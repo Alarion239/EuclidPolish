@@ -57,7 +57,7 @@ Rules that apply everywhere:
 | `hooks/` | `useUrlState`, `useShortcut` / `bindShortcut`, `useMediaQuery`, `usePolling`, plus re-exports of `useResource` / `invalidate` |
 | `format.ts` | Number, SI, bytes, duration, magnitude, RA/Dec and date formatting; `parseSkyCoord` |
 | `ticks.ts` | Linear, log, decade and magnitude ticks; `extent`, `paddedDomain`, `unionDomain` |
-| `colors.ts` | Canvas colour readers: `C.*`, `categorical`, `LOSS_COLOR`, `bandColor`, `viridis` |
+| `colors.ts` | Canvas colour readers: `C.*`, `categorical`, `LOSS_COLOR`, `bandColor`, `statusColor`, `viridis` |
 | `theme/` | `tokens.css` (the token contract), `base.css` (element styles, `.muted`, `.eyebrow` — a sentence-case small label —, `.sr-only`), `index.css` (entry point); `tokens.test.ts` and `chrome.test.ts` (§8) |
 | `ui/` | UI kit v2 on Radix (§9): controls, overlays, `confirm`, `toast`, display primitives, `Toolbar`, `DataTable`, `LogView`, `JsonTree`, `JobProgress`, `Icon`, download/clipboard helpers, `UiProvider` |
 | `charts/` | `Plot` v2, `Legend`, `useLegend` (§9.4); the pure maths is in `plotModel.ts` |
@@ -514,7 +514,8 @@ used without defining (`--line`, `--muted`, `--mono`, `--panel`, `--bg`, `--surf
 aliases now. The `.muted` class is defined in `base.css`.
 
 To read a token in canvas code, use the `colors.ts` readers (`C.mean`, `categorical(i)`,
-`LOSS_COLOR.l1`, `bandColor("VIS")`). To redraw on a theme flip, add `useResolvedTheme()` to the
+`LOSS_COLOR.l1`, `bandColor("VIS")`, `statusColor("bad")` — the last only for a mark that means
+the state, e.g. an out-of-memory run, with a marker shape and a legend label beside it). To redraw on a theme flip, add `useResolvedTheme()` to the
 figure's dependencies. A theme or accent flip also re-renders the active workspace tab and the
 inspector content (`useTokenRerender`, §11.1), so a token read during render (`color: C.muted`
 in JSX) picks up the new theme; memoised values and effects still need the dependency.
@@ -1551,10 +1552,10 @@ workspace has its own subsection below (§11.7–§11.15).
 | `sky` | `tabs/{Atlas,Targets,Compare}.tsx` (+ `atlas/`, `targets/`, `compare/`, `results/` the tile card and model picker, `src/sky/` Aladin engine) | `tile`, `source`, `realtile`, `experiment` |
 | `figures` | `tabs/{Plates,Sheet,Studies}.tsx` (+ `plates/`, `sheet/`, `grid/`, `studies/`) | `figure` |
 | `files` | `FilesPage.tsx` (`?fits=`, `?path=`, `dir`, `q`, `hdu`, `slice`, `view`) | `fits` |
-| `runs` | `tabs/{Live,History,Steps}.tsx` (+ `steps/` the FASRC step card behind `src/fasrc.tsx`, `Connection.tsx`, `Queue.tsx`, `LogViewer.tsx`, `LocalJob.tsx`) | (`job`, built in) |
+| `runs` | `tabs/{Live,History,Resources,Steps}.tsx` (+ `steps/` the FASRC step card behind `src/fasrc.tsx`, `resourcesModel.ts`, `Connection.tsx`, `Queue.tsx`, `LogViewer.tsx`, `LocalJob.tsx`) | (`job`, built in) |
 | `notebook` | `tabs/{Log,Backups,Sandboxes}.tsx` (+ `NotebookView.tsx`, `CampaignBar.tsx`, `Backups.tsx`, `Archive.tsx`, `TimeTravel.tsx`, `TrackedJobs.tsx`) | `campaign` |
 | `system` | `tabs/{Connections,Config,Lineage,Code,Storage,Appearance}.tsx` (+ `configFields.ts`, `configModel.ts`, `git/`, `provenance/`) | `prov`, `commit`, `root` |
-| (shared) | `workspaces/shared/`: `LogToNotebook.tsx`, `ConfigKnobsLink.tsx`, `PageLead.tsx`, `FreezeStudyDialog.tsx` (+ `studyFreeze.ts`), `versionText.ts`, `noteText.ts` (§11.6) | — |
+| (shared) | `workspaces/shared/`: `LogToNotebook.tsx`, `ConfigKnobsLink.tsx`, `PageLead.tsx`, `FreezeStudyDialog.tsx` (+ `studyFreeze.ts`), `ResourceAdvice.tsx` (+ `resourceAdviceModel.ts`), `versionText.ts`, `noteText.ts` (§11.6) | — |
 
 Old URLs: every page of the previous console (`/realism/*`, `/data/*`, `/ensemble/:mode/*`,
 `/inspect`, `/ops/*`, `/settings/*` and the pre-rework paths) redirects to its new home with its
@@ -1588,8 +1589,11 @@ import { StepById, SlurmMonitor, useStepsStatus } from "../../../fasrc";
   prefilled from `last_params` (the last successful run) or from a cloned past run (Runs ›
   History's "Clone"; Runs › Steps `?step=&clone=<jobid>`), with "Defaults" / "Use last run"
   resets, the SLURM resources (partition fixed per step) and a confirmed submit (a danger
-  confirm for `force`-style flags). A submit while another FASRC job runs is queued; the card says
-  where. It re-attaches to the step's live job from the shared jobs feed after navigation and lists
+  confirm for `force`-style flags). Under the resources sits the resource advisor's
+  `ResourceAdvice` (§11.6), asked with exactly the task params the submit posts
+  (`stepForm.ts submitParams`); its Apply sets only the editable fields (`editableResources`,
+  `applyAdvisedResources`: not a fixed CPU / GPU count, never the partition). A submit while another
+  FASRC job runs is queued; the card says where. It re-attaches to the step's live job from the shared jobs feed after navigation and lists
   the step's known remote `outputs`.
 - Props (backward compatible): `stepId`/`step`, `extraParams` (host-controlled params: posted as
   given and hidden from the form), `embedded`, `showHistory`, `submitDisabled`,
@@ -1614,6 +1618,9 @@ import { ConfigKnobsLink } from "../../shared/ConfigKnobsLink";
 <ConfigKnobsLink groups={["scenes", "lenses"]} />                            // "2 knobs changed · Edit"
 import { PageLead } from "../../shared/PageLead";
 <PageLead right={<Button …>Refresh</Button>}>What the page is for.</PageLead>
+import { ResourceAdvice } from "../../shared/ResourceAdvice";
+<ResourceAdvice stepId="ensemble_train" params={params} resources={res}      // "Recommended from N past runs"
+  fields={["n_cpus", "memory", "time_limit"]} perTask="model" onApply={(r) => …} />
 ```
 
 - **LogToNotebook**: every "Log to notebook" (Models › Leaderboard and Combiner, Sky › Compare,
@@ -1632,6 +1639,20 @@ import { PageLead } from "../../shared/PageLead";
 - **PageLead**: the lead line of a Home / Runs / Notebook / System page with the page's own
   actions at its right. Those pages render no visible title or eyebrow: the breadcrumb and the
   active tab name the page, `<Workspace>` renders its visually hidden h1.
+- **ResourceAdvice** (spec `2026-09-30-resource-advisor-design.md`): the compact "Recommended from N
+  past runs (level) · confidence" callout under a submission form's resources — the FASRC step card
+  (§11.5) and Models › Train's Resources card. It POSTs `{params, resources}` as JSON to
+  `/api/fasrc/resources/<step>/recommend` from a debounced effect (400 ms; a read-only exemption
+  from "no effect POSTs", like Train's command preview: the advisor reads the local job ledger and
+  mutates nothing), lists current → recommended with the evidence for the fields the host edits
+  (`fields`), keeps the notes and warnings in a disclosure, and changes nothing until Apply (disabled
+  when there is nothing to change, and while an edit is being re-asked: the answer on screen is
+  for the previous plan), which hands back the current resources with the recommended
+  values in place. "Open usage" → Runs › Resources `?step=`. Loading, no history (`available:
+  false`, or a 404 for a step the ledger never saw) and errors are one quiet muted line — never a
+  big error inside a form. The pure part (types, labels, `adviceRows`, `appliedResources`,
+  `rateText`) is `resourceAdviceModel.ts`; Runs › Resources' recommendation card reuses its
+  `AdviceChanges` / `AdviceNotes`.
 - **versionText** (`serverCodeText`): the version state in plain words — "Backend code changed —
   restart the server to load it" (`/api/version` `behind`), "The console build changed — reload"
   (`useConsoleUpdate`), else "current code". System › Code reads it; never "behind HEAD".
@@ -1726,7 +1747,9 @@ rest, counts on the chips and controls they belong to (so a `DataTable` beside t
   mean over the bands rounds a core specialist to 0.0%, so when the row has `gate_usage_peak`
   the cell reads "0.0% mean · 48% peak (VIS cores)" (`model.ts gatePeak / gateUseText`).
 - **Train** seeds CPUs / memory / time from the newest COMPLETED job of the same kind
-  (`trainModel.ts defaultResources`, else the recipe 16 CPUs, 32G, 3:00:00); "Continue them…"
+  (`trainModel.ts defaultResources`, else the recipe 16 CPUs, 32G, 3:00:00); under them the
+  `ResourceAdvice` for the built params (`buildParams`), per model = per array task, whose Apply
+  owns the resources like an edit (the "As job X" hint stays); "Continue them…"
   (`?mode=continue&members=`) continues up to the members' `target_steps`; the submit confirm
   names CPUs, memory and time and its label repeats the count and the regime ("Submit 4
   STARFULL members to SLURM"). The command preview is `POST /ensemble/train/preview` from a
@@ -1845,6 +1868,19 @@ rest, counts on the chips and controls they belong to (so a `DataTable` beside t
   campaign (`?campaign=current` = the jobs the active campaign logged), with labelled Clone and
   Logs; the selected run's log opens beside the table (`?run=<jobid>|local:<id>&logs=1`); the
   Source chips carry the counts. `ensemble_train` rows show wall time per 1000 steps.
+- **Resources** (`?step=`, default `ensemble_train`; spec `2026-09-30-resource-advisor-design.md`):
+  what past runs asked for vs used, from the local job ledger's sacct + Jobstats accounting (`GET
+  /api/fasrc/resources[/<step>]`, offline; opening only reads). The step list (runs, completed
+  share, OOM / timeout badges, median CPU efficiency and GPU utilisation) beside the picked step: one
+  `SummaryLine` (completed of finished, then what ran out of memory, timed out, failed…), the medians
+  and the allocated-but-unused CPU / GPU / memory hours as `FactsList`s (no tiles: §9.2), the
+  recommendation "For the next run like the last one" (the advisor on the latest counted run's
+  params and the step defaults) with "Submit in <home>" (`resourcesModel.ts submitHome`: Models ›
+  Train, Synthetic › Records' generate drawer, else Runs › Steps), the two per-run charts (peak
+  memory vs requested, elapsed vs time limit: oldest → newest, the request dashed, OOM / TIMEOUT
+  runs as status-coloured diamonds) and the recent runs with requested-vs-used bars (a row opens the
+  `job:slurm/<id>` inspector). Every allocation is per array task; on GPU steps a caption says the
+  GPU memory % is no usage number (TensorFlow preallocates the card).
 - **Steps**: the step catalogue grouped by stage (`?stage=`), one step's card (`?step=`,
   `?clone=`), each linking the tab whose drawer embeds it.
 

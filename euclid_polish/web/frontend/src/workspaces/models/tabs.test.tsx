@@ -2,7 +2,8 @@
  * Leaderboard (status line, verdict, comparison table with the real
  * benchmark, TIMEOUT alert line, knee curves and the leaderboard), Members
  * (roster, selection toolbar, archive only after confirm(), Images link, the
- * Pull banner), Train (preview, regime in the button, resources), Combiner
+ * Pull banner), Train (preview, regime in the button, resources and their
+ * past-run advice), Combiner
  * (current membership + history, real holes from ONE Sky › Compare run, gate
  * share → Members, held-out loss scale, promote guard, never the RBF),
  * Diagnostics (facet legend, the spread answer + coverage, old d= values,
@@ -33,7 +34,7 @@ vi.mock("../../viewer", () => ({
 
 type Reply = { status?: number; body: unknown };
 let routes: Record<string, (form: Record<string, string>) => Reply>;
-let calls: { url: string; method: string; form: Record<string, string> }[];
+let calls: { url: string; method: string; form: Record<string, string>; json?: unknown }[];
 const posts = (u: string) => calls.filter((c) => c.method === "POST" && c.url === u);
 const gets = (u: string) => calls.filter((c) => c.method === "GET" && c.url === u);
 
@@ -165,7 +166,7 @@ beforeEach(() => {
     const url = String(input);
     const method = init.method ?? "GET";
     const form = formOf(init.body);
-    calls.push({ url, method, form });
+    calls.push({ url, method, form, json: typeof init.body === "string" ? JSON.parse(init.body) : undefined });
     const r = routes[`${method} ${url}`]?.(form) ?? { status: 404, body: { ok: false, error: `no route ${url}` } };
     return new Response(JSON.stringify(r.body), { status: r.status ?? 200 });
   }));
@@ -494,6 +495,35 @@ describe("train", () => {
     const upTo = await screen.findByRole("spinbutton", { name: "Up to step" });
     expect((upTo as HTMLInputElement).value).toBe("70000");
     await waitFor(() => expect(posts("/ensemble/train/preview").at(-1)?.form).toMatchObject({ continue_basis: "target", target_steps: "70000" }));
+  });
+
+  it("advises the resources for the built params; Apply sets them per model and keeps the 'As job' hint", async () => {
+    routes["POST /api/fasrc/resources/ensemble_train/recommend"] = () => ({ body: {
+      ok: true, step_id: "ensemble_train", available: true, confidence: "high",
+      resources: { n_cpus: "6", n_gpus: "1", memory: "36G", time_limit: "3:30:00" },
+      current: { n_cpus: "4", n_gpus: "1", memory: "32G", time_limit: "3:00:00" },
+      changes: [
+        { field: "n_cpus", current: "4", recommended: "6", reason: "GPU waits on the input pipeline (starved): add CPUs" },
+        { field: "memory", current: "32G", recommended: "36G", reason: "p90 peak 29 GB of 32 GB over 6 runs" },
+        { field: "time_limit", current: "3:00:00", recommended: "3:30:00", reason: "p90 0.15 s per step × 70,000 steps × 1.2" },
+      ],
+      basis: { level: "similar", level_label: "same kind, batch and depth", n_runs: 6, jobids: [] }, notes: [], warnings: [],
+    } });
+    const Train = await load();
+    show(<Train />, "/models/starfull/train");
+    const cpus = await screen.findByRole("spinbutton", { name: "CPUs / model" });
+    await waitFor(() => expect((cpus as HTMLInputElement).value).toBe("4"));
+    expect(await screen.findByText(/Recommended from 6 past runs/)).toBeTruthy();
+    const ask = posts("/api/fasrc/resources/ensemble_train/recommend").at(-1)!;
+    const preview = posts("/ensemble/train/preview").at(-1)!;
+    expect((ask.json as { params: unknown }).params).toEqual(preview.form);          // the same built params
+    expect((ask.json as { resources: unknown }).resources).toEqual({ n_cpus: "4", n_gpus: "1", memory: "32G", time_limit: "3:00:00" });
+    expect(document.querySelector(".radv__field")?.textContent).toBe("CPUs / model");  // per array task
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect((cpus as HTMLInputElement).value).toBe("6"));
+    expect((screen.getByRole("textbox", { name: "Memory / model" }) as HTMLInputElement).value).toBe("36G");
+    expect((screen.getByRole("textbox", { name: "Time limit / model" }) as HTMLInputElement).value).toBe("3:30:00");
+    expect(screen.getByText(/As job 48107719/)).toBeTruthy();
   });
 
   it("trains starless members from the starless workspace, and the regime is an explicit field", async () => {

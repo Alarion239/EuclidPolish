@@ -867,12 +867,9 @@ def register(app):
         # Fill universal job-config values. Most steps always inherit /config
         # (including computed/locked values); React Train members deliberately
         # exposes experiment-local ensemble controls, so preserve values that
-        # page explicitly submitted instead of silently replacing them.
-        for param_name, value in job_config.fasrc_params_for(step_id).items():
-            if step_id == "ensemble_train":
-                form.setdefault(param_name, value)
-            else:
-                form[param_name] = value
+        # page explicitly submitted instead of silently replacing them. The
+        # resource advisor's recommend POST completes its params the same way.
+        form = job_config.with_fasrc_params(step_id, form)
 
         # All form values are passed as ``params``; the step picks out
         # what it needs.

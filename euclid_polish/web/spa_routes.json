@@ -8,7 +8,7 @@
     { "id": "sky", "label": "Sky", "path": "/sky", "tabs": ["atlas", "targets", "compare"], "defaultTab": "atlas" },
     { "id": "figures", "label": "Figures", "path": "/figures", "tabs": ["plates", "sheet", "studies"], "defaultTab": "plates" },
     { "id": "files", "label": "Files", "path": "/files", "tabs": [] },
-    { "id": "runs", "label": "Runs", "path": "/runs", "tabs": ["live", "history", "steps"], "defaultTab": "live" },
+    { "id": "runs", "label": "Runs", "path": "/runs", "tabs": ["live", "history", "resources", "steps"], "defaultTab": "live" },
     { "id": "notebook", "label": "Notebook", "path": "/notebook", "tabs": ["log", "backups", "sandboxes"], "defaultTab": "log" },
     { "id": "system", "label": "System", "path": "/system", "tabs": ["connections", "config", "lineage", "code", "storage", "appearance"], "defaultTab": "connections" }
   ],

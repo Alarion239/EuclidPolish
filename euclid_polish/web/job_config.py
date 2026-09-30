@@ -18,6 +18,7 @@ import contextlib
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from typing import Any
 
@@ -92,6 +93,26 @@ def fasrc_params_for(step_id: str) -> dict[str, str]:
         # oversampling = 2). The ``+1`` keeps it odd so the kernel has a true
         # centre sample. The field is removed from the form.
         out["output_size"] = str(2 * int(cfg.vis_pixels) + 1)
+    return out
+
+
+#: Steps whose page submits its own values for some /config knobs (React
+#: Train members exposes experiment-local ensemble controls): /config only
+#: fills what the form left out. Every other step always inherits /config.
+FORM_WINS_STEPS = frozenset({"ensemble_train"})
+
+
+def with_fasrc_params(step_id: str, form: Mapping[str, Any]) -> dict[str, Any]:
+    """``form`` with the step's /config params merged in, exactly as the
+    submit route hands a job off (and so as the job ledger records it):
+    :func:`fasrc_params_for` overrides the form, except on
+    :data:`FORM_WINS_STEPS`, where a submitted value is kept."""
+    out = dict(form)
+    for param_name, value in fasrc_params_for(step_id).items():
+        if step_id in FORM_WINS_STEPS:
+            out.setdefault(param_name, value)
+        else:
+            out[param_name] = value
     return out
 
 

@@ -716,6 +716,33 @@ progress comes from its `.events` stream, `/api/fasrc/jobs/<jobid>/status`).
 | POST | `/api/fasrc/steps/<step_id>/submit` | fasrc | Submit (or queue behind the running job) one pipeline step: `confirm=yes`, resources (`n_cpus`, `n_gpus`, `memory`, `time_limit`; partition is fixed per step) and task params. Absent (and blank, unless blank means "unset") task params take the schema defaults; an invalid one, or a spec that cannot be rendered, is refused **400** `{ok:false,error}` before anything reaches FASRC or the queue (C5, see *FASRC step task parameters*). `{ok, jobid}` or `{ok, queued:true, queue}`. |
 | GET | `/api/fasrc/steps/status` |  | `{ssh_connected, steps[], artifacts, remote_paths}`; each step: `step_id, label, needs_gpu, fixed_cpus, fixed_gpus, defaults` (resources), `task_params` (schema) and `last_params` (typed task params of the newest COMPLETED run, or `null`) — C5 — and `outputs[{key, path, exists}]` (the remote artifacts the step is known to write; `exists` null offline). Offline it skips the artifact probes (never gated). |
 
+### Resource advisor (`routes/resources.py`, `observability/resource_advisor.py`)
+
+What past FASRC runs asked for vs used, and what to ask for next (Runs ›
+Resources, the step cards' "Recommended from N past runs" callout). All local
+and offline: the job ledger CSV is re-read per request (parsed rows cached on
+the file's `(mtime_ns, size)`); nothing is gated and nothing starts a job.
+Evidence runs: `COMPLETED`, `OUT_OF_MEMORY` (memory lower bound), `TIMEOUT`
+(time lower bound) with an elapsed time; failed / cancelled runs are counted in
+the summaries only. Per array task (the ledger's allocation fields are per task).
+Match levels: `exact` (same settings key and CPU count; steps whose memory
+scales with CPUs, i.e. `synthetic_generate`) → `similar` (same key) → `step`;
+the first with ≥ 3 runs wins (else the most specific non-empty, low confidence),
+its 20 newest runs are the `basis`. A CPU change re-matches the runs at the
+recommended count until the rule holds there, so memory and time come from runs
+like the recommendation and re-asking with it (after Apply) changes nothing; a
+starved GPU step gets 1.5× the CPUs its runs had (not 1.5× the form's). Time per
+unit of work is the p90 over the runs within 4× of the planned work (all sizes
+when none is: a smoke run's rate is mostly startup); on `synthetic_generate`
+(one worker per CPU) a run measured at more CPUs than planned counts as
+`elapsed × its CPUs / planned CPUs`.
+
+| Methods | Path | Gate | Notes |
+|---|---|---|---|
+| GET | `/api/fasrc/resources` |  | `{ok, steps[StepSummary]}` — every step in the ledger, `ensemble_train` and `synthetic_generate` first, then by `last_submitted_at` desc. StepSummary: `{step_id, label (registry title, else the id), needs_gpu, registered (the console still submits it; false for a historical step), runs, states{completed, oom, timeout, failed, cancelled, running}, success_rate (completed / finished), last_submitted_at, cpu_efficiency, gpu_util, mem_ratio, time_ratio (medians over the evidence runs), peak_mem_p90_mb, cpu_hours_alloc, cpu_hours_used, gpu_hours_alloc, gpu_hours_used, mem_gb_hours_alloc, mem_gb_hours_used}` (hours over every finished run; `null` when unknown). |
+| GET | `/api/fasrc/resources/<step_id>` |  | `{ok, step_id, summary, runs[RunUsage] (newest first, ≤ 200), recommendation}`; `recommendation` is for the latest evidence run's params and resources (the step defaults fill blanks) — "the next run like the last one". RunUsage: `{jobid, submitted_at, state, partition, cpus, gpus, req_memory, req_memory_mb, req_time_limit, req_time_s, elapsed_s, cpu_efficiency, cores_used, peak_mem_mb, mem_ratio, time_ratio, gpu_util, gpu_mem_used_mb (display only: TensorFlow preallocates the card), units, units_label, key_label, label}`. 404 `{ok:false,error}` for a step neither registered nor in the ledger (a historical step with rows answers). |
+| POST | `/api/fasrc/resources/<step_id>/recommend` |  | Read-only (a POST for the payload size). JSON `{params, resources{n_cpus, n_gpus, memory, time_limit}}` or form fields (resource keys split out, the rest are params). The params are completed as the submit completes them before the run reaches the ledger: schema defaults for absent / blank task params (a value the schema refuses keeps the posted params), then `/config`'s injected params (`job_config.with_fasrc_params`: `synthetic_generate`'s scene counts and image size, which no card posts). → `{ok, step_id, available, confidence (high\|medium\|low), resources{n_cpus, n_gpus, memory ("36G"), time_limit (SLURM H:MM:SS / D-HH:MM:SS)}, current{…} (what was sent; null = blank), changes[{field, current, recommended, reason}], basis{level, level_label, n_runs, jobids, units, units_label, rate_s_per_unit}, notes[], warnings[]}`. `available:false` (current values echoed, defaults filling blanks) without evidence runs; 404 as above; 400 for a non-object JSON body. |
+
 ### Euclid archive auth (`routes/auth.py`)
 
 | Methods | Path | Gate | Notes |

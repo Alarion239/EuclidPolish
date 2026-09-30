@@ -191,24 +191,51 @@ export function visibleParams(params: readonly TaskParam[], values: FormValues, 
   return { shown, more: pool.length - shown.length };
 }
 
-/** The POST body for `/api/fasrc/steps/<id>/submit`: resources, every
- *  form-controlled task param (blank = the server's default/unset), then the
- *  host page's `extraParams` (they win), and `confirm=yes`. */
+/** The task params a submit posts: every form-controlled task param (blank
+ *  = the server's default/unset), then the host page's `extraParams` (they
+ *  win). The resource advisor is asked about exactly these. */
+export function submitParams(step: Step, values: FormValues,
+  extraParams: Record<string, string | number> = {}, hidden: ReadonlySet<string> = new Set()): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of step.task_params ?? []) {
+    if (hidden.has(p.name)) continue;
+    out[p.name] = (values[p.name] ?? "").trim();
+  }
+  for (const [k, v] of Object.entries(extraParams)) out[k] = String(v);
+  return out;
+}
+
+/** The POST body for `/api/fasrc/steps/<id>/submit`: resources, the task
+ *  params (`submitParams`) and `confirm=yes`. */
 export function submitBody(step: Step, values: FormValues, resources: Resources,
   extraParams: Record<string, string | number> = {}, hidden: ReadonlySet<string> = new Set()): Record<string, string> {
-  const body: Record<string, string> = {
+  return {
     n_cpus: String(step.fixed_cpus ?? resources.n_cpus).trim(),
     n_gpus: String(step.fixed_gpus ?? resources.n_gpus).trim(),
     memory: resources.memory.trim(),
     time_limit: resources.time_limit.trim(),
+    ...submitParams(step, values, extraParams, hidden),
+    confirm: "yes",
   };
-  for (const p of step.task_params ?? []) {
-    if (hidden.has(p.name)) continue;
-    body[p.name] = (values[p.name] ?? "").trim();
+}
+
+/** The resource fields a user can edit on a step's card: CPUs unless the
+ *  step fixes them, GPUs only on a GPU step that does not fix them, memory
+ *  and time always (the partition is fixed per step). */
+export function editableResources(step: Step): (keyof Resources)[] {
+  return (["n_cpus", "n_gpus", "memory", "time_limit"] as (keyof Resources)[]).filter((k) =>
+    k === "n_cpus" ? step.fixed_cpus == null : k === "n_gpus" ? step.needs_gpu && step.fixed_gpus == null : true);
+}
+
+/** The form's resources after applying advised ones: only the editable
+ *  fields change, and only to a non-blank value. */
+export function applyAdvisedResources(step: Step, current: Resources, advised: Partial<Resources>): Resources {
+  const next = { ...current };
+  for (const k of editableResources(step)) {
+    const v = String(advised[k] ?? "").trim();
+    if (v) next[k] = v;
   }
-  for (const [k, v] of Object.entries(extraParams)) body[k] = String(v);
-  body.confirm = "yes";
-  return body;
+  return next;
 }
 
 /** Why a submit deserves a danger confirmation (destructive flags set). */

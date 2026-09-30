@@ -1,7 +1,8 @@
 /* Runs workspace against a mocked Flask: the schema-driven step card (shared
- * by every page that embeds a step), the SLURM monitor, Live (one list of
- * local and SLURM jobs, the queue), History (one ledger, its filters, Clone /
- * Logs, the log side panel, wall time) and Steps (by stage, home tabs). */
+ * by every page that embeds a step, with its resource advice), the SLURM
+ * monitor, Live (one list of local and SLURM jobs, the queue), History (one
+ * ledger, its filters, Clone / Logs, the log side panel, wall time), Resources
+ * (past usage by step, the recommendation) and Steps (by stage, home tabs). */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
@@ -9,17 +10,20 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useJobsStore } from "../../api/jobs";
 import { queryClient } from "../../api/query";
+import { useInspector } from "../../state/inspector";
 import { resetConfirm } from "../../ui";
 import { QueuePanel } from "./Queue";
 import { SlurmMonitor } from "./steps/SlurmMonitor";
 import { StepCard } from "./steps/StepCard";
 import type { Step } from "./steps/stepForm";
+import type { RunUsage, StepSummary } from "./api";
 import History from "./tabs/History";
 import Live from "./tabs/Live";
+import Resources from "./tabs/Resources";
 import Steps from "./tabs/Steps";
 
 type Reply = { status?: number; body: unknown };
-type Call = { url: string; method: string; form: Record<string, string | string[]> };
+type Call = { url: string; method: string; form: Record<string, string | string[]>; json?: unknown };
 let routes: Record<string, (form: Call["form"], url: URL) => Reply>;
 let calls: Call[];
 let location = "";
@@ -49,7 +53,8 @@ beforeEach(() => {
     const url = new URL(String(input), "http://localhost");
     const method = init.method ?? "GET";
     const form = formOf(init.body);
-    calls.push({ url: `${url.pathname}${url.search}`, method, form });
+    const json = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+    calls.push({ url: `${url.pathname}${url.search}`, method, form, json });
     const handler = routes[`${method} ${url.pathname}${url.search}`] ?? routes[`${method} ${url.pathname}`];
     const r = handler?.(form, url) ?? { status: 404, body: { ok: false, error: `no route ${url.pathname}` } };
     return new Response(JSON.stringify(r.body), { status: r.status ?? 200 });
@@ -190,6 +195,35 @@ describe("StepCard (schema-driven)", () => {
   it("stays disabled offline", async () => {
     show(<StepCard step={QUERY} sshConnected={false} />);
     expect(((await screen.findByRole("button", { name: "Submit" })) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("asks the resource advisor with the params it submits; Apply fills only the editable resources", async () => {
+    routes["POST /api/fasrc/resources/euclid_query/recommend"] = () => ({ body: {
+      ok: true, step_id: "euclid_query", available: true, confidence: "medium",
+      resources: { n_cpus: "2", n_gpus: "1", memory: "8G", time_limit: "45:00" },
+      current: { n_cpus: "1", n_gpus: "0", memory: "4G", time_limit: "30:00" },
+      changes: [
+        { field: "n_gpus", current: "0", recommended: "1", reason: "never offered on a CPU step" },
+        { field: "memory", current: "4G", recommended: "8G", reason: "p90 peak 6.1 GB of 4 GB over 3 runs; 1 OOM at 4 GB" },
+        { field: "time_limit", current: "30:00", recommended: "45:00", reason: "p90 elapsed 31 min × 1.2" },
+      ],
+      basis: { level: "step", level_label: "every run of the step", n_runs: 3, jobids: ["41"] }, notes: [], warnings: [],
+    } });
+    show(<StepCard step={{ ...QUERY, fixed_cpus: 1 }} sshConnected />);
+    expect(await screen.findByText(/Recommended from 3 past runs/)).toBeTruthy();
+    const ask = posts("/api/fasrc/resources/euclid_query/recommend").at(-1)!;
+    expect(ask.json).toEqual({ params: { num_stars: "500", magnitude_min: "18", mode: "a" },
+      resources: { n_cpus: "1", n_gpus: "0", memory: "4G", time_limit: "30:00" } });
+    expect(screen.queryByText("never offered on a CPU step")).toBeNull();          // GPUs: not a field of this card
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    const res = within(screen.getByLabelText("Resources"));
+    await waitFor(() => expect((res.getByLabelText("Memory") as HTMLInputElement).value).toBe("8G"));
+    expect((res.getByLabelText("Time limit") as HTMLInputElement).value).toBe("45:00");
+    expect((res.getByLabelText("CPUs") as HTMLInputElement).value).toBe("1");      // fixed_cpus
+    routes["POST /api/fasrc/steps/euclid_query/submit"] = () => ({ body: { ok: true, jobid: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await answer(/Submit/, "Submit");
+    await waitFor(() => expect(posts("/api/fasrc/steps/euclid_query/submit").at(-1)?.form).toMatchObject({ memory: "8G", time_limit: "45:00" }));
   });
 });
 
@@ -432,5 +466,114 @@ describe("Runs › Steps", () => {
   it("warns when the linked step is not registered", async () => {
     show(<Steps />, "/runs/steps?step=gone_step");
     expect(await screen.findByText("No step “gone_step”")).toBeTruthy();
+  });
+});
+
+/* ── Resources ───────────────────────────────────────────────────────────── */
+
+describe("Runs › Resources", () => {
+  const STATES = { completed: 2, oom: 1, timeout: 1, failed: 0, cancelled: 0, running: 0 };
+  const SUMMARY = (p: Partial<StepSummary> & { step_id: string }): StepSummary => ({
+    label: p.step_id, needs_gpu: false, registered: true, runs: 4, states: STATES, success_rate: 0.5, last_submitted_at: "2026-09-27T21:25:02Z",
+    cpu_efficiency: 0.42, gpu_util: null, mem_ratio: 0.6, time_ratio: 0.7, peak_mem_p90_mb: 20480,
+    cpu_hours_alloc: 100, cpu_hours_used: 40, gpu_hours_alloc: null, gpu_hours_used: null,
+    mem_gb_hours_alloc: 400, mem_gb_hours_used: 300, ...p,
+  });
+  const RUN = (p: Partial<RunUsage> & { jobid: string }): RunUsage => ({
+    submitted_at: "2026-09-20T10:00:00Z", state: "COMPLETED", partition: "gpu", cpus: 16, gpus: 1, req_memory: "32G",
+    req_memory_mb: 32768, req_time_limit: "3:00:00", req_time_s: 10800, elapsed_s: 9000, cpu_efficiency: 0.8,
+    cores_used: 12.8, peak_mem_mb: 16384, mem_ratio: 0.5, time_ratio: 0.83, gpu_util: 71, gpu_mem_used_mb: 79000,
+    units: 70000, units_label: "steps", key_label: "new · batch 16 · 16 blocks", label: "Train ensemble · member 199", ...p,
+  });
+  const TRAIN = SUMMARY({ step_id: "ensemble_train", label: "Train ensemble", needs_gpu: true, gpu_util: 71,
+    gpu_hours_alloc: 10, gpu_hours_used: 7 });
+  const GEN = SUMMARY({ step_id: "synthetic_generate", label: "Generate synthetic data", runs: 9,
+    states: { ...STATES, completed: 7, oom: 2, timeout: 0 } });
+  const RETIRED = SUMMARY({ step_id: "lensfinder_train", registered: false, needs_gpu: true });
+  beforeEach(() => {
+    useInspector.getState().reset();
+    routes["GET /api/fasrc/resources"] = () => ({ body: { ok: true, steps: [TRAIN, GEN, RETIRED] } });
+    routes["GET /api/fasrc/resources/ensemble_train"] = () => ({ body: {
+      ok: true, step_id: "ensemble_train", summary: TRAIN,
+      runs: [
+        RUN({ jobid: "48107719", submitted_at: "2026-09-27T21:25:02Z", state: "TIMEOUT", elapsed_s: 10805, time_ratio: 1 }),
+        RUN({ jobid: "48100001", submitted_at: "2026-09-21T10:00:00Z", state: "OUT_OF_MEMORY", peak_mem_mb: null }),
+        RUN({ jobid: "48000000" }),
+      ],
+      recommendation: {
+        ok: true, step_id: "ensemble_train", available: true, confidence: "high",
+        resources: { n_cpus: "16", n_gpus: "1", memory: "36G", time_limit: "4:00:00" },
+        current: { n_cpus: "4", n_gpus: "1", memory: "32G", time_limit: "48:00:00" },
+        changes: [
+          { field: "n_cpus", current: "4", recommended: "16", reason: "GPU waits on the input pipeline (starved): add CPUs" },
+          { field: "memory", current: "32G", recommended: "36G", reason: "p90 peak 29 GB of 32 GB over 6 runs; 1 OOM at 32 GB" },
+          { field: "time_limit", current: "48:00:00", recommended: "4:00:00", reason: "p90 0.14 s per step × 70,000 steps × 1.2" },
+        ],
+        basis: { level: "similar", level_label: "same kind, batch and depth", n_runs: 6, jobids: ["48000000", "48107719"],
+          units: 70000, units_label: "steps", rate_s_per_unit: 0.14 },
+        notes: ["GPU memory is not used to recommend: TensorFlow preallocates the card."], warnings: ["1 TIMEOUT run would still time out."],
+      },
+    } });
+    routes["GET /api/fasrc/resources/synthetic_generate"] = () => ({ body: {
+      ok: true, step_id: "synthetic_generate", summary: GEN, runs: [RUN({ jobid: "5", gpus: 0, gpu_util: null })],
+      recommendation: { ok: true, step_id: "synthetic_generate", available: false, confidence: null, resources: {}, current: {},
+        changes: [], basis: null, notes: [], warnings: [] },
+    } });
+  });
+
+  it("opens on ensemble_train: the summary, the recommendation with its submit link, the charts and the runs", async () => {
+    show(<Resources />, "/runs/resources");
+    const nav = await screen.findByRole("navigation", { name: "Steps with past runs" });
+    expect(within(nav).getByText("Train ensemble").closest("button")?.getAttribute("aria-current")).toBe("true");
+    expect(within(nav).getByText("2 OOM")).toBeTruthy();
+    expect(await screen.findByText(/finished runs completed/)).toBeTruthy();
+    expect(document.querySelector(".ui-summary")?.textContent).toContain("1 ran out of memory and 1 hit the time limit");
+    expect(screen.getByText("For the next run like the last one")).toBeTruthy();
+    expect(screen.getByText("Recommended from 6 past runs (same kind, batch and depth) · high confidence")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Submit in Models › Train/ }).getAttribute("href")).toBe("/models/starfull/train");
+    expect(screen.getAllByText("CPUs / member").length).toBeGreaterThan(0);        // the facts and the change list
+    expect(screen.getByText("2m 20s per 1,000 steps")).toBeTruthy();
+    expect(screen.getByText("1 TIMEOUT run would still time out.")).toBeTruthy();
+    expect(screen.getByText(/TensorFlow preallocates the whole card/)).toBeTruthy();
+    expect(screen.getByRole("figure", { name: "Peak memory vs requested" })).toBeTruthy();
+    expect(screen.getByRole("figure", { name: "Elapsed vs time limit" })).toBeTruthy();
+    const table = screen.getByRole("grid", { name: "Train ensemble runs" });
+    expect(within(table).getByText("TIMEOUT")).toBeTruthy();
+    expect(within(table).getAllByText("16 GB / 32 GB")).toHaveLength(2);          // the COMPLETED and TIMEOUT runs
+    // opening the page only reads
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+  });
+
+  it("a run row opens the job inspector", async () => {
+    show(<Resources />, "/runs/resources");
+    const table = await screen.findByRole("grid", { name: "Train ensemble runs" });
+    fireEvent.click(within(table).getByText("#48000000 · 2026-09-20", { exact: false }));
+    expect(useInspector.getState().current).toEqual({ kind: "job", id: "slurm/48000000" });
+  });
+
+  it("switches steps in the URL, and says when a step has nothing to recommend from", async () => {
+    show(<Resources />, "/runs/resources");
+    const nav = await screen.findByRole("navigation", { name: "Steps with past runs" });
+    fireEvent.click(within(nav).getByText("Generate synthetic data"));
+    await waitFor(() => expect(params().get("step")).toBe("synthetic_generate"));
+    expect(await screen.findByText("Nothing to recommend from yet")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Submit in Synthetic › Records/ }).getAttribute("href")).toBe("/synthetic/records?gen=1");
+  });
+
+  it("offers no submit link for a retired step (only its ledger rows are left)", async () => {
+    routes["GET /api/fasrc/resources/lensfinder_train"] = () => ({ body: {
+      ok: true, step_id: "lensfinder_train", summary: RETIRED, runs: [RUN({ jobid: "7" })],
+      recommendation: { ok: true, step_id: "lensfinder_train", available: false, confidence: null, resources: {}, current: {},
+        changes: [], basis: null, notes: [], warnings: [] },
+    } });
+    show(<Resources />, "/runs/resources?step=lensfinder_train");
+    expect(await screen.findByText("Retired step")).toBeTruthy();
+    expect(screen.getByText("For the next run like the last one")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Submit in/ })).toBeNull();
+  });
+
+  it("warns about a step the ledger has no runs of", async () => {
+    show(<Resources />, "/runs/resources?step=gone_step");
+    expect(await screen.findByText("No runs of “gone_step” in the job ledger")).toBeTruthy();
   });
 });

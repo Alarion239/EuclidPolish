@@ -70,7 +70,7 @@ def test_load_manifest_reads_an_explicit_path(tmp_path):
     "/models/starfull", "/models/starless", "/models/starless/train",
     "/models/starfull/leaderboard", "/synthetic", "/synthetic/noise",
     "/synthetic/records", "/synthetic/psf", "/figures/plates",
-    "/figures/sheet", "/files", "/runs/live", "/runs/history",
+    "/figures/sheet", "/files", "/runs/live", "/runs/history", "/runs/resources",
     "/notebook/log", "/system", "/system/storage",
 ])
 def test_workspace_and_tab_paths_are_pages(path):

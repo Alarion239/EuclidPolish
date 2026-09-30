@@ -197,3 +197,18 @@ def test_ensemble_train_build_command_injects_lr_plateau_flags(monkeypatch):
     assert cmd[cmd.index("--plateau-lr-metric") + 1] == "psnr_stretched"
     # Absent knobs contribute no flags (blank-safe).
     assert "--lr-final" not in cmd
+
+
+def test_with_fasrc_params_merges_config_like_a_submit(cfg_path):
+    """The submit route and the resource advisor's recommend POST complete a
+    form the same way: /config overrides the form, except on ensemble_train,
+    whose page may submit its own value."""
+    job_config.update({"n_valid": "300", "lr_peak": "3e-4"})
+    form = {"regenerate_splits": "validate", "n_valid": "5"}
+    merged = job_config.with_fasrc_params("synthetic_generate", form)
+    assert merged["n_valid"] == "300" and merged["n_train"] == "6400"
+    assert merged["image_size"] == "510" and merged["regenerate_splits"] == "validate"
+    assert form == {"regenerate_splits": "validate", "n_valid": "5"}    # not mutated
+    train = job_config.with_fasrc_params("ensemble_train", {"lr_peak": "1e-3"})
+    assert train["lr_peak"] == "1e-3" and train["lr_final"] == str(job_config.load().lr_final)
+    assert job_config.with_fasrc_params("tng_grid", {"a": "1"}) == {"a": "1"}

@@ -89,6 +89,8 @@ export const WORKSPACE_META: Record<string, WorkspaceMeta> = {
     tabs: {
       live: { label: "Live", description: "Running and queued jobs, local and SLURM", keywords: ["queue", "running"] },
       history: { label: "History", description: "Every past run, with its logs", keywords: ["logs", "ledger"] },
+      resources: { label: "Resources", description: "What past runs asked for vs used, and what to ask for next",
+        keywords: ["cpu", "memory", "time", "gpu", "efficiency", "sacct"] },
       steps: { label: "Steps", description: "The FASRC step catalogue by stage", keywords: ["pipeline", "submit"] },
     },
   },

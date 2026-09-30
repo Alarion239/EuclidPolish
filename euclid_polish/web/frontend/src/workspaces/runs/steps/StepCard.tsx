@@ -8,9 +8,12 @@
  * popover), prefilled from the last successful run (`last_params`) or from a
  * cloned past run, the SLURM resources, a confirmed submit that reports a
  * queued submission, and re-attaches to the step's live job (from the shared
- * jobs feed) after navigating away. Output artifacts and the run history
- * (clone a run) sit under the form. Props are backward compatible with the
- * pre-rework StepCard. */
+ * jobs feed) after navigating away. Under the resources, the resource
+ * advisor's "Recommended from N past runs" callout (shared/ResourceAdvice:
+ * asked with exactly the task params the submit posts; Apply sets the
+ * editable resource fields). Output artifacts and the run history (clone a
+ * run) sit under the form. Props are backward compatible with the pre-rework
+ * StepCard. */
 import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, apiPost, isFasrcOffline } from "../../../api/client";
@@ -29,10 +32,11 @@ import {
   parentDir, rowParams, rowState, varyingParams, type HistoryRow,
 } from "../model";
 import {
-  changedParams, dangerReasons, defaultResources, defaultValues, humanName, initialValues, isChanged,
-  paramFacts, resourcesFromRow, submitBody, validateResources, validateValues, visibleParams,
-  type FormValues, type Resources, type Step, type TaskParam,
+  applyAdvisedResources, changedParams, dangerReasons, defaultResources, defaultValues, editableResources, humanName,
+  initialValues, isChanged, paramFacts, resourcesFromRow, submitBody, submitParams, validateResources, validateValues,
+  visibleParams, type FormValues, type Resources, type Step, type TaskParam,
 } from "./stepForm";
+import { ResourceAdvice } from "../../shared/ResourceAdvice";
 import { SlurmMonitor } from "./SlurmMonitor";
 import "./steps.css";
 
@@ -214,6 +218,9 @@ export function StepCard({
   const invalid = Object.keys(errors).length > 0 || Object.keys(resErrors).length > 0;
   const { shown, more } = visibleParams(params, values, { hidden, expanded, errors });
   const changed = changedParams(params, values, hidden);
+  // What the advisor is asked about: the task params this card submits.
+  const advisedParams = useMemo(() => submitParams(step, values, extraParams, hidden), [step, values, extraParams, hidden]);
+  const advisedFields = useMemo(() => editableResources(step), [step]);
   const live = feed.slurm.filter((j) => j.step_id === step.step_id && isLiveState(j.state));
   const queued = (feed.slurmQueue?.items as { id: string; step?: string; position: number }[] | undefined ?? [])
     .filter((it) => it.step === step.step_id);
@@ -341,6 +348,9 @@ export function StepCard({
           <span className="ops-step__partition" tabIndex={0}><Badge size="sm">{step.defaults.partition}</Badge></span>
         </Tooltip>
       </div>
+      <ResourceAdvice stepId={step.step_id} params={advisedParams} resources={resources} fields={advisedFields}
+        perTask={step.step_id === "ensemble_train" ? "member" : undefined}
+        onApply={(advised) => setResources((cur) => applyAdvisedResources(step, cur, advised))} />
       <div className="ops-step__submit">
         <Button variant="primary" icon="server" loading={busy} onClick={submit}
           disabled={!sshConnected || submitDisabled || invalid}>

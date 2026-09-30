@@ -1,9 +1,10 @@
 /* Typed endpoints of the Runs workspace (euclid_polish/web/API.md: FASRC
  * jobs, history, logs, queue, steps). URL builders + response shapes only. */
+import type { Recommendation } from "../shared/resourceAdviceModel";
 import type { HistoryRow } from "./model";
 import type { Step } from "./steps/stepForm";
 
-export type { HistoryRow };
+export type { HistoryRow, Recommendation };
 
 const qs = (params: Record<string, string | number | boolean | null | undefined>): string => {
   const sp = new URLSearchParams();
@@ -71,6 +72,46 @@ export type LogPage = {
 };
 export type LogGrep = { ok: boolean; path: string; grep: string; matches: { line: number; text: string }[]; truncated: boolean };
 export const logGrepUrl = (path: string, needle: string) => `/api/fasrc/runs/log${qs({ path, grep: needle })}`;
+
+/* ── resource usage (Runs › Resources; the resource advisor) ─────────────── */
+
+/** Runs per state over all of a step's ledger rows. */
+export type StateCounts = { completed: number; oom: number; timeout: number; failed: number; cancelled: number; running: number };
+
+/** One step over its ledger rows (`GET /api/fasrc/resources`): medians
+ *  (`cpu_efficiency` 0–1, `gpu_util` %, `mem_ratio` / `time_ratio` used ÷
+ *  requested), the p90 peak memory and the allocated vs used hours of the
+ *  finished runs (an array job counts one task's allocation). `null` = unknown.
+ *  `registered`: the console still submits the step (false for a historical
+ *  one, which only has its ledger rows). */
+export type StepSummary = {
+  step_id: string; label: string; needs_gpu: boolean; registered: boolean; runs: number; states: StateCounts;
+  success_rate: number | null; last_submitted_at: string | null;
+  cpu_efficiency: number | null; gpu_util: number | null; mem_ratio: number | null; time_ratio: number | null;
+  peak_mem_p90_mb: number | null;
+  cpu_hours_alloc: number | null; cpu_hours_used: number | null;
+  gpu_hours_alloc: number | null; gpu_hours_used: number | null;
+  mem_gb_hours_alloc: number | null; mem_gb_hours_used: number | null;
+};
+export type ResourcesResp = { ok: boolean; steps: StepSummary[] };
+export const RESOURCES_URL = "/api/fasrc/resources";
+
+/** One run's requested vs used resources (per array task). */
+export type RunUsage = {
+  jobid: string; submitted_at: string | null; state: string; partition?: string | null;
+  cpus: number | null; gpus: number | null;
+  req_memory: string | null; req_memory_mb: number | null; req_time_limit: string | null; req_time_s: number | null;
+  elapsed_s: number | null; cpu_efficiency: number | null; cores_used: number | null;
+  peak_mem_mb: number | null; mem_ratio: number | null; time_ratio: number | null;
+  gpu_util: number | null; gpu_mem_used_mb: number | null;
+  units: number | null; units_label: string | null; key_label: string | null; label: string | null;
+};
+/** One step: its summary, its runs (newest first, ≤ 200) and the advisor's
+ *  recommendation for a run like its latest counted one. */
+export type StepResourcesResp = {
+  ok: boolean; step_id: string; summary: StepSummary; runs: RunUsage[]; recommendation: Recommendation | null;
+};
+export const stepResourcesUrl = (stepId: string) => `${RESOURCES_URL}/${encodeURIComponent(stepId)}`;
 
 /* ── campaigns (the History campaign filter) ──────────────────────────────── */
 

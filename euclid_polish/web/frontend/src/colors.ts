@@ -45,6 +45,18 @@ export const LOSS_COLOR = new Proxy({} as Record<string, string>, {
   get: (_t, k: string) => cvar(`--loss-${k}`, LOSS_FALLBACK[k] ?? "#9aa6b6"),
 });
 
+/* Status colours (tokens --good/--warn/--bad/--info): only for a mark that
+   MEANS the state, e.g. a run that ran out of memory on a usage chart, and
+   always with a label or marker shape beside it (never colour alone). */
+const STATUS_TOKEN: Record<"good" | "warn" | "bad" | "info", [string, string]> = {
+  good: ["--good", "#096b41"], warn: ["--warn", "#845300"], bad: ["--bad", "#b12a2a"], info: ["--info", "#1d4ed8"],
+};
+
+/** Themed status colour for canvas marks. */
+export function statusColor(tone: "good" | "warn" | "bad" | "info"): string {
+  return cvar(STATUS_TOKEN[tone][0], STATUS_TOKEN[tone][1]);
+}
+
 /* Euclid band colours, short → long wavelength (tokens --band-vis/-y/-j/-h). */
 const BAND_TOKEN: Record<string, [string, string]> = {
   VIS: ["--band-vis", "#2563eb"],

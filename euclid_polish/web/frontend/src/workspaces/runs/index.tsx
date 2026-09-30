@@ -6,6 +6,9 @@
      history  one ledger of the finished runs (SLURM + local), filtered by
               source / step / state / campaign; the selected run's log and,
               for training runs, the wall time per 1000 steps
+     resources  what past runs of each step asked for vs used (the job
+              ledger's sacct + Jobstats accounting) and the resources to
+              ask for next (the resource advisor)
      steps    the FASRC step catalogue by pipeline stage, one step's card
    The inspector kinds `prov`, `campaign` and `commit` are registered by the
    System and Notebook workspaces (../system/register.ts,
@@ -15,6 +18,7 @@ import { Workspace, defineTabs } from "../../app/workspace";
 export const TABS = defineTabs("runs", {
   live: { load: () => import("./tabs/Live") },
   history: { load: () => import("./tabs/History") },
+  resources: { load: () => import("./tabs/Resources") },
   steps: { load: () => import("./tabs/Steps") },
 });
 

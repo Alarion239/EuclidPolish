@@ -9,7 +9,9 @@
    saturation values System › Config owns, read-only with an edit link — the
    form never sends them, so the step fills them from Config — and the
    trainer's own knobs, shown as the recipe and editable for one batch);
-   Resources (CPUs, memory, time); the live command preview (POST
+   Resources (CPUs, memory, time; under them the resource advisor's
+   "Recommended from N past runs" for the built params, applied only by its
+   Apply, per model = per array task); the live command preview (POST
    /ensemble/train/preview: the member names the submit allocates, the exact
    argv; a read-only exemption, nothing reaches FASRC); and the confirmed
    submit, whose label repeats the count and the regime ("Submit 4 STARFULL
@@ -37,6 +39,8 @@ import {
   DEFAULT_MULTI_KNEES, KNEE_LOSSES, LOSSES, RECIPE_RESOURCES, buildParams, continueTarget, defaultForm, defaultResources,
   formFromJob, lastBatch, newRow, recipeSummary, validate, type Resources, type SpecRow, type TrainForm, type TrainMode,
 } from "../trainModel";
+import { ResourceAdvice } from "../../shared/ResourceAdvice";
+import type { AdviceField } from "../../shared/resourceAdviceModel";
 import "../models.css";
 
 type Preview = { ok: boolean; mode: string; member_names: string[]; count: number; array: { tasks: number; max_parallel: number } | null;
@@ -45,6 +49,8 @@ type StepInfo = { step_id: string; defaults: { partition: string; n_cpus: number
 type ConfigPayload = { config?: Record<string, unknown>; defaults?: Record<string, unknown>; used_by?: Record<string, string[]> };
 
 const CONFIG_PATH = "/system/config";
+/** The resources this form edits (the GPU count is fixed per model). */
+const ADVICE_FIELDS: readonly AdviceField[] = ["n_cpus", "memory", "time_limit"];
 
 function SpecRowEditor({ row, i, mode, onChange, onRemove, onDuplicate, canRemove }: {
   row: SpecRow; i: number; mode: TrainMode; onChange: (p: Partial<SpecRow>) => void; onRemove: () => void;
@@ -406,11 +412,16 @@ function TrainPage() {
           <CardHead title="Resources" sub={step ? `${step.defaults.partition} partition · ${step.fixed_gpus ?? 1} GPU per model` : undefined} />
           <CardBody>
             {res && (
-              <div className="mdl-form">
-                <NumberField label="CPUs / model" value={res.n_cpus} onChange={(v) => ownRes({ ...res, n_cpus: v })} min={1}
-                  hint={resFrom ? `As job ${resFrom} (the last finished ${form.mode === "continue" ? "continue job" : "new batch"})` : "The recipe: 16 keep the GPU fed"} />
-                <Field label="Memory / model"><Input value={res.memory} onChange={(v) => ownRes({ ...res, memory: v })} /></Field>
-                <Field label="Time limit / model" hint="The 70k-step recipe takes 2.5–3 h on the gpu partition."><Input value={res.time_limit} onChange={(v) => ownRes({ ...res, time_limit: v })} /></Field>
+              <div className="mdl-stack mdl-stack--tight">
+                <div className="mdl-form">
+                  <NumberField label="CPUs / model" value={res.n_cpus} onChange={(v) => ownRes({ ...res, n_cpus: v })} min={1}
+                    hint={resFrom ? `As job ${resFrom} (the last finished ${form.mode === "continue" ? "continue job" : "new batch"})` : "The recipe: 16 keep the GPU fed"} />
+                  <Field label="Memory / model"><Input value={res.memory} onChange={(v) => ownRes({ ...res, memory: v })} /></Field>
+                  <Field label="Time limit / model" hint="The 70k-step recipe takes 2.5–3 h on the gpu partition."><Input value={res.time_limit} onChange={(v) => ownRes({ ...res, time_limit: v })} /></Field>
+                </div>
+                <ResourceAdvice stepId="ensemble_train" params={params} fields={ADVICE_FIELDS} perTask="model"
+                  resources={{ n_cpus: res.n_cpus, n_gpus: String(step?.fixed_gpus ?? 1), memory: res.memory, time_limit: res.time_limit }}
+                  onApply={(r) => ownRes({ n_cpus: r.n_cpus, memory: r.memory, time_limit: r.time_limit })} />
               </div>
             )}
           </CardBody>

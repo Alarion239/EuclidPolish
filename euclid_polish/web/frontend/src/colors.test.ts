@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { C, bandColor, categorical } from "./colors";
+import { C, bandColor, categorical, statusColor } from "./colors";
 
 const root = () => document.documentElement;
 
@@ -13,6 +13,8 @@ describe("chart colours", () => {
     expect(bandColor("VIS")).toBe("#123456");
     expect(C.mean).toBe("#abcdef");
     expect(categorical(11)).toBe("#010203");          // wraps modulo 8
+    root().style.setProperty("--bad", "#fedcba");
+    expect(statusColor("bad")).toBe("#fedcba");
   });
 
   it("fall back to the light palette before styles apply", () => {
@@ -20,5 +22,6 @@ describe("chart colours", () => {
     expect(bandColor("H")).toBe("#dc2626");            // short band name
     expect(bandColor("F200W")).toBe("#9aa6b6");        // unknown → muted
     expect(C.baseline).toBe("#e11d48");
+    expect(statusColor("warn")).toBe("#845300");
   });
 });

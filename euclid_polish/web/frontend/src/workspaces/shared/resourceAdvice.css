@@ -1,0 +1,19 @@
+/* The "Recommended from N past runs" callout (ResourceAdvice.tsx), under a
+   submission form's resources. Compact: it must not push the submit button
+   far down, so the evidence is small text and the notes are collapsed.
+   Tokens only. */
+.radv .ui-callout__title { font-size: var(--fs-sm); }
+.radv__body { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; transition: opacity var(--dur-base) var(--ease-out); }
+.radv__body[data-stale] { opacity: 0.6; }
+.radv__changes { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--s1); }
+.radv__change { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.radv__what { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; color: var(--text); font-size: var(--fs-sm); }
+.radv__field { color: var(--text-dim); }
+.radv__from { color: var(--text-dim); }
+.radv__reason { font-size: var(--fs-xs); color: var(--text-dim); line-height: var(--lh-base); }
+.radv__notes { margin: 0; padding-left: var(--s4); display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-xs); color: var(--text-dim); }
+.radv__notes--warn { list-style: none; padding-left: 0; color: var(--warn); }
+.radv__notes--warn .ui-icon { vertical-align: -2px; }
+.radv__details { font-size: var(--fs-xs); }
+.radv__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.radv__quiet { margin: 0; font-size: var(--fs-xs); color: var(--text-faint); }

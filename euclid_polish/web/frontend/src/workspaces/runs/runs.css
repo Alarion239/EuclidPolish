@@ -76,3 +76,20 @@
 .runs-spacer { flex: 1 1 auto; }
 .runs-pre { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: var(--fs-xs); }
 .runs-row-actions { display: inline-flex; align-items: center; gap: 2px; }
+
+/* Resources: the picked step's head, the facts side by side, the two per-run
+   charts (side by side when the page is wide), the requested-vs-used bars */
+.runs-res__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); min-width: 0; }
+.runs-res__title { margin: 0; font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
+.runs-res__facts { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); }
+.runs-res__charts { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); }
+@container runs (min-width: 1100px) {
+  .runs-res__facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .runs-res__charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.runs-res__chart { margin: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.runs-use { display: inline-flex; align-items: center; justify-content: flex-end; gap: var(--s2); min-width: 0; }
+.runs-use__bar { flex: none; width: 44px; height: 6px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+.runs-use__fill { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.runs-use[data-tone="bad"] .runs-use__fill { background: var(--bad); }
+.runs-use[data-tone="warn"] .runs-use__fill { background: var(--warn); }

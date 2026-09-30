@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  changedParams, dangerReasons, defaultResources, initialValues, isChanged, paramFacts, resourcesFromRow,
-  submitBody, toFormValue, validateParam, validateResources, validateValues, visibleParams,
-  type Step, type TaskParam,
+  applyAdvisedResources, changedParams, dangerReasons, defaultResources, editableResources, initialValues, isChanged,
+  paramFacts, resourcesFromRow, submitBody, submitParams, toFormValue, validateParam, validateResources, validateValues,
+  visibleParams, type Step, type TaskParam,
 } from "./stepForm";
 
 const P = (p: Partial<TaskParam> & { name: string; type: TaskParam["type"] }): TaskParam =>
@@ -125,6 +125,34 @@ describe("submitBody", () => {
     const body = submitBody(step, {}, { n_cpus: "64", n_gpus: "8", memory: "1G", time_limit: "1:00:00" });
     expect(body.n_cpus).toBe("4");
     expect(body.n_gpus).toBe("1");
+  });
+});
+
+describe("submitParams (what the resource advisor is asked about)", () => {
+  it("is exactly the task params of the submit body", () => {
+    const values = { num_stars: " 500 ", magnitude_min: "", snr_min: "50" };
+    const params = submitParams(QUERY, values, { snr_min: 10 }, new Set(["snr_min"]));
+    expect(params).toEqual({ num_stars: "500", magnitude_min: "", snr_min: "10" });
+    const { n_cpus: _c, n_gpus: _g, memory: _m, time_limit: _t, confirm: _y, ...rest } =
+      submitBody(QUERY, values, defaultResources(QUERY), { snr_min: 10 }, new Set(["snr_min"]));
+    expect(rest).toEqual(params);
+  });
+});
+
+describe("applying advised resources", () => {
+  const GPU: Step = { ...QUERY, step_id: "train", needs_gpu: true };
+  const cur = { n_cpus: "4", n_gpus: "1", memory: "16G", time_limit: "2:00:00" };
+  it("edits only the fields the card lets the user edit", () => {
+    expect(editableResources(QUERY)).toEqual(["n_cpus", "memory", "time_limit"]);        // a CPU step has no GPU field
+    expect(editableResources(GPU)).toEqual(["n_cpus", "n_gpus", "memory", "time_limit"]);
+    expect(editableResources({ ...GPU, fixed_cpus: 8, fixed_gpus: 1 })).toEqual(["memory", "time_limit"]);
+  });
+  it("respects fixed CPU / GPU counts and ignores blanks", () => {
+    const advised = { n_cpus: "12", n_gpus: "2", memory: "36G", time_limit: "3:15:00" };
+    expect(applyAdvisedResources(GPU, cur, advised)).toEqual(advised);
+    expect(applyAdvisedResources({ ...GPU, fixed_cpus: 4, fixed_gpus: 1 }, cur, advised))
+      .toEqual({ ...cur, memory: "36G", time_limit: "3:15:00" });
+    expect(applyAdvisedResources(QUERY, cur, { memory: " ", time_limit: "45:00" })).toEqual({ ...cur, time_limit: "45:00" });
   });
 });
 

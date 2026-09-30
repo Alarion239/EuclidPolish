@@ -29,6 +29,7 @@ from euclid_polish.web.routes import (
     psfs,
     real,
     realism,
+    resources,
     sky_atlas,
     star_distribution,
     studies,
@@ -67,6 +68,7 @@ MODULES = (
     figures,
     studies,
     fasrc,
+    resources,
     system,
 )
 
