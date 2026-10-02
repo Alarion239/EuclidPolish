@@ -2,6 +2,7 @@
 scripts/fit_spatial_gate.py (synthetic fields, stub combiners — no TF)."""
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -105,6 +106,22 @@ def test_compare_blackout_group_scores_holes(tmp_path):
     assert "knee" not in report
     hole = report["groups"]["blackout"]["member:01·psnr"]["hole_mse"]
     assert all(v > 0 for v in hole)
+
+
+def test_compare_without_blackout_fields_is_strict_json(tmp_path):
+    """A compare run with 0 blackout fields scores an EMPTY blackout group: its
+    PSNRs are null, never NaN (a bare NaN token made /ensemble/combiners.json
+    unparseable in the browser)."""
+    fields = _fields(tmp_path, n=2)
+    labels = ["00·psnr", "01·psnr", "02·psnr"]
+    report, _ = sgc.compare_methods(fields, [], labels, {},
+                                    source_lr={f.index: f.lr_e for f in fields}, knee=False)
+    json.dumps(report, allow_nan=False)
+    assert report["groups"]["blackout"]["mean"]["band_psnr"] == [None] * 4
+    assert sgc.best_member(report, "blackout") is None
+    assert sgc.best_member(report) == "member:00·psnr"
+    text = sgc.format_report(report)
+    assert "natural test fields" in text and "blackout test fields" not in text
 
 
 def test_parse_loss_knees():

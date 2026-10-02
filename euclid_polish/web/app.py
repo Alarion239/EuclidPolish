@@ -29,6 +29,7 @@ from flask import Flask, jsonify, redirect, request, send_file
 from euclid_polish.web import errors, fasrc_jobs, fasrc_queue
 from euclid_polish.web.fasrc_gate import register_fasrc_gate
 from euclid_polish.web.helpers import provenance_index, sky_atlas
+from euclid_polish.web.json_provider import StandardJSONProvider
 from euclid_polish.web.remote import STATE, SSHError, connect_from_config
 from euclid_polish.web.routes import MODULES as ROUTE_MODULES
 from euclid_polish.web.routes import fasrc as fasrc_routes
@@ -118,6 +119,8 @@ def create_app() -> Flask:
         __name__,
         static_folder=os.path.join(here, "static"),
     )
+    # Standard JSON only: a NaN anywhere in a payload goes out as null.
+    app.json = StandardJSONProvider(app)
 
     # Hook order matters: Host allowlist first (nothing may answer an
     # untrusted Host), then the cross-origin mutation guard, then the SPA

@@ -93,9 +93,11 @@ class Scores:
         self.hole = np.zeros(len(BANDS))
 
     def summary(self, n_bins, n_halo, n_hole) -> dict:
-        psnr = (np.mean(self.band_psnr, axis=0) if self.band_psnr
-                else np.full(len(BANDS), np.nan))
-        return {"band_psnr": psnr.tolist(),
+        # An empty group (a compare without blackout fields) has no PSNR:
+        # null, never NaN (the report is served as JSON).
+        psnr = (np.mean(self.band_psnr, axis=0).tolist() if self.band_psnr
+                else [None] * len(BANDS))
+        return {"band_psnr": psnr,
                 "bin_mse": (self.bins / np.maximum(n_bins, 1)).tolist(),
                 "halo_mse": (self.halo / np.maximum(n_halo, 1)).tolist(),
                 "hole_mse": (self.hole / np.maximum(n_hole, 1)).tolist()}
@@ -401,9 +403,11 @@ def run_compare(*, regime_dir: str, records_dir: str, gates: Sequence[str],
 
 
 def best_member(report: dict, group: str = "natural", band: int = 0) -> str | None:
-    """The ``member:<label>`` with the best PSNR in one band of a group."""
+    """The ``member:<label>`` with the best PSNR in one band of a group
+    (None when the group scored no fields)."""
     block = report.get("groups", {}).get(group, {})
-    members = {k: v for k, v in block.items() if k.startswith("member:")}
+    members = {k: v for k, v in block.items() if k.startswith("member:")
+               and v["band_psnr"][band] is not None and np.isfinite(v["band_psnr"][band])}
     if not members:
         return None
     return max(members, key=lambda k: members[k]["band_psnr"][band])
