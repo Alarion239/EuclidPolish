@@ -95,7 +95,7 @@ export function StudyList() {
           onRowClick={(s) => navigate(studyPath(s.id))} height="auto" countText={null}
           caption={studies.length ? `${formatCount(studies.length)} stud${studies.length === 1 ? "y" : "ies"} · numbers ${formatBytes(bytes)} locally` : undefined} />
       )}
-      {freezeOpen && <FreezeStudyDialog mode="starfull" onClose={closeFreeze} />}
+      {freezeOpen && <FreezeStudyDialog onClose={closeFreeze} />}
     </div>
   );
 }

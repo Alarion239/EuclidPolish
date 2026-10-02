@@ -22,7 +22,7 @@ import { transferFor, useDisplay } from "../../state/display";
 import { Button, EmptyState, IconButton, Segmented, Skeleton } from "../../ui";
 import { renderCubeImageData, type ColorMeta, type RenderOpts } from "../../viewer";
 import { drawFrame } from "../../viewer/draw";
-import { url, type EvalBand, type Mode } from "./api";
+import { REGIME, url, type EvalBand } from "./api";
 import { bandLabel, formatE, stampBacking, stampKnee } from "./model";
 
 export type Pick = { diag: "std_err" | "bright_std"; i: number; j: number };
@@ -138,17 +138,17 @@ function SigmaStamp({ b64, size, center, stretch }: { b64: string; size: number;
 }
 
 /** The Images viewer on this stamp's test field (`test:<index>`). */
-const fieldHref = (mode: Mode, field: number) =>
-  `${pagePath("models", { tab: "images", params: { mode } })}?${new URLSearchParams({ "v.ens.id": `test:${field}` }).toString()}`;
+const fieldHref = (field: number) =>
+  `${pagePath("models", { tab: "images" })}?${new URLSearchParams({ "v.ens.id": `test:${field}` }).toString()}`;
 
-export function PixelTrace({ mode, pick, model, band = "VIS", cellLabel, targetLabel, onClose }: {
-  mode: Mode; pick: Pick; model?: string; band?: EvalBand; cellLabel: string; targetLabel: string; onClose: () => void;
+export function PixelTrace({ pick, model, band = "VIS", cellLabel, onClose }: {
+  pick: Pick; model?: string; band?: EvalBand; cellLabel: string; onClose: () => void;
 }) {
-  const q = new URLSearchParams({ mode, diag: pick.diag, i: String(pick.i), j: String(pick.j) });
+  const q = new URLSearchParams({ mode: REGIME, diag: pick.diag, i: String(pick.i), j: String(pick.j) });
   if (model) q.set("model", model);
   if (band !== "VIS") q.set("band", band);
   const trace = useResource<Trace>(`/ensemble/pixel-trace.json?${q.toString()}`, [q.toString()]);
-  const meta = useResource<{ color?: ColorMeta }>(url.viewerMeta(mode), [mode], { ttl: 5 * 60_000 });
+  const meta = useResource<{ color?: ColorMeta }>(url.viewerMeta(), [], { ttl: 5 * 60_000 });
   const display = useDisplay();
   const colorMeta = meta.data?.color;
   const K0 = colorMeta?.default_asinh ?? 100;
@@ -192,7 +192,7 @@ export function PixelTrace({ mode, pick, model, band = "VIS", cellLabel, targetL
               <>
                 <div className="mdl-trace__table cv-root cv-table" role="list" aria-label={`${t.stamps.length} sampled pixels`}>
                   <div className="mdl-trace__cols" aria-hidden>
-                    <span>LR</span><span>{targetLabel}</span><span>{srLabel(t.stamps[0])}</span><span>σ (members)</span><span>Pixel</span>
+                    <span>LR</span><span>HR</span><span>{srLabel(t.stamps[0])}</span><span>σ (members)</span><span>Pixel</span>
                   </div>
                   {t.stamps.map((s, k) => {
                     const opts = rowOpts(s);
@@ -202,18 +202,18 @@ export function PixelTrace({ mode, pick, model, band = "VIS", cellLabel, targetL
                           <strong>Field {s.field}</strong>
                           <span>x {s.x}, y {s.y}</span>
                           <span className="mdl-trace__knee" title={kneeFrom === "pixel"
-                            ? "One asinh knee for this row's LR, target and SR stamps: the traced pixel's own level (white at 30× it)"
+                            ? "One asinh knee for this row's LR, HR and SR stamps: the traced pixel's own level (white at 30× it)"
                             : "The Display panel's knee"}>knee {formatE(opts.knee ?? K0)} e⁻</span>
                         </div>
                         <ImageStamp b64={s.lr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label="LR" />
-                        <ImageStamp b64={s.hr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label={targetLabel} />
+                        <ImageStamp b64={s.hr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label="HR" />
                         <ImageStamp b64={s.sr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label={srLabel(s)} />
                         <SigmaStamp b64={s.std} size={t.size} center={s.center} stretch={t.stretch} />
                         <div className="mdl-trace__nums">
                           <span>σ {formatE(s.std_val)} e⁻</span>
                           <span>|err| {formatE(s.err_val)} e⁻</span>
-                          <span>{targetLabel} {formatE(s.hr_val)} e⁻</span>
-                          <Link to={fieldHref(mode, s.field)}>Open field {s.field} in the viewer</Link>
+                          <span>HR {formatE(s.hr_val)} e⁻</span>
+                          <Link to={fieldHref(s.field)}>Open field {s.field} in the viewer</Link>
                         </div>
                       </div>
                     );

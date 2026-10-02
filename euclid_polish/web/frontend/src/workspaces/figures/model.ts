@@ -304,19 +304,14 @@ export function viewerLink(r: SavedResult): SourceLink | null {
     case "evaluation": {
       // Synthetic stamps (HR truth) are synthetic validation: Models › Images.
       const stamp = /^syn-(lens|gal)(?:$|[_-])/.exec(String(obj.grade ?? "")) ?? (id ? /^syn-(lens|gal)[_-]/.exec(id) : null);
-      // The regime the stamp was scored in: the saved object's or the viewer's,
-      // else starfull (the catalogue evaluation runs the starfull production model).
-      const regime = [obj.regime, obj.mode, params.mode].find((m) => m === "starless" || m === "starfull") ?? "starfull";
-      if (stamp) return { to: `/models/${regime}/images${q({ set: "stamps", g: `syn-${stamp[1]}`, id })}`, label: "Open in Models › Images" };
+      if (stamp) return { to: `/models/images${q({ set: "stamps", g: `syn-${stamp[1]}`, id })}`, label: "Open in Models › Images" };
       // A real lens candidate or Q1 galaxy: its tile card in its target set.
       const grade = String(obj.grade ?? "");
       const set = /^[A-C]$/.test(grade) ? "lenses" : grade === "gal" ? "galaxies" : "lenses,galaxies";
       return { to: `/sky/targets${q({ set, ...(id ? { inspect: `tile:eval/${id}` } : pos("cev")) })}`, label: "Open in Sky › Targets" };
     }
-    case "ensemble": {
-      const mode = params.mode === "starless" ? "starless" : "starfull";
-      return { to: `/models/${mode}/images${q(pos("ens"))}`, label: "Open in Models › Images" };
-    }
+    case "ensemble":
+      return { to: `/models/images${q(pos("ens"))}`, label: "Open in Models › Images" };
     case "sky":
       return { to: `/synthetic/records${q({ ...pos("sky"), subset: params.subset })}`, label: "Open in Records" };
     case "cutouts":

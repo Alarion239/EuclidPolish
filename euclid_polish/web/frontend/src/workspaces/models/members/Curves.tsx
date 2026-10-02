@@ -14,7 +14,7 @@ import { useUrlState } from "../../../hooks/useUrlState";
 import {
   Button, Chip, EmptyState, Segmented, Select, Switch, Toolbar, ToolbarGroup, ToolbarSpacer,
 } from "../../../ui";
-import { BAND_SHORT, BANDS, useCurves, type Curve, type Mode } from "../api";
+import { BAND_SHORT, BANDS, useCurves, type Curve } from "../api";
 import { ColorBySelect, LoadState, openMember, useFacetColors } from "../common";
 import { facetOf, kneeText, lossFacets, memberNumber, smooth, xy, type ColorBy } from "../model";
 
@@ -46,7 +46,7 @@ function commonTarget(curves: readonly Curve[]): number | null {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
 
-export function Curves({ mode }: { mode: Mode }) {
+export function Curves() {
   const res = useCurves();
   // ?layout= as the old Curves tab wrote it (its "grid" and "time" read as All).
   const [show, setShow] = useUrlState<Show>("layout", "all", { parse: parseShow });
@@ -57,7 +57,7 @@ export function Curves({ mode }: { mode: Mode }) {
   const [logY, setLogY] = useUrlState("logy", true);
   const lg = useLegend();
 
-  const all = useMemo(() => (res.data?.members ?? []).filter((c) => c.starless === (mode === "starless")), [res.data, mode]);
+  const all = useMemo(() => (res.data?.members ?? []).filter((c) => !c.starless), [res.data]);
   const sel = useMemo(() => new Set(selRaw.split(",").map((s) => memberNumber(s)).filter(Boolean) as string[]), [selRaw]);
   const shown = useMemo(() => (onlySel && sel.size ? all.filter((c) => sel.has(memberNumber(c.name) ?? "")) : all), [all, onlySel, sel]);
   const colors = useFacetColors(shown, colorBy);
@@ -131,7 +131,7 @@ export function Curves({ mode }: { mode: Mode }) {
       </Toolbar>
       <LoadState loading={res.loading} error={res.error} onRetry={res.reload}
         empty={!res.loading && !shown.length && (
-          <EmptyState icon="activity" title={`No ${mode} training logs`}>Pull members from FASRC to see their curves.</EmptyState>
+          <EmptyState icon="activity" title="No training logs">Pull members from FASRC to see their curves.</EmptyState>
         )}>
         <div className="mdl-stack">
           <Legend items={colors.legend} {...lg.legendProps} />

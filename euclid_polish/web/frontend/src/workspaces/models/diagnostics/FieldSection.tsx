@@ -2,7 +2,7 @@
  * old Sky › Results field diagnostics, ?diag=1): on the cached legacy 10×10
  * real field, what the ensemble does WITHOUT an HR reference — the
  * model–model angular cross-correlation r(d) (?fd=cross) and the member σ
- * vs brightness (?fd=brightness) — each beside its synthetic STARFULL twin on
+ * vs brightness (?fd=brightness) — each beside its synthetic twin on
  * shared axes, with the caption naming the two ensembles ("14 real vs 30
  * synthetic members"). The RBF occupancy view is gone with the RBF. The data
  * loads only while the section is shown; Recompute asks first. */
@@ -90,7 +90,7 @@ function Body({ view, diag, syn, synLoading, synError, fieldId }: {
               xLabel={`d [″] · ${power.pixel_scale_arcsec.toFixed(2)}″ px`} />
               : <p className="mdl-note">No cross-correlation measured.</p>}
           </Side>
-          <Side title="Synthetic starfull twin">
+          <Side title="Synthetic twin">
             {synCross ? <CrossPlot series={crossSeries(synCross, C.comb)} name="synthetic-rd" xLabel="d [″]" />
               : <Missing loading={synLoading} error={synError} />}
           </Side>
@@ -103,7 +103,7 @@ function Body({ view, diag, syn, synLoading, synError, fieldId }: {
   return (
     <div className="mdl-pair">
       <Side title="Real field"><HeatPlot pair={bright} z={bright.real} label="sampled pixels" name={`field-${fieldId}-sigma`} /></Side>
-      <Side title="Synthetic starfull twin">
+      <Side title="Synthetic twin">
         {bright.synthetic ? <HeatPlot pair={bright} z={bright.synthetic} label="synthetic pixels" name="synthetic-sigma" />
           : <Missing loading={synLoading} error={synError} />}
       </Side>
@@ -115,7 +115,7 @@ export function FieldSection() {
   const [view, setView] = useUrlState<View>("fd", "cross", { parse: parseView });
   const field = useResource<FieldStatus>(url.fieldStatus(), [], TTL);
   const diag = useResource<{ diagnostics: Diag | null }>(url.fieldDiagnostics(), [], TTL);
-  const syn = useResource<Evals>(url.evals("starfull"), ["starfull"], { ttl: 5 * 60_000 });
+  const syn = useResource<Evals>(url.evals(), [], { ttl: 5 * 60_000 });
   const job = useJob(JOB.fieldDiagnostics);
   const f = field.data?.field ?? null;
   const d = diag.data?.diagnostics ?? null;
@@ -155,7 +155,7 @@ export function FieldSection() {
           options={VIEWS.map((v) => ({ value: v.value, label: v.label, title: v.title }))} />
         <span className="mdl-muted">{current.title}</span>
         <span className="mdl-grow" />
-        <Tooltip content="Apply the newest starfull combiners to the field and rewrite its diagnostics">
+        <Tooltip content="Apply the newest combiners to the field and rewrite its diagnostics">
           <span><Button size="sm" icon="reset" disabled={!f} loading={job.busy} onClick={recompute}>Recompute…</Button></span>
         </Tooltip>
       </div>

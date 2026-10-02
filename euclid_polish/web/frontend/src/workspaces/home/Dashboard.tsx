@@ -102,7 +102,7 @@ function Verdict({ knee, prod, holes }: { knee: KneeHeadline | null; prod: Produ
     const best = knee.best ? `the best member (#${knee.best.name.replace(/^member_/, "")})` : "the best member";
     head = <>
       {knee.gate != null ? "Production gate" : "Plain mean"} <Num>{db(kneeValue)}</Num>{"\u00a0"}dB{" "}
-      <Link to="/models/starfull/leaderboard" title={KNEE_HINT}>integrated PSNR</Link>
+      <Link to="/models/leaderboard" title={KNEE_HINT}>integrated PSNR</Link>
       {(knee.vsBest != null || knee.vsMean != null) && ", "}
       {joinClauses([gain(knee.vsBest, best), knee.gate != null ? gain(knee.vsMean, "the plain mean") : null])}
     </>;
@@ -113,7 +113,7 @@ function Verdict({ knee, prod, holes }: { knee: KneeHeadline | null; prod: Produ
       : [gain(prod.vsMeanMember, "the mean member")];
     head = <>
       {prod.kind === "gate" ? "Production gate" : "Plain mean"} <Num>{db(prod.psnr)}</Num>{"\u00a0"}dB{" "}
-      <Link to="/models/starfull/leaderboard" title={TEST_HINT}>test PSNR</Link>
+      <Link to="/models/leaderboard" title={TEST_HINT}>test PSNR</Link>
       {clauses.some((c) => c != null) && ", "}{joinClauses(clauses)}
     </>;
   } else {
@@ -163,7 +163,7 @@ function Running({ line }: { line: RunningLine }) {
   const stopped = n > 0 && (
     <span className="home__timeout">
       <Num tone="warn">{n}</Num> member{n === 1 ? "" : "s"} stopped short of the target steps (TIMEOUT):{" "}
-      <Link to={line.continueTo ?? "/models/starfull/train"}>Continue {n === 1 ? "it" : "them"}</Link>.
+      <Link to={line.continueTo ?? "/models/train"}>Continue {n === 1 ? "it" : "them"}</Link>.
     </span>
   );
   return (
@@ -274,7 +274,7 @@ export default function Dashboard() {
         {caption.length > 0 && (kh || prod) && (
           <Caption className="home__caption">
             {caption.map((part, i) => (
-              <span key={part}>{i ? " · " : ""}{i === 0 && memberCount != null ? <Link to="/models/starfull/members">{part}</Link> : part}</span>
+              <span key={part}>{i ? " · " : ""}{i === 0 && memberCount != null ? <Link to="/models/members">{part}</Link> : part}</span>
             ))}
           </Caption>
         )}

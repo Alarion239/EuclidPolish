@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { KneeModel, TrainingJob } from "./api";
 import {
-  benchmarkChoices, benchmarkExperiment, dbDelta, facetOf, facetValues, formatE, gateUsage, heldOutComparable, holesText,
+  benchmarkChoices, benchmarkExperiment, combinerVariant, dbDelta, facetOf, facetValues, formatE, gateUsage, heldOutComparable, holesText,
   integrateKnee, kneeLeaderboard, kneeModelName, kneeText, memberLabel, memberMatches, memberName, memberNumber, membersButtonText,
   movieStatus, parseMemberList, readsText, relativeTo, smooth, stepsText, stampBacking, stampKnee, variantLabel,
-  gatePeak, gateUseText, productionRunsText, pruneThreshold, usedByGate, fieldErrorRatio, overviewComparison,
+  gatePeak, gateUseText, productionRunsText, pruneThreshold, usedByGate, fieldErrorRatio, overviewComparison, isStarlessJob,
 } from "./model";
 import {
-  RECIPE_RESOURCES, buildParams, buildSpec, continueTarget, defaultForm, defaultResources, formFromJob, jobRegime, lastBatch,
+  RECIPE_RESOURCES, buildParams, buildSpec, continueTarget, defaultForm, defaultResources, formFromJob, lastBatch,
   newRow, recipeSummary, rowsFromSpec, validate,
 } from "./trainModel";
 
@@ -99,6 +99,8 @@ describe("formatting", () => {
     expect(dbDelta(null)).toBe("—");
     expect(stepsText(52000, 70000)).toBe("52k / 70k");
     expect(variantLabel("gate:spatial_gate_combiner")).toBe("production");
+    expect(combinerVariant("spatial_gate_linear")).toBe("spatial_gate_linear");
+    expect(combinerVariant("starfull/spatial_gate_linear")).toBe("spatial_gate_linear");   // an older inspector link
     expect(variantLabel("spatial_gate_linear")).toBe("linear");
     expect(smooth([1, 2, 3, 4], 2)).toEqual([1, 1.5, 2.5, 3.5]);
   });
@@ -132,7 +134,6 @@ describe("train form", () => {
     expect(f.rows[0]).toMatchObject({ kneeMode: "multi", outputKnee: "10", kneeLoss: "balanced", seed: "" });
     expect(f.rows[1]).toMatchObject({ kneeMode: "single", knee: "3000" });
     expect(f.geometry.batch_size).toBe("4");
-    expect(f.regime).toBe("starfull");
     expect(JSON.parse(buildParams(f).member_spec)).toEqual(JSON.parse(String(JOB.params.member_spec)));
     expect(rowsFromSpec("nope")).toEqual([]);
     expect(recipeSummary(JOB)).toBe("add 2 × L2 · 1 multi-knee, knee 3000 · 70k steps");
@@ -154,26 +155,21 @@ describe("train form", () => {
     expect(p).toMatchObject({ batch_size: "4", forward_onthefly: "1", hr_crop_size: "256", crops_per_field: "8", psf_subset: "64" });
   });
 
-  it("takes the regime from the form's own field (default: the workspace's), and a clone from its job", () => {
-    expect(defaultForm().regime).toBe("starfull");
-    expect(defaultForm("starless").regime).toBe("starless");
-    expect(buildParams(defaultForm("starless")).starless).toBe("1");
-    expect(formFromJob({ ...JOB, params: { ...JOB.params, starless: "1" } }).regime).toBe("starless");
-  });
-
-  it("takes the star regime from the workspace, never from a per-row knob", () => {
-    const add = buildParams(defaultForm(), "starless");
-    expect(add.starless).toBe("1");
-    expect(JSON.parse(add.member_spec)[0]).not.toHaveProperty("starless");
-    expect(buildParams(defaultForm(), "starfull")).not.toHaveProperty("starless");
+  it("never emits a starless key: new members train starfull, and a legacy starless job clones as starfull", () => {
     expect(buildParams(defaultForm())).not.toHaveProperty("starless");
-    expect(buildParams({ ...defaultForm(), mode: "fork", forkFrom: "member_7" }, "starless").starless).toBe("1");
-    // continue keeps each member's recorded regime (origin.json wins in train_ensemble.py)
-    expect(buildParams({ ...defaultForm(), mode: "continue", members: ["member_7"] }, "starless")).not.toHaveProperty("starless");
+    expect(buildParams({ ...defaultForm(), mode: "fork", forkFrom: "member_7" })).not.toHaveProperty("starless");
+    expect(buildParams({ ...defaultForm(), mode: "continue", members: ["member_7"] })).not.toHaveProperty("starless");
     expect(newRow()).not.toHaveProperty("starless");
-    expect(jobRegime(JOB)).toBe("starfull");
-    expect(jobRegime({ ...JOB, params: { ...JOB.params, starless: "1" } })).toBe("starless");
-    expect(jobRegime({ ...JOB, params: { ...JOB.params, member_spec: JSON.stringify([{ loss: "l2", starless: true }]) } })).toBe("starless");
+    const legacy = { ...JOB, params: { ...JOB.params, starless: "1", member_spec: JSON.stringify([{ loss: "l2", starless: true }]) } };
+    const f = formFromJob(legacy);
+    expect(f).not.toHaveProperty("regime");
+    const p = buildParams(f);
+    expect(p).not.toHaveProperty("starless");
+    expect(JSON.parse(p.member_spec)).toEqual([{ loss: "l2", num_res_blocks: 32 }]);
+    // the job log still tells a legacy starless batch apart (the Pull banner skips it)
+    expect(isStarlessJob(JOB)).toBe(false);
+    expect(isStarlessJob(legacy)).toBe(true);
+    expect(isStarlessJob({ params: { member_spec: JSON.stringify([{ loss: "l2", starless: true }]) } })).toBe(true);
   });
 
   it("validates what the submit would refuse", () => {

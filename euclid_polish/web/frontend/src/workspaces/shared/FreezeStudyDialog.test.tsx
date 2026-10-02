@@ -82,8 +82,8 @@ afterEach(() => {
 
 const open = () => render(
   <QueryClientProvider client={queryClient}>
-    <MemoryRouter initialEntries={["/models/starfull/leaderboard"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <FreezeStudyDialog mode="starfull" onClose={() => {}} />
+    <MemoryRouter initialEntries={["/models/leaderboard"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <FreezeStudyDialog onClose={() => {}} />
     </MemoryRouter>
   </QueryClientProvider>,
 );
@@ -269,18 +269,17 @@ describe("the dialog flow", () => {
     expect(within(dialog()).getByRole("button", { name: "Choose fields…" })).toBeTruthy();
   });
 
-  it("re-reads the candidates of the other regime when the mode switches, and drops the picks", async () => {
-    routes["GET /api/studies/candidates?mode=starless"] = () => ({ body: { ...CANDIDATES, regime: "starless", ensemble: { ...CANDIDATES.ensemble, n_members: 2 } } });
+  it("always freezes the starfull ensemble: no regime choice", async () => {
     open();
     await within(dialog()).findByText("Combiner comparison");
-    fireEvent.click(within(dialog()).getByRole("radio", { name: "starless" }));
-    await waitFor(() => expect(calls.some((c) => c.url === "/api/studies/candidates?mode=starless")).toBe(true));
-    await waitFor(() => expect(dialog().querySelector(".ui-summary")?.textContent).toMatch(/^2 members/));
+    expect(within(dialog()).queryByRole("radio", { name: "starless" })).toBeNull();
+    expect(within(dialog()).queryByRole("radiogroup", { name: "Regime" })).toBeNull();
+    expect(calls.every((c) => !c.url.includes("starless"))).toBe(true);
     fireEvent.click(within(dialog()).getByRole("button", { name: "Freeze without fields" }));
-    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Name" }), { target: { value: "Starless" } });
+    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Name" }), { target: { value: "Starfull" } });
     click("Freeze");
     await waitFor(() => expect(posts()).toHaveLength(1));
-    expect(posts()[0].body).toMatchObject({ mode: "starless", fields: "" });
+    expect(posts()[0].body).toMatchObject({ mode: "starfull", fields: "" });
   });
 
   it("re-attaches to a running freeze and keeps the study link after the job finishes", async () => {

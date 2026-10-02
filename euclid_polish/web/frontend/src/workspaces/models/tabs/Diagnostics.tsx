@@ -1,4 +1,4 @@
-/* Models › Diagnostics (`/models/:mode/diagnostics`; absorbs the old
+/* Models › Diagnostics (`/models/diagnostics`; absorbs the old
    Ensemble Diagnostics tab, the Sky › Results field diagnostics (?diag=1)
    and the Sky › Catalog eval figures). One section at a time (?d=), each
    drawn from the caches:
@@ -39,7 +39,7 @@ import {
   Button, Callout, Caption, Chip, EmptyState, JobProgress, Num, Page, Segmented, SummaryLine, Table, Toolbar, ToolbarGroup, ToolbarSpacer,
   confirm, toast, type Column,
 } from "../../../ui";
-import { EVAL_BANDS, url, useEvalRuns, useMode, type Aps, type EvalBand, type Evals, type Mode, type NumArr } from "../api";
+import { EVAL_BANDS, url, useEvalRuns, type Aps, type EvalBand, type Evals, type NumArr } from "../api";
 import { ColorBySelect, LoadState, useFacetColors } from "../common";
 import { JOB, computeBandEvals, useOnJobEnd } from "../jobs";
 import {
@@ -90,9 +90,8 @@ const BAND_OPTIONS = EVAL_BANDS.map((b) => ({ value: b, label: bandLabel(b) }));
 const REAL_FIELD_BANDS_TITLE = "VIS only: the legacy real field has no Y, J or H diagnostics";
 
 export default function Diagnostics() {
-  const mode = useMode();
   const [band, setBand] = useUrlState<EvalBand>("band", "VIS", { parse: parseBand });
-  const res = useResource<Evals>(url.evals(mode, band), [mode, band], { ttl: 5 * 60_000 });
+  const res = useResource<Evals>(url.evals(band), [band], { ttl: 5 * 60_000 });
   const bandJob = useJob(JOB.bandEvals);
   useOnJobEnd(bandJob.job, () => void res.reload());
   const [section, setSection] = useUrlState<Section>("d", "spectrum", { parse: parseSection });
@@ -105,7 +104,6 @@ export default function Diagnostics() {
   const setPick = (p: Pick | null) => setCellRaw(p ? `${p.diag},${p.i},${p.j}` : "");
   const lg = useLegend();
   const e = res.data;
-  const targetLabel = mode === "starless" ? "clean target" : "HR";
   const members = useMemo(() => e?.members ?? [], [e]);
   const colors = useFacetColors(members, colorBy);
   const memberColor = (i: number) => (colorBy === "uniform" ? C.muted : colors.of(members[i] ?? { loss: "l1" }));
@@ -207,9 +205,9 @@ export default function Diagnostics() {
       xDomain: [bx[0], bx[bx.length - 1]] as [number, number], yDomain: [sy[0], sy[sy.length - 1]] as [number, number],
       xTicks: [0, 100, 1e3, 1e4, 1e5, 1e6].map((v) => ({ v: Math.asinh(v / st), label: v === 0 ? "0" : formatE(v) })),
       yTicks: decadeTicks([sy[0], sy[sy.length - 1]], { space: "log10" }),
-      describe: (p: Pick) => `${targetLabel} ${formatE(st * Math.sinh(bx[p.i]))}–${formatE(st * Math.sinh(bx[p.i + 1]))} e⁻ · σ ${range(sy, p.j)} e⁻`,
+      describe: (p: Pick) => `HR ${formatE(st * Math.sinh(bx[p.i]))}–${formatE(st * Math.sinh(bx[p.i + 1]))} e⁻ · σ ${range(sy, p.j)} e⁻`,
     };
-  }, [e, targetLabel]);
+  }, [e]);
 
   /* coherence: a sorted horizontal dot plot, highest at the top */
   const coherence = useMemo(() => {
@@ -268,8 +266,7 @@ export default function Diagnostics() {
 
   const trace = (describe: (p: Pick) => string, diag: Pick["diag"], extra: { model?: string } = {}) =>
     cell?.diag === diag ? (
-      <PixelTrace mode={mode} pick={cell} model={extra.model} band={band} cellLabel={describe(cell)}
-        targetLabel={targetLabel} onClose={() => setPick(null)} />
+      <PixelTrace pick={cell} model={extra.model} band={band} cellLabel={describe(cell)} onClose={() => setPick(null)} />
     ) : null;
 
   const evalSection = section !== "real-field" && section !== "recovery";
@@ -300,11 +297,11 @@ export default function Diagnostics() {
         )}
       </Toolbar>
       {section === "real-field" && <FieldSection />}
-      {section === "recovery" && <Recovery mode={mode} band={band} />}
+      {section === "recovery" && <Recovery band={band} />}
       {evalSection && band !== "VIS" && <JobProgress job={bandJob.job} error={bandJob.error} />}
       {evalSection && band !== "VIS" && res.error?.status === 404 ? (
         <EmptyState icon="activity" title={`The ${bandLabel(band)} diagnostics are not computed yet`}
-          action={<Button size="sm" variant="primary" loading={bandJob.busy} onClick={() => void computeBandEvals(mode)}>Compute Y, J and H…</Button>}>
+          action={<Button size="sm" variant="primary" loading={bandJob.busy} onClick={() => void computeBandEvals()}>Compute Y, J and H…</Button>}>
           They are measured from the cached test cubes of the last evaluation (no model runs). Evaluate keeps them current afterwards.
         </EmptyState>
       ) : evalSection && (
@@ -313,7 +310,7 @@ export default function Diagnostics() {
             <div className="mdl-stack">
               {e.stale && (
                 <Callout tone="warn" title={`These ${bandLabel(band)} diagnostics belong to an earlier evaluation`}
-                  action={<Button size="sm" loading={bandJob.busy} onClick={() => void computeBandEvals(mode)}>Recompute…</Button>}>
+                  action={<Button size="sm" loading={bandJob.busy} onClick={() => void computeBandEvals()}>Recompute…</Button>}>
                   The members, the test fields or the gate changed since; VIS is current.
                 </Callout>
               )}
@@ -321,8 +318,8 @@ export default function Diagnostics() {
                 <div className="mdl-chart">
                   <Plot {...lg.plotProps} xScale="log" xDomain={spectrum.xDomain} yDomain={spectrum.yDomain} xTicks={spectrum.xTicks}
                     yTicks={unitTicks(spectrum.yDomain[1])}
-                    xLabel="angular scale θ = 1/2k [arcsec]" yLabel={section === "transfer" ? `T(k) [${bandLabel(band)}]` : `r(k) vs ${targetLabel} [${bandLabel(band)}]`}
-                    series={spectrum.series} guides={spectrum.guides} aspect={0.46} legend={spectrum.legend} exportName={`ensemble-${section}-${mode}-${band}`}
+                    xLabel="angular scale θ = 1/2k [arcsec]" yLabel={section === "transfer" ? `T(k) [${bandLabel(band)}]` : `r(k) vs HR [${bandLabel(band)}]`}
+                    series={spectrum.series} guides={spectrum.guides} aspect={0.46} legend={spectrum.legend} exportName={`ensemble-${section}-${band}`}
                     xFormat={(v) => `${v.toPrecision(2)}″`} yFormat={(v) => v.toFixed(3)} aria-label={section === "transfer" ? "Transfer function" : "Cross-correlation r(k)"} />
                 </div>
               ) : <EmptyState icon="activity" title="No power spectrum cached">Evaluate the ensemble (Leaderboard).</EmptyState>)}
@@ -330,7 +327,7 @@ export default function Diagnostics() {
                 <Plot xDomain={coherence.xDomain} yDomain={[-0.7, coherence.n - 0.3]} yTicks={coherence.ticks}
                   xLabel="normalised mean r(k) over d log k" yLabel="" series={coherence.series} height={Math.max(260, 17 * coherence.n + 70)}
                   guides={[{ axis: "x", v: 1, color: C.guide, dash: [2, 3] }]} legend="auto" zoomAxes="x"
-                  xFormat={(v) => v.toFixed(2)} exportName={`ensemble-coherence-${mode}`} aria-label="Spectral coherence per model, highest first" />
+                  xFormat={(v) => v.toFixed(2)} exportName="ensemble-coherence" aria-label="Spectral coherence per model, highest first" />
               ) : <EmptyState icon="activity" title="No coherence cached">Re-evaluate to compute it.</EmptyState>)}
               {section === "spread" && (calib || stdErr || bright ? <>
                 {calib?.verdict && calib.ratio.ratio != null && (
@@ -346,20 +343,20 @@ export default function Diagnostics() {
                     <div className="mdl-chart">
                       <h3 className="mdl-chart__title">σ vs error ({MODEL_LABEL[stdErr.kind] ?? stdErr.kind})</h3>
                       <Plot xDomain={stdErr.domain} yDomain={stdErr.domain} xTicks={stdErr.ticks} yTicks={stdErr.ticks}
-                        xLabel="cross-member σ per pixel [e⁻]" yLabel={`|${MODEL_LABEL[stdErr.kind] ?? stdErr.kind} − ${targetLabel}| [e⁻]`}
+                        xLabel="cross-member σ per pixel [e⁻]" yLabel={`|${MODEL_LABEL[stdErr.kind] ?? stdErr.kind} − HR| [e⁻]`}
                         heat={stdErr.heat} series={stdErr.series} aspect={0.8} legend="auto"
                         onHeatClick={(c) => setPick({ diag: "std_err", ...c })} highlight={cell?.diag === "std_err" ? cell : null}
-                        exportName={`ensemble-std-error-${mode}`} aria-label="Disagreement vs error" />
+                        exportName="ensemble-std-error" aria-label="Disagreement vs error" />
                     </div>
                   )}
                   {bright && (
                     <div className="mdl-chart">
                       <h3 className="mdl-chart__title">σ vs brightness</h3>
                       <Plot xDomain={bright.xDomain} yDomain={bright.yDomain} xTicks={bright.xTicks} yTicks={bright.yTicks}
-                        xLabel={`${targetLabel} brightness [e⁻] (asinh axis)`} yLabel="cross-member σ [e⁻]"
+                        xLabel="HR brightness [e⁻] (asinh axis)" yLabel="cross-member σ [e⁻]"
                         heat={bright.heat} series={bright.series} aspect={0.8} legend="auto"
                         onHeatClick={(c) => setPick({ diag: "bright_std", ...c })} highlight={cell?.diag === "bright_std" ? cell : null}
-                        exportName={`ensemble-std-brightness-${mode}`} aria-label="Disagreement vs brightness" />
+                        exportName="ensemble-std-brightness" aria-label="Disagreement vs brightness" />
                     </div>
                   )}
                 </div>
@@ -371,15 +368,15 @@ export default function Diagnostics() {
                     <div className="mdl-chart">
                       <h3 className="mdl-chart__title">z-score distribution</h3>
                       <Plot xDomain={[-6, 6]} yDomain={calib.pdfDomain} xLabel="z" yLabel="pdf" series={calib.pdf} guides={calib.zGuides}
-                        aspect={0.62} legend="auto" exportName={`ensemble-z-pdf-${mode}`} aria-label="z-score distribution" />
+                        aspect={0.62} legend="auto" exportName="ensemble-z-pdf" aria-label="z-score distribution" />
                       <Caption>Dashed lines: |z| = 1, 2, 3 (the coverage table above).</Caption>
                     </div>
                     <div className="mdl-chart">
                       <h3 className="mdl-chart__title">Per field: mean σ vs RMSE</h3>
                       <Plot xScale="log" yScale="log" xDomain={calib.sdom} yDomain={calib.sdom}
                         xTicks={logTicks(calib.sdom)} yTicks={logTicks(calib.sdom)}
-                        xLabel="mean cross-member σ [e⁻]" yLabel={`RMSE vs ${targetLabel} [e⁻]`} series={calib.scatter} aspect={0.62}
-                        legend="auto" exportName={`ensemble-sigma-rmse-${mode}`} aria-label="Per-field sigma vs RMSE" />
+                        xLabel="mean cross-member σ [e⁻]" yLabel="RMSE vs HR [e⁻]" series={calib.scatter} aspect={0.62}
+                        legend="auto" exportName="ensemble-sigma-rmse" aria-label="Per-field sigma vs RMSE" />
                     </div>
                   </div>
                 )}
@@ -396,7 +393,7 @@ export default function Diagnostics() {
 /* ── recovery: SR → HR on the synthetic stamps ─────────────────────────── */
 const GROUP_COLOR: Record<string, number> = { "syn-lens": 2, "syn-gal": 0 };
 
-function Recovery({ mode, band }: { mode: Mode; band: EvalBand }) {
+function Recovery({ band }: { band: EvalBand }) {
   const runs = useEvalRuns();
   const sets = useMemo(() => stampSets(runs.data?.rows ?? []), [runs.data]);
   const plot = useMemo(() => {
@@ -427,7 +424,7 @@ function Recovery({ mode, band }: { mode: Mode; band: EvalBand }) {
     const outside = ratios.filter((v) => v < fluxDom[0] || v > fluxDom[1]).length;
     return { series, dom, flux, fluxDom, outside };
   }, [sets]);
-  const imagesPath = `${pagePath("models", { tab: "images", params: { mode } })}?set=stamps`;
+  const imagesPath = `${pagePath("models", { tab: "images" })}?set=stamps`;
   const total = sets.reduce((n, s) => n + s.points.length, 0);
   const improved = sets.reduce((n, s) => n + s.improved, 0);
   return (

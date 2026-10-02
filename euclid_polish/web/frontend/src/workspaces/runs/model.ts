@@ -475,7 +475,7 @@ export function stepHome(stepId: string): { label: string; to: string } | null {
     case "vis_noise_sample": return synthetic("noise", "how=1", "Noise");
     case "archive_field_sample": return synthetic("fields", "ref=1", "Fields");
     case "synthetic_generate": return synthetic("records", "gen=1", "Records");
-    case "ensemble_train": return { label: "Models › Train", to: pagePath("models", { tab: "train", params: { mode: "starfull" } }) };
+    case "ensemble_train": return { label: "Models › Train", to: pagePath("models", { tab: "train" }) };
     case "poster_cutout": return { label: "Figures › Plates", to: pagePath("figures", { tab: "plates" }) };
     default: return null;
   }

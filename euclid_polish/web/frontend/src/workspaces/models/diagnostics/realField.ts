@@ -1,5 +1,5 @@
 /* Real-field diagnostics (GET /api/inference/diagnostics.json) matched to the
- * synthetic STARFULL evaluation (GET /ensemble/evals.json): model–model
+ * synthetic evaluation (GET /ensemble/evals.json): model–model
  * angular cross-correlation r_ij(d) and member σ vs brightness. Pure shaping
  * (unit-tested in realField.test.ts) — the plots live in RealField.tsx. Both
  * sides are put on SHARED axes and a common (coarser) binning so the real and

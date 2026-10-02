@@ -1,5 +1,5 @@
 /* "Run job X" from anywhere: the local jobs a user starts most often
- * (evaluate the STARFULL ensemble, PSNR vs knee, member PSNR, disk usage,
+ * (evaluate the ensemble, PSNR vs knee, member PSNR, disk usage,
  * the health checks) as palette actions under "Run a job", plus shortcuts
  * to the pages that own the knob-heavy runs (fit a gate variant, compare
  * models on real tiles, train members). The shell mounts <RunActions/> once;
@@ -40,16 +40,16 @@ type RunSpec = {
 
 const SPECS = {
   evaluate: {
-    key: "run:evaluate", label: "Evaluate the STARFULL ensemble", url: "/ensemble/evaluate",
+    key: "run:evaluate", label: "Evaluate the ensemble", url: "/ensemble/evaluate",
     data: { mode: "starfull" },
     question: {
-      title: "Evaluate the STARFULL ensemble?",
+      title: "Evaluate the ensemble?",
       message: "Loads every active member (TensorFlow) and scores the local test records. It takes several minutes.",
       confirmLabel: "Evaluate",
     },
   },
   knee: {
-    key: "run:knee", label: "Compute PSNR vs knee (STARFULL)", url: "/ensemble/knee-psnr",
+    key: "run:knee", label: "Compute PSNR vs knee", url: "/ensemble/knee-psnr",
     data: { mode: "starfull" },
     question: {
       title: "Recompute PSNR vs knee?",

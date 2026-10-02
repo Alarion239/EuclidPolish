@@ -111,7 +111,7 @@ const MOD: KeyboardEventInit = /Mac|iPod|iPhone|iPad/.test(navigator.platform) ?
 
 describe("Shell", () => {
   it("renders the rail with every workspace, the active one marked, and breadcrumbs", async () => {
-    mount("/models/starless/combiner");
+    mount("/models/combiner");
     await screen.findByText("models:combiner");
     const rail = screen.getByRole("navigation", { name: "Workspaces" });
     for (const ws of MANIFEST.workspaces) expect(within(rail).getByText(ws.label)).toBeTruthy();
@@ -121,9 +121,10 @@ describe("Shell", () => {
     ]);
     expect(within(rail).getByText("Models").closest("a")?.getAttribute("aria-current")).toBe("page");
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumbs" });
-    expect(crumbs.textContent).toContain("Models (starless)");
+    expect(crumbs.textContent).toContain("Models");
+    expect(crumbs.textContent).not.toContain("starless");
     expect(crumbs.textContent).toContain("Combiner");
-    expect(document.title).toBe("Combiner · Models (starless) · EuclidPolish");
+    expect(document.title).toBe("Combiner · Models · EuclidPolish");
   });
 
   it("renders the router-linked workspace tabs", async () => {
@@ -399,7 +400,7 @@ describe("Shell", () => {
       return this.classList.contains("ws__tabs-wrap") ? 420 : 0;
     });
     try {
-      const router = mount("/models/starfull/images");
+      const router = mount("/models/images");
       await screen.findByText("models:images");
       const strip = screen.getByRole("navigation", { name: "Models tabs" });
       const shown = () => within(strip).getAllByRole("link").map((a) => a.textContent);
@@ -417,10 +418,10 @@ describe("Shell", () => {
       // items are router links: a middle- or ⌘-click opens a new browser tab
       const train = within(menu).getByRole("menuitem", { name: "Train" });
       expect(train.tagName).toBe("A");
-      expect(train.getAttribute("href")).toBe("/models/starfull/train");
+      expect(train.getAttribute("href")).toBe("/models/train");
       fireEvent.click(train);
       await screen.findByText("models:train");
-      expect(router.state.location.pathname).toBe("/models/starfull/train");
+      expect(router.state.location.pathname).toBe("/models/train");
       // the new active tab takes the reserved slot; the leading tabs never move
       await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Members", "Train"]));
       // no label is ever cut: every visible tab is a whole label
@@ -633,7 +634,7 @@ describe("Shell", () => {
     const selected = () => document.querySelector("[cmdk-item][aria-selected='true']")?.textContent ?? "";
     const items = () => [...document.querySelectorAll("[cmdk-item]")].map((e) => e.textContent ?? "");
     for (const [q, page] of [
-      ["code", "System › Code"], ["noise", "Synthetic › Noise"], ["members", "Models (starfull) › Members"],
+      ["code", "System › Code"], ["noise", "Synthetic › Noise"], ["members", "Models › Members"],
       // an old page name still finds its new home
       ["git", "System › Code"], ["provenance", "System › Lineage"], ["experiments", "Sky › Compare"],
     ]) {
@@ -680,10 +681,10 @@ const ALERTS = {
 
 describe("Shell polish", () => {
   it("puts the full breadcrumb path in a tooltip so truncated crumbs stay readable", async () => {
-    mount("/models/starless/leaderboard");
+    mount("/models/leaderboard");
     await screen.findByText("models:leaderboard");
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumbs" });
-    expect(crumbs.getAttribute("title")).toBe("Models (starless) › Leaderboard");
+    expect(crumbs.getAttribute("title")).toBe("Models › Leaderboard");
     // every crumb is a truncating text element (CSS ellipsis)
     expect(crumbs.querySelectorAll(".crumbs__text")).toHaveLength(2);
     expect(within(crumbs).getByText("Leaderboard").getAttribute("aria-current")).toBe("page");
@@ -713,7 +714,7 @@ describe("Shell polish", () => {
     const headings = [...document.querySelectorAll("[cmdk-group-heading]")].map((h) => h.textContent);
     expect(headings.indexOf("Sky")).toBeGreaterThanOrEqual(0);
     expect(headings.indexOf("Run a job")).toBeGreaterThan(headings.indexOf("Sky"));
-    expect(screen.getByText("Evaluate the STARFULL ensemble")).toBeTruthy();
+    expect(screen.getByText("Evaluate the ensemble")).toBeTruthy();
   });
 
   it("runs a job from the palette only after confirm, then tracks it in the tray", async () => {
@@ -721,8 +722,8 @@ describe("Shell polish", () => {
     mount();
     await screen.findByText("sky:atlas");
     act(() => useShellUi.getState().openOnly("palette"));
-    fireEvent.click(await screen.findByText("Evaluate the STARFULL ensemble"));
-    const dlg = await screen.findByRole("alertdialog", { name: "Evaluate the STARFULL ensemble?" });
+    fireEvent.click(await screen.findByText("Evaluate the ensemble"));
+    const dlg = await screen.findByRole("alertdialog", { name: "Evaluate the ensemble?" });
     expect(calls.some((c) => c.url === "/ensemble/evaluate")).toBe(false);
     fireEvent.click(within(dlg).getByRole("button", { name: "Evaluate" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url === "/ensemble/evaluate")).toBe(true));

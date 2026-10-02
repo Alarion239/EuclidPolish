@@ -89,9 +89,9 @@ const stage = (id: string, label: string, state: string, reason: string, to: str
 const LOOP_OK = () => ({ computed_at: new Date().toISOString(), ttl_s: 60, counts: {}, errors: {}, stages: [
   stage("priors", "Priors", "current", "galaxies v15 · stars · noise v5", "/synthetic/status"),
   stage("records", "Records", "current", "built 2 d ago, after the priors", "/synthetic/records"),
-  stage("members", "Members", "current", "30 active", "/models/starfull/members"),
-  stage("evaluation", "Evaluation", "current", "evaluated 7 h ago", "/models/starfull/leaderboard"),
-  stage("gate", "Gate", "current", "fitted for the 30 members", "/models/starfull/combiner"),
+  stage("members", "Members", "current", "30 active", "/models/members"),
+  stage("evaluation", "Evaluation", "current", "evaluated 7 h ago", "/models/leaderboard"),
+  stage("gate", "Gate", "current", "fitted for the 30 members", "/models/combiner"),
   stage("real-sr", "Real SR", "stale", "449 stale", "/sky/targets?state=stale"),
   stage("figures", "Figures", "current", "made with this fit", "/figures/plates"),
 ] });
@@ -185,7 +185,7 @@ describe("Home · the production verdict", () => {
     expect(text.match(/\u00a0dB/g)).toHaveLength(3);
     expect(text).not.toMatch(/ dB/);
     expect(screen.queryByText(/99\.00/)).toBeNull();                       // the RBF block is never the headline
-    expect(within(summary()!).getByRole("link", { name: "integrated PSNR" }).getAttribute("href")).toBe("/models/starfull/leaderboard");
+    expect(within(summary()!).getByRole("link", { name: "integrated PSNR" }).getAttribute("href")).toBe("/models/leaderboard");
     expect(within(summary()!).getByRole("link", { name: /Sky › Compare/ }).getAttribute("href")).toBe("/sky/compare?exp=e-new");
   });
 
@@ -198,7 +198,7 @@ describe("Home · the production verdict", () => {
       return el;
     });
     expect(cap.textContent).toBe("30 members · gate fitted 3 h ago · 100 test fields · knees 0.1–10⁴ e⁻");
-    expect(within(cap).getByRole("link", { name: "30 members" }).getAttribute("href")).toBe("/models/starfull/members");
+    expect(within(cap).getByRole("link", { name: "30 members" }).getAttribute("href")).toBe("/models/members");
     expect(cap.textContent).not.toContain("42");                             // STARFULL regime labels, never all 42
   });
 
@@ -258,7 +258,7 @@ describe("Home · the Loop strip", () => {
     const real = chip("Real SR");
     expect(real.textContent).toBe("Real SR449 stale");
     expect(real.getAttribute("href")).toBe("/sky/targets?state=stale");
-    expect(chip("Gate").getAttribute("href")).toBe("/models/starfull/combiner");
+    expect(chip("Gate").getAttribute("href")).toBe("/models/combiner");
     expect(chip("Members").textContent).toBe("Members30 active");
     // no tiles, no badge, no job launchers
     expect(document.querySelector(".ui-kpi, .ui-stat")).toBeNull();
@@ -332,9 +332,9 @@ describe("Home · the staleness service", () => {
   const LOOP = { computed_at: new Date().toISOString(), ttl_s: 60, counts: {}, errors: {}, stages: [
     stage("priors", "Priors", "current", "galaxies v15 · stars · noise v5", "/synthetic/status"),
     stage("records", "Records", "current", "built 2 d ago, after the priors", "/synthetic/records"),
-    stage("members", "Members", "stale", "7 new on FASRC", "/models/starfull/members", "members 199–205 finished on FASRC and are not pulled"),
-    stage("evaluation", "Evaluation", "current", "evaluated 7 h ago", "/models/starfull/leaderboard"),
-    stage("gate", "Gate", "current", "fitted for the 30 members", "/models/starfull/combiner"),
+    stage("members", "Members", "stale", "7 new on FASRC", "/models/members", "members 199–205 finished on FASRC and are not pulled"),
+    stage("evaluation", "Evaluation", "current", "evaluated 7 h ago", "/models/leaderboard"),
+    stage("gate", "Gate", "current", "fitted for the 30 members", "/models/combiner"),
     stage("real-sr", "Real SR", "stale", "450 stale", "/sky/targets?state=stale"),
     stage("figures", "Figures", "stale", "NEXUS plates use a legacy SR", "/figures/plates?plate=nexus", "Made with minibatched convex all-asinh RBF."),
   ] };
@@ -389,7 +389,7 @@ describe("Home · running now", () => {
     });
     expect(line.textContent).toBe("Nothing running. 2 members stopped short of the target steps (TIMEOUT): Continue them. Runs › Live");
     expect(within(line).getByRole("link", { name: "Continue them" }).getAttribute("href"))
-      .toBe("/models/starfull/train?mode=continue&members=member_169%2Cmember_170");
+      .toBe("/models/train?mode=continue&members=member_169%2Cmember_170");
   });
 
   it("says nothing when idle", async () => {

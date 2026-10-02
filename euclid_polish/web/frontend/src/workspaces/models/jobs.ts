@@ -9,7 +9,7 @@ import { isTerminal, type Job } from "../../api/jobs";
 import { invalidate } from "../../api/query";
 import { startJob } from "../../app/RunActions";
 import { confirm } from "../../ui";
-import type { Mode } from "./api";
+import { REGIME } from "./api";
 
 export const JOB = {
   evaluate: "run:evaluate",        // == app/RunActions (same url → same key)
@@ -28,15 +28,15 @@ export const JOB = {
   bandEvals: "ensemble:band-evals",
 } as const;
 
-/** Evaluate the regime's ensemble on `n` test fields (confirmed; `asked`:
- *  the caller's own dialog already asked, so no second confirm). */
-export function evaluate(mode: Mode, n: number, force = false, opts: { asked?: boolean } = {}) {
+/** Evaluate the ensemble on `n` test fields (confirmed; `asked`: the
+ *  caller's own dialog already asked, so no second confirm). */
+export function evaluate(n: number, force = false, opts: { asked?: boolean } = {}) {
   return startJob({
     key: JOB.evaluate, url: "/ensemble/evaluate",
-    label: `Evaluate the ${mode} ensemble${force ? " (forced)" : ""}`,
-    data: { mode, num_images: String(n), force: force ? "1" : "0" },
+    label: `Evaluate the ensemble${force ? " (forced)" : ""}`,
+    data: { mode: REGIME, num_images: String(n), force: force ? "1" : "0" },
     question: opts.asked ? undefined : {
-      title: `Evaluate the ${mode} ensemble on ${n} test fields?`,
+      title: `Evaluate the ensemble on ${n} test fields?`,
       message: force
         ? "Forced: every member is re-run (TensorFlow) even if an identical evaluation is cached. Several minutes."
         : "Loads every active member (TensorFlow) unless an identical evaluation is cached. Several minutes.",
@@ -46,8 +46,8 @@ export function evaluate(mode: Mode, n: number, force = false, opts: { asked?: b
 }
 
 /** Recompute the PSNR-vs-knee curves from the cached test cubes (confirmed). */
-export const computeKnee = (mode: Mode) => startJob({
-  key: JOB.knee, url: "/ensemble/knee-psnr", label: `PSNR vs knee (${mode})`, data: { mode },
+export const computeKnee = () => startJob({
+  key: JOB.knee, url: "/ensemble/knee-psnr", label: "PSNR vs knee", data: { mode: REGIME },
   question: { title: "Recompute PSNR vs knee?", message: "Scores every member, the mean and each combiner at every knee from the cached test cubes.", confirmLabel: "Compute" },
 });
 
@@ -57,7 +57,7 @@ export const computeKnee = (mode: Mode) => startJob({
 export async function generateSr(subsets: readonly string[], overwrite: boolean) {
   const ok = await confirm({
     title: `Generate the production SR for ${subsets.join(" + ")}?`,
-    message: `Loads every active starfull member (TensorFlow) and the production gate${overwrite ? "; the existing SR of these splits is deleted first" : ""}.`,
+    message: `Loads every active member (TensorFlow) and the production gate${overwrite ? "; the existing SR of these splits is deleted first" : ""}.`,
     confirmLabel: "Generate", tone: overwrite ? "danger" : "default",
   });
   if (!ok) return null;
@@ -67,21 +67,21 @@ export async function generateSr(subsets: readonly string[], overwrite: boolean)
   });
 }
 
-/** Re-apply the newest starfull combiners to the cached legacy real field
+/** Re-apply the newest combiners to the cached legacy real field
  *  and rewrite its diagnostics (Diagnostics › Real field; confirmed). */
 export const refreshFieldDiagnostics = (fieldId: string) => startJob({
   key: JOB.fieldDiagnostics, url: "/inference/refresh-combiners", label: "Real-field diagnostics",
   question: {
     title: "Recompute the real-field diagnostics?",
-    message: `Applies the newest starfull combiners to field ${fieldId} (TensorFlow, local job; stale member SRs are rebuilt, the 100 sub-tiles re-downloaded only if the member cache is stale).`,
+    message: `Applies the newest combiners to field ${fieldId} (TensorFlow, local job; stale member SRs are rebuilt, the 100 sub-tiles re-downloaded only if the member cache is stale).`,
     confirmLabel: "Recompute",
   },
 });
 
 /** Compute the Y, J and H evaluation diagnostics from the cached test cubes
  *  (Diagnostics' band switch; confirmed). */
-export const computeBandEvals = (mode: Mode) => startJob({
-  key: JOB.bandEvals, url: "/ensemble/evals/bands", label: `Y, J, H diagnostics (${mode})`, data: { mode },
+export const computeBandEvals = () => startJob({
+  key: JOB.bandEvals, url: "/ensemble/evals/bands", label: "Y, J, H diagnostics", data: { mode: REGIME },
   question: {
     title: "Compute the Y, J and H diagnostics?",
     message: "Re-measures the spectra, the coherence and the spread in each NISP band from the cached test cubes (no model runs; a local job of several minutes). Evaluate keeps them current afterwards.",

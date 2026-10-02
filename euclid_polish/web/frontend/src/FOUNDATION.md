@@ -124,11 +124,12 @@ dependencies.
 
 ```ts
 import { MANIFEST, matchPage, isPagePath, redirectTarget, workspace, workspacePaths, pagePaths } from "./app/manifest";
-matchPage("/models/starless/train")  // {workspace:"models", params:{mode:"starless"}, tab:"train", base:"/models/starless"}
+matchPage("/models/train")          // {workspace:"models", params:{}, tab:"train", base:"/models"}
 isPagePath("/ensemble/status.json")  // false (data URL sharing an old page prefix)
 redirectTarget("/config", "?x=1")     // "/system/config?x=1"
 redirectTarget("/ensemble/starless/curves", "?layout=time")   // "/runs/history?step=ensemble_train"
-redirectTarget("/app/ensemble")      // "/models/starfull/leaderboard" (the /app prefix and the old path, one hop)
+redirectTarget("/app/ensemble")      // "/models/leaderboard" (the /app prefix and the old path, one hop)
+redirectTarget("/models/starfull/combiner", "?inspect=x")  // "/models/combiner?inspect=x" (the regime left the URL)
 redirectTarget("/app//evil.example")  // "/evil.example" (never protocol-relative)
 ```
 
@@ -1108,8 +1109,8 @@ const router = createBrowserRouter(buildRoutes({ layout: Shell }), { future: ROU
 
 The router only picks the workspace. The workspace validates the rest of the path with the
 manifest matcher (`<Workspace>`, §11), so `/sky/unknown`, `/models/foo` and
-`/models/starfull/train/x` show Not found — the same URLs Flask 404s. A bare workspace path
-(`/sky`, `/models/starless`) redirects to its default tab (or the workspace's `redirectTab`)
+`/models/train/x` show Not found — the same URLs Flask 404s. A bare workspace path
+(`/sky`, `/models`) redirects to its default tab (or the workspace's `redirectTab`)
 with query and hash kept.
 
 Adding a workspace = a manifest entry (orchestrator) + an `app/nav.ts` entry + one line in
@@ -1139,7 +1140,7 @@ The shell mounts, exactly once: `UiProvider` (§9.1), `useInspectorUrlSync`, `us
 `useSlurmToasts` (§10.6), the global shortcuts, `<RunActions/>` (the palette's "Run a job"
 group, §10.5), the command palette, the ? sheet, the Display panel, a skip link, and:
 
-- `document.title` = `pageTitle(pathname)`, e.g. "Members · Models (starless) · EuclidPolish";
+- `document.title` = `pageTitle(pathname)`, e.g. "Members · Models · EuclidPolish";
 - stage scrolling (`useStageScroll`): a new pathname scrolls to the top, back/forward restores
   that history entry's position, and a query-only change (a `useUrlState` write, `?inspect=`)
   keeps the scroll. This replaces react-router's `<ScrollRestoration>`, which only drives the
@@ -1297,7 +1298,7 @@ const href = inspectHref({ kind: "tile", id: "nexus/12" }, location); // "/sky/a
   | `readiness`, `noisepos`, `archivefield` | Status row id · Q1 tile · archive field id | `workspaces/synthetic/register.ts` |
   | `star`, `truth`, `psf`, `tng` | catalogue row · `<split>/<index>/<row>` · cluster index · subhalo id | `workspaces/synthetic/register.ts` |
   | `member` | `member_<n>` | `workspaces/models/register.ts` |
-  | `combiner` | `<regime>/<variant dir>` | `workspaces/models/register.ts` |
+  | `combiner` | `<variant dir>` (a legacy `starfull/<variant dir>` still resolves) | `workspaces/models/register.ts` |
   | `tile`, `source` | `nexus/<n>` · `<layer>/<id>` | `workspaces/sky/atlas/inspectors/register.tsx` |
   | `realtile`, `experiment` | `<source>/<id>` · experiment id | `workspaces/sky/results/register.tsx` |
   | `figure` | saved result id | `workspaces/figures/register.tsx` |
@@ -1463,15 +1464,14 @@ export default function SyntheticWorkspace() {
   the strip's `<nav>` landmark and its items are router links (middle-/⌘-click opens a new
   browser tab). `app/tabFit.ts` (`fitTabs`, unit-tested) does the maths;
   `WorkspaceTabs` measures the tabs before paint and re-fits on resize, density and font load.
-- Every page gets a visually hidden h1, `pageHeading(pathname)` ("Members, Models
-  (starless)"), for screen readers and the outline; CSS drops it when the page renders its own
+- Every page gets a visually hidden h1, `pageHeading(pathname)` ("Members, Models"),
+  for screen readers and the outline; CSS drops it when the page renders its own
   h1 (`.ws:has(.ws__body h1)`), so there is always exactly one.
 - A bare workspace path redirects to the manifest default tab, or to `redirectTab` when that is
-  one of the workspace's tabs (the models workspace passes the last tab it showed, so a regime
-  switch to the bare `/models/<mode>` keeps the tab).
-- `aside` is the workspace's and holds only workspace-wide controls: the Models regime switch
-  (starfull | starless, keeping the tab and `?inspect=`) and the Synthetic include-training
-  toggle. Nothing a tab owns goes there, so the strip never reshapes (the Models › Images member
+  one of the workspace's tabs (the models workspace passes the last tab it showed, so the bare
+  `/models` returns to it).
+- `aside` is the workspace's and holds only workspace-wide controls (the Synthetic
+  include-training toggle). Nothing a tab owns goes there, so the strip never reshapes (the Models › Images member
   picker is a side panel of its page).
 - A theme or accent flip re-renders the active tab (and `children`, which `<Workspace>` clones
   for that reason): the route elements above a workspace are static, and the legacy pages read
@@ -1731,9 +1731,10 @@ rest, counts on the chips and controls they belong to (so a `DataTable` beside t
 
 ### 11.9 Models: page notes
 
-- `/models/:mode/<tab>`; the ONE starfull | starless switch sits beside the tabs and keeps the tab
-  and `?inspect=`; a bare `/models/<mode>` returns to the last tab visited. The data endpoints keep
-  their `/ensemble/` prefix (API.md). `register.ts` registers `member` and `combiner`.
+- `/models/<tab>`: starfull only (stars are injected into starless scenes during training, but
+  no starless model is trained, so there is no regime switch); the old `/models/starfull|starless/<tab>`
+  URLs redirect, `?inspect=` kept. A bare `/models` returns to the last tab visited. The data
+  endpoints keep their `/ensemble/` prefix and `?mode=starfull` (API.md). `register.ts` registers `member` and `combiner`.
 - One knee colour everywhere (`common.tsx kneeColor` / `kneeOrderOf`) and one gate-share precision
   rule (`model.ts share()`: a zero share reads "0%" with no band tag).
 - **Leaderboard**: one status line ("All current", or each failing staleness check with its

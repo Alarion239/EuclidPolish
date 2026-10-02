@@ -1,4 +1,4 @@
-/* Models › Combiner (`/models/:mode/combiner`; absorbs the old Ensemble
+/* Models › Combiner (`/models/combiner`; absorbs the old Ensemble
    Combiners tab). From the top:
    - the action bar: Fit variant…, Compare…, the compare-report select (only
      when reports exist), "Real holes from" (ONE Sky › Compare run, ?bench=,
@@ -16,7 +16,8 @@
      "Open in Members with this selection" for pruning;
    - the held-out curves, the loss drawn only for fits on production's loss
      scale, each curve its own style (model.ts heldOutCurves);
-   - the compare report, only when one exists.
+   - the compare report, only when one exists (its blackout group only when
+     the report scored blackout fields).
    The legacy RBF is never listed or offered. Opening the page reads caches
    only; every job asks first. */
 import { useMemo, useState } from "react";
@@ -36,7 +37,7 @@ import {
   NumberField, Page, Segmented, Select, Skeleton, Toolbar, ToolbarGroup, ToolbarSeparator, ToolbarSpacer, Tooltip, confirm, type DataColumn,
 } from "../../../ui";
 import {
-  BAND_SHORT, url, useCombiners, useExperiment, useExperiments, useMembers, useModelCatalog, useMode, type CombinersPayload, type CompareReport, type Mode, type Variant,
+  BAND_SHORT, REGIME, url, useCombiners, useExperiment, useExperiments, useMembers, useModelCatalog, type CombinersPayload, type CompareReport, type Variant,
 } from "../api";
 import { LoadState, ShareBar } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
@@ -49,7 +50,7 @@ import { compareNote, compareRows, holesLine, promoteNote, utcText, variantNote 
 import { LogToNotebookButton, useLogToNotebook } from "../../shared/LogToNotebook";
 import "../models.css";
 
-const tabPath = (mode: Mode, tab: string) => pagePath("models", { tab, params: { mode } });
+const tabPath = (tab: string) => pagePath("models", { tab });
 const method = (v: Variant) => `gate:${v.name}`;
 const meanOf = (vs: (number | null | undefined)[] | null | undefined) => {
   const f = (vs ?? []).filter((v): v is number => v != null && Number.isFinite(v));
@@ -79,8 +80,8 @@ const DEFAULT_FIT: FitKnobs = {
   blackout_fields: "40", seed: "0", num_images: "100", members: [], compare_after: true, overwrite: false,
 };
 
-function FitDialog({ open, onOpenChange, data, mode, onStart }: {
-  open: boolean; onOpenChange: (v: boolean) => void; data: CombinersPayload; mode: Mode;
+function FitDialog({ open, onOpenChange, data, onStart }: {
+  open: boolean; onOpenChange: (v: boolean) => void; data: CombinersPayload;
   onStart: (body: Record<string, string>) => void;
 }) {
   const [k, setK] = useState<FitKnobs>({ ...DEFAULT_FIT, out_name: `trial_${new Date().toISOString().slice(5, 10).replace("-", "")}` });
@@ -100,7 +101,7 @@ function FitDialog({ open, onOpenChange, data, mode, onStart }: {
       confirmLabel: "Fit",
     });
     if (!ok) return;
-    const body: Record<string, string> = { mode };
+    const body: Record<string, string> = { mode: REGIME };
     for (const [key, v] of Object.entries(k)) {
       if (key === "members") { if ((v as string[]).length) body.members = (v as string[]).map((l) => memberNumber(l)).join(","); continue; }
       body[key] = typeof v === "boolean" ? (v ? "1" : "0") : String(v);
@@ -198,20 +199,32 @@ function CompareDialog({ open, onOpenChange, data, onStart }: {
 }
 
 /* ── compare report table ───────────────────────────────────────────────── */
+/** A squared error ÷ the best member's, or "—" (no score, or no reference). */
+function ratio(v: number | null | undefined, ref: number | null | undefined): string {
+  const x = v != null && ref ? v / Math.max(ref, 1e-30) : null;
+  return x == null || !Number.isFinite(x) ? "—" : x.toFixed(3);
+}
+
 function ReportTable({ report }: { report: CompareReport }) {
-  const [group, setGroup] = useUrlState("group", "natural");
-  const block = report.groups[group] ?? report.groups.natural;
+  const [asked, setGroup] = useUrlState("group", "natural");
+  // A report scored without blackout fields carries an empty blackout group
+  // (null PSNRs, zero errors): it is never shown, whatever ?group= says.
+  const hasBlackout = (report.n_fields?.blackout ?? 0) > 0 && !!report.groups.blackout;
+  const group = report.groups[asked] && (asked !== "blackout" || hasBlackout) ? asked : "natural";
+  const block = report.groups[group];
   if (!block) return null;
-  const rows = compareRows(report, report.groups[group] ? group : "natural");
+  const rows = compareRows(report, group);
   const best = rows.find((r) => r.startsWith("member:")) ?? null;
   const ref = best ? block[best] : null;
-  const rel = (v: number, r: number | undefined) => (r ? v / Math.max(r, 1e-30) : NaN);
   const knee = report.knee?.methods ?? {};
+  const vis = (r: string) => block[r].band_psnr[0] ?? -Infinity;
   return (
     <div className="mdl-stack mdl-stack--tight">
       <div className="mdl-row">
         <Segmented size="sm" aria-label="Field group" value={group} onChange={setGroup}
-          options={[{ value: "natural", label: `natural ${report.n_fields?.natural ?? ""}`.trim() }, { value: "blackout", label: `blackout ${report.n_fields?.blackout ?? 0}` }]} />
+          options={[{ value: "natural", label: `natural ${report.n_fields?.natural ?? ""}`.trim() },
+            { value: "blackout", label: `blackout ${report.n_fields?.blackout ?? 0}`, disabled: !hasBlackout,
+              title: hasBlackout ? undefined : "This report scored no blackout fields" }]} />
         <span className="mdl-faint">bins, halo, holes: VIS squared error ÷ the best member's (lower is better)</span>
       </div>
       <div className="mdl-scroll-x">
@@ -224,16 +237,15 @@ function ReportTable({ report }: { report: CompareReport }) {
           <tbody>
             {rows.map((r) => {
               const s = block[r];
-              const vs = s.band_psnr;
-              const top = rows.every((x) => block[x].band_psnr[0] <= vs[0]);
+              const top = s.band_psnr[0] != null && rows.every((x) => vis(x) <= vis(r));
               return (
                 <tr key={r} data-best={top}>
                   <td>{r.startsWith("member:") ? `best member #${memberNumber(r.slice(7))}` : variantLabel(r)}</td>
-                  {vs.map((v, i) => <td key={i}>{db(v, 3)}</td>)}
+                  {s.band_psnr.map((v, i) => <td key={i}>{db(v, 3)}</td>)}
                   {group === "natural" && report.knee && <td>{db(meanOf(knee[r]?.integrated), 3)}</td>}
-                  {s.bin_mse.map((v, i) => <td key={i}>{rel(v, ref?.bin_mse[i]).toFixed(3)}</td>)}
-                  <td>{rel(s.halo_mse[0], ref?.halo_mse[0]).toFixed(3)}</td>
-                  {group === "blackout" && <td>{rel(meanOf(s.hole_mse) ?? NaN, meanOf(ref?.hole_mse) ?? undefined).toFixed(3)}</td>}
+                  {s.bin_mse.map((v, i) => <td key={i}>{ratio(v, ref?.bin_mse[i])}</td>)}
+                  <td>{ratio(s.halo_mse[0], ref?.halo_mse[0])}</td>
+                  {group === "blackout" && <td>{ratio(meanOf(s.hole_mse), meanOf(ref?.hole_mse))}</td>}
                 </tr>
               );
             })}
@@ -246,8 +258,8 @@ function ReportTable({ report }: { report: CompareReport }) {
 }
 
 /* ── gate share per member ──────────────────────────────────────────────── */
-function GateShare({ rows, loading, variant, mode, onPick }: {
-  rows: ShareRow[] | null; loading: boolean; variant: Variant | null; mode: Mode; onPick: (name: string) => void;
+function GateShare({ rows, loading, variant, onPick }: {
+  rows: ShareRow[] | null; loading: boolean; variant: Variant | null; onPick: (name: string) => void;
 }) {
   const navigate = useNavigate();
   const [sel, setSel] = useState<string[]>([]);
@@ -263,7 +275,7 @@ function GateShare({ rows, loading, variant, mode, onPick }: {
   ], [max]);
   const open = () => {
     useSelection.getState().select("member", sel);
-    navigate(tabPath(mode, "members"));
+    navigate(tabPath("members"));
   };
   const toolbar = (
     <div className="mdl-row" role="group" aria-label="Gate share selection">
@@ -292,7 +304,7 @@ function GateShare({ rows, loading, variant, mode, onPick }: {
         : (
           <DataTable rows={list} columns={columns} rowKey={(r) => r.name} aria-label="Gate share per member" dense
             selectable selected={sel} onSelectedChange={(keys) => setSel(keys)} toolbar={toolbar} urlKey="gs"
-            defaultSort={[{ id: "share", desc: true }]} height={360} exportName={`gate-share-${mode}`}
+            defaultSort={[{ id: "share", desc: true }]} height={360} exportName="gate-share"
             inspect={(r) => ({ kind: "member", id: r.name })} />
         )}
       <Caption>
@@ -305,9 +317,8 @@ function GateShare({ rows, loading, variant, mode, onPick }: {
 
 /* ── the tab ────────────────────────────────────────────────────────────── */
 export default function Combiner() {
-  const mode = useMode();
-  const res = useCombiners(mode);
-  const members = useMembers(mode);
+  const res = useCombiners();
+  const members = useMembers();
   const exps = useExperiments();
   const [reportId, setReportId] = useUrlState("report", "");
   const [historyMetric, setHistoryMetric] = useUrlState<HeldOutMetric>("hist", "loss");
@@ -321,7 +332,7 @@ export default function Combiner() {
   const logToNotebook = useLogToNotebook("Models › Combiner");
   const data = res.data;
   const hasReports = !!data?.compare || !!data?.reports.length;
-  const report = useResource<CompareReport>(hasReports ? url.report(mode, reportId || null) : null, [mode, reportId, data?.compare?.id]);
+  const report = useResource<CompareReport>(hasReports ? url.report(reportId || null) : null, [reportId, data?.compare?.id]);
   const fit = useJob(JOB.fit);
   const compare = useJob(JOB.compare);
   const promote = useJob(JOB.promote);
@@ -333,17 +344,15 @@ export default function Combiner() {
   const lg = useLegend();
   const rep = hasReports ? report.data ?? null : null;
 
-  // Sky › Compare scores starfull models only: a starless variant has no real holes.
-  const starless = mode === "starless";
-  const benchmark = useMemo(() => (starless ? null : benchmarkExperiment(exps.data?.experiments, benchId)), [exps.data, benchId, starless]);
+  const benchmark = useMemo(() => benchmarkExperiment(exps.data?.experiments, benchId), [exps.data, benchId]);
   // A run's score counts only for the fit it scored: check each spec's fingerprint
   // against the catalogue's, so an earlier production's holes are never shown as current.
   const benchDetail = useExperiment(benchmark?.expId);
-  const catalog = useModelCatalog(!starless);
+  const catalog = useModelCatalog();
   const freshness = useMemo(() => benchFreshness(benchmark?.expId, benchDetail.data, catalog.data), [benchmark, benchDetail.data, catalog.data]);
-  const benchOptions = useMemo(() => (starless ? [] : benchmarkChoices(exps.data?.experiments)).map((c) => ({
+  const benchOptions = useMemo(() => benchmarkChoices(exps.data?.experiments).map((c) => ({
     value: c.value, label: c.label, hint: c.production ? "scored production" : "no production run",
-  })), [exps.data, starless]);
+  })), [exps.data]);
   const scope = useMemo(() => variantScope(data?.variants ?? [], showHistory), [data, showHistory]);
   const production = data?.variants.find((v) => v.production) ?? null;
   const rows = useMemo<Row[]>(() => scope.shown.map((v) => {
@@ -364,9 +373,9 @@ export default function Combiner() {
   }), [scope, rep, benchmark, freshness, production]);
   const prod = rows.find((r) => r.production) ?? null;
   const prodScores = prod ? { testVis: prod.testVis, kneeMean: prod.kneeMean } : null;
-  const noteFor = (v: Row) => variantNote(v, { mode, prod: prodScores, benchmark });
+  const noteFor = (v: Row) => variantNote(v, { prod: prodScores, benchmark });
   const tableNote = () => [
-    `**Combiner variants · ${mode}** — ${rows.length} variants${rep ? ` · compare report \`${rep.id ?? "latest"}\`` : ""}${benchmark ? ` · real holes on ${benchmark.tileSet} (experiment \`${benchmark.expId}\`)` : ""}`, "",
+    `**Combiner variants** — ${rows.length} variants${rep ? ` · compare report \`${rep.id ?? "latest"}\`` : ""}${benchmark ? ` · real holes on ${benchmark.tileSet} (experiment \`${benchmark.expId}\`)` : ""}`, "",
     "| Variant | Members | Mix | Held-out | ∫PSNR | Real holes VIS · Y · J · H | Fitted |",
     "| --- | --- | --- | ---: | ---: | --- | --- |",
     ...rows.map((v) => `| ${variantLabel(v.name)}${v.production ? " (production)" : ""} | ${readsText(v)} | ${v.mix_space ?? "—"} | ${v.lossComparable && v.selected?.loss != null ? v.selected.loss.toFixed(4) : "—"} | ${db(v.kneeMean)} | ${v.bench ? holesText(v.bench) : "—"} | ${v.fitted_at ? utcText(v.fitted_at) : "—"} |`),
@@ -399,11 +408,11 @@ export default function Combiner() {
       tone: mismatch ? "danger" : "default", confirmLabel: "Promote",
       ...(mismatch ? { requireText: "promote" } : {}),
     });
-    if (ok) await promote.run("/ensemble/combiners/promote", { mode, variant: v.name, ...(mismatch ? { force: "1" } : {}) });
+    if (ok) await promote.run("/ensemble/combiners/promote", { mode: REGIME, variant: v.name, ...(mismatch ? { force: "1" } : {}) });
   }
   const startCompare = (body: Record<string, string>) => void (async () => {
     if (await confirm({ title: "Run the compare?", message: "Scores the picked variants on the test cubes (blackout fields may need member inference the first time).", confirmLabel: "Compare" })) {
-      await compare.run("/ensemble/combiners/compare", { mode, ...body });
+      await compare.run("/ensemble/combiners/compare", { mode: REGIME, ...body });
     }
   })();
 
@@ -475,14 +484,14 @@ export default function Combiner() {
     { id: "actions", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: 48,
       cell: (v) => (
         <Menu label={`${v.name} actions`} trigger={<IconButton size="sm" icon="more" label={`${v.name} actions`} />} items={[
-          { label: "Inspect", onSelect: () => openInspector({ kind: "combiner", id: `${mode}/${v.name}` }) },
+          { label: "Inspect", onSelect: () => openInspector({ kind: "combiner", id: v.name }) },
           ...(!v.production ? [{ label: "Promote to production…", onSelect: () => void doPromote(v) }] : []),
           ...(v.applies_to_test_cubes && !v.production ? [{ label: "Compare with production", onSelect: () => startCompare({ gates: [data?.production ?? "spatial_gate_combiner", v.name].filter((x, i, a) => a.indexOf(x) === i).join(","), blackout_fields: "40" }) }] : []),
           { type: "separator" as const },
           { label: "Log to notebook…", onSelect: () => logToNotebook(noteFor(v)) },
         ]} />
       ) },
-  ], [prod, mode, data, benchmark, rep]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [prod, data, benchmark, rep]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const held = useMemo(() => {
     // The categorical colours without the orange (--cat-2), the combiner's own hue in
@@ -514,7 +523,7 @@ export default function Combiner() {
       {promoted?.promoted && (
         <div className="mdl-row">
           <span className="mdl-muted">Promoted {variantLabel(promoted.promoted)} to production.</span>
-          <LogToNotebookButton from="Models › Combiner" label="Log the promotion to the notebook" note={() => promoteNote(promoted, mode, prodScores)} />
+          <LogToNotebookButton from="Models › Combiner" label="Log the promotion to the notebook" note={() => promoteNote(promoted, prodScores)} />
         </div>
       )}
     </div>
@@ -532,7 +541,7 @@ export default function Combiner() {
               options={[{ value: "", label: "latest" }, ...(data?.reports ?? []).map((r) => ({ value: r.id, label: r.id }))]} />
           </ToolbarGroup>
         )}
-        {!starless && <ToolbarGroup label="Real holes from">
+        <ToolbarGroup label="Real holes from">
           <Select size="sm" className="mdl-bench-select" aria-label="Real holes from (Sky › Compare run)" value={benchmark?.expId ?? ""}
             disabled={!benchOptions.length} onChange={setBenchId} placeholder={exps.loading ? "loading…" : "no Sky › Compare run yet"} options={benchOptions} />
           {benchmark && (
@@ -542,7 +551,7 @@ export default function Combiner() {
               </Button>
             </Tooltip>
           )}
-        </ToolbarGroup>}
+        </ToolbarGroup>
         <ToolbarSpacer />
         <Chip on={showHistory} onClick={toggleHistory}
           title="Variants fitted for earlier memberships, and the promotion backups">History{scope.hidden ? ` ${scope.hidden}` : ""}</Chip>
@@ -550,7 +559,7 @@ export default function Combiner() {
       </Toolbar>
       <LoadState loading={res.loading} error={res.error} onRetry={res.reload}
         empty={data && !scope.shown.length && !scope.hidden && (
-          <EmptyState icon="layers" title={`No ${mode} combiner yet`} action={<Button variant="primary" onClick={() => setFitOpen(true)}>Fit a variant</Button>}>
+          <EmptyState icon="layers" title="No combiner yet" action={<Button variant="primary" onClick={() => setFitOpen(true)}>Fit a variant</Button>}>
             Fit a spatial gate on the validate member cubes, compare it, then promote it.
           </EmptyState>
         )}>
@@ -564,22 +573,21 @@ export default function Combiner() {
               </p>
             )}
             <DataTable rows={rows} columns={columns} rowKey={(v) => v.name} aria-label="Combiner variants"
-              inspect={(v) => ({ kind: "combiner", id: `${mode}/${v.name}` })} urlKey="v" height="auto"
-              defaultSort={[{ id: "kneeMean", desc: true }]} exportName={`combiner-variants-${mode}`}
+              inspect={(v) => ({ kind: "combiner", id: v.name })} urlKey="v" height="auto"
+              defaultSort={[{ id: "kneeMean", desc: true }]} exportName="combiner-variants"
               empty={showHistory ? "No variants." : "No variant is fitted for the current membership: fit one, or open History."} />
             <Caption>
               ∫PSNR: PSNR averaged over the scoring knees 0.1–10⁴ e⁻ on the test fields, the metric the{" "}
-              <Link to={tabPath(mode, "leaderboard")}>Leaderboard</Link> ranks by.{" "}
+              <Link to={tabPath("leaderboard")}>Leaderboard</Link> ranks by.{" "}
               {benchmark
                 ? <>Real holes: the % of bright LR pixels the SR blanks, per band (the worst in colour), from the{" "}
                     <Link to={compareRunPath(benchmark.expId)}>Sky › Compare run</Link> on {benchmark.tileSet}
                     {benchmark.created ? ` (${formatDateTime(benchmark.created)})` : ""}.
                     {prod?.staleBench ? " That run scored an earlier production gate, so production's holes are not shown; score this one again in Sky › Compare." : ""}</>
-                : starless ? <>No real holes for starless: <Link to="/sky/compare">Sky › Compare</Link> scores starfull models.</>
-                  : <>Real holes come from a <Link to="/sky/compare">Sky › Compare</Link> run; there is none yet.</>}
+                : <>Real holes come from a <Link to="/sky/compare">Sky › Compare</Link> run; there is none yet.</>}
               {!showHistory && scope.hidden > 0 ? ` ${scope.hidden} more variant${scope.hidden === 1 ? "" : "s"} (earlier memberships, backups) under History.` : ""}
             </Caption>
-            <GateShare rows={shareRows} loading={shareLoading} variant={shareVariant ?? null} mode={mode} onPick={setShareOf} />
+            <GateShare rows={shareRows} loading={shareLoading} variant={shareVariant ?? null} onPick={setShareOf} />
             <section className="mdl-stack mdl-stack--tight" aria-labelledby="mdl-held-title">
               <div className="mdl-row">
                 <h2 id="mdl-held-title" className="mdl-h2">Held-out curves</h2>
@@ -591,7 +599,7 @@ export default function Combiner() {
               {held.series.length
                 ? <Plot {...lg.plotProps} xDomain={held.xDomain} yDomain={held.yDomain} xLabel="fit step"
                     yLabel={historyMetric === "loss" ? "held-out loss (1 = best member)" : "PSNR [dB]"}
-                    series={held.series} legend="auto" aspect={0.42} exportName={`gate-history-${mode}`} aria-label="Held-out fit curves" />
+                    series={held.series} legend="auto" aspect={0.42} exportName="gate-history" aria-label="Held-out fit curves" />
                 : <EmptyState compact icon="activity" title="No fit history" />}
               {held.offScale.length > 0 && (
                 <Caption>
@@ -605,7 +613,7 @@ export default function Combiner() {
                 <div className="mdl-row">
                   <h2 id="mdl-report-title" className="mdl-h2">Compare report</h2>
                   <span className="mdl-grow" />
-                  <LogToNotebookButton from="Models › Combiner" note={() => compareNote(rep, mode)} title="Open Notebook › Log with this compare report; you edit it there first" />
+                  <LogToNotebookButton from="Models › Combiner" note={() => compareNote(rep)} title="Open Notebook › Log with this compare report; you edit it there first" />
                 </div>
                 <ReportTable report={rep} />
               </section>
@@ -613,7 +621,7 @@ export default function Combiner() {
           </div>
         )}
       </LoadState>
-      {data && fitOpen && <FitDialog open={fitOpen} onOpenChange={setFitOpen} data={data} mode={mode}
+      {data && fitOpen && <FitDialog open={fitOpen} onOpenChange={setFitOpen} data={data}
         onStart={(body) => void fit.run("/ensemble/combiners/fit", body)} />}
       {data && cmpOpen && <CompareDialog open={cmpOpen} onOpenChange={setCmpOpen} data={data} onStart={startCompare} />}
     </Page>

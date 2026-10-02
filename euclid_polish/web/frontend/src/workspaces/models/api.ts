@@ -2,22 +2,16 @@
    euclid_polish/web/API.md › Ensemble), plus the few reads it shares with
    other workspaces (the Sky › Compare runs, the model catalogue, the
    catalogue evaluation's synthetic stamps, the SR over the local records,
-   System › Config), typed here to the fields this workspace uses. Every
-   ensemble read takes the star regime. */
-import { useLocation } from "react-router-dom";
+   System › Config), typed here to the fields this workspace uses. */
 import { useResource } from "../../api/query";
-import { matchPage } from "../../app/manifest";
 
-export type Mode = "starfull" | "starless";
+/** The `?mode=` of every ensemble read and job. The models are starfull only
+ *  (the training still injects stars into starless scenes); the endpoints
+ *  default to it, but the URLs name it so they equal Home's and share its cache. */
+export const REGIME = "starfull";
 export const BANDS = ["VIS", "Y_E", "J_E", "H_E"] as const;
 export type Band = (typeof BANDS)[number];
 export const BAND_SHORT: Record<string, string> = { VIS: "VIS", Y_E: "Y", J_E: "J", H_E: "H" };
-
-/** The workspace's `:mode` path param (STARFULL unless the path says starless). */
-export function useMode(): Mode {
-  const m = matchPage(useLocation().pathname);
-  return m?.params.mode === "starless" ? "starless" : "starfull";
-}
 
 export type Series2 = [number, number][];
 export type KneeInfo = { asinh_knee?: number | null; asinh_knees?: number[] | null; output_knee?: number | null; knee_loss?: string | null };
@@ -37,7 +31,7 @@ export type Headline = {
   };
 };
 export type Overview = {
-  regime: Mode; active_members: string[]; n_members: number; records_dir?: string | null;
+  active_members: string[]; n_members: number; records_dir?: string | null;
   eval_subset?: string; test_present: boolean; evaluated_at?: string | null;
   summary: Record<string, unknown> | null; headline: Headline; checks: Check[];
   production_gate: { available: boolean; n_members: number; mix_space?: string | null; fitted_at?: string | null; promoted_from?: string | null };
@@ -50,7 +44,7 @@ export type MemberJob = {
 };
 export type MemberStatus = "complete" | "timeout" | "running" | "unknown";
 export type MemberRow = KneeInfo & {
-  name: string; label: string; starless: boolean; regime: Mode;
+  name: string; label: string;
   origin: Record<string, unknown> | null; op?: string | null; forked_from?: string | null;
   loss: string; blocks?: number | null;
   noise_aug?: number | null; bootstrap?: number | null; icnr?: boolean | null; seed?: number | null;
@@ -76,7 +70,7 @@ export type Tombstone = {
   zip_found: boolean; zip_path?: string | null; campaign?: string | null; size_bytes?: number | null;
 };
 export type MembersPayload = {
-  regime: Mode; members: MemberRow[]; other_regime_members: number; archived: Tombstone[];
+  members: MemberRow[]; archived: Tombstone[];
   knee: { available: boolean; stale: boolean; n_fields?: number | null };
   gate: { available: boolean; stale: boolean; n_members: number };
   psnr_fields: number; eval_subset: string;
@@ -92,7 +86,7 @@ export type KneeModel = KneeInfo & {
   psnr: number[][]; integrated: number[];
 };
 export type MemberDetail = {
-  name: string; label: string; active: boolean; archived: Tombstone | null; regime: Mode;
+  name: string; label: string; active: boolean; archived: Tombstone | null;
   row: MemberRow | null; curves: MemberCurves | null;
   knee: { knees: number[]; bands: string[]; stale: boolean; models: KneeModel[] } | null;
   gate: {
@@ -104,6 +98,7 @@ export type MemberDetail = {
 
 /* ── training-curves.json ──────────────────────────────────────────────── */
 export type Curve = MemberCurves & KneeInfo & {
+  /** training-curves.json lists every active member, a legacy starless one too (Curves drops it). */
   name: string; label: string; starless: boolean; loss_norm: string; blocks?: number | null;
   target_steps?: number | null; test_psnr?: number | null;
 };
@@ -132,16 +127,18 @@ export type Variant = {
   applies_to_test_cubes: boolean;
   fit: Record<string, unknown>;
   selected?: HistoryRow | null; baseline?: HistoryRow | null; history: HistoryRow[];
-  test?: { source: string; report?: string | null; band_psnr?: number[] | null; blackout_band_psnr?: number[] | null } | null;
+  test?: { source: string; report?: string | null; band_psnr?: NumArr | null; blackout_band_psnr?: NumArr | null } | null;
   knee?: { source: "knee" | "compare"; stale?: boolean; report?: string | null; integrated?: number[] | null; psnr?: number[][] | null } | null;
   eval?: { psnr?: number | null; vs_mean_db?: number | null; vs_best_member_db?: number | null };
 };
 export type ReportRef = { id: string; created?: string | null; methods?: string[] | null; n_fields?: Record<string, number> | null; gates_requested?: string[] | null };
 export type CombinersPayload = {
-  regime: Mode; production: string; active_members: string[]; cube_members: string[];
+  production: string; active_members: string[]; cube_members: string[];
   variants: Variant[]; compare: ReportRef | null; reports: ReportRef[];
 };
-export type GroupScores = { band_psnr: number[]; bin_mse: number[]; halo_mse: number[]; hole_mse: number[] };
+/** One method's scores on a field group (null: not scored, e.g. a report's
+ *  empty blackout group when it was run without blackout fields). */
+export type GroupScores = { band_psnr: NumArr; bin_mse: NumArr; halo_mse: NumArr; hole_mse: NumArr };
 export type CompareReport = {
   id?: string; created?: string; members: string[]; bands: string[]; brightness_names: string[];
   methods: string[]; method_labels?: Record<string, string>; method_members?: Record<string, string[]>;
@@ -229,8 +226,8 @@ export type EvalRuns = { rows: EvalRow[]; n?: number; n_ok?: number; groups?: Re
 /** A curve row the loss facets split (training-curves.json). */
 export type CurveFacetRow = { loss_norm: string; name: string };
 
-/** The model catalogue (GET /api/models, starfull): each spec's fingerprint. */
-export type ModelCatalog = { regime: string; models: { spec: string; label?: string; fingerprint?: string | null; available?: boolean }[] };
+/** The model catalogue (GET /api/models): each spec's fingerprint. */
+export type ModelCatalog = { models: { spec: string; label?: string; fingerprint?: string | null; available?: boolean }[] };
 /** One Sky › Compare run's record (GET /api/experiments/<id>): the fields read here. */
 export type ExperimentDetail = { id: string; label?: string; created?: string; fingerprints?: Record<string, string | null> | null };
 
@@ -244,20 +241,20 @@ export type SrStatus = {
 
 /* ── URLs ──────────────────────────────────────────────────────────────── */
 export const url = {
-  overview: (m: Mode) => `/ensemble/overview.json?mode=${m}`,
-  members: (m: Mode) => `/ensemble/members.json?mode=${m}`,
+  overview: () => `/ensemble/overview.json?mode=${REGIME}`,
+  members: () => `/ensemble/members.json?mode=${REGIME}`,
   member: (name: string) => `/ensemble/member/${encodeURIComponent(name)}.json`,
   curves: () => "/ensemble/training-curves.json",
-  knee: (m: Mode) => `/ensemble/knee-psnr.json?mode=${m}`,
-  evals: (m: Mode, band: EvalBand = "VIS") => `/ensemble/evals.json?mode=${m}${band === "VIS" ? "" : `&band=${band}`}`,
+  knee: () => `/ensemble/knee-psnr.json?mode=${REGIME}`,
+  evals: (band: EvalBand = "VIS") => `/ensemble/evals.json?mode=${REGIME}${band === "VIS" ? "" : `&band=${band}`}`,
   evalBands: () => "/ensemble/evals/bands",
-  combiners: (m: Mode) => `/ensemble/combiners.json?mode=${m}`,
-  report: (m: Mode, id?: string | null) => `/ensemble/combiners/compare.json?mode=${m}${id ? `&report=${encodeURIComponent(id)}` : ""}`,
+  combiners: () => `/ensemble/combiners.json?mode=${REGIME}`,
+  report: (id?: string | null) => `/ensemble/combiners/compare.json?mode=${REGIME}${id ? `&report=${encodeURIComponent(id)}` : ""}`,
   trainingJobs: () => "/ensemble/training-jobs.json",
   experiments: () => "/api/experiments",
   experiment: (id: string) => `/api/experiments/${encodeURIComponent(id)}`,
   models: () => "/api/models",
-  viewerMeta: (m: Mode) => `/viewer/meta/ensemble?mode=${m}`,
+  viewerMeta: () => `/viewer/meta/ensemble?mode=${REGIME}`,
   evalRuns: () => "/api/evaluation/runs",
   srStatus: () => "/api/sky/sr-status",
   generateSr: () => "/api/sky/generate-sr",
@@ -271,15 +268,15 @@ export const url = {
 };
 
 const MIN = 60_000;
-export const useOverview = (m: Mode) => useResource<Overview>(url.overview(m), [m], { ttl: 30_000 });
-export const useMembers = (m: Mode) => useResource<MembersPayload>(url.members(m), [m], { ttl: 30_000 });
+export const useOverview = () => useResource<Overview>(url.overview(), [], { ttl: 30_000 });
+export const useMembers = () => useResource<MembersPayload>(url.members(), [], { ttl: 30_000 });
 export const useCurves = () => useResource<{ members: Curve[] }>(url.curves(), [], { ttl: 2 * MIN });
-export const useKnee = (m: Mode) => useResource<KneePayload>(url.knee(m), [m], { ttl: MIN });
-export const useCombiners = (m: Mode) => useResource<CombinersPayload>(url.combiners(m), [m], { ttl: 30_000 });
+export const useKnee = () => useResource<KneePayload>(url.knee(), [], { ttl: MIN });
+export const useCombiners = () => useResource<CombinersPayload>(url.combiners(), [], { ttl: 30_000 });
 export const useTrainingJobs = () => useResource<{ jobs: TrainingJob[] }>(url.trainingJobs(), [], { ttl: MIN });
 export const useExperiments = () => useResource<{ experiments: ExperimentSummary[] }>(url.experiments(), [], { ttl: MIN });
 export const useExperiment = (id: string | null | undefined) =>
   useResource<ExperimentDetail>(id ? url.experiment(id) : null, [id], { ttl: 5 * MIN });
-export const useModelCatalog = (on = true) => useResource<ModelCatalog>(on ? url.models() : null, [on], { ttl: MIN });
+export const useModelCatalog = () => useResource<ModelCatalog>(url.models(), [], { ttl: MIN });
 export const useEvalRuns = () => useResource<EvalRuns>(url.evalRuns(), [], { ttl: 30_000 });
 export const useSrStatus = (poll?: number) => useResource<SrStatus>(url.srStatus(), [], { ttl: 30_000, poll });

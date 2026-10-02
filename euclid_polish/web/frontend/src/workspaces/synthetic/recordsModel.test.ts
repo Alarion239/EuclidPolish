@@ -44,11 +44,11 @@ describe("records census", () => {
 describe("recordSrLink (the record's SR is one click away, in Models › Images)", () => {
   it("opens this record on the records set when its split has an SR", () => {
     expect(recordSrLink("test", 12, 100)).toEqual({
-      to: "/models/starfull/images?set=records&split=test&id=test%3A12", label: "Open its SR in Models › Images",
+      to: "/models/images?set=records&split=test&id=test%3A12", label: "Open its SR in Models › Images",
     });
   });
   it("points at Generate SR when the split has none, and at the set without a record", () => {
-    expect(recordSrLink("validate", 3, 0)).toEqual({ to: "/models/starfull/images?set=records", label: "Generate its SR in Models › Images" });
-    expect(recordSrLink("test", null, 5).to).toBe("/models/starfull/images?set=records&split=test");
+    expect(recordSrLink("validate", 3, 0)).toEqual({ to: "/models/images?set=records", label: "Generate its SR in Models › Images" });
+    expect(recordSrLink("test", null, 5).to).toBe("/models/images?set=records&split=test");
   });
 });

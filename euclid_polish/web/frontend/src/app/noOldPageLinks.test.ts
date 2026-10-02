@@ -85,6 +85,9 @@ describe("the old-page-link matcher", () => {
     expect(oldPageLink("/inspect?fits=${encodeURIComponent(p)}")).toMatch(/redirects/);
     expect(oldPageLink("/realism/unknown")).toMatch(/prefix/);
     expect(oldPageLink("/settings")).toMatch(/redirects/);
+    // the star regime left the Models URLs
+    expect(oldPageLink("/models/starfull/combiner")).toMatch(/redirects/);
+    expect(oldPageLink("/models/${mode}/images")).toMatch(/redirects/);
   });
 
   it("lets backend URLs and v2 pages through", () => {
@@ -92,7 +95,7 @@ describe("the old-page-link matcher", () => {
       "/ensemble/status.json", "/ensemble/members.json?mode=${mode}", "/ensemble/combiners/compare",
       "/ensemble/train/preview", "/ensemble/${name}.json", "/inspect/preview.png?path=${p}", "/inspect/download",
       "/api/realism/overview", "/tng/result/grid.png", "/git/commit", "/fasrc/file/inspect${qs(x)}",
-      "/inference/refresh-combiners", "/viewer/meta/sky", "/models/${mode}/images", "/synthetic/psf?view=cutouts",
+      "/inference/refresh-combiners", "/viewer/meta/sky", "/models/images", "/synthetic/psf?view=cutouts",
       "/sky/targets", "/files?fits=${p}", "/runs/history", "/app/*", "/datasets", "/opsx", "/ensemble/",
       "/ensemble/${endpoint}.json",
     ]) expect(oldPageLink(ok), ok).toBeNull();

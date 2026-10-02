@@ -143,7 +143,7 @@ def test_members_finished_on_fasrc_and_not_pulled():
          "member_names": ["member_171"], "params": {}},
     ]
     m = stages(jobs=jobs)["members"]
-    assert (m["state"], m["reason"], m["to"]) == ("stale", "4 new on FASRC", "/models/starfull/members")
+    assert (m["state"], m["reason"], m["to"]) == ("stale", "4 new on FASRC", "/models/members")
     assert m["detail"].startswith("members 171, 199–201 finished on FASRC")
 
 

@@ -67,13 +67,18 @@ def test_app_prefix_redirects_to_canonical_route(client):
 
 
 def test_ensemble_page_renders(client):
-    _assert_react_shell(client.get("/models/starfull"))
+    _assert_react_shell(client.get("/models"))
+    _assert_react_shell(client.get("/models/combiner"))
     legacy = client.get("/ensemble")
     assert legacy.status_code == 308
-    assert legacy.headers["Location"] == "/models/starfull/leaderboard"
-    bare = client.get("/models")
-    assert bare.status_code == 308
-    assert bare.headers["Location"] == "/models/starfull/leaderboard"
+    assert legacy.headers["Location"] == "/models/leaderboard"
+    # The star regime left the Models URLs (starfull only): old links keep working.
+    regime = client.get("/models/starfull/combiner?inspect=member%3Amember_196")
+    assert regime.status_code == 308
+    assert regime.headers["Location"] == "/models/combiner?inspect=member%3Amember_196"
+    starless = client.get("/models/starless")
+    assert starless.status_code == 308
+    assert starless.headers["Location"] == "/models"
 
 
 def test_ensemble_status_no_members(monkeypatch, tmp_path):
@@ -356,7 +361,7 @@ def test_training_redirects_to_models(client):
     training); the legacy URL moves permanently."""
     r = client.get("/training")
     assert r.status_code == 308
-    assert r.headers["Location"] == "/models/starfull/leaderboard"
+    assert r.headers["Location"] == "/models/leaderboard"
 
 
 def test_inference_page_renders(client):

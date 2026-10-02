@@ -67,8 +67,7 @@ def test_load_manifest_reads_an_explicit_path(tmp_path):
 
 @pytest.mark.parametrize("path", [
     "/", "/sky", "/sky/atlas", "/sky/targets", "/sky/compare",
-    "/models/starfull", "/models/starless", "/models/starless/train",
-    "/models/starfull/leaderboard", "/synthetic", "/synthetic/noise",
+    "/models", "/models/train", "/models/leaderboard", "/models/combiner/", "/synthetic", "/synthetic/noise",
     "/synthetic/records", "/synthetic/psf", "/figures/plates",
     "/figures/sheet", "/files", "/runs/live", "/runs/history", "/runs/resources",
     "/notebook/log", "/system", "/system/storage",
@@ -99,8 +98,9 @@ def test_trailing_slash_is_normalised():
     "/ensemble/starfull",
     "/ensemble/starfull/overview",
     "/models/foo",
+    "/models/starfull",
+    "/models/starless/train",
     "/models/starfull/foo",
-    "/models/leaderboard",
     "/sky/unknown",
     "/sky/atlas/extra",
     "/sky/results",

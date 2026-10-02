@@ -255,5 +255,3 @@
 .mdl-figure { display: block; max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-1); }
 /* Images: viewer first — a tight gap under the one bar */
 .mdl-images-page { gap: var(--s3); }
-/* a segmented control in a form column keeps its own width */
-.mdl-seg-start { align-self: flex-start; }

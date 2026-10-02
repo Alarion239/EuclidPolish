@@ -14,7 +14,7 @@ function LocationProbe() {
 }
 
 const show = (el: JSX.Element) => render(
-  <MemoryRouter initialEntries={["/models/starfull/leaderboard"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+  <MemoryRouter initialEntries={["/models/leaderboard"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
     <UiProvider>{el}</UiProvider><LocationProbe />
   </MemoryRouter>,
 );
@@ -45,7 +45,7 @@ describe("LogToNotebookButton", () => {
     </>);
     fireEvent.click(screen.getByRole("button", { name: "Log to notebook" }));
     fireEvent.click(screen.getByRole("button", { name: "Log empty" }));
-    expect(screen.getByTestId("loc").textContent).toBe("/models/starfull/leaderboard");
+    expect(screen.getByTestId("loc").textContent).toBe("/models/leaderboard");
   });
 });
 

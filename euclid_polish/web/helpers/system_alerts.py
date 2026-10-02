@@ -316,7 +316,7 @@ def waiting_on_fasrc(jobs: Sequence[Mapping[str, Any]], members: Mapping[str, An
 def members_stage(
     m: Mapping[str, Any] | None, jobs: Sequence[Mapping[str, Any]] | None, now: float
 ) -> dict[str, Any]:
-    to = "/models/starfull/members"
+    to = "/models/members"
     if m is None:
         return _loading("members", to)
     waiting = waiting_on_fasrc(jobs, m, now) if jobs else []
@@ -336,7 +336,7 @@ def members_stage(
 
 
 def evaluation_stage(alerts: Mapping[str, Any] | None, now: float) -> dict[str, Any]:
-    to = "/models/starfull/leaderboard"
+    to = "/models/leaderboard"
     if alerts is None:
         return _loading("evaluation", to)
     ev, knee = _check(alerts, "evaluation"), _check(alerts, "knee")
@@ -363,7 +363,7 @@ def evaluation_stage(alerts: Mapping[str, Any] | None, now: float) -> dict[str, 
 
 
 def gate_stage(alerts: Mapping[str, Any] | None) -> dict[str, Any]:
-    to = "/models/starfull/combiner"
+    to = "/models/combiner"
     if alerts is None:
         return _loading("gate", to)
     c = _check(alerts, "combiner")

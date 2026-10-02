@@ -1,4 +1,4 @@
-/* "Freeze study…" — the dialog that freezes the whole ensemble of one regime
+/* "Freeze study…" — the dialog that freezes the whole (starfull) ensemble
  * into an immutable model study (spec 2026-09-28 "The freeze dialog"; opened
  * from Models › Leaderboard, Figures › Studies and the palette). Three steps:
  *   1. what will be frozen: the ensemble and each numbers block's state (a
@@ -16,19 +16,19 @@ import { refreshJobsFeed, useJob, useJobsStore } from "../../api/jobs";
 import { invalidate, useResource } from "../../api/query";
 import { formatBytes, formatCount, formatRelative } from "../../format";
 import {
-  Button, Callout, Caption, Checkbox, Dialog, Field, FactsList, Input, JobProgress, Num, Segmented, Skeleton, SummaryLine, Textarea,
+  Button, Callout, Caption, Checkbox, Dialog, Field, FactsList, Input, JobProgress, Num, Skeleton, SummaryLine, Textarea,
 } from "../../ui";
 import {
-  FREEZE_JOB_KEY, KIND_HINT, KIND_TITLE, MAX_FIELDS, blockFix, candidatesUrl, counterText, groupFields, refusalMessage, studyPath, togglePick,
-  uploadBytes, type CandidateBlock, type CandidateField, type Candidates, type FieldGroup, type FreezeReply, type StudyMode,
+  FREEZE_JOB_KEY, KIND_HINT, KIND_TITLE, MAX_FIELDS, STUDY_MODE, blockFix, candidatesUrl, counterText, groupFields, refusalMessage, studyPath, togglePick,
+  uploadBytes, type CandidateBlock, type CandidateField, type Candidates, type FieldGroup, type FreezeReply,
 } from "./studyFreeze";
 import "./freezeStudy.css";
 
 type Step = "what" | "fields" | "confirm" | "running";
 type Refusal = ReturnType<typeof refusalMessage>;
 
-function BlockRow({ block, mode, onFix }: { block: CandidateBlock; mode: StudyMode; onFix: (to: string) => void }) {
-  const fix = blockFix(block, mode);
+function BlockRow({ block, onFix }: { block: CandidateBlock; onFix: (to: string) => void }) {
+  const fix = blockFix(block);
   const tone = block.state === "current" ? "good" : block.state === "stale" ? "warn" : "neutral";
   return (
     <li className="sfz-block" data-tone={tone}>
@@ -112,12 +112,11 @@ function FieldGallery({ groups, picked, max, offline, offlineId, limitId, onTogg
   );
 }
 
-export function FreezeStudyDialog({ mode: initialMode, onClose }: { mode: StudyMode; onClose: () => void }) {
+export function FreezeStudyDialog({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate();
   const job = useJob(FREEZE_JOB_KEY);
   // A freeze started earlier (this session) and still running re-attaches.
   const [step, setStep] = useState<Step>(() => (job.job?.status === "running" ? "running" : "what"));
-  const [mode, setMode] = useState<StudyMode>(initialMode);
   const [picked, setPicked] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
@@ -131,7 +130,7 @@ export function FreezeStudyDialog({ mode: initialMode, onClose }: { mode: StudyM
     if (step !== "running" && job.job && job.job.status !== "running") useJobsStore.getState().forgetKey(FREEZE_JOB_KEY);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const cand = useResource<Candidates>(step === "running" ? null : candidatesUrl(mode), [mode], { ttl: 15_000 });
+  const cand = useResource<Candidates>(step === "running" ? null : candidatesUrl(), [], { ttl: 15_000 });
   const c = cand.data;
   const max = c?.max_fields ?? MAX_FIELDS;
   const offline = c ? !c.fasrc_connected : false;
@@ -168,7 +167,6 @@ export function FreezeStudyDialog({ mode: initialMode, onClose }: { mode: StudyM
   }, [finished]);
 
   const leave = (to: string) => { onClose(); navigate(to); };
-  const switchMode = (m: StudyMode) => { setMode(m); setPicked([]); setRefusal(null); };
 
   async function freeze() {
     setNameTouched(true);
@@ -176,7 +174,7 @@ export function FreezeStudyDialog({ mode: initialMode, onClose }: { mode: StudyM
     setPosting(true);
     setRefusal(null);
     try {
-      const r = await apiPost<FreezeReply>("/api/studies", { name: name.trim(), note, mode, fields: picked.join(",") });
+      const r = await apiPost<FreezeReply>("/api/studies", { name: name.trim(), note, mode: STUDY_MODE, fields: picked.join(",") });
       if (!r.ok || !r.job_id) {
         setRefusal({ title: "The freeze did not start", text: r.error ?? "The server gave no job.", retry: null });
         return;
@@ -206,7 +204,7 @@ export function FreezeStudyDialog({ mode: initialMode, onClose }: { mode: StudyM
     body = (
       <div className="sfz-stack">
         <p className="sfz-note">
-          Freezing the {mode} ensemble. The numbers step takes about 2–3 minutes; attached fields then upload to holylabs one
+          Freezing the ensemble. The numbers step takes about 2–3 minutes; attached fields then upload to holylabs one
           product at a time. You can close this dialog: the job keeps running in the job tray.
         </p>
         <JobProgress job={job.job} error={job.error} />
@@ -234,15 +232,13 @@ export function FreezeStudyDialog({ mode: initialMode, onClose }: { mode: StudyM
   } else if (step === "what") {
     body = (
       <div className="sfz-stack">
-        <Segmented<StudyMode> size="sm" aria-label="Regime" value={mode} onChange={switchMode}
-          options={[{ value: "starfull", label: "starfull" }, { value: "starless", label: "starless" }]} />
         <SummaryLine>
           <Num>{formatCount(c.ensemble.n_members)}</Num> member{c.ensemble.n_members === 1 ? "" : "s"}
           {gate?.available ? <> · production gate <Num>{gate.name ?? "—"}</Num></> : " · no production gate"}
           {" · "}{c.ensemble.evaluated_at ? <>evaluated <Num>{formatRelative(c.ensemble.evaluated_at)}</Num></> : "not evaluated"}
         </SummaryLine>
         <ul className="sfz-blocks" aria-label="Numbers blocks">
-          {c.ensemble.blocks.map((b) => <BlockRow key={b.id} block={b} mode={mode} onFix={leave} />)}
+          {c.ensemble.blocks.map((b) => <BlockRow key={b.id} block={b} onFix={leave} />)}
         </ul>
         {!c.can_freeze && (
           <Callout tone="bad" title="Cannot freeze now">{c.blocking ?? "Nothing to freeze."}</Callout>
@@ -300,7 +296,6 @@ export function FreezeStudyDialog({ mode: initialMode, onClose }: { mode: StudyM
           <Textarea value={note} onChange={setNote} rows={3} />
         </Field>
         <FactsList title="Will be written" facts={[
-          { label: "Regime", value: mode },
           { label: "Members", value: formatCount(c.ensemble.n_members) },
           { label: "Production gate", value: gate?.available ? gate.name ?? "—" : "none" },
           { label: "Numbers", value: `≈ ${formatBytes(c.ensemble.numbers_bytes)}`, hint: "Written locally, mirrored to holylabs" },

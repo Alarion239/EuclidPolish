@@ -26,7 +26,7 @@ export type WorkspaceMeta = {
   tabs: Record<string, TabMeta>;
   /** Palette words for every page of the workspace (e.g. its old name). */
   keywords?: string[];
-  /** Labels of the values of each `:param` (e.g. the models regime). */
+  /** Labels of the values of each `:param` of the workspace path. */
   paramLabels?: Record<string, Record<string, string>>;
 };
 
@@ -51,7 +51,6 @@ export const WORKSPACE_META: Record<string, WorkspaceMeta> = {
   models: {
     icon: "layers", goKey: "m", keywords: ["ensemble"],
     description: "Which model is best on synthetic truth and real data, how the members trained, and which combiner is production",
-    paramLabels: { mode: { starfull: "starfull", starless: "starless" } },
     tabs: {
       leaderboard: { label: "Leaderboard", description: "Production gate, plain mean and members ranked, with the knee curves", keywords: ["overview", "knee", "psnr"] },
       members: { label: "Members", description: "The roster, training curves and archived members", keywords: ["curves", "roster"] },
@@ -172,7 +171,7 @@ export type LocationInfo = {
   match: PageMatch;
   workspaceLabel: string;
   tabLabel: string | null;
-  /** Labels of the path params (e.g. ["starless"]). */
+  /** Labels of the path params (empty for a workspace without params). */
   paramLabels: string[];
 };
 
@@ -188,13 +187,13 @@ export function describePath(pathname: string): LocationInfo | null {
   };
 }
 
-/** "Models (starless)": the workspace with its path parameters. */
+/** "Workspace (param)": the workspace with its path parameters, if any. */
 function workspaceWithParams(info: LocationInfo): string {
   return info.paramLabels.length
     ? `${info.workspaceLabel} (${info.paramLabels.join(", ")})` : info.workspaceLabel;
 }
 
-/** `document.title` for a page: "Members · Models (starless) · EuclidPolish". */
+/** `document.title` for a page: "Members · Models · EuclidPolish". */
 export function pageTitle(pathname: string): string {
   const info = describePath(pathname);
   if (!info) return `Not found · ${APP_NAME}`;
@@ -202,7 +201,7 @@ export function pageTitle(pathname: string): string {
 }
 
 /** The page's one h1 (visually hidden; screen readers and the outline), in
- *  plain words: "Members, Models (starless)", "Records, Synthetic", "Home". */
+ *  plain words: "Members, Models", "Records, Synthetic", "Home". */
 export function pageHeading(pathname: string): string {
   const info = describePath(pathname);
   if (!info) return "Not found";

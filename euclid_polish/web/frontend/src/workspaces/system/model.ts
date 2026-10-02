@@ -118,7 +118,7 @@ export function groupHome(group: string): { label: string; to: string } | null {
     case "cutouts": case "psf": return synthetic("psf", "PSF");
     case "scenes": case "lenses": return synthetic("records", "Records");
     case "stars": return synthetic("stars", "Stars");
-    case "lr": case "plateau": return { label: "Models › Train", to: pagePath("models", { tab: "train", params: { mode: "starfull" } }) };
+    case "lr": case "plateau": return { label: "Models › Train", to: pagePath("models", { tab: "train" }) };
     default: return null;
   }
 }

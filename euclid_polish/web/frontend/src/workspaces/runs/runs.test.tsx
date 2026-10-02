@@ -444,7 +444,7 @@ describe("Runs › Steps", () => {
     expect(within(nav).getAllByRole("heading").map((h) => h.textContent)).toEqual(["Reference data", "Noise and fields", "Training"]);
     const item = within(nav).getByText("Train ensemble").closest("button");
     expect(item?.getAttribute("aria-current")).toBe("true");
-    expect(screen.getByRole("link", { name: /Models › Train/ }).getAttribute("href")).toBe("/models/starfull/train");
+    expect(screen.getByRole("link", { name: /Models › Train/ }).getAttribute("href")).toBe("/models/train");
   });
 
   it("opens on the first step of ?stage= (the old Pixels › Inputs link)", async () => {
@@ -530,7 +530,7 @@ describe("Runs › Resources", () => {
     expect(document.querySelector(".ui-summary")?.textContent).toContain("1 ran out of memory and 1 hit the time limit");
     expect(screen.getByText("For the next run like the last one")).toBeTruthy();
     expect(screen.getByText("Recommended from 6 past runs (same kind, batch and depth) · high confidence")).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Submit in Models › Train/ }).getAttribute("href")).toBe("/models/starfull/train");
+    expect(screen.getByRole("link", { name: /Submit in Models › Train/ }).getAttribute("href")).toBe("/models/train");
     expect(screen.getAllByText("CPUs / member").length).toBeGreaterThan(0);        // the facts and the change list
     expect(screen.getByText("2m 20s per 1,000 steps")).toBeTruthy();
     expect(screen.getByText("1 TIMEOUT run would still time out.")).toBeTruthy();

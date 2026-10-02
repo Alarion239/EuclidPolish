@@ -1,9 +1,9 @@
-/* Models › Images (`/models/:mode/images`; absorbs the old Ensemble
+/* Models › Images (`/models/images`; absorbs the old Ensemble
    Disagreement tab, the synthetic groups of Sky › Catalog eval and the
    "Generate SR over local records" action of Data › Records). What SR looks
    like on synthetic truth:
-   - the bar: the set — test fields (default; the regime's evaluated test
-     cubes, the `ensemble` viewer collection), source-centred stamps
+   - the bar: the set — test fields (default; the evaluated test cubes, the
+     `ensemble` viewer collection), source-centred stamps
      (?set=stamps&g=syn-lens|syn-gal, the `evaluation` collection) or the
      local synthetic records with the production SR generated over them
      (?set=records&split=test&id=test:12, the `sky` collection, the SR tier
@@ -29,7 +29,7 @@ import {
   ToolbarSpacer, Tooltip, type DataColumn,
 } from "../../../ui";
 import { ImageViewer, type ViewerApi } from "../../../viewer";
-import { url, useEvalRuns, useMembers, useMode, useOverview, useSrStatus, type Mode, type SrSplit, type SrStatus } from "../api";
+import { REGIME, url, useEvalRuns, useMembers, useOverview, useSrStatus, type SrSplit, type SrStatus } from "../api";
 import { useFacetColors } from "../common";
 import { JOB, generateSr, useOnJobEnd } from "../jobs";
 import {
@@ -45,8 +45,10 @@ const RECORD_TIERS = ["dirty", "sr", "hr"];
 const FIELD_TIERS = ["lr", "sr", "hr"];
 const STAMP_TIERS = ["LR", "SR", "HR"];
 type Meta = { member_labels?: string[]; count?: number };
+/** The `ensemble` viewer collection's params (its URLs carry ?mode=, as url.viewerMeta). */
+const FIELD_PARAMS = { mode: REGIME };
 
-const tabPath = (mode: Mode, tab: string) => pagePath("models", { tab, params: { mode } });
+const tabPath = (tab: string) => pagePath("models", { tab });
 
 /** The footer under the viewer: SR's total-flux change against LR. */
 function FluxFooter({ delta, what }: { delta: FluxDelta | null; what: string }) {
@@ -60,15 +62,14 @@ function FluxFooter({ delta, what }: { delta: FluxDelta | null; what: string }) 
 }
 
 /* ── Generate SR over the local records ────────────────────────────────── */
-function GenerateSr({ mode }: { mode: Mode }) {
+function GenerateSr() {
   const job = useJob(JOB.generateSr);
   const status = useSrStatus(job.busy ? 3_000 : undefined);
   useOnJobEnd(job.job);
   const [open, setOpen] = useState(false);
   const s = status.data;
-  const reason = mode === "starless" ? "Generates the STARFULL production SR (switch to starfull)"
-    : !s ? (status.error ? `Cannot read the records: ${status.error.message}` : "Reading the local records…")
-      : !s.records ? "Sync the records first (Synthetic › Records)." : !s.checkpoint ? "No active starfull members." : !s.can_generate ? "Nothing to generate" : null;
+  const reason = !s ? (status.error ? `Cannot read the records: ${status.error.message}` : "Reading the local records…")
+    : !s.records ? "Sync the records first (Synthetic › Records)." : !s.checkpoint ? "No active members." : !s.can_generate ? "Nothing to generate" : null;
   if (reason) {
     return (
       <Tooltip content={reason}>
@@ -109,10 +110,10 @@ function GenerateForm({ status, onStart }: { status: SrStatus; onStart: (subsets
 }
 
 /* ── test fields ───────────────────────────────────────────────────────── */
-function FieldsView({ mode }: { mode: Mode }) {
-  const meta = useResource<Meta>(url.viewerMeta(mode), [mode], { ttl: 0 });
-  const members = useMembers(mode);
-  const ov = useOverview(mode);
+function FieldsView() {
+  const meta = useResource<Meta>(url.viewerMeta(), [], { ttl: 0 });
+  const members = useMembers();
+  const ov = useOverview();
   const [selRaw, setSelRaw] = useUrlState("sel", "");
   const [sort, setSort] = useUrlState<Sort>("sort", "knee");
   const [loss, setLoss] = useUrlState("loss", "");
@@ -121,8 +122,7 @@ function FieldsView({ mode }: { mode: Mode }) {
   const [color, setColor] = useState("VIS");
   const api = useRef<ViewerApi | null>(null);
   const ready = useRef(false);
-  const params = useMemo(() => ({ mode }), [mode]);
-  const delta = useFluxDelta("ensemble", params, index, ["lr", "sr"], color);
+  const delta = useFluxDelta("ensemble", FIELD_PARAMS, index, ["lr", "sr"], color);
 
   const byNum = useMemo(() => new Map((members.data?.members ?? []).map((m) => [memberNumber(m.name) ?? "", m])), [members.data]);
   const picks = useMemo<Pick[]>(() => (meta.data?.member_labels ?? []).map((label, i) => {
@@ -185,17 +185,16 @@ function FieldsView({ mode }: { mode: Mode }) {
   }
   if (!meta.loading && count === 0) {
     return (
-      <EmptyState icon="image" title={`No ${mode} test fields cached`}>
+      <EmptyState icon="image" title="No test fields cached">
         Evaluate the ensemble (Leaderboard) to cache the test fields for the viewer.
       </EmptyState>
     );
   }
   const h = ov.data?.headline;
-  const target = mode === "starless" ? "the clean target" : "HR";
   const caption = h ? [
-    `${h.n_scored ?? count} ${mode} test fields`,
+    `${h.n_scored ?? count} test fields`,
     h.production.psnr != null || h.mean.psnr != null
-      ? `PSNR vs ${target} (VIS, knee ${h.knee_e ?? 100} e⁻): ${[h.production.psnr != null ? `production ${db(h.production.psnr)} dB` : null,
+      ? `PSNR vs HR (VIS, knee ${h.knee_e ?? 100} e⁻): ${[h.production.psnr != null ? `production ${db(h.production.psnr)} dB` : null,
         h.mean.psnr != null ? `plain mean ${db(h.mean.psnr)} dB` : null,
         h.best_member.psnr != null ? `best member ${db(h.best_member.psnr)} dB` : null].filter(Boolean).join(", ")}` : null,
     h.knee.production != null ? `production ∫PSNR ${db(h.knee.production)} dB` : null,
@@ -203,21 +202,21 @@ function FieldsView({ mode }: { mode: Mode }) {
   return (
     <div className="mdl-images">
       <div className="mdl-images__main">
-        <ImageViewer key={mode} collection="ensemble" params={params} urlKey="ens" toolbar="full" tiers={FIELD_TIERS}
+        <ImageViewer collection="ensemble" params={FIELD_PARAMS} urlKey="ens" toolbar="full" tiers={FIELD_TIERS}
           onReady={(v) => { api.current = v; if (!v) ready.current = false; }}
           onState={(s) => {
             setIndex(s.index);
             setColor(s.color);
             if (!ready.current && s.tiers.length && picks.length) { ready.current = true; apply(sel); }
           }} />
-        <FluxFooter delta={delta} what={mode === "starless" ? "SR (starless)" : "SR"} />
-        {caption && <Caption>{caption}. The ranking is the <Link to={tabPath(mode, "leaderboard")}>Leaderboard</Link>.</Caption>}
+        <FluxFooter delta={delta} what="SR" />
+        {caption && <Caption>{caption}. The ranking is the <Link to={tabPath("leaderboard")}>Leaderboard</Link>.</Caption>}
       </div>
       <MemberPanel shown={shown} picks={picks} sel={selSet} status={movieStatus(sel)} find={find} setFind={setFind}
         loss={loss} setLoss={setLoss} losses={losses} sort={sort} setSort={setSort} colorOf={(row) => colors.of(row)}
         toggle={toggle} top={top} clear={() => setSelRaw("")} ranked={ranked} loading={!members.data && !members.error}
         unreadable={!members.data && !!members.error}
-        leaderboard={tabPath(mode, "leaderboard")} />
+        leaderboard={tabPath("leaderboard")} />
     </div>
   );
 }
@@ -291,7 +290,7 @@ const SR_STATE_TEXT: Record<string, string> = {
   stale: "predates the current production model", partial: "covers only some of the records", missing: "not generated",
 };
 
-function RecordsView({ mode }: { mode: Mode }) {
+function RecordsView() {
   const status = useSrStatus();
   const splits = useMemo(() => recordSrSplits(status.data), [status.data]);
   const [splitRaw, setSplit] = useUrlState("split", "");
@@ -330,9 +329,8 @@ function RecordsView({ mode }: { mode: Mode }) {
         onState={(st) => { setIndex(st.index); setColor(st.color); }} />
       <FluxFooter delta={delta} what="SR" />
       <Caption>
-        {cur.n} of {cur.records} {cur.split} records carry the production SR (STARFULL gate), shown beside their LR input and HR truth
-        {cur.state !== "current" && <span className="mdl-warn">; it {SR_STATE_TEXT[cur.state] ?? cur.state}{cur.reasons.length ? ` (${cur.reasons.join("; ")})` : ""}</span>}.
-        {mode === "starless" && " The records' SR is always the starfull production model's."}{" "}
+        {cur.n} of {cur.records} {cur.split} records carry the production SR, shown beside their LR input and HR truth
+        {cur.state !== "current" && <span className="mdl-warn">; it {SR_STATE_TEXT[cur.state] ?? cur.state}{cur.reasons.length ? ` (${cur.reasons.join("; ")})` : ""}</span>}.{" "}
         The records themselves, their truth sources and census are in <Link to={pagePath("synthetic", { tab: "records" })}>Synthetic › Records</Link>.
       </Caption>
     </div>
@@ -341,7 +339,6 @@ function RecordsView({ mode }: { mode: Mode }) {
 
 /* ── the tab ───────────────────────────────────────────────────────────── */
 export default function Images() {
-  const mode = useMode();
   const [set, setSet] = useUrlState<SetKey>("set", "fields", { parse: (r) => (SETS.includes(r as SetKey) ? r as SetKey : undefined) });
   const [group, setGroup] = useUrlState("g", "");
   const runs = useEvalRuns();
@@ -360,7 +357,7 @@ export default function Images() {
       <Toolbar label="Images controls">
         <ToolbarGroup label="Set" hideLabel>
           <Segmented<SetKey> size="sm" aria-label="Image set" value={set} onChange={setSet} options={[
-            { value: "fields", label: "Test fields", title: "The regime's evaluated synthetic test fields" },
+            { value: "fields", label: "Test fields", title: "The evaluated synthetic test fields" },
             { value: "stamps", label: nStamps ? `Stamps ${nStamps}` : "Stamps", title: "Source-centred synthetic lenses and galaxies (with HR truth)" },
             { value: "records", label: nRecords ? `Records ${nRecords}` : "Records", title: "The local synthetic records with the production SR generated over them" },
           ]} />
@@ -374,15 +371,12 @@ export default function Images() {
         )}
         <ToolbarSpacer />
         {set === "stamps" && <IconButton size="sm" icon="reset" label="Reload the stamps" onClick={() => void runs.reload()} />}
-        <GenerateSr mode={mode} />
+        <GenerateSr />
       </Toolbar>
       {set === "fields"
-        ? <FieldsView mode={mode} />
-        : set === "records" ? <RecordsView mode={mode} />
-        : <>
-            {mode === "starless" && <p className="mdl-note">The synthetic stamps are made by the STARFULL production model.</p>}
-            <StampsView sets={sets} set={stamps} loading={runs.loading} error={runs.error ?? null} onRetry={() => void runs.reload()} />
-          </>}
+        ? <FieldsView />
+        : set === "records" ? <RecordsView />
+        : <StampsView sets={sets} set={stamps} loading={runs.loading} error={runs.error ?? null} onRetry={() => void runs.reload()} />}
     </Page>
   );
 }

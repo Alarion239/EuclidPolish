@@ -278,7 +278,7 @@ def test_combiner_check_follows_the_production_spec(monkeypatch):
     ])
     check = system.check_combiner()
     assert check["state"] == "warn" and "26 members" in check["detail"]
-    assert check["to"] == "/models/starfull/combiner"
+    assert check["to"] == "/models/combiner"
     monkeypatch.setattr(system.model_catalog, "list_specs",
                         lambda: [_spec("production", True, members=["1·psnr"] * 30)])
     ok = system.check_combiner()

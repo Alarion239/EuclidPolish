@@ -48,9 +48,9 @@ export type LoopPayload = {
 const STAGES: readonly { id: StageId; label: string; to: string }[] = [
   { id: "priors", label: "Priors", to: "/synthetic/status" },
   { id: "records", label: "Records", to: "/synthetic/records" },
-  { id: "members", label: "Members", to: "/models/starfull/members" },
-  { id: "evaluation", label: "Evaluation", to: "/models/starfull/leaderboard" },
-  { id: "gate", label: "Gate", to: "/models/starfull/combiner" },
+  { id: "members", label: "Members", to: "/models/members" },
+  { id: "evaluation", label: "Evaluation", to: "/models/leaderboard" },
+  { id: "gate", label: "Gate", to: "/models/combiner" },
   { id: "real-sr", label: "Real SR", to: "/sky/targets" },
   { id: "figures", label: "Figures", to: "/figures/plates" },
 ];
@@ -146,7 +146,7 @@ export function runningLine({ local, slurm, members }: {
   if (!items.length && !timeouts.length) return null;
   const line: RunningLine = { items, timeouts };
   if (timeouts.length) {
-    line.continueTo = `/models/starfull/train?${new URLSearchParams({ mode: "continue", members: timeouts.join(",") }).toString()}`;
+    line.continueTo = `/models/train?${new URLSearchParams({ mode: "continue", members: timeouts.join(",") }).toString()}`;
   }
   return line;
 }

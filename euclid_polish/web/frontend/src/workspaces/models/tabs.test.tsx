@@ -2,14 +2,15 @@
  * Leaderboard (status line, verdict, comparison table with the real
  * benchmark, TIMEOUT alert line, knee curves and the leaderboard), Members
  * (roster, selection toolbar, archive only after confirm(), Images link, the
- * Pull banner), Train (preview, regime in the button, resources and their
- * past-run advice), Combiner
+ * Pull banner), Train (preview, the count in the button, no star-regime
+ * flag, resources and their past-run advice), Combiner
  * (current membership + history, real holes from ONE Sky › Compare run, gate
- * share → Members, held-out loss scale, promote guard, never the RBF),
+ * share → Members, held-out loss scale, promote guard, never the RBF, a
+ * report without blackout fields),
  * Diagnostics (facet legend, the spread answer + coverage, old d= values,
  * SR-scale focus, real field, recovery), Images (viewer first, ONE member
- * picker side panel, stamps, Generate SR asks first), the member inspector
- * and the pixel back-trace. */
+ * picker side panel, stamps, Generate SR asks first), the member and
+ * combiner inspectors and the pixel back-trace. */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
@@ -47,7 +48,7 @@ const formOf = (body: BodyInit | null | undefined): Record<string, string> => {
 };
 
 const member = (n: number, patch: Partial<MemberRow> = {}): MemberRow => ({
-  name: `member_${n}`, label: `${n}·psnr`, starless: false, regime: "starfull", origin: { seed: n },
+  name: `member_${n}`, label: `${n}·psnr`, origin: { seed: n },
   loss: "l2", blocks: 32, asinh_knee: 10, step: 70000, target_steps: 70000, fraction: 1,
   status: "complete", timeout: false, job: { jobid: "48107719", state: "COMPLETED" },
   psnr: 61.8, psnr_rank: 1, knee_integrated: { VIS: 53.5, Y_E: 62.4, J_E: 59.7, H_E: 58.8, mean: 58.6 }, knee_rank: 1,
@@ -56,7 +57,7 @@ const member = (n: number, patch: Partial<MemberRow> = {}): MemberRow => ({
 });
 
 const MEMBERS = {
-  regime: "starfull", other_regime_members: 12, psnr_fields: 100, eval_subset: "test",
+  psnr_fields: 100, eval_subset: "test",
   knee: { available: true, stale: false, n_fields: 100 }, gate: { available: true, stale: false, n_members: 30 },
   members: [
     member(196, { asinh_knee: null, asinh_knees: [0.1, 1, 10, 100, 1000, 10000], output_knee: 10, knee_loss: "balanced",
@@ -69,7 +70,7 @@ const MEMBERS = {
 };
 
 const OVERVIEW: OverviewData = {
-  regime: "starfull", active_members: ["178·psnr", "196·psnr", "197·psnr"], n_members: 3, test_present: true,
+  active_members: ["178·psnr", "196·psnr", "197·psnr"], n_members: 3, test_present: true,
   eval_subset: "test", evaluated_at: "2026-09-25T19:32:00Z", summary: { ensemble_psnr: 58.3753 },
   headline: {
     metric: "vis_asinh", knee_e: 100, n_scored: 100,
@@ -107,7 +108,7 @@ const variant = (name: string, patch: Partial<CombinersPayload["variants"][numbe
   test: null, knee: null, ...patch,
 });
 const COMBINERS: CombinersPayload = {
-  regime: "starfull", production: "spatial_gate_combiner", active_members: ["178·psnr", "196·psnr", "197·psnr"],
+  production: "spatial_gate_combiner", active_members: ["178·psnr", "196·psnr", "197·psnr"],
   cube_members: ["178·psnr", "196·psnr", "197·psnr"], compare: null, reports: [],
   variants: [
     variant("spatial_gate_combiner", { eval: { psnr: 59.2355 } }),
@@ -118,7 +119,7 @@ const COMBINERS: CombinersPayload = {
 };
 
 const DETAIL: MemberDetail = {
-  name: "member_196", label: "196·psnr", active: true, archived: null, regime: "starfull",
+  name: "member_196", label: "196·psnr", active: true, archived: null,
   row: MEMBERS.members[0] as MemberRow,
   curves: { psnr: [[1000, 40], [2000, 42]], band_psnr: { VIS: [[1000, 39]] }, loss_series: [[1000, 0.2]], train_loss: [], gnorm: [], gnorm_max: [], step_time: [] },
   knee: { knees: KNEE.knees, bands: KNEE.bands, stale: false, models: KNEE.models as unknown as KneeModel[] },
@@ -143,7 +144,7 @@ beforeEach(() => {
     "GET /ensemble/knee-psnr.json?mode=starfull": () => ({ body: KNEE }),
     "GET /ensemble/combiners.json?mode=starfull": () => ({ body: COMBINERS }),
     "GET /api/experiments": () => ({ body: { experiments: [] } }),
-    "GET /api/models": () => ({ body: { regime: "starfull", models: [] } }),
+    "GET /api/models": () => ({ body: { models: [] } }),
     "GET /ensemble/training-jobs.json": () => ({ body: { jobs: [TRAIN_JOB] } }),
     "GET /api/fasrc/steps/status": () => ({ body: { ssh_connected: false, steps: [{ step_id: "ensemble_train",
       defaults: { partition: "gpu", n_cpus: 4, n_gpus: 1, memory: "32G", time_limit: "48:00:00" }, fixed_gpus: 1 }] } }),
@@ -180,10 +181,10 @@ afterEach(() => { act(() => resetConfirm()); queryClient.clear(); });
 let lastLocation = "";
 function Spy() { const l = useLocation(); lastLocation = l.pathname + l.search; return null; }
 
-const show = (el: ReactElement, url = "/models/starfull/leaderboard") => render(
+const show = (el: ReactElement, url = "/models/leaderboard") => render(
   <QueryClientProvider client={queryClient}>
     <MemoryRouter initialEntries={[url]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-      <Routes><Route path="/models/:mode/*" element={<>{el}<Spy /></>} /><Route path="*" element={<Spy />} /></Routes>
+      <Routes><Route path="/models/*" element={<>{el}<Spy /></>} /><Route path="*" element={<Spy />} /></Routes>
     </MemoryRouter>
   </QueryClientProvider>,
 );
@@ -204,15 +205,15 @@ describe("leaderboard", () => {
 
   it("opens the freeze-study dialog from the toolbar; it only reads until Freeze", async () => {
     routes["GET /api/studies/candidates?mode=starfull"] = () => ({ body: {
-      ok: true, regime: "starfull", fields: [], max_fields: 10, can_freeze: true, blocking: null, fasrc_connected: true, fields_note: null,
+      ok: true, fields: [], max_fields: 10, can_freeze: true, blocking: null, fasrc_connected: true, fields_note: null,
       ensemble: { members: ["196·psnr"], n_members: 1, gate: { available: true, state: "current", name: "spatial_gate_p20" }, evaluated_at: null,
-        blocks: [{ id: "members", title: "Members", state: "current", detail: "1 active starfull member." }], stale: [], numbers_bytes: 1000 },
+        blocks: [{ id: "members", title: "Members", state: "current", detail: "1 active member." }], stale: [], numbers_bytes: 1000 },
     } });
     const Leaderboard = await load();
     show(<Leaderboard />);
     fireEvent.click(await screen.findByRole("button", { name: "Freeze study…" }));
     const dlg = await screen.findByRole("dialog", { name: "Freeze a study" });
-    expect(await within(dlg).findByText("1 active starfull member.")).toBeTruthy();
+    expect(await within(dlg).findByText("1 active member.")).toBeTruthy();
     expect(gets("/api/studies/candidates?mode=starfull")).toHaveLength(1);
     expect(calls.filter((c) => c.method === "POST" && c.url.startsWith("/api/studies"))).toHaveLength(0);
     fireEvent.click(within(dlg).getByRole("button", { name: "Cancel" }));
@@ -248,7 +249,7 @@ describe("leaderboard", () => {
     routes["GET /api/experiments"] = () => ({ body: { experiments: [{ id: "e1", created: "2026-09-27T20:38:56Z", label: "poster galaxy", tiles: ["t/a"],
       summary: { production: agg(17, 18, 22, 20, 1.18), mean: agg(20, 25, 26, 30, 1.2) } }] } });
     routes["GET /api/experiments/e1"] = () => ({ body: { id: "e1", fingerprints: { production: "p1", mean: "m1" } } });
-    routes["GET /api/models"] = () => ({ body: { regime: "starfull", models: [{ spec: "production", fingerprint: "p1" }, { spec: "mean", fingerprint: "m1" }] } });
+    routes["GET /api/models"] = () => ({ body: { models: [{ spec: "production", fingerprint: "p1" }, { spec: "mean", fingerprint: "m1" }] } });
     const Leaderboard = await load();
     show(<Leaderboard />);
     await waitFor(() => expect(tableRows()[0]).toEqual(["Production gate", "61.00", "56.00", "65.00", "62.00", "61.00", "J 22", "1.18"]));
@@ -264,7 +265,7 @@ describe("leaderboard", () => {
     const status = await screen.findByRole("list", { name: "Staleness" });
     const item = within(status).getByText("Production gate vs members").closest("li") as HTMLElement;
     expect(item.textContent).toContain("Fitted for 30 members; 31 are active");
-    expect(within(item).getByRole("link", { name: "Combiner" }).getAttribute("href")).toBe("/models/starfull/combiner");
+    expect(within(item).getByRole("link", { name: "Combiner" }).getAttribute("href")).toBe("/models/combiner");
     expect(within(status).queryByText("Evaluation vs members")).toBeNull();
   });
 
@@ -284,13 +285,13 @@ describe("leaderboard", () => {
     await waitFor(() => expect(posts("/ensemble/knee-psnr")[0]?.form).toMatchObject({ mode: "starfull" }));
     // The Evaluate dialog is the confirm: Cancel starts nothing.
     fireEvent.click(within(status).getByRole("button", { name: "Evaluate 100 fields…" }));
-    let dlg = await screen.findByRole("dialog", { name: /Evaluate the starfull ensemble/ });
+    let dlg = await screen.findByRole("dialog", { name: "Evaluate the ensemble" });
     fireEvent.click(within(dlg).getByRole("button", { name: "Cancel" }));
     expect(posts("/ensemble/evaluate")).toHaveLength(0);
     // It chooses the field count (the old Overview's ?n=) and says when scores stop being comparable.
     routes["POST /ensemble/evaluate"] = () => ({ body: { job_id: "ev1" } });
     fireEvent.click(within(status).getByRole("button", { name: "Evaluate 100 fields…" }));
-    dlg = await screen.findByRole("dialog", { name: /Evaluate the starfull ensemble/ });
+    dlg = await screen.findByRole("dialog", { name: "Evaluate the ensemble" });
     fireEvent.change(within(dlg).getByRole("spinbutton", { name: /Test fields/ }), { target: { value: "250" } });
     expect(within(dlg).getByText(/not comparable/)).toBeTruthy();
     fireEvent.click(within(dlg).getByRole("button", { name: "Evaluate 250 fields" }));
@@ -312,18 +313,18 @@ describe("leaderboard", () => {
     const line = await screen.findByText("1 member stopped short of the target steps: 178");
     expect(line.closest(".ui-callout")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Continue" }).getAttribute("href"))
-      .toBe("/models/starfull/train?mode=continue&members=member_178");
+      .toBe("/models/train?mode=continue&members=member_178");
   });
 
   it("logs the evaluation and the leaderboard on Notebook › Log, appending nothing itself", async () => {
     const Leaderboard = await load();
-    show(<Leaderboard />, "/models/starfull/leaderboard?range=1,100");
+    show(<Leaderboard />, "/models/leaderboard?range=1,100");
     await screen.findByRole("grid", { name: "Knee-integrated PSNR leaderboard" });
     fireEvent.click(screen.getByRole("button", { name: "Log to notebook" }));
     await waitFor(() => expect(lastLocation.startsWith("/notebook/log?")).toBe(true));
     const q = new URLSearchParams(lastLocation.split("?")[1]);
     expect(q.get("from")).toBe("Models › Leaderboard");
-    expect(q.get("entry")).toContain("**Ensemble evaluation · starfull**");
+    expect(q.get("entry")).toContain("**Ensemble evaluation** — ");
     expect(q.get("entry")).toContain("∫ over 1–100 e⁻ (a sub-range of 0.1–10k e⁻, uniform in log knee)");
     expect(posts("/api/tracking/log")).toHaveLength(0);
   });
@@ -337,7 +338,7 @@ describe("leaderboard", () => {
     expect(heads.some((h) => /Test VIS|Test 4b/.test(h ?? ""))).toBe(false);
     expect(legendLabels()).toEqual(["production gate", "plain mean", "10 e⁻", "multi-knee → 1 image"]);
     view.unmount();
-    show(<Leaderboard />, "/models/starfull/leaderboard?range=0.1,10");
+    show(<Leaderboard />, "/models/leaderboard?range=0.1,10");
     const narrow = await screen.findByRole("grid", { name: "Knee-integrated PSNR leaderboard" });
     const first = within(narrow).getAllByRole("row")[1];
     expect(within(first).getByText("#178")).toBeTruthy();
@@ -351,9 +352,9 @@ describe("members", () => {
 
   it("shows the roster: Member, Status, Steps, Recipe, ∫PSNR and the gate share bar; the rest in Columns", async () => {
     const Members = await load();
-    show(<Members />, "/models/starfull/members");
+    show(<Members />, "/models/members");
     expect(await screen.findByText("multi ×6 → 10")).toBeTruthy();
-    const grid = screen.getByRole("grid", { name: "starfull members" });
+    const grid = screen.getByRole("grid", { name: "Members" });
     const heads = within(grid).getAllByRole("columnheader").map((h) => h.textContent?.trim()).filter(Boolean);
     expect(heads).toEqual(["Member", "Status", "Steps", "Recipe", "∫PSNR", "Gate share"]);
     expect(screen.getAllByText("TIMEOUT").length).toBeGreaterThan(0);
@@ -364,7 +365,7 @@ describe("members", () => {
   it("keeps the selection toolbar visible, archives only after confirm(), typed beyond 3", async () => {
     const confirmSpy = vi.spyOn(window, "confirm");
     const Members = await load();
-    show(<Members />, "/models/starfull/members");
+    show(<Members />, "/models/members");
     await screen.findByText("multi ×6 → 10");
     const tools = screen.getByRole("group", { name: "Selection" });
     expect((within(tools).getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(true);
@@ -382,12 +383,12 @@ describe("members", () => {
 
   it("sends the selection to Images and to Train", async () => {
     const Members = await load();
-    show(<Members />, "/models/starfull/members");
+    show(<Members />, "/models/members");
     await screen.findByText("multi ×6 → 10");
     act(() => useSelection.getState().select("member", ["member_196", "member_178"]));
     const tools = screen.getByRole("group", { name: "Selection" });
     fireEvent.click(within(tools).getByRole("button", { name: "Images" }));
-    await waitFor(() => expect(lastLocation).toBe("/models/starfull/images?sel=196,178"));
+    await waitFor(() => expect(lastLocation).toBe("/models/images?sel=196,178"));
   });
 
   it("shows a core specialist's peak share and marks what the gate does not read", async () => {
@@ -397,7 +398,7 @@ describe("members", () => {
       member(169, { gate_usage: { VIS: 0.00001, Y_E: 0.00001, J_E: 0.00001, H_E: 0.00001 }, gate_usage_peak: 0.0031, used_by_gate: false }),
     ] } });
     const Members = await load();
-    show(<Members />, "/models/starfull/members");
+    show(<Members />, "/models/members");
     // The cell carries one value (the peak and where), so it never clips; the full reading is its tooltip.
     const cell = await screen.findByText("48% VIS cores");
     expect(cell.closest("[aria-label]")?.getAttribute("aria-label")).toBe("Gate share 48% VIS cores");
@@ -408,14 +409,14 @@ describe("members", () => {
 
   it("offers the Pull banner only when finished members are waiting on FASRC", async () => {
     const Members = await load();
-    const view = show(<Members />, "/models/starfull/members");
+    const view = show(<Members />, "/models/members");
     await screen.findByText("multi ×6 → 10");
     // member_195 finished on FASRC and is not local
     expect(await screen.findByText(/1 new member finished on FASRC: 195/)).toBeTruthy();
     view.unmount();
     routes["GET /ensemble/training-jobs.json"] = () => ({ body: { jobs: [{ ...TRAIN_JOB, member_names: ["member_196"] }] } });
     queryClient.clear();
-    show(<Members />, "/models/starfull/members");
+    show(<Members />, "/models/members");
     await screen.findByText("multi ×6 → 10");
     expect(screen.queryByText(/finished on FASRC/)).toBeNull();
     expect(screen.getByRole("button", { name: "Pull from FASRC…" })).toBeTruthy();
@@ -424,7 +425,7 @@ describe("members", () => {
   it("lists the archived members with Restore behind a confirm", async () => {
     routes["POST /ensemble/restore-member"] = () => ({ body: { job_id: "rs1" } });
     const Members = await load();
-    show(<Members />, "/models/starfull/members?view=archived");
+    show(<Members />, "/models/members?view=archived");
     const grid = await screen.findByRole("grid", { name: "Archived members" });
     expect(within(grid).getByText("#09")).toBeTruthy();
     fireEvent.click(within(grid).getByRole("button", { name: "Restore" }));
@@ -437,9 +438,9 @@ describe("members", () => {
 describe("train", () => {
   const load = async () => (await import("./tabs/Train")).default;
 
-  it("previews names + command, repeats the last batch, names the regime on the submit and needs FASRC", async () => {
+  it("previews names + command, repeats the last batch, names the count on the submit and needs FASRC", async () => {
     const Train = await load();
-    show(<Train />, "/models/starfull/train");
+    show(<Train />, "/models/train");
     expect(await screen.findByText("member_199")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Repeat last batch" }));
     await waitFor(() => {
@@ -447,14 +448,14 @@ describe("train", () => {
       expect(spec[0]).toMatchObject({ asinh_knees: [0.1, 1, 10, 100, 1000, 10000], output_knee: 10, knee_loss: "balanced" });
       expect(spec[1]).toMatchObject({ asinh_knee: 3000 });
     });
-    const submit = await screen.findByRole("button", { name: "Submit 2 STARFULL members to SLURM" });
+    const submit = await screen.findByRole("button", { name: "Submit 2 members to SLURM" });
     expect((submit as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/FASRC offline/)).toBeTruthy();
   });
 
   it("shows the forward-model values System › Config owns, read-only, and never sends them", async () => {
     const Train = await load();
-    show(<Train />, "/models/starfull/train");
+    show(<Train />, "/models/train");
     expect(await screen.findByText("PSF warp α max")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Edit in System › Config" }).getAttribute("href")).toBe("/system/config");
     await waitFor(() => expect(posts("/ensemble/train/preview").length).toBeGreaterThan(0));
@@ -469,7 +470,7 @@ describe("train", () => {
       used_by: used(["psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma", "saturation_mask_prob", "lr_peak", "lr_final", "lr_warmup_steps", "plateau_lr_enabled"]),
     } });
     const Train = await load();
-    show(<Train />, "/models/starfull/train");
+    show(<Train />, "/models/train");
     const forward = await screen.findByRole("link", { name: "2 knobs changed · Edit" });
     expect(forward.getAttribute("href")).toBe("/system/config");
     expect(screen.getByRole("link", { name: "1 knob changed · Edit" }).getAttribute("href")).toBe("/system/config");
@@ -478,8 +479,8 @@ describe("train", () => {
 
   it("re-reads the members when an in-app link opens Train for other members", async () => {
     const Train = await load();
-    show(<><Train /><Link to="/models/starfull/train?mode=continue&members=member_179">next</Link></>,
-      "/models/starfull/train?mode=continue&members=member_178");
+    show(<><Train /><Link to="/models/train?mode=continue&members=member_179">next</Link></>,
+      "/models/train?mode=continue&members=member_178");
     await waitFor(() => expect(posts("/ensemble/train/preview").at(-1)?.form.members).toBe("member_178"));
     fireEvent.click(screen.getByRole("link", { name: "next" }));
     await waitFor(() => expect(posts("/ensemble/train/preview").at(-1)?.form.members).toBe("member_179"));
@@ -487,11 +488,11 @@ describe("train", () => {
 
   it("starts from the last finished batch's resources and continues TIMEOUT members up to their target", async () => {
     const Train = await load();
-    const view = show(<Train />, "/models/starfull/train");
+    const view = show(<Train />, "/models/train");
     const cpus = await screen.findByRole("spinbutton", { name: "CPUs / model" });
     await waitFor(() => expect((cpus as HTMLInputElement).value).toBe("4"));
     view.unmount();
-    show(<Train />, "/models/starfull/train?mode=continue&members=member_178");
+    show(<Train />, "/models/train?mode=continue&members=member_178");
     const upTo = await screen.findByRole("spinbutton", { name: "Up to step" });
     expect((upTo as HTMLInputElement).value).toBe("70000");
     await waitFor(() => expect(posts("/ensemble/train/preview").at(-1)?.form).toMatchObject({ continue_basis: "target", target_steps: "70000" }));
@@ -510,7 +511,7 @@ describe("train", () => {
       basis: { level: "similar", level_label: "same kind, batch and depth", n_runs: 6, jobids: [] }, notes: [], warnings: [],
     } });
     const Train = await load();
-    show(<Train />, "/models/starfull/train");
+    show(<Train />, "/models/train");
     const cpus = await screen.findByRole("spinbutton", { name: "CPUs / model" });
     await waitFor(() => expect((cpus as HTMLInputElement).value).toBe("4"));
     expect(await screen.findByText(/Recommended from 6 past runs/)).toBeTruthy();
@@ -526,16 +527,16 @@ describe("train", () => {
     expect(screen.getByText(/As job 48107719/)).toBeTruthy();
   });
 
-  it("trains starless members from the starless workspace, and the regime is an explicit field", async () => {
-    routes["GET /ensemble/members.json?mode=starless"] = () => ({ body: { ...MEMBERS, regime: "starless", members: [] } });
+  it("offers no star regime and never sends one, even for a clone of a legacy starless batch", async () => {
+    routes["GET /ensemble/training-jobs.json"] = () => ({ body: { jobs: [
+      { ...TRAIN_JOB, jobid: "47000001", params: { ...TRAIN_JOB.params, starless: "1" } }] } });
     const Train = await load();
-    show(<Train />, "/models/starless/train");
-    expect(await screen.findByText("member_199")).toBeTruthy();
-    expect(posts("/ensemble/train/preview").at(-1)!.form.starless).toBe("1");
-    expect(await screen.findByRole("button", { name: "Submit 1 STARLESS member to SLURM" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("radio", { name: "starfull" }));
-    await waitFor(() => expect(posts("/ensemble/train/preview").at(-1)!.form).not.toHaveProperty("starless"));
-    expect(screen.getByRole("button", { name: "Submit 1 STARFULL member to SLURM" })).toBeTruthy();
+    show(<Train />, "/models/train?from=47000001");
+    await waitFor(() => expect(JSON.parse(posts("/ensemble/train/preview").at(-1)!.form.member_spec)).toHaveLength(2));
+    expect(posts("/ensemble/train/preview").every((c) => !("starless" in c.form))).toBe(true);
+    expect(screen.queryByRole("radiogroup", { name: "Regime" })).toBeNull();
+    expect(screen.queryByText(/starless|starfull|regime/i)).toBeNull();
+    expect(await screen.findByRole("button", { name: "Submit 2 members to SLURM" })).toBeTruthy();
   });
 });
 
@@ -552,7 +553,7 @@ describe("combiner", () => {
   it("never tells production's gate share to 'compare it with production' (loading or unreadable members.json)", async () => {
     routes["GET /ensemble/members.json?mode=starfull"] = () => ({ status: 500, body: { ok: false, error: "boom" } });
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner");
+    show(<Combiner />, "/models/combiner");
     await screen.findByRole("grid", { name: "Combiner variants" });
     expect(screen.queryByText(/compare it with production to measure one/)).toBeNull();          // while members.json loads
     // (the query layer retries a failed GET before it reports the error)
@@ -562,7 +563,7 @@ describe("combiner", () => {
 
   it("shows production and the variants of the current membership; the rest behind History", async () => {
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner");
+    show(<Combiner />, "/models/combiner");
     const grid = await screen.findByRole("grid", { name: "Combiner variants" });
     expect(within(grid).getByText("combiner")).toBeTruthy();
     expect(within(grid).getByText("p2")).toBeTruthy();
@@ -579,10 +580,10 @@ describe("combiner", () => {
     ] } });
     routes["GET /api/experiments/e-prod"] = () => ({ body: { id: "e-prod", fingerprints: { production: "p1", "gate:p2": "g2" } } });
     routes["GET /api/experiments/e-new"] = () => ({ body: { id: "e-new", fingerprints: { mean: "m1", "gate:p2": "g2" } } });
-    routes["GET /api/models"] = () => ({ body: { regime: "starfull", models: [
+    routes["GET /api/models"] = () => ({ body: { models: [
       { spec: "production", fingerprint: "p1" }, { spec: "mean", fingerprint: "m1" }, { spec: "gate:p2", fingerprint: "g2" }] } });
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner");
+    show(<Combiner />, "/models/combiner");
     const grid = await screen.findByRole("grid", { name: "Combiner variants" });
     const picker = screen.getByRole("combobox", { name: "Real holes from (Sky › Compare run)" }) as HTMLSelectElement;
     await waitFor(() => expect(picker.value).toBe("e-prod"));
@@ -603,9 +604,9 @@ describe("combiner", () => {
     ] } });
     // The run scored production d9…; production is now 11…
     routes["GET /api/experiments/e-prod"] = () => ({ body: { id: "e-prod", fingerprints: { production: "d9efa5b5" } } });
-    routes["GET /api/models"] = () => ({ body: { regime: "starfull", models: [{ spec: "production", fingerprint: "1188a841" }] } });
+    routes["GET /api/models"] = () => ({ body: { models: [{ spec: "production", fingerprint: "1188a841" }] } });
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner");
+    show(<Combiner />, "/models/combiner");
     const grid = await screen.findByRole("grid", { name: "Combiner variants" });
     const prodRow = within(grid).getByText("combiner").closest("tr") as HTMLElement;
     await waitFor(() => expect(within(prodRow).getByText("earlier fit")).toBeTruthy());
@@ -620,7 +621,7 @@ describe("combiner", () => {
     ] } });
     routes["POST /ensemble/combiners/compare"] = () => ({ body: { ok: true, job_id: "cmp1" } });
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner?history=1");
+    show(<Combiner />, "/models/combiner?history=1");
     const grid = await screen.findByRole("grid", { name: "Combiner variants" });
     expect(within(grid).queryByText(/rbf/i)).toBeNull();
     expect(screen.queryByText("Compare report")).toBeNull();
@@ -639,7 +640,7 @@ describe("combiner", () => {
       variant("spatial_gate_combiner", { n_members: 30, n_reads: 20, pruned: true, fit: { steps: 2000, prune_threshold: 0.005 } }),
     ] } });
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner");
+    show(<Combiner />, "/models/combiner");
     expect(await screen.findByText(/^Runs 20 of 30 members: those with ≥ 0\.5% of the gate's weight somewhere/)).toBeTruthy();
   });
 
@@ -649,7 +650,7 @@ describe("combiner", () => {
       member(178, { gate_usage: { VIS: 0, Y_E: 0, J_E: 0, H_E: 0 }, gate_usage_peak: { value: 0, band: "VIS" }, used_by_gate: false }),
     ] } });
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner");
+    show(<Combiner />, "/models/combiner");
     const list = await screen.findByRole("grid", { name: "Gate share per member" });
     await waitFor(() => expect(within(list).getAllByRole("row")).toHaveLength(3));
     expect(within(within(list).getAllByRole("row")[1]).getByText("#196")).toBeTruthy();   // largest share first
@@ -660,13 +661,13 @@ describe("combiner", () => {
     expect(within(row178).queryByText(/VIS/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Select the 1 not read" }));
     fireEvent.click(screen.getByRole("button", { name: "Open in Members with this selection (1)" }));
-    await waitFor(() => expect(lastLocation).toBe("/models/starfull/members"));
+    await waitFor(() => expect(lastLocation).toBe("/models/members"));
     expect(useSelection.getState().get("member")).toEqual(["member_178"]);
   });
 
   it("fits a named variant and refuses the production name and reserved names", async () => {
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner");
+    show(<Combiner />, "/models/combiner");
     await screen.findByRole("grid", { name: "Combiner variants" });
     fireEvent.click(screen.getByRole("button", { name: "Fit variant…" }));
     const name = await screen.findByRole("textbox", { name: /Variant name/ });
@@ -687,7 +688,7 @@ describe("combiner", () => {
       variant("spatial_gate_v1", { fit: { loss: "band-weighted asinh squared error" }, selected: { step: 3000, loss: 0.1775 } }),
     ] } });
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner");
+    show(<Combiner />, "/models/combiner");
     expect(await screen.findByText("other scale")).toBeTruthy();
     expect(screen.getByText("0.6500")).toBeTruthy();
     expect(screen.getByText(/Not drawn: v1, whose loss is on another scale than production's/)).toBeTruthy();
@@ -695,7 +696,7 @@ describe("combiner", () => {
 
   it("promotes a variant fitted for other members only with typed confirmation + force", async () => {
     const Combiner = await load();
-    show(<Combiner />, "/models/starfull/combiner?history=1");
+    show(<Combiner />, "/models/combiner?history=1");
     const grid = await screen.findByRole("grid", { name: "Combiner variants" });
     const row = within(grid).getByText("26m").closest("tr") as HTMLElement;
     fireEvent.pointerDown(within(row).getByRole("button", { name: /actions/ }), { button: 0 });
@@ -706,6 +707,32 @@ describe("combiner", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Promote" }));
     await waitFor(() => expect(posts("/ensemble/combiners/promote")[0]?.form).toEqual({
       mode: "starfull", variant: "spatial_gate_26m", force: "1" }));
+  });
+
+  it("never shows the empty blackout group of a report scored without blackout fields, whatever ?group= says", async () => {
+    const scores = (vis: number | null, mse: number) => ({ band_psnr: [vis, vis], bin_mse: [mse], halo_mse: [mse], hole_mse: [mse] });
+    routes["GET /ensemble/combiners.json?mode=starfull"] = () => ({ body: { ...COMBINERS, compare: { id: "cmp-1" }, reports: [{ id: "cmp-1" }] } });
+    routes["GET /ensemble/combiners/compare.json?mode=starfull"] = () => ({ body: {
+      id: "cmp-1", members: ["196·psnr"], bands: ["VIS", "Y_E"], brightness_names: ["core"],
+      methods: ["mean", "gate:spatial_gate_combiner"], n_fields: { natural: 100, blackout: 0 },
+      groups: {
+        natural: { mean: scores(58, 2), "member:196·psnr": scores(59, 1), "gate:spatial_gate_combiner": scores(60, 0.5) },
+        blackout: { mean: scores(null, 0), "member:196·psnr": scores(null, 0), "gate:spatial_gate_combiner": scores(null, 0) },
+      },
+    } });
+    const Combiner = await load();
+    show(<Combiner />, "/models/combiner?group=blackout");
+    await screen.findByRole("heading", { name: "Compare report" });
+    const groups = screen.getByRole("radiogroup", { name: "Field group" });
+    const blackout = within(groups).getByRole("radio", { name: "blackout 0" });
+    expect(blackout.hasAttribute("disabled")).toBe(true);
+    expect(within(groups).getByRole("radio", { name: "natural 100" }).getAttribute("data-on")).toBe("true");
+    const table = document.querySelector(".mdl-table-mini") as HTMLElement;
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Method", "VIS [dB]", "Y [dB]", "core", "halo"]);
+    expect([...table.querySelectorAll("tbody tr")].map((tr) => tr.querySelector("td")?.textContent))
+      .toEqual(["mean", "best member #196", "production"]);
+    expect(table.textContent).toContain("60.000");
+    expect(table.textContent).not.toContain("NaN");
   });
 });
 
@@ -731,7 +758,7 @@ describe("diagnostics", () => {
   it("gives the members ONE legend entry per colour facet, and a band switch that really switches the data", async () => {
     routes["GET /ensemble/evals.json?mode=starfull"] = () => ({ body: EVALS });
     const Diagnostics = await load();
-    const view = show(<Diagnostics />, "/models/starfull/diagnostics");
+    const view = show(<Diagnostics />, "/models/diagnostics");
     await screen.findByLabelText("Cross-correlation r(k)");
     expect(legendLabels()).toEqual(["members 3", "LR (bicubic)", "plain mean"]);
     const bands = screen.getByRole("radiogroup", { name: "Band" });
@@ -746,7 +773,7 @@ describe("diagnostics", () => {
     expect(gets("/ensemble/evals.json?mode=starfull&band=Y_E")).toHaveLength(1);
     expect(posts("/ensemble/evals/bands")).toHaveLength(0);                 // opening computes nothing
     view.unmount();
-    show(<Diagnostics />, "/models/starfull/diagnostics?color=loss");
+    show(<Diagnostics />, "/models/diagnostics?color=loss");
     await screen.findByLabelText("Cross-correlation r(k)");
     expect(legendLabels()).toEqual(["l1", "l2", "LR (bicubic)", "plain mean"]);
   });
@@ -754,7 +781,7 @@ describe("diagnostics", () => {
   it("offers to compute a band that is not measured yet, and flags one measured for an earlier evaluation", async () => {
     routes["POST /ensemble/evals/bands"] = () => ({ body: { ok: true, job_id: "bands1" } });
     const Diagnostics = await load();
-    const view = show(<Diagnostics />, "/models/starfull/diagnostics?band=J_E");
+    const view = show(<Diagnostics />, "/models/diagnostics?band=J_E");
     const empty = await screen.findByText("The J diagnostics are not computed yet");
     expect(empty).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Compute Y, J and H…" }));
@@ -762,7 +789,7 @@ describe("diagnostics", () => {
     await waitFor(() => expect(posts("/ensemble/evals/bands")[0]?.form).toEqual({ mode: "starfull" }));
     view.unmount();
     routes["GET /ensemble/evals.json?mode=starfull&band=H_E"] = () => ({ body: { ...EVALS, band: "H_E", stale: true } });
-    show(<Diagnostics />, "/models/starfull/diagnostics?band=H_E");
+    show(<Diagnostics />, "/models/diagnostics?band=H_E");
     expect(await screen.findByText("These H diagnostics belong to an earlier evaluation")).toBeTruthy();
     expect(screen.getByText(/· H band$/)).toBeTruthy();
   });
@@ -770,7 +797,7 @@ describe("diagnostics", () => {
   it("answers the spread in one sentence and a coverage table (the old calibration URL lands here)", async () => {
     routes["GET /ensemble/evals.json?mode=starfull"] = () => ({ body: SPREAD });
     const Diagnostics = await load();
-    show(<Diagnostics />, "/models/starfull/diagnostics?d=calibration");
+    show(<Diagnostics />, "/models/diagnostics?d=calibration");
     const line = await waitFor(() => {
       const el = document.querySelector(".ui-summary");
       if (!el) throw new Error("not yet");
@@ -789,7 +816,7 @@ describe("diagnostics", () => {
   it("lands the deleted axes view on spread and never offers the RBF", async () => {
     routes["GET /ensemble/evals.json?mode=starfull"] = () => ({ body: SPREAD });
     const Diagnostics = await load();
-    show(<Diagnostics />, "/models/starfull/diagnostics?d=axes");
+    show(<Diagnostics />, "/models/diagnostics?d=axes");
     await screen.findByLabelText("Disagreement vs error");
     expect(screen.queryByRole("radio", { name: /Combiner axes/ })).toBeNull();
     const chips = within(screen.getByRole("group", { name: "Error of" })).getAllByRole("button").map((c) => c.textContent);
@@ -804,7 +831,7 @@ describe("diagnostics", () => {
       model_power: { k: [0.5, 1, 2], r_pairs: [[0.9, 0.8, 0.7]], r_cross: [0.9, 0.8, 0.7], pixel_scale_arcsec: 0.05 },
       std_brightness: { x_edges: [0, 1, 2], y_edges: [0, 1, 2], counts: [[1, 2], [3, 4]], x_label: "brightness", y_label: "σ" } } } });
     const Diagnostics = await load();
-    show(<Diagnostics />, "/models/starfull/diagnostics?d=real-field&fd=cross");
+    show(<Diagnostics />, "/models/diagnostics?d=real-field&fd=cross");
     expect(await screen.findByLabelText("Cross-correlation r(d), field-f1-rd")).toBeTruthy();
     expect(screen.getByLabelText("Cross-correlation r(d), synthetic-rd")).toBeTruthy();
     expect(await screen.findByText(/^14 real vs 30 synthetic members/)).toBeTruthy();
@@ -822,7 +849,7 @@ describe("diagnostics", () => {
       { id: "c", grade: "A", ok: "True" },
     ] } });
     const Diagnostics = await load();
-    show(<Diagnostics />, "/models/starfull/diagnostics?d=recovery");
+    show(<Diagnostics />, "/models/diagnostics?d=recovery");
     expect(await screen.findByLabelText("SR vs HR recovery of the synthetic stamps")).toBeTruthy();
     expect(document.querySelector(".ui-summary")?.textContent)
       .toBe("SR is closer to the HR truth than LR on 1 of 2 synthetic stamps; Syn lens median 30.00 → 33.00 dB; Syn gal median 31.00 → 30.00 dB.");
@@ -842,7 +869,7 @@ describe("diagnostics", () => {
     } });
     routes["POST /api/evaluation/angular-power-spectrum"] = () => ({ body: { ok: true, rendered: true } });
     const Diagnostics = await load();
-    show(<Diagnostics />, "/models/starfull/diagnostics?d=recovery&band=Y_E");
+    show(<Diagnostics />, "/models/diagnostics?d=recovery&band=Y_E");
     expect(await screen.findByLabelText("Transfer function, Y")).toBeTruthy();
     expect(screen.getByLabelText("Cross-correlation, Y")).toBeTruthy();
     expect(screen.getByText(/^10 validate fields of 510×510 px at 0\.05″ · per-field median, shaded 16–84% of fields/)).toBeTruthy();
@@ -861,7 +888,7 @@ describe("images", () => {
   it("puts the viewer first with ONE member picker beside it (no popover in the tab strip)", async () => {
     routes["GET /viewer/meta/ensemble?mode=starfull"] = () => ({ body: META });
     const Images = await load();
-    show(<Images />, "/models/starfull/images?sel=196,178");
+    show(<Images />, "/models/images?sel=196,178");
     const panel = await screen.findByRole("complementary", { name: "Members" });
     const viewer = screen.getByTestId("viewer");
     expect(viewer.dataset.collection).toBe("ensemble");
@@ -875,14 +902,14 @@ describe("images", () => {
     await waitFor(() => expect(lastLocation).toContain("sel=196"));
     expect(lastLocation).not.toContain("178");
     expect(screen.getAllByRole("complementary")).toHaveLength(1);
-    expect(within(panel).getByRole("link", { name: "Leaderboard" }).getAttribute("href")).toBe("/models/starfull/leaderboard");
+    expect(within(panel).getByRole("link", { name: "Leaderboard" }).getAttribute("href")).toBe("/models/leaderboard");
   });
 
   it("gives no member-table verdict while members.json loads", async () => {
     routes["GET /viewer/meta/ensemble?mode=starfull"] = () => ({ body: META });
     routes["GET /ensemble/members.json?mode=starfull"] = () => ({ status: 500, body: { ok: false, error: "boom" } });
     const Images = await load();
-    show(<Images />, "/models/starfull/images");
+    show(<Images />, "/models/images");
     const panel = await screen.findByRole("complementary", { name: "Members" });
     const picker = within(panel).getByRole("group", { name: "Members in the movie" });
     await waitFor(() => expect(within(picker).getAllByRole("button")).toHaveLength(3));
@@ -897,7 +924,7 @@ describe("images", () => {
     routes["GET /viewer/meta/ensemble?mode=starfull"] = () => ({ body: META });
     const Images = await load();
     show(<Images />);
-    expect(await screen.findByText(/^100 starfull test fields · PSNR vs HR \(VIS, knee 100 e⁻\): production 59\.24 dB, plain mean 58\.38 dB, best member 58\.94 dB · production ∫PSNR 60\.97 dB/)).toBeTruthy();
+    expect(await screen.findByText(/^100 test fields · PSNR vs HR \(VIS, knee 100 e⁻\): production 59\.24 dB, plain mean 58\.38 dB, best member 58\.94 dB · production ∫PSNR 60\.97 dB/)).toBeTruthy();
   });
 
   it("shows the synthetic stamps of one group with its PSNR vs HR caption, a row opening the stamp", async () => {
@@ -907,7 +934,7 @@ describe("images", () => {
       { id: "g1", grade: "syn-gal", ok: "True", psnr_lr_hr: "40", psnr_sr_hr: "41", viewer_id: "syn-gal_0001_0", state: "current", n_members: 20 },
     ] } });
     const Images = await load();
-    show(<Images />, "/models/starfull/images?set=stamps&g=syn-lens");
+    show(<Images />, "/models/images?set=stamps&g=syn-lens");
     expect(await screen.findByRole("button", { name: "Syn lens 2" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Syn gal 1" })).toBeTruthy();
     const viewer = await screen.findByTestId("viewer");
@@ -924,7 +951,7 @@ describe("images", () => {
       sr: { test: 12, validate: 0 }, splits: { test: { count: 20, present: true, sr: { state: "stale", reasons: ["model changed"], count: 12 } },
         validate: { count: 10, present: true, sr: { state: "missing", reasons: [], count: 0 } } } } });
     const Images = await load();
-    show(<Images />, "/models/starfull/images?set=records&id=test:3");
+    show(<Images />, "/models/images?set=records&id=test:3");
     expect(await screen.findByRole("radio", { name: "Records 12" })).toBeTruthy();
     const viewer = await screen.findByTestId("viewer");
     expect(viewer.dataset.collection).toBe("sky");
@@ -970,6 +997,20 @@ describe("member inspector", () => {
   });
 });
 
+describe("combiner inspector", () => {
+  it("opens a variant by its dir, and an older id with the regime in front still resolves", async () => {
+    const { default: CombinerInspector } = await import("./CombinerInspector");
+    const view = show(<CombinerInspector id="spatial_gate_p2" />);
+    await waitFor(() => expect(document.querySelector(".mdl-insp__title")?.textContent).toBe("p2"));
+    view.unmount();
+    show(<CombinerInspector id="starfull/spatial_gate_p2" />);
+    await waitFor(() => expect(document.querySelector(".mdl-insp__title")?.textContent).toBe("p2"));
+    expect(screen.queryByText(/starfull|starless/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Combiner" }));
+    await waitFor(() => expect(lastLocation).toBe("/models/combiner"));
+  });
+});
+
 describe("pixel back-trace", () => {
   const stamp = (hr: number, std: number, err: number) => ({
     field: 7, y: 20, x: 20, center: 20, sr_is_combiner: true, model_kind: "spatial_gate",
@@ -990,7 +1031,7 @@ describe("pixel back-trace", () => {
     Element.prototype.scrollIntoView = scrolled;
     onTestFinished(() => { Element.prototype.scrollIntoView = had; });
     const { PixelTrace } = await import("./PixelTrace");
-    show(<PixelTrace mode="starfull" pick={{ diag: "std_err", i: 32, j: 32 }} cellLabel="σ 1.2–1.61 e⁻" targetLabel="HR" onClose={() => {}} />);
+    show(<PixelTrace pick={{ diag: "std_err", i: 32, j: 32 }} cellLabel="σ 1.2–1.61 e⁻" onClose={() => {}} />);
     expect(await screen.findByText("knee 3.1 e⁻")).toBeTruthy();
     expect(screen.getByText("knee 11 e⁻")).toBeTruthy();
     await waitFor(() => expect(scrolled).toHaveBeenCalledWith(expect.objectContaining({ block: "nearest" })));

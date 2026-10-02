@@ -85,7 +85,7 @@ describe("running now", () => {
   it("raises the members that stopped short (TIMEOUT) even when nothing runs", () => {
     const members = { ...MEMBERS, members: MEMBERS.members!.map((m, i) => (i < 2 ? { ...m, timeout: true, status: "timeout" } : m)) };
     const line = runningLine({ local: [], slurm: [], members });
-    expect(line).toEqual({ items: [], timeouts: ["member_169", "member_170"], continueTo: "/models/starfull/train?mode=continue&members=member_169%2Cmember_170" });
+    expect(line).toEqual({ items: [], timeouts: ["member_169", "member_170"], continueTo: "/models/train?mode=continue&members=member_169%2Cmember_170" });
     expect(runningLine({ local: [], slurm: [], members: MEMBERS })).toBeNull();
   });
 });

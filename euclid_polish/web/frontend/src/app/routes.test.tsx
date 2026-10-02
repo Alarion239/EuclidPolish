@@ -55,7 +55,7 @@ describe("buildRoutes", () => {
   });
 
   it("renders the right tab", async () => {
-    go("/models/starless/combiner");
+    go("/models/combiner");
     await landed("models:combiner");
   });
 
@@ -74,7 +74,9 @@ describe("buildRoutes", () => {
   it("follows the query-aware rules exactly as Flask does, keeping the hash", async () => {
     for (const [from, to] of [
       ["/ensemble/starless/curves?layout=time&x=2", "/runs/history?x=2&step=ensemble_train"],
-      ["/ensemble/starfull/curves", "/models/starfull/members?view=curves"],
+      ["/ensemble/starfull/curves", "/models/members?view=curves"],
+      ["/models/starfull/combiner?inspect=member%3Amember_196", "/models/combiner?inspect=member%3Amember_196"],
+      ["/models/starless/train?mode=continue", "/models/train?mode=continue"],
       ["/sky/results?source=tile&inspect=tile%3Aposter%2Fp1", "/sky/targets?set=cached&inspect=tile%3Aposter%2Fp1"],
       ["/realism/pixels?view=census", "/synthetic/records?section=census"],
       ["/cutouts/Y_E", "/synthetic/psf?view=cutouts&band=Y_E"],
@@ -92,9 +94,21 @@ describe("buildRoutes", () => {
 
   it("registers a client route for every rule pattern and exact entry", () => {
     const paths = redirectRoutePaths();
-    for (const rule of MANIFEST.redirectRules ?? []) expect(paths, rule.from).toContain(rule.from);
+    // a rule is registered by its concrete sources (each `:name` value), so
+    // `/models/:mode` never outranks the `/models/*` workspace route
+    expect(paths).toContain("/ensemble/starless/curves");
+    expect(paths).toContain("/models/starfull/combiner");
+    expect(paths.some((p) => p.includes(":")), "a pattern route").toBe(false);
     for (const from of Object.keys(MANIFEST.redirects)) expect(paths, from).toContain(from);
     expect(new Set(paths).size).toBe(paths.length);
+  });
+
+  it("never lets a redirect route capture a page", async () => {
+    for (const tab of MANIFEST.workspaces.find((w) => w.id === "models")!.tabs) {
+      go(`/models/${tab}`);
+      await landed(`models:${tab}`);
+      cleanup();
+    }
   });
 
   it("redirects every manifest entry client-side", async () => {
@@ -147,7 +161,7 @@ describe("buildRoutes", () => {
   });
 
   it("shows Not found for unknown paths, tabs and params", async () => {
-    for (const path of ["/nope", "/sky/unknown", "/models/foo", "/models/foo/train", "/models/starfull/train/x",
+    for (const path of ["/nope", "/sky/unknown", "/models/foo", "/models/foo/train", "/models/starfull/train/x", "/models/starfree/train",
       "/ensemble/foo", "/ensemble/foo/knee", "/cutouts/K"]) {
       go(path);
       expect(await screen.findByText("No page here"), path).toBeTruthy();
@@ -164,10 +178,10 @@ describe("buildRoutes", () => {
       .map((t) => [t, { load: async () => ({ default: () => <p>{`models:${t}`}</p> }) }])));
     for (const [redirectTab, landing] of [["combiner", "combiner"], ["nope", "leaderboard"]] as const) {
       const components = { ...fakes, models: async () => ({ default: () => <Workspace id="models" tabs={tabs} redirectTab={redirectTab} /> }) };
-      const router = createMemoryRouter(buildRoutes({ components }), { initialEntries: ["/models/starless?x=1"], future: ROUTER_FUTURE });
+      const router = createMemoryRouter(buildRoutes({ components }), { initialEntries: ["/models?x=1"], future: ROUTER_FUTURE });
       render(<RouterProvider router={router} future={{ v7_startTransition: true }} />);
       await landed(`models:${landing}`);
-      expect(router.state.location.pathname + router.state.location.search).toBe(`/models/starless/${landing}?x=1`);
+      expect(router.state.location.pathname + router.state.location.search).toBe(`/models/${landing}?x=1`);
       cleanup();
     }
   });

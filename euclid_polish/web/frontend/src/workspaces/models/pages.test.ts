@@ -57,7 +57,7 @@ describe("combiner held-out curves", () => {
 });
 
 const row = (n: number, patch: Partial<MemberRow> = {}): MemberRow => ({
-  name: `member_${n}`, label: `${n}·psnr`, starless: false, regime: "starfull", origin: null, loss: "l2",
+  name: `member_${n}`, label: `${n}·psnr`, origin: null, loss: "l2",
   status: "complete", timeout: false, job: null, ...patch,
 } as MemberRow);
 

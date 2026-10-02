@@ -1,4 +1,4 @@
-/* Models › Train (`/models/:mode/train`): submit an ensemble_train SLURM job.
+/* Models › Train (`/models/train`): submit an ensemble_train SLURM job.
    From the top: the "Running batch" strip (the live SLURM ensemble_train
    jobs, the feed Runs › Live reads; nothing when none runs); the bar — Add /
    Continue / Fork, Repeat last batch, Clone a past job, Recipe reset; the
@@ -14,11 +14,10 @@
    Apply, per model = per array task); the live command preview (POST
    /ensemble/train/preview: the member names the submit allocates, the exact
    argv; a read-only exemption, nothing reaches FASRC); and the confirmed
-   submit, whose label repeats the count and the regime ("Submit 4 STARFULL
-   members to SLURM"). The regime is an explicit field defaulting to the
-   workspace's. URL: ?mode=, ?members= (continue), ?member= (fork),
-   ?from=<jobid> (clone). */
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+   submit, whose label repeats the count ("Submit 4 members to SLURM").
+   URL: ?mode=, ?members= (continue), ?member= (fork), ?from=<jobid>
+   (clone). */
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, apiPost } from "../../../api/client";
 import { useJobsFeed } from "../../../api/jobs";
@@ -33,7 +32,7 @@ import {
   Badge, Button, Callout, Caption, Card, CardBody, CardHead, Checkbox, CopyButton, FactsList, Field, IconButton, Input,
   NumberField, Page, Segmented, Select, Switch, Toolbar, ToolbarGroup, ToolbarSeparator, ToolbarSpacer, Tooltip, confirm, toast,
 } from "../../../ui";
-import { url, useMembers, useMode, useTrainingJobs, type MemberRow, type Mode, type TrainingJob } from "../api";
+import { url, useMembers, useTrainingJobs, type MemberRow, type TrainingJob } from "../api";
 import { CONFIG_FORWARD_KEYS, changedConfigKnobs, forwardModelFacts, kneeText, knobsChangedText, lrScheduleText, memberName, memberNumber, runningBatches, stepsText, submitLabel } from "../model";
 import {
   DEFAULT_MULTI_KNEES, KNEE_LOSSES, LOSSES, RECIPE_RESOURCES, buildParams, continueTarget, defaultForm, defaultResources,
@@ -148,8 +147,7 @@ export default function Train() {
 }
 
 function TrainPage() {
-  const mode = useMode();
-  const members = useMembers(mode);
+  const members = useMembers();
   const jobs = useTrainingJobs();
   const steps = useResource<{ ssh_connected: boolean; steps: StepInfo[] }>("/api/fasrc/steps/status", [], { ttl: 60_000 });
   const config = useResource<ConfigPayload>(url.config(), [], { ttl: 60_000 });
@@ -159,7 +157,7 @@ function TrainPage() {
   const [urlMember] = useUrlState("member", "");
   const [from, setFrom] = useUrlState("from", "");
   const [form, setForm] = useState<TrainForm>(() => {
-    const f = defaultForm(mode);
+    const f = defaultForm();
     f.mode = urlMode;
     if (urlMembers) f.members = urlMembers.split(",").map((n) => memberName(n)).filter((n): n is string => !!n);
     if (urlMember) f.forkFrom = memberName(urlMember) ?? "";
@@ -176,7 +174,6 @@ function TrainPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<{ jobid?: string; queued?: boolean } | null>(null);
   const cloned = useRef<string | null>(null);
-  const regimeId = useId();
 
   const step = steps.data?.steps.find((s) => s.step_id === "ensemble_train");
   // Resources start from the last finished batch of the same kind (else the
@@ -205,7 +202,7 @@ function TrainPage() {
   const setMode = (m: TrainMode) => { patch({ mode: m }); setUrlMode(m); };
   const setGeometry = (p: Partial<TrainForm["geometry"]>) => setForm((f) => ({ ...f, geometry: { ...f.geometry, ...p } }));
   const setRow = (i: number, p: Partial<SpecRow>) => setForm((f) => ({ ...f, rows: f.rows.map((r, j) => (j === i ? { ...r, ...p } : r)) }));
-  const reset = () => { setForm({ ...defaultForm(mode), mode: form.mode }); setFrom(""); ownRes({ ...RECIPE_RESOURCES }); setResFrom(null); setOverride(false); };
+  const reset = () => { setForm({ ...defaultForm(), mode: form.mode }); setFrom(""); ownRes({ ...RECIPE_RESOURCES }); setResFrom(null); setOverride(false); };
 
   const clone = (job: TrainingJob) => {
     const f = formFromJob(job);
@@ -218,7 +215,7 @@ function TrainPage() {
         memory: job.req_memory || r?.memory || RECIPE_RESOURCES.memory, time_limit: job.req_time_limit || r?.time_limit || RECIPE_RESOURCES.time_limit }));
       setResFrom(job.jobid);
     }
-    toast.info(`Cloned job ${job.jobid}`, { description: `${recipeSummary(job)}${f.mode !== "continue" ? ` · ${f.regime}` : ""}` });
+    toast.info(`Cloned job ${job.jobid}`, { description: recipeSummary(job) });
   };
   // ?from=<jobid> deep link → clone once the job list arrives
   useEffect(() => {
@@ -243,12 +240,12 @@ function TrainPage() {
 
   const offline = fasrc ? !fasrc.ssh_connected : true;
   const count = form.mode === "continue" ? form.members.length : form.rows.length;
-  const label = submitLabel(form.mode, count, form.regime);
+  const label = submitLabel(form.mode, count);
   async function submit() {
     if (errors.length || !res) return;
     const what = form.mode === "continue"
-      ? `Continue ${form.members.length} member(s), each in its recorded regime`
-      : `${form.rows.length} ${form.regime.toUpperCase()} ${form.mode === "fork" ? "fork" : "new"} member(s): ${preview?.member_names.join(", ") ?? "…"}`;
+      ? `Continue ${form.members.length} member(s)`
+      : `${form.rows.length} ${form.mode === "fork" ? "fork" : "new"} member(s): ${preview?.member_names.join(", ") ?? "…"}`;
     const ok = await confirm({ title: `${label}?`, message: `${what} · per model ${res.n_cpus} CPUs, ${res.memory}, ${res.time_limit} on ${step?.defaults.partition ?? "gpu"}. It queues locally when another job is active.`, confirmLabel: "Submit" });
     if (!ok) return;
     setSubmitting(true);
@@ -292,18 +289,6 @@ function TrainPage() {
       <Link to={CONFIG_PATH} title={`The ${what} values live in System › Config`}>{changed ? `${changed} · Edit` : "Edit in System › Config"}</Link>
     </Button>
   );
-  // Not a <Field>: its <label> would name the first radio "Regime starfull".
-  const regimeField = form.mode !== "continue" && (
-    <span className="ui-field" role="group" aria-labelledby={regimeId}>
-      <span className="ui-field__main">
-        <Tooltip content="The regime new members train in. A fork keeps its source member's regime in the trainer.">
-          <span className="ui-field__label" id={regimeId} tabIndex={0}>Regime</span>
-        </Tooltip>
-        <Segmented<Mode> size="sm" aria-label="Regime" className="mdl-seg-start" value={form.regime} onChange={(v) => patch({ regime: v })}
-          options={[{ value: "starfull", label: "starfull", title: "Reconstruct stars (default)" }, { value: "starless", label: "starless", title: "Erase stars (opt-in)" }]} />
-      </span>
-    </span>
-  );
   const recipeFacts = [
     { label: "Live forward model", value: g.forward_onthefly ? "on" : "off" },
     { label: "HR example side", value: g.hr_crop_size, unit: "px" },
@@ -330,7 +315,7 @@ function TrainPage() {
       </Toolbar>
       {form.mode === "continue" ? (
         <Card>
-          <CardHead title="Continue members" sub="each member becomes one task of a capped job array, in its recorded regime" />
+          <CardHead title="Continue members" sub="each member becomes one task of a capped job array" />
           <CardBody>
             <div className="mdl-form mdl-form--gap">
               <Field label="Continue by"><Select value={form.continueBasis} onChange={(v) => patch({ continueBasis: v as TrainForm["continueBasis"] })}
@@ -353,7 +338,6 @@ function TrainPage() {
             </div>} />
           <CardBody>
             <div className="mdl-form mdl-form--gap">
-              {regimeField}
               <NumberField label="Steps" value={form.steps} onChange={(v) => patch({ steps: v })} min={1000} step={1000} />
               {form.mode === "fork" && <>
                 <Field label="Fork from">
@@ -364,7 +348,6 @@ function TrainPage() {
                   options={[{ value: "psnr", label: "PSNR-best" }, { value: "loss", label: "loss-best" }]} /></Field>
               </>}
             </div>
-            {form.regime !== mode && <p className="mdl-note mdl-warn">This batch trains {form.regime} members; the workspace shows {mode}.</p>}
             <div className="mdl-spec">
               {form.rows.map((r, i) => (
                 <SpecRowEditor key={i} row={r} i={i} mode={form.mode} onChange={(p) => setRow(i, p)} canRemove={form.rows.length > 1}

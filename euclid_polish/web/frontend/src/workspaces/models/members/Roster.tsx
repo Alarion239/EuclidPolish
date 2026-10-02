@@ -1,4 +1,4 @@
-/* Models › Members, roster view: ONE table of the regime's active members
+/* Models › Members, roster view: ONE table of the active members
    (members.json: status + origin.json + training job + knee-integrated PSNR
    + production-gate share + coherence). Default columns: Member, Status,
    Steps, Recipe (loss · knee), ∫PSNR and the Gate share bar (the peak share
@@ -19,11 +19,11 @@ import { formatDate } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { useSelected, useSelection } from "../../../state/selection";
 import { Badge, Button, Caption, Chip, DataTable, Tooltip, confirm, toast, type DataColumn } from "../../../ui";
-import { BAND_SHORT, BANDS, type MemberRow, type MembersPayload, type Mode } from "../api";
+import { BAND_SHORT, BANDS, type MemberRow, type MembersPayload } from "../api";
 import { ShareBar, useFacetColors } from "../common";
 import { GATE_BANDS, db, gatePeak, gateShare, kneeText, memberNumber, share as sharePct, stepsText, usedByGate } from "../model";
 
-const tabPath = (mode: Mode, tab: string) => pagePath("models", { tab, params: { mode } });
+const tabPath = (tab: string) => pagePath("models", { tab });
 const num = (v: number | null | undefined, d = 2) => (v == null || !Number.isFinite(v) ? null : Number(v.toFixed(d)));
 
 function Progress({ m }: { m: MemberRow }) {
@@ -74,7 +74,7 @@ async function archiveAll(names: string[], onStep: (i: number) => void): Promise
   return failed;
 }
 
-export function Roster({ data, mode }: { data: MembersPayload; mode: Mode }) {
+export function Roster({ data }: { data: MembersPayload }) {
   const navigate = useNavigate();
   const rows = data.members;
   const [query, setQuery] = useUrlState("m.q", "");
@@ -163,7 +163,7 @@ export function Roster({ data, mode }: { data: MembersPayload; mode: Mode }) {
     else toast.success(`Archived ${names.length} member${names.length > 1 ? "s" : ""}`);
   }
 
-  const go = (tab: string, q: string) => navigate(`${tabPath(mode, tab)}?${q}`);
+  const go = (tab: string, q: string) => navigate(`${tabPath(tab)}?${q}`);
   const numbers = sel.map((n) => memberNumber(n)).join(",");
   const actions = {
     continue: () => go("train", `mode=continue&members=${sel.join(",")}`),
@@ -206,16 +206,16 @@ export function Roster({ data, mode }: { data: MembersPayload; mode: Mode }) {
           {data.gate.stale && <Badge tone="warn">gate share from a stale gate</Badge>}
         </p>
       )}
-      <DataTable rows={rows} columns={columns} rowKey={(m) => m.name} aria-label={`${mode} members`}
+      <DataTable rows={rows} columns={columns} rowKey={(m) => m.name} aria-label="Members"
         selectable selected={sel} onSelectedChange={(keys) => setSelected(keys)}
-        inspect={(m) => ({ kind: "member", id: m.name })} exportName={`ensemble-members-${mode}`}
+        inspect={(m) => ({ kind: "member", id: m.name })} exportName="ensemble-members"
         urlKey="m" height={560} toolbar={toolbar} filterPlaceholder="Filter: recipe:l2  status:timeout  knee_mean>59"
         defaultSort={[{ id: "knee_mean", desc: true }]}
-        empty={`No ${mode} members${data.other_regime_members ? ` (${data.other_regime_members} in the other regime)` : ""}: train some, then pull them.`} />
+        empty="No members: train some, then pull them." />
       {archiving && <span className="mdl-muted">Archiving {archiving}…</span>}
       <Caption>
         Sorted by ∫PSNR over {data.knee.n_fields ?? "the"} test fields; the ranking with the plain mean and the production gate
-        is the <Link to={tabPath(mode, "leaderboard")}>Leaderboard</Link>.
+        is the <Link to={tabPath("leaderboard")}>Leaderboard</Link>.
       </Caption>
     </div>
   );

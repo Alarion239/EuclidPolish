@@ -2,10 +2,11 @@
    chunks, so importing this module is cheap; the workspace imports it (and
    the shell may, so `member:member_196` opens from the palette anywhere).
    - `member:<name>` — one member (member_196, 196 or 196·psnr);
-   - `combiner:<regime>/<variant dir>` — one combiner variant. */
+   - `combiner:<variant dir>` — one combiner variant (combinerVariant; an
+     older `combiner:starfull/<variant dir>` link still resolves). */
 import { lazy } from "react";
 import { registerInspector } from "../../app/inspector";
-import { memberNumber } from "./model";
+import { combinerVariant, memberNumber } from "./model";
 
 const MemberInspector = lazy(() => import("./MemberInspector"));
 const CombinerInspector = lazy(() => import("./CombinerInspector"));
@@ -15,5 +16,5 @@ export const unregisterMemberInspector = registerInspector("member", MemberInspe
 });
 
 export const unregisterCombinerInspector = registerInspector("combiner", CombinerInspector, {
-  title: (id) => `Combiner ${id.split("/").slice(1).join("/").replace(/^spatial_gate_/, "") || id}`,
+  title: (id) => `Combiner ${combinerVariant(id).replace(/^spatial_gate_/, "") || id}`,
 });

@@ -1,19 +1,19 @@
 /* The Train tab's form model (pure; tested in model.test.ts): per-member rows →
    the positional `member_spec` JSON the ensemble_train step consumes, the
-   run's scheduling and trainer forward-model knobs, the regime, the FASRC
-   form body, presets and "clone a past job". The forward-model values System
-   › Config owns (PSF warp, saturation mask; job_config FASRC_STEP_PARAMS) are
-   never sent: the step fills them from Config, so Config is their one
-   source. */
-import type { Mode, TrainingJob } from "./api";
+   run's scheduling and trainer forward-model knobs, the FASRC form body,
+   presets and "clone a past job". New members always train starfull (the
+   trainer's default), so no star-regime flag is ever sent. The forward-model
+   values System › Config owns (PSF warp, saturation mask; job_config
+   FASRC_STEP_PARAMS) are never sent: the step fills them from Config, so
+   Config is their one source. */
+import type { TrainingJob } from "./api";
 
 export type TrainMode = "add" | "continue" | "fork";
 export const LOSSES = ["l1", "l2", "l3", "mse"] as const;
 export const KNEE_LOSSES = ["plain", "balanced"] as const;
 export const DEFAULT_MULTI_KNEES = "0.1,1,10,100,1000,10000";
 
-/** One NEW member's knobs. Blank fields fall back to the run-wide defaults.
- *  The star regime is NOT a row knob: it is the workspace's (buildParams). */
+/** One NEW member's knobs. Blank fields fall back to the run-wide defaults. */
 export type SpecRow = {
   loss: string;
   blocks: string;
@@ -37,8 +37,6 @@ export type Geometry = {
 
 export type TrainForm = {
   mode: TrainMode;
-  /** The regime new members (add, fork) train in; continue keeps each member's. */
-  regime: Mode;
   rows: SpecRow[];
   steps: string;
   forkFrom: string;
@@ -68,8 +66,8 @@ export const RECIPE_GEOMETRY: Geometry = {
   psf_subset: "64", target_psf_fwhm_arcsec: "0.066",
 };
 
-export const defaultForm = (regime: Mode = "starfull"): TrainForm => ({
-  mode: "add", regime, rows: [newRow()], steps: "70000", forkFrom: "", forkTrack: "psnr",
+export const defaultForm = (): TrainForm => ({
+  mode: "add", rows: [newRow()], steps: "70000", forkFrom: "", forkTrack: "psnr",
   members: [], continueBasis: "extra", extraSteps: "20000", targetSteps: "70000",
   baseSeed: "", evaluateEvery: "", arrayMaxParallel: "4",
   geometry: { ...RECIPE_GEOMETRY },
@@ -170,12 +168,8 @@ const GEOMETRY_KEYS: StringGeometryKey[] = [
 const TRUTHY = ["1", "true", "yes", "on"];
 
 /** The form → the POST body of `/ensemble/train/preview` and
- *  `/api/fasrc/steps/ensemble_train/submit` (task params only). `regime` is
- *  the form's own field (default: the workspace's): add/fork send the
- *  run-wide `starless` flag for a starless batch (a fork's source regime still
- *  wins in the trainer); continue sends none, each member keeps its recorded
- *  regime. */
-export function buildParams(f: TrainForm, regime: Mode = f.regime ?? "starfull"): Record<string, string> {
+ *  `/api/fasrc/steps/ensemble_train/submit` (task params only). */
+export function buildParams(f: TrainForm): Record<string, string> {
   const g: Record<string, string> = { forward_onthefly: f.geometry.forward_onthefly ? "1" : "0" };
   for (const k of GEOMETRY_KEYS) {
     const v = String(f.geometry[k] ?? "").trim();
@@ -196,18 +190,7 @@ export function buildParams(f: TrainForm, regime: Mode = f.regime ?? "starfull")
     member_spec: JSON.stringify(buildSpec(f.rows, f.mode)), ...common,
   };
   if (f.mode === "fork") { out.fork_from = f.forkFrom.trim(); out.fork_track = f.forkTrack; }
-  if (regime === "starless") out.starless = "1";
   return out;
-}
-
-/** The regime a past job trained in (run-wide flag or any per-member one). */
-export function jobRegime(job: TrainingJob): Mode {
-  const p = job.params ?? {};
-  if (TRUTHY.includes(String(p.starless ?? "").toLowerCase())) return "starless";
-  let spec: unknown;
-  try { spec = typeof p.member_spec === "string" ? JSON.parse(p.member_spec) : p.member_spec; } catch { spec = null; }
-  return Array.isArray(spec) && spec.some((o) => !!o && typeof o === "object" && (o as Record<string, unknown>).starless === true)
-    ? "starless" : "starfull";
 }
 
 /** Everything the submit would refuse, as short messages (empty = valid). */
@@ -244,7 +227,8 @@ export function validate(f: TrainForm): string[] {
 const str = (v: unknown, fallback = "") => (v == null || v === "" ? fallback : String(v));
 
 /** A past ensemble_train job → a form (clone / "repeat last batch"). Seeds
- *  and member names are never cloned (they are allocated at submit). */
+ *  and member names are never cloned (they are allocated at submit), nor a
+ *  legacy batch's starless flag: the clone trains starfull. */
 export function formFromJob(job: TrainingJob): TrainForm {
   const p = job.params ?? {};
   const base = defaultForm();
@@ -259,7 +243,6 @@ export function formFromJob(job: TrainingJob): TrainForm {
   return {
     ...base,
     mode,
-    regime: jobRegime(job),
     rows: mode === "continue" ? base.rows : (rows.length ? rows : Array.from({ length: count }, () => newRow())),
     steps: str(p.steps, base.steps),
     forkFrom: str(p.fork_from),

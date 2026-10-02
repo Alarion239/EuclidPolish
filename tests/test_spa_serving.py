@@ -37,7 +37,7 @@ def test_every_manifest_page_serves_the_shell(client, path):
     _assert_shell(client.get(path))
 
 
-@pytest.mark.parametrize("path", ["/sky/atlas", "/", "/models/starless/train",
+@pytest.mark.parametrize("path", ["/sky/atlas", "/", "/models/train",
                                   "/system/storage", "/files"])
 def test_new_workspace_urls_serve_the_shell(client, path):
     _assert_shell(client.get(path))

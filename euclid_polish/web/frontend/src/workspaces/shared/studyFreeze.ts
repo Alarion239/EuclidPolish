@@ -3,9 +3,11 @@
  * read-only; `POST /api/studies` is the only write (the dialog's "Freeze").
  * API.md "Model studies". */
 import { ApiError, isFasrcOffline } from "../../api/client";
+import { pagePath } from "../../app/nav";
 import { formatBytes } from "../../format";
 
-export type StudyMode = "starfull" | "starless";
+/** A study freezes the starfull ensemble (no other regime is trained). */
+export const STUDY_MODE = "starfull";
 export type BlockState = "current" | "stale" | "missing";
 
 export type CandidateBlock = {
@@ -57,7 +59,7 @@ export type FreezeReply = { ok: boolean; job_id?: string; study_id?: string | nu
 export const MAX_FIELDS = 10;
 export const FREEZE_JOB_KEY = "study:freeze";
 
-export const candidatesUrl = (mode: StudyMode) => `/api/studies/candidates?mode=${mode}`;
+export const candidatesUrl = () => `/api/studies/candidates?mode=${STUDY_MODE}`;
 export const studyPath = (id: string) => `/figures/studies?study=${encodeURIComponent(id)}`;
 
 export const KIND_ORDER: readonly FieldKind[] = ["test", "blackout", "real"];
@@ -111,14 +113,14 @@ export function togglePick(picked: readonly string[], fid: string, max: number):
 }
 
 /** Where each numbers block is fixed, when it is not current. */
-export function blockFix(block: CandidateBlock, mode: StudyMode): { label: string; to: string } | null {
+export function blockFix(block: CandidateBlock): { label: string; to: string } | null {
   if (block.state === "current") return null;
-  const models = (tab: string) => `/models/${mode}/${tab}`;
+  const models = (tab: string) => pagePath("models", { tab });
   switch (block.id) {
     case "test_cubes": return { label: "Re-evaluate", to: models("leaderboard") };
     case "gate": case "gate_diagnostic": case "compare": return { label: "Combiner", to: models("combiner") };
     case "training_curves": return { label: "Members", to: models("members") };
-    case "real": return mode === "starfull" ? { label: "Sky › Compare", to: "/sky/compare" } : null;
+    case "real": return { label: "Sky › Compare", to: "/sky/compare" };
     default: return null;
   }
 }

@@ -14,7 +14,7 @@ const check = (id: string, ok: boolean, action: string | null = null, tone: Chec
   ({ id, ok, tone: ok ? "good" : tone, title: id, detail: `${id} detail`, action });
 
 const row = (n: number, patch: Partial<MemberRow> = {}): MemberRow => ({
-  name: `member_${n}`, label: `${n}·psnr`, starless: false, regime: "starfull", origin: null, loss: "l2",
+  name: `member_${n}`, label: `${n}·psnr`, origin: null, loss: "l2",
   status: "complete", timeout: false, job: null, psnr: 61, ...patch,
 } as MemberRow);
 
@@ -52,7 +52,7 @@ describe("leaderboard real benchmark", () => {
   ] };
 
   it("scores gate, mean and best member from the newest Compare run of this production, fresh specs only", () => {
-    const b = leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p1", mean: "m1", "member:member_196": "old" } }, CATALOG, "starfull");
+    const b = leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p1", mean: "m1", "member:member_196": "old" } }, CATALOG);
     expect(b.state).toBe("current");
     if (b.state !== "current") return;
     expect(b.expId).toBe("e-new");
@@ -64,16 +64,15 @@ describe("leaderboard real benchmark", () => {
   });
 
   it("says there is no real benchmark for this membership when production changed since", () => {
-    const b = leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p0" } }, CATALOG, "starfull");
+    const b = leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p0" } }, CATALOG);
     expect(b).toMatchObject({ state: "none", last: { expId: "e-new" } });
     expect(b.state === "none" && b.reason).toBe("no real benchmark for this membership: the last Sky › Compare run of production scored an earlier one");
   });
 
-  it("waits for the run's fingerprints, and has nothing without a run or for starless", () => {
-    expect(leaderboardBenchmark(EXPS, null, CATALOG, "starfull").state).toBe("loading");
-    expect(leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p1" } }, null, "starfull").state).toBe("loading");
-    expect(leaderboardBenchmark([], null, CATALOG, "starfull")).toMatchObject({ state: "none", reason: "no real benchmark yet: no Sky › Compare run has scored production" });
-    expect(leaderboardBenchmark(EXPS, null, CATALOG, "starless")).toMatchObject({ state: "none", reason: "no real benchmark for starless: Sky › Compare scores starfull models" });
+  it("waits for the run's fingerprints, and has nothing without a run", () => {
+    expect(leaderboardBenchmark(EXPS, null, CATALOG).state).toBe("loading");
+    expect(leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p1" } }, null).state).toBe("loading");
+    expect(leaderboardBenchmark([], null, CATALOG)).toMatchObject({ state: "none", reason: "no real benchmark yet: no Sky › Compare run has scored production" });
   });
 
   it("links a Compare run by its id", () => {
@@ -85,30 +84,32 @@ describe("leaderboard real benchmark", () => {
 describe("members waiting on FASRC", () => {
   const job = (jobid: string, mode: string, state: string, names: string[], patch: Partial<TrainingJob> = {}): TrainingJob =>
     ({ jobid, mode, state, member_names: names, params: { mode }, ...patch });
-  it("lists finished members not yet pulled (nor archived), in this regime only", () => {
+  it("lists finished members not yet pulled (nor archived), never a legacy starless batch's", () => {
     const w = waitingOnFasrc([
       job("3", "add", "RUNNING", ["member_203"]),
       job("2", "add", "COMPLETED", ["member_199", "member_200", "member_201"]),
       job("1", "add", "TIMEOUT", ["member_198"]),
       job("0", "add", "COMPLETED", ["member_150"], { params: { mode: "add", starless: "1" } }),
-    ], [row(199), row(198)], ["member_201"], "starfull");
+    ], [row(199), row(198)], ["member_201"]);
     expect(w.members).toEqual(["member_200"]);
   });
-  it("skips members that are local in the other regime and batches that ended long ago", () => {
+  it("skips per-member starless batches and batches that ended long ago", () => {
     const now = Date.parse("2026-09-27T20:00:00Z");
     const w = waitingOnFasrc([
       job("5", "add", "COMPLETED", ["member_199"], { ended_at: "2026-09-26T10:00:00Z" }),
-      // an old job without the regime flag whose members live in starless here
-      job("6", "add", "TIMEOUT", ["member_128", "member_129"], { ended_at: "2026-09-20T10:00:00Z" }),
+      // a legacy batch whose spec flagged its members starless
+      job("6", "add", "TIMEOUT", ["member_128"], { ended_at: "2026-09-20T10:00:00Z",
+        params: { mode: "add", member_spec: JSON.stringify([{ loss: "l2", starless: true }]) } }),
+      job("8", "add", "COMPLETED", ["member_129"], { ended_at: "2026-09-20T10:00:00Z" }),
       // finished in July and never pulled: not "new"
       job("7", "add", "COMPLETED", ["member_137"], { ended_at: "2026-07-10T10:00:00Z" }),
-    ], [], ["member_129"], "starfull", { elsewhere: ["member_128"], now });
+    ], [], ["member_129"], { now });
     expect(w.members).toEqual(["member_199"]);
   });
 
   it("lists continued members whose finished job went past the local step", () => {
     const w = waitingOnFasrc([job("4", "continue", "COMPLETED", ["member_178", "member_179"], { target_steps: 70000 })],
-      [row(178, { step: 52000 }), row(179, { step: 70000 })], [], "starfull");
+      [row(178, { step: 52000 }), row(179, { step: 70000 })], []);
     expect(w.continued).toEqual(["member_178"]);
     expect(w.members).toEqual([]);
   });
@@ -183,12 +184,12 @@ describe("diagnostics shaping", () => {
 });
 
 describe("train", () => {
-  it("names the regime and the count in the submit button", () => {
-    expect(submitLabel("add", 4, "starfull")).toBe("Submit 4 STARFULL members to SLURM");
-    expect(submitLabel("add", 1, "starless")).toBe("Submit 1 STARLESS member to SLURM");
-    expect(submitLabel("fork", 2, "starfull")).toBe("Submit 2 STARFULL forks to SLURM");
-    expect(submitLabel("continue", 3, "starfull")).toBe("Continue 3 members on SLURM");
-    expect(submitLabel("continue", 0, "starfull")).toBe("Continue members on SLURM");
+  it("names the count in the submit button", () => {
+    expect(submitLabel("add", 4)).toBe("Submit 4 members to SLURM");
+    expect(submitLabel("add", 1)).toBe("Submit 1 member to SLURM");
+    expect(submitLabel("fork", 2)).toBe("Submit 2 forks to SLURM");
+    expect(submitLabel("continue", 3)).toBe("Continue 3 members on SLURM");
+    expect(submitLabel("continue", 0)).toBe("Continue members on SLURM");
   });
 
   it("reads the running training batches from the live SLURM rows, with their members", () => {

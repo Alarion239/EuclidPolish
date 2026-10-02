@@ -15,8 +15,8 @@
  * `/models/foo` → Not found), redirects a bare workspace path to its default
  * tab (or `redirectTab`; query and hash kept), renders the router-linked tab
  * strip (<WorkspaceTabs>) and the active tab inside a per-tab error boundary
- * and a Suspense skeleton, under a visually hidden h1 ("Members, Models
- * (starless)"; dropped by CSS when the page has its own h1, e.g. a PageHead).
+ * and a Suspense skeleton, under a visually hidden h1 ("Members, Models";
+ * dropped by CSS when the page has its own h1, e.g. a PageHead).
  * The strip stays one line and never cuts a label: a fixed run of leading
  * tabs is shown whole, the active tab is always visible (in one reserved
  * slot when it is past the run, so tabs never trade places), the rest sit in
@@ -215,7 +215,7 @@ export function Workspace(
   { id, tabs, aside, redirectTab, children }: {
     id: string;
     tabs?: WorkspaceTabDefs;
-    /** Controls right of the tab strip (e.g. the ensemble regime switch). */
+    /** Controls right of the tab strip (e.g. the Synthetic header). */
     aside?: ReactNode;
     /** Where a bare workspace path goes instead of the manifest default tab
      *  (ignored unless it is one of the workspace's tabs). */

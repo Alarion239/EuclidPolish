@@ -1,4 +1,4 @@
-/* Models › Leaderboard (`/models/:mode/leaderboard`; absorbs the old
+/* Models › Leaderboard (`/models/leaderboard`; absorbs the old
    Ensemble Overview and Knee PSNR tabs). From the top:
    - one status line: "All current", or each failing staleness check once with
      its confirmed fix (Evaluate N fields, Member PSNR, Knee PSNR, Combiner);
@@ -30,8 +30,8 @@ import {
   SummaryLine, Table, Toolbar, ToolbarGroup, ToolbarSpacer, Tooltip, type Column, type DataColumn,
 } from "../../../ui";
 import {
-  BAND_SHORT, BANDS, useExperiment, useExperiments, useKnee, useMembers, useModelCatalog, useMode, useOverview,
-  type KneeModel, type MemberRow, type Mode, type Overview,
+  BAND_SHORT, BANDS, useExperiment, useExperiments, useKnee, useMembers, useModelCatalog, useOverview,
+  type KneeModel, type MemberRow, type Overview,
 } from "../api";
 import { kneeColor, kneeOrderOf, LoadState } from "../common";
 import { JOB, computeKnee, evaluate, refreshMemberPsnr, useOnJobEnd } from "../jobs";
@@ -44,7 +44,7 @@ import { FreezeStudyDialog } from "../../shared/FreezeStudyDialog";
 import { LogToNotebookButton } from "../../shared/LogToNotebook";
 import "../models.css";
 
-const tabPath = (mode: Mode, tab: string) => pagePath("models", { tab, params: { mode } });
+const tabPath = (tab: string) => pagePath("models", { tab });
 
 /* ── prose helpers ─────────────────────────────────────────────────────── */
 
@@ -67,8 +67,8 @@ function gain(v: number | null, what: string): ReactNode {
 
 /** One quiet line when every check passes; else each failing check once,
  *  with its confirmed fix. */
-function StatusLine({ checks, o, mode, nFields, onEvaluate }: {
-  checks: StatusCheck[]; o: Overview; mode: Mode; nFields: number; onEvaluate: () => void;
+function StatusLine({ checks, o, nFields, onEvaluate }: {
+  checks: StatusCheck[]; o: Overview; nFields: number; onEvaluate: () => void;
 }) {
   if (!checks.length) {
     return <p className="mdl-status" data-tone="good"><span className="mdl-dot" aria-hidden />All current</p>;
@@ -82,9 +82,9 @@ function StatusLine({ checks, o, mode, nFields, onEvaluate }: {
         </Tooltip>
       );
     }
-    if (c.fix === "knee") return <Button size="sm" onClick={() => void computeKnee(mode)}>Knee PSNR</Button>;
+    if (c.fix === "knee") return <Button size="sm" onClick={() => void computeKnee()}>Knee PSNR</Button>;
     if (c.fix === "member-psnr") return <Button size="sm" onClick={() => void refreshMemberPsnr()}>Member PSNR</Button>;
-    if (c.fix === "combiners") return <Button size="sm" asChild><Link to={tabPath(mode, "combiner")}>Combiner</Link></Button>;
+    if (c.fix === "combiners") return <Button size="sm" asChild><Link to={tabPath("combiner")}>Combiner</Link></Button>;
     return <span />;
   };
   return (
@@ -107,8 +107,8 @@ const MAX_FIELDS = 2000;
 /** Evaluate the ensemble: how many test fields (default: the last run's
  *  count, so the scores stay comparable) and whether to re-run every member
  *  even when an identical evaluation is cached. The dialog is the confirm. */
-function EvaluateDialog({ open, onOpenChange, mode, defaultN, lastN, defaultForce, onStart }: {
-  open: boolean; onOpenChange: (v: boolean) => void; mode: Mode; defaultN: number; lastN: number | null; defaultForce: boolean;
+function EvaluateDialog({ open, onOpenChange, defaultN, lastN, defaultForce, onStart }: {
+  open: boolean; onOpenChange: (v: boolean) => void; defaultN: number; lastN: number | null; defaultForce: boolean;
   onStart: (n: number, force: boolean) => void;
 }) {
   const [n, setN] = useState(String(defaultN));
@@ -116,7 +116,7 @@ function EvaluateDialog({ open, onOpenChange, mode, defaultN, lastN, defaultForc
   const count = Number(n);
   const bad = !Number.isInteger(count) || count < 1 || count > MAX_FIELDS ? `a whole number from 1 to ${MAX_FIELDS}` : null;
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title={`Evaluate the ${mode} ensemble`}
+    <Dialog open={open} onOpenChange={onOpenChange} title="Evaluate the ensemble"
       description="Runs every active member, the plain mean and the combiners on the local test records (a local TensorFlow job, several minutes)."
       footer={<>
         <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -250,13 +250,12 @@ type BoardRow = LeaderRow & { testVis: number | null; test4b: number | null };
 /* ── the tab ───────────────────────────────────────────────────────────── */
 
 export default function Leaderboard() {
-  const mode = useMode();
-  const ov = useOverview(mode);
-  const members = useMembers(mode);
-  const kneeRes = useKnee(mode);
+  const ov = useOverview();
+  const members = useMembers();
+  const kneeRes = useKnee();
   const exps = useExperiments();
-  const catalog = useModelCatalog(mode === "starfull");
-  const run = mode === "starfull" ? productionRun(exps.data?.experiments) : null;
+  const catalog = useModelCatalog();
+  const run = productionRun(exps.data?.experiments);
   const detail = useExperiment(run?.id);
   const evalJob = useJob(JOB.evaluate);
   const kneeJob = useJob(JOB.knee);
@@ -289,23 +288,23 @@ export default function Leaderboard() {
   const checks = useMemo(() => (o ? statusChecks(o.checks, memberRows) : []), [o, memberRows]);
   const kneeOffered = checks.some((c) => c.fix === "knee" || c.action === "knee");
   const cmp = useMemo(() => overviewComparison(kneeData, o?.headline.knee), [kneeData, o]);
-  const bench = leaderboardBenchmark(exps.data?.experiments, detail.data, catalog.data, mode);
+  const bench = leaderboardBenchmark(exps.data?.experiments, detail.data, catalog.data);
   const timeouts = (memberRows ?? []).filter((m) => m.timeout);
 
   const run_ = {
     evaluate: () => setEvalAsk({ force: false }),
     force: () => setEvalAsk({ force: true }),
-    knee: () => void computeKnee(mode),
+    knee: () => void computeKnee(),
     psnr: () => void refreshMemberPsnr(),
   };
   usePageActions([
-    { id: "mdl-evaluate", label: `Evaluate the ${mode} ensemble`, group: "Models", keywords: ["test", "psnr"], shortcut: "Shift+E", run: run_.evaluate },
-    { id: "mdl-evaluate-force", label: `Evaluate the ${mode} ensemble (force re-inference)`, group: "Models", run: run_.force },
+    { id: "mdl-evaluate", label: "Evaluate the ensemble", group: "Models", keywords: ["test", "psnr"], shortcut: "Shift+E", run: run_.evaluate },
+    { id: "mdl-evaluate-force", label: "Evaluate the ensemble (force re-inference)", group: "Models", run: run_.force },
     { id: "mdl-knee", label: "Compute PSNR vs knee", group: "Models", keywords: ["integrated"], run: run_.knee },
     { id: "mdl-member-psnr", label: "Refresh member PSNR", group: "Models", run: run_.psnr },
     { id: "knee-full", label: "Leaderboard: integrate over the full knee range", group: "Models", disabled: isFull, run: () => setRangeRaw("") },
     { id: "knee-relative", label: "Leaderboard: curves relative to the plain mean", group: "Models", run: () => setView("relative") },
-    { id: "study-freeze", label: `Freeze a study of the ${mode} ensemble…`, group: "Models", keywords: ["study", "paper", "figures", "snapshot"], run: () => setFreezeOpen(true) },
+    { id: "study-freeze", label: "Freeze a study of the ensemble…", group: "Models", keywords: ["study", "paper", "figures", "snapshot"], run: () => setFreezeOpen(true) },
   ]);
 
   /* curves */
@@ -397,8 +396,8 @@ export default function Leaderboard() {
     o.evaluated_at ? `evaluated ${nb(formatRelative(o.evaluated_at))}` : "not evaluated yet",
   ].filter(Boolean).join(" · ") : "";
 
-  const note = () => [o ? evaluationNote(o, mode) : "",
-    board.length ? kneeNote(board, { mode, range, full, band, bands, nFields: kneeData?.n_fields }) : ""].filter(Boolean).join("\n\n");
+  const note = () => [o ? evaluationNote(o) : "",
+    board.length ? kneeNote(board, { range, full, band, bands, nFields: kneeData?.n_fields }) : ""].filter(Boolean).join("\n\n");
   const runMenu = (
     <Menu label="Run" trigger={<Button size="sm" iconRight="chevronDown" loading={evalJob.busy || kneeJob.busy || psnrJob.busy}>Run</Button>} items={[
       { label: "Evaluate test fields…", onSelect: run_.evaluate, disabled: o ? !o.test_present : true },
@@ -421,7 +420,7 @@ export default function Leaderboard() {
       <LoadState loading={ov.loading} error={ov.error} onRetry={ov.reload}>
         {o && (
           <div className="mdl-stack">
-            <StatusLine checks={checks} o={o} mode={mode} nFields={nFields} onEvaluate={run_.evaluate} />
+            <StatusLine checks={checks} o={o} nFields={nFields} onEvaluate={run_.evaluate} />
             {members.error && !members.data && <p className="mdl-note">Could not read the members: {members.error.message}</p>}
             {jobs}
             <section className="mdl-result" aria-label="Production model">
@@ -433,7 +432,7 @@ export default function Leaderboard() {
             {timeouts.length > 0 && (
               <Callout tone="warn" dense action={(
                 <Button size="sm" asChild>
-                  <Link to={`${tabPath(mode, "train")}?mode=continue&members=${timeouts.map((m) => m.name).join(",")}`}>Continue</Link>
+                  <Link to={`${tabPath("train")}?mode=continue&members=${timeouts.map((m) => m.name).join(",")}`}>Continue</Link>
                 </Button>
               )}>
                 {`${timeouts.length} member${timeouts.length === 1 ? "" : "s"} stopped short of the target steps: ${timeouts.map((m) => memberNumber(m.name)).join(", ")}`}
@@ -489,22 +488,22 @@ export default function Leaderboard() {
                   xLabel="scoring knee [e⁻]" yLabel={view === "relative" ? "PSNR − mean [dB]" : "PSNR [dB]"}
                   series={p.series} bands={p.bands} aspect={panels.length > 1 ? 0.62 : 0.45} syncKey="mdl-knee"
                   xFormat={(v) => `${kneeNum(v)} e⁻`} yFormat={(v) => v.toFixed(2)}
-                  exportName={`knee-psnr-${mode}-${p.name}`} aria-label={`PSNR vs knee, ${p.name}`} />
+                  exportName={`knee-psnr-${p.name}`} aria-label={`PSNR vs knee, ${p.name}`} />
               </div>
             ))}
           </div>
           <DataTable rows={board} columns={columns} rowKey={(r) => r.id} aria-label="Knee-integrated PSNR leaderboard"
-            urlKey="k" defaultSort={[{ id: "rank", desc: false }]} exportName={`knee-leaderboard-${mode}`} height={480}
+            urlKey="k" defaultSort={[{ id: "rank", desc: false }]} exportName="knee-leaderboard" height={480}
             caption={`${cmp.rows.length && nKneeFields ? "" : `${kneeData?.n_fields ?? "?"} test fields · `}∫ uniform in log knee over ${kneeNum(range[0])}–${kneeNum(range[1])} e⁻`}
             inspect={(r) => (r.kind === "member" ? { kind: "member", id: `member_${memberNumber(r.label)}` }
-              : r.kind === "combiner" ? { kind: "combiner", id: `${mode}/spatial_gate_combiner` } : null)} />
+              : r.kind === "combiner" ? { kind: "combiner", id: "spatial_gate_combiner" } : null)} />
         </LoadState>
       </section>
-      {freezeOpen && <FreezeStudyDialog mode={mode} onClose={() => setFreezeOpen(false)} />}
+      {freezeOpen && <FreezeStudyDialog onClose={() => setFreezeOpen(false)} />}
       {evalAsk && (
-        <EvaluateDialog open onOpenChange={(v) => { if (!v) setEvalAsk(null); }} mode={mode}
+        <EvaluateDialog open onOpenChange={(v) => { if (!v) setEvalAsk(null); }}
           defaultN={askN} lastN={o?.headline.n_scored ?? null} defaultForce={evalAsk.force}
-          onStart={(n, force) => void evaluate(mode, n, force, { asked: true })} />
+          onStart={(n, force) => void evaluate(n, force, { asked: true })} />
       )}
     </Page>
   );

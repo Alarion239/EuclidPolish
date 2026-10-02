@@ -446,13 +446,13 @@ def check_combiner() -> dict[str, Any]:
                        if spec.spec == model_catalog.SPEC_PRODUCTION), None)
     if production is None:
         return {"state": "unknown", "title": "No production model in the catalogue",
-                "detail": None, "to": "/models/starfull/combiner"}
+                "detail": None, "to": "/models/combiner"}
     if production.available:
         n = len(production.member_labels)
         return {"state": "ok", "title": f"Production gate fitted for the current {n} members",
-                "detail": None, "to": "/models/starfull/combiner", "facts": {"members": n}}
+                "detail": None, "to": "/models/combiner", "facts": {"members": n}}
     return {"state": "warn", "title": "The production gate does not match the members",
-            "detail": production.reason, "to": "/models/starfull/combiner"}
+            "detail": production.reason, "to": "/models/combiner"}
 
 
 _EVALUATE_ACTION = {
@@ -492,7 +492,7 @@ def check_evaluation() -> dict[str, Any]:
     if not isinstance(summary, dict):
         return {"state": "warn", "title": "The STARFULL ensemble is not evaluated yet",
                 "detail": "Evaluate it on the local test records to get the production numbers.",
-                "to": "/models/starfull/leaderboard", "action": _EVALUATE_ACTION}
+                "to": "/models/leaderboard", "action": _EVALUATE_ACTION}
     recorded = [str(x) for x in (summary.get("member_labels")
                                  or summary.get("per_member_labels") or [])]
     active = model_catalog.active_member_labels()
@@ -507,7 +507,7 @@ def check_evaluation() -> dict[str, Any]:
         return {"state": "warn", "title": "The evaluation predates the current members",
                 "detail": (f"Evaluated {len(recorded)} members; {len(active)} are active now"
                            f"{f' ({change})' if change else ''}."),
-                "to": "/models/starfull/leaderboard", "action": _EVALUATE_ACTION, "facts": facts}
+                "to": "/models/leaderboard", "action": _EVALUATE_ACTION, "facts": facts}
     identity = summary.get("eval_identity") or {}
     subset = str(identity.get("subset") or "test")
     match = (_records_match(identity["records_fp"], records_dir(), subset)
@@ -516,11 +516,11 @@ def check_evaluation() -> dict[str, Any]:
         return {"state": "warn", "title": "The evaluation predates the current test records",
                 "detail": (f"The {subset} records changed since the evaluation "
                            f"({evaluated_at[:10]}); its numbers describe the old fields."),
-                "to": "/models/starfull/leaderboard", "action": _EVALUATE_ACTION, "facts": facts}
+                "to": "/models/leaderboard", "action": _EVALUATE_ACTION, "facts": facts}
     return {"state": "ok",
             "title": f"Evaluation current ({len(active)} members, {subset} records)",
             "detail": None if match else "The test records could not be compared.",
-            "to": "/models/starfull/leaderboard", "facts": facts}
+            "to": "/models/leaderboard", "facts": facts}
 
 
 def starless_member_labels() -> list[str]:
@@ -560,13 +560,13 @@ def check_knee() -> dict[str, Any]:
               "confirm": "Recompute the PSNR-vs-knee curves from the cached test cubes?"}
     if not status.get("available"):
         return {"state": "warn", "title": "PSNR-vs-knee curves not computed",
-                "detail": status.get("reason"), "to": "/models/starfull/leaderboard", "action": action}
+                "detail": status.get("reason"), "to": "/models/leaderboard", "action": action}
     if status.get("stale"):
         return {"state": "warn", "title": "PSNR-vs-knee curves are stale",
                 "detail": "The cubes, members or combiners changed since they were computed.",
-                "to": "/models/starfull/leaderboard", "action": action}
+                "to": "/models/leaderboard", "action": action}
     return {"state": "ok", "title": "PSNR-vs-knee curves current", "detail": None,
-            "to": "/models/starfull/leaderboard"}
+            "to": "/models/leaderboard"}
 
 
 def _find_noise_model(value: Any) -> str | None:

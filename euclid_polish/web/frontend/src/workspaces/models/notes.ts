@@ -5,7 +5,7 @@
    Each states the facts on the page with their definitions; the user edits
    before appending. */
 import { utcText } from "../shared/noteText";
-import { BAND_SHORT, type CompareReport, type Mode, type Overview, type Variant } from "./api";
+import { BAND_SHORT, type CompareReport, type Overview, type Variant } from "./api";
 import {
   db, dbDelta, kneeModelName, kneeNum, kneeText, memberNumber, readsText, variantLabel, type Bench, type Benchmark, type LeaderRow,
 } from "./model";
@@ -23,12 +23,12 @@ const row = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
 
 /* ── Overview: the Evaluate summary ────────────────────────────────────── */
 
-export function evaluationNote(o: Overview, mode: Mode): string {
+export function evaluationNote(o: Overview): string {
   const h = o.headline;
   const k = h.knee;
   const head = o.evaluated_at
-    ? `**Ensemble evaluation · ${mode}** — ${utcText(o.evaluated_at)} · ${o.n_members} members · ${h.n_scored ?? "?"} test fields`
-    : `**Ensemble evaluation · ${mode}** — not evaluated yet · ${o.n_members} members`;
+    ? `**Ensemble evaluation** — ${utcText(o.evaluated_at)} · ${o.n_members} members · ${h.n_scored ?? "?"} test fields`
+    : `**Ensemble evaluation** — not evaluated yet · ${o.n_members} members`;
   const lines = [head, ""];
   lines.push(`- Metric: VIS asinh PSNR at knee ${h.knee_e ?? 100} e⁻ on the ${o.eval_subset ?? "test"} fields (eval_summary.json)`);
   const p = h.production;
@@ -58,7 +58,7 @@ export function evaluationNote(o: Overview, mode: Mode): string {
 /* ── Knee: the leaderboard over its integration range ──────────────────── */
 
 export function kneeNote(board: readonly LeaderRow[], opts: {
-  mode: Mode; range: [number, number]; full: [number, number]; band: string; bands: readonly string[];
+  range: [number, number]; full: [number, number]; band: string; bands: readonly string[];
   nFields?: number | null; top?: number;
 }): string {
   const top = opts.top ?? 10;
@@ -71,7 +71,7 @@ export function kneeNote(board: readonly LeaderRow[], opts: {
   const keep = new Set(members.slice(0, top).map((r) => r.id));
   const rows = ranked.filter((r) => r.kind !== "member" || keep.has(r.id));
   const lines = [
-    `**Knee-integrated PSNR · ${opts.mode}** — ∫ over ${where} · ${bandText} · ${opts.nFields ?? "?"} test fields`, "",
+    `**Knee-integrated PSNR** — ∫ over ${where} · ${bandText} · ${opts.nFields ?? "?"} test fields`, "",
     row(["#", "Model", "Trained", ...opts.bands.map((b) => `∫${shortBand(b)}`), opts.band === "all" ? "∫ mean" : `∫ ${shortBand(opts.band)}`, "vs mean"]),
     row(["---:", "---", "---", ...opts.bands.map(() => "---:"), "---:", "---:"]),
     ...rows.map((r) => row([
@@ -101,9 +101,9 @@ export function holesLine(bench: Bench, benchmark: Benchmark): string {
   return `- Real holes ${where}: mean ${bench.holeMean != null ? bench.holeMean.toFixed(1) : "—"} %`;
 }
 
-export function variantNote(v: Variant & Scores & { bench: Bench | null }, opts: { mode: Mode; prod: Scores | null; benchmark: Benchmark | null }): string {
+export function variantNote(v: Variant & Scores & { bench: Bench | null }, opts: { prod: Scores | null; benchmark: Benchmark | null }): string {
   const name = v.kind === "rbf" ? "RBF" : variantLabel(v.name);
-  const lines = [`**${v.production ? "Production gate" : "Gate variant"} \`${name}\` · ${opts.mode}** — fitted ${utcText(v.fitted_at)}`, ""];
+  const lines = [`**${v.production ? "Production gate" : "Gate variant"} \`${name}\`** — fitted ${utcText(v.fitted_at)}`, ""];
   const missing = v.membership.missing.map((l) => `#${memberNumber(l) ?? l}`).join(", ");
   lines.push(`- Reads ${readsText(v)} (${v.membership.current ? "the active set" : `not the active set${missing ? `: missing ${missing}` : ""}`})`);
   const steps = v.fit.steps_run ?? v.fit.steps;
@@ -129,19 +129,20 @@ export function variantNote(v: Variant & Scores & { bench: Bench | null }, opts:
 export function compareRows(report: CompareReport, group: string): string[] {
   const block = report.groups[group];
   if (!block) return [];
+  const vis = (k: string) => block[k].band_psnr[0] ?? -Infinity;
   const best = Object.keys(block).filter((k) => k.startsWith("member:"))
-    .reduce<string | null>((b, k) => (b == null || block[k].band_psnr[0] > block[b].band_psnr[0] ? k : b), null);
+    .reduce<string | null>((b, k) => (b == null || vis(k) > vis(b) ? k : b), null);
   return ["mean", ...(best ? [best] : []), ...report.methods.filter((m) => m !== "mean")].filter((r) => block[r]);
 }
 
 const methodName = (r: string) => (r.startsWith("member:") ? `best member #${memberNumber(r.slice(7)) ?? r.slice(7)}` : variantLabel(r));
 
-export function compareNote(report: CompareReport, mode: Mode): string {
+export function compareNote(report: CompareReport): string {
   const block = report.groups.natural ?? {};
   const n = report.n_fields ?? {};
   const fields = [n.natural != null ? `${n.natural} natural` : null, n.blackout ? `${n.blackout} blackout` : null].filter(Boolean).join(" + ");
   const lines = [
-    `**Gate compare · ${mode}** — report \`${report.id ?? "latest"}\`${report.created ? `, ${utcText(report.created)}` : ""} · ${fields || "?"} test fields · ${report.members.length} cube members`, "",
+    `**Gate compare** — report \`${report.id ?? "latest"}\`${report.created ? `, ${utcText(report.created)}` : ""} · ${fields || "?"} test fields · ${report.members.length} cube members`, "",
     row(["Method", ...report.bands.map(shortBand), "∫ mean"]),
     row(["---", ...report.bands.map(() => "---:"), "---:"]),
     ...compareRows(report, "natural").map((r) => row([
@@ -153,8 +154,8 @@ export function compareNote(report: CompareReport, mode: Mode): string {
 }
 
 export function promoteNote(result: { promoted?: string | null; backup?: string | null; test_rescored?: boolean | null },
-  mode: Mode, after: Scores | null): string {
-  const lines = [`**Promoted \`${variantLabel(result.promoted ?? "?")}\` to production · ${mode}**`, ""];
+  after: Scores | null): string {
+  const lines = [`**Promoted \`${variantLabel(result.promoted ?? "?")}\` to production**`, ""];
   if (result.backup) lines.push(`- The previous production gate is backed up as \`${result.backup}\` (promote it to roll back)`);
   if (result.test_rescored) {
     const s = [after?.testVis != null ? `VIS ${db(after.testVis)} dB` : null, after?.kneeMean != null ? `∫PSNR ${db(after.kneeMean)} dB` : null].filter(Boolean).join(" · ");

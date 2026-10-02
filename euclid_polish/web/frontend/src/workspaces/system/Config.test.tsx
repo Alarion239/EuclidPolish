@@ -203,7 +203,7 @@ describe("System › Config (regrouping)", () => {
     const scenes = await screen.findByRole("region", { name: "Synthetic scenes" });
     expect(within(scenes).getByRole("link", { name: "judged on Synthetic › Records" }).getAttribute("href")).toBe("/synthetic/records");
     const plateau = screen.getByRole("region", { name: "Training · plateau guard" });
-    expect(within(plateau).getByRole("link", { name: "judged on Models › Train" }).getAttribute("href")).toBe("/models/starfull/train");
+    expect(within(plateau).getByRole("link", { name: "judged on Models › Train" }).getAttribute("href")).toBe("/models/train");
     const psf = screen.getByRole("region", { name: "PSF distribution & saturation" });
     expect(within(psf).getByRole("link", { name: "judged on Synthetic › PSF" }).getAttribute("href")).toBe("/synthetic/psf");
   });
@@ -242,7 +242,7 @@ describe("ConfigKnobsLink (the back-link on the tabs that judge a group)", () =>
   });
 
   it("shows nothing when every knob of the group is at its default", async () => {
-    show(<ConfigKnobsLink groups={["plateau"]} />, "/models/starfull/train");
+    show(<ConfigKnobsLink groups={["plateau"]} />, "/models/train");
     await waitFor(() => expect(calls.some((c) => c.url === "/api/config")).toBe(true));
     expect(screen.queryByRole("link")).toBeNull();
   });

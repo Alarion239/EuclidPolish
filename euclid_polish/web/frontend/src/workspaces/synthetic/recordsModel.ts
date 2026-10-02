@@ -65,7 +65,7 @@ export function lensDensity(census: SourcesCensus): { count: number; area: numbe
 /** Where a record's SR is: Models › Images, records set, on this record when
  *  its split has SR cubes (`nSr`), else the set itself (its Generate SR). */
 export function recordSrLink(split: string, index: number | null, nSr: number): { to: string; label: string } {
-  const base = pagePath("models", { tab: "images", params: { mode: "starfull" } });
+  const base = pagePath("models", { tab: "images" });
   if (!nSr) return { to: `${base}?set=records`, label: "Generate its SR in Models › Images" };
   const q = new URLSearchParams({ set: "records", split, ...(index != null ? { id: `${split}:${index}` } : {}) });
   return { to: `${base}?${q.toString()}`, label: "Open its SR in Models › Images" };

@@ -343,7 +343,7 @@ describe("System › Lineage", () => {
   const LOOP = { computed_at: "2026-09-27T23:00:00+00:00", ttl_s: 60, errors: {}, counts: { current: 1, stale: 2, blocked: 0, unknown: 0 },
     stages: [
       { id: "records", label: "Records", state: "stale", reason: "predate the stellar prior", to: "/synthetic/records" },
-      { id: "members", label: "Members", state: "current", reason: "30 active", to: "/models/starfull/members" },
+      { id: "members", label: "Members", state: "current", reason: "30 active", to: "/models/members" },
       { id: "real-sr", label: "Real SR", state: "stale", reason: "449 stale", to: "/sky/targets" },
     ] };
   const summary = (kinds: Record<string, number>, total: number, verdicts = { current: 0, stale: 0, unknown: total }) => ({

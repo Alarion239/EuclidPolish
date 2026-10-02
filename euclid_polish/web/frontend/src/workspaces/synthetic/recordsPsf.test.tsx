@@ -297,7 +297,7 @@ describe("Records", () => {
   it("the record's SR is one click away, in Models › Images", async () => {
     show(<Records />);
     const link = await screen.findByRole("link", { name: "Open its SR in Models › Images" });
-    await waitFor(() => expect(link.getAttribute("href")).toBe("/models/starfull/images?set=records&split=test&id=test%3A1"));
+    await waitFor(() => expect(link.getAttribute("href")).toBe("/models/images?set=records&split=test&id=test%3A1"));
   });
 
   it("links back to System › Config when a scene or lens knob differs from its default", async () => {

@@ -246,7 +246,7 @@ describe("Runs › Steps by stage", () => {
     expect(stepsByStage([{ step_id: "brand_new", label: "New" }]).map((g) => g.id)).toEqual(["other"]);
   });
   it("links every step to the tab whose drawer embeds it, a real page", () => {
-    expect(stepHome("ensemble_train")).toEqual({ label: "Models › Train", to: "/models/starfull/train" });
+    expect(stepHome("ensemble_train")).toEqual({ label: "Models › Train", to: "/models/train" });
     expect(stepHome("extract_euclid_psf")?.to).toBe("/synthetic/psf?view=epsf&how=1");
     for (const s of steps) {
       const home = stepHome(s);

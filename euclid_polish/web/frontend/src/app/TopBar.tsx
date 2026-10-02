@@ -36,7 +36,7 @@ export function Breadcrumbs() {
   useInspectorRegistry((s) => s.kinds);
   if (!info) return <nav className="crumbs" aria-label="Breadcrumbs"><span className="crumbs__here">Not found</span></nav>;
   const { match } = info;
-  // "Models (starfull)": the regime is part of where you are.
+  // A workspace's path params (if any) are part of where you are.
   const ws = info.paramLabels.length ? `${info.workspaceLabel} (${info.paramLabels.join(", ")})` : info.workspaceLabel;
   const wsTo = match.tab ? pagePath(match.workspace, { params: match.params }) : landingPath(match.workspace);
   const entity = current ? inspectorTitle(current) : null;

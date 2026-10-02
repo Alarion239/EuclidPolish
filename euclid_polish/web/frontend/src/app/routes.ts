@@ -3,7 +3,7 @@
  *   createBrowserRouter(buildRoutes())
  *
  * One root layout route (the shell) holds:
- *   - every workspace: `<path>/*` (e.g. `/sky/*`, `/models/:mode/*`; the
+ *   - every workspace: `<path>/*` (e.g. `/sky/*`, `/models/*`; the
  *     home page is exactly `/`). The workspace component is lazy
  *     (`workspaceComponents`); it validates the rest of the path against the
  *     manifest itself (<Workspace>), so the router and Flask agree on what a
@@ -11,9 +11,10 @@
  *     navigation): a workspace chunk that fails to load — the console was
  *     rebuilt under an open page — shows "Reload page" in the stage while
  *     the rail, top bar and other workspaces keep working;
- *   - every legacy redirect — each `manifest.redirectRules` `from` pattern
- *     (`/ensemble/:mode/curves`; a static old path such as `/sky/results`
- *     outranks the `/sky/*` workspace route), each exact `manifest.redirects`
+ *   - every legacy redirect — each concrete source of a `manifest.redirectRules`
+ *     `from` pattern (`/ensemble/starfull/curves`, …: static paths, so an old
+ *     path such as `/sky/results` or `/models/starfull` outranks the
+ *     workspace's splat route and never captures a page), each exact `manifest.redirects`
  *     path and `/app/<rest>` — as a client-side <Navigate replace> to
  *     `redirectTarget()` (the rules rewrite the query, the exact entries keep
  *     it) plus the hash; Flask answers the same URLs with the same 308;
@@ -25,7 +26,7 @@
 import { Suspense, createElement, lazy, type ComponentType, type LazyExoticComponent } from "react";
 import { Navigate, useLocation, type RouteObject } from "react-router-dom";
 import { ErrorBoundary, RouteError } from "./ErrorBoundary";
-import { MANIFEST, normalisePath, redirectTarget, type RouteManifest } from "./manifest";
+import { MANIFEST, normalisePath, redirectTarget, type RedirectRule, type RouteManifest } from "./manifest";
 import { workspaceLabel } from "./nav";
 import { NotFound } from "./NotFound";
 import { TabSkeleton } from "./workspace";
@@ -46,11 +47,23 @@ export const workspaceComponents: Record<string, WorkspaceLoader> = {
   system: () => import("../workspaces/system"),
 };
 
-/** Every client-side redirect route path: the rule patterns, then the exact
- *  entries (each once, in manifest order). */
+/** Every concrete path a rule's `from` matches (each `:name` segment takes
+ *  each of its allowed values). Registered as static routes, a rule never
+ *  outranks a workspace's splat route: the pattern `/models/:mode` would
+ *  capture the page `/models/leaderboard` and answer it Not found. */
+function ruleSources(rule: RedirectRule): string[] {
+  let paths = [normalisePath(rule.from).split("/")];
+  for (const [name, values] of Object.entries(rule.params ?? {})) {
+    paths = paths.flatMap((segs) => values.map((v) => segs.map((s) => (s === `:${name}` ? v : s))));
+  }
+  return paths.map((segs) => segs.join("/"));
+}
+
+/** Every client-side redirect route path: the rules' concrete sources, then
+ *  the exact entries (each once, in manifest order). */
 export function redirectRoutePaths(manifest: RouteManifest = MANIFEST): string[] {
   const out: string[] = [];
-  for (const rule of manifest.redirectRules ?? []) out.push(normalisePath(rule.from));
+  for (const rule of manifest.redirectRules ?? []) out.push(...ruleSources(rule));
   for (const from of Object.keys(manifest.redirects ?? {})) out.push(normalisePath(from));
   return [...new Set(out)].filter((p) => p !== "/");
 }

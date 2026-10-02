@@ -47,7 +47,7 @@ describe("summary numbers", () => {
     expect(stepMeta({ ...SUMMARY, needs_gpu: false, runs: 1, success_rate: null })).toBe("1 run · CPU 42%");
   });
   it("links each step to where it is submitted", () => {
-    expect(submitHome("ensemble_train")).toEqual({ label: "Models › Train", to: "/models/starfull/train" });
+    expect(submitHome("ensemble_train")).toEqual({ label: "Models › Train", to: "/models/train" });
     expect(submitHome("synthetic_generate").label).toBe("Synthetic › Records");
     expect(submitHome("lensfinder_train")).toEqual({ label: "Runs › Steps", to: "/runs/steps?step=lensfinder_train" });
   });

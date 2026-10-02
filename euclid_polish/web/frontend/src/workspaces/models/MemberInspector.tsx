@@ -130,7 +130,7 @@ export default function MemberInspector({ id }: InspectorProps) {
   const d = res.data;
   const r = d.row;
   const num = memberNumber(d.name);
-  const tab = (t: string, q = "") => navigate(`${pagePath("models", { tab: t, params: { mode: d.regime } })}${q}`);
+  const tab = (t: string, q = "") => navigate(`${pagePath("models", { tab: t })}${q}`);
   const k = r ? kneeText(r) : null;
   const meanModel = d.knee?.models.find((x) => x.kind === "mean");
   const meanVals = (meanModel?.integrated ?? []).filter((x) => Number.isFinite(x));
@@ -139,7 +139,6 @@ export default function MemberInspector({ id }: InspectorProps) {
     <div className="mdl-insp">
       <div className="mdl-insp__head">
         <span className="mdl-insp__title">#{num}</span>
-        <Badge>{d.regime}</Badge>
         {!d.active && <Badge tone="warn">archived</Badge>}
         {r?.status === "timeout" && <Badge tone="warn">TIMEOUT</Badge>}
         {r?.status === "running" && <Badge tone="info" dot>training</Badge>}

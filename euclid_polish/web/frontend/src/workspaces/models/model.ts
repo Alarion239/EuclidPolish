@@ -10,7 +10,7 @@
 import type { SlurmJob } from "../../api/jobs";
 import { formatCount, formatDate } from "../../format";
 import type {
-  Check, CurveFacetRow, EvalRow, ExperimentSummary, Headline, KneeInfo, KneeModel, KneePayload, MemberRow, Mode, SrSplit, SrStatus, TrainingJob, Variant,
+  Check, CurveFacetRow, EvalRow, ExperimentSummary, Headline, KneeInfo, KneeModel, KneePayload, MemberRow, SrSplit, SrStatus, TrainingJob, Variant,
 } from "./api";
 
 /* ── member names ──────────────────────────────────────────────────────── */
@@ -341,6 +341,13 @@ export function smooth(y: readonly number[], window: number): number[] {
   return out;
 }
 
+/** A `combiner:` inspector id → its variant dir. Older ids led with the star
+ *  regime (`starfull/spatial_gate_linear`); a variant dir has no slash, so it
+ *  is the last segment either way. */
+export function combinerVariant(id: string): string {
+  return id.slice(id.lastIndexOf("/") + 1);
+}
+
 /** Combiner method / variant id → a short display name. */
 export function variantLabel(name: string): string {
   if (name === "mean") return "mean";
@@ -658,10 +665,9 @@ export function productionRun(exps: readonly ExperimentSummary[] | null | undefi
  *  production, when it scored THIS production (its spec fingerprint equals
  *  the catalogue's); each other row only when its own fingerprint matches.
  *  `detail` is that run's record (GET /api/experiments/<id>), `catalog` the
- *  current model catalogue (GET /api/models; starfull only). */
+ *  current model catalogue (GET /api/models). */
 export function leaderboardBenchmark(exps: readonly ExperimentSummary[] | null | undefined, detail: ExpDetail | null | undefined,
-  catalog: Catalog | null | undefined, regime: Mode): LeaderBenchmark {
-  if (regime === "starless") return { state: "none", reason: "no real benchmark for starless: Sky › Compare scores starfull models" };
+  catalog: Catalog | null | undefined): LeaderBenchmark {
   const run = productionRun(exps);
   if (!run) return { state: "none", reason: "no real benchmark yet: no Sky › Compare run has scored production" };
   if (!detail || detail.id !== run.id || !catalog) return { state: "loading" };
@@ -701,15 +707,15 @@ const TERMINAL_WITH_CHECKPOINT = new Set(["COMPLETED", "TIMEOUT"]);
 export const WAITING_DAYS = 14;
 
 /** What finished on FASRC and is not local yet (the Members "Pull" banner):
- *  new members of add/fork batches of this regime that ended in the last
- *  `days` (default 14) and are neither active here, nor local in the other
- *  regime (`elsewhere`: older jobs lack the regime flag), nor archived; and
+ *  new members of add/fork batches that ended in the last `days` (default
+ *  14) and are neither active here nor archived — never those of a legacy
+ *  starless batch (isStarlessJob), which the roster does not list; and
  *  continued members whose recent finished job's target lies past their
  *  local step. A job without an end time counts as recent. */
 export function waitingOnFasrc(jobs: readonly TrainingJob[], members: readonly MemberRow[], archived: readonly string[],
-  regime: Mode, opts: { elsewhere?: readonly string[]; now?: number; days?: number } = {}): { members: string[]; continued: string[] } {
+  opts: { now?: number; days?: number } = {}): { members: string[]; continued: string[] } {
   const local = new Map(members.map((m) => [m.name, m]));
-  const gone = new Set([...archived, ...(opts.elsewhere ?? [])]);
+  const gone = new Set(archived);
   const cutoff = (opts.now ?? Date.now()) - (opts.days ?? WAITING_DAYS) * 86_400_000;
   const recent = (j: TrainingJob) => {
     const t = Date.parse(String(j.ended_at ?? j.submitted_at ?? ""));
@@ -726,7 +732,7 @@ export function waitingOnFasrc(jobs: readonly TrainingJob[], members: readonly M
       }
       continue;
     }
-    if (jobRegimeOf(j) !== regime) continue;
+    if (isStarlessJob(j)) continue;
     for (const n of j.member_names) if (!local.has(n) && !gone.has(n)) fresh.add(n);
   }
   const byNum = (a: string, b: string) => Number(memberNumber(a)) - Number(memberNumber(b));
@@ -734,14 +740,14 @@ export function waitingOnFasrc(jobs: readonly TrainingJob[], members: readonly M
 }
 
 const TRUTHY = ["1", "true", "yes", "on"];
-/** The regime a past training job trained in (run-wide flag or a per-member one). */
-export function jobRegimeOf(job: Pick<TrainingJob, "params">): Mode {
+/** Whether a past training job trained starless members (the run-wide flag
+ *  or a per-member one): legacy batches only, the Train tab never sends it. */
+export function isStarlessJob(job: Pick<TrainingJob, "params">): boolean {
   const p = job.params ?? {};
-  if (TRUTHY.includes(String(p.starless ?? "").toLowerCase())) return "starless";
+  if (TRUTHY.includes(String(p.starless ?? "").toLowerCase())) return true;
   let spec: unknown;
   try { spec = typeof p.member_spec === "string" ? JSON.parse(p.member_spec) : p.member_spec; } catch { spec = null; }
-  return Array.isArray(spec) && spec.some((o) => !!o && typeof o === "object" && (o as Record<string, unknown>).starless === true)
-    ? "starless" : "starfull";
+  return Array.isArray(spec) && spec.some((o) => !!o && typeof o === "object" && (o as Record<string, unknown>).starless === true);
 }
 
 /** A member's share of the production gate's weight as the Members and
@@ -1024,12 +1030,12 @@ export function lossFacets<T extends CurveFacetRow>(curves: readonly T[]): { los
 
 /* ── train ─────────────────────────────────────────────────────────────── */
 
-/** "Submit 4 STARFULL members to SLURM" — the regime and the count repeated
- *  on the button, so a wrong regime is caught before the confirm. */
-export function submitLabel(mode: "add" | "continue" | "fork", count: number, regime: Mode): string {
+/** "Submit 4 members to SLURM" — the count repeated on the button, so a
+ *  wrong batch size is caught before the confirm. */
+export function submitLabel(mode: "add" | "continue" | "fork", count: number): string {
   if (mode === "continue") return count > 0 ? `Continue ${count} member${count === 1 ? "" : "s"} on SLURM` : "Continue members on SLURM";
   const noun = mode === "fork" ? "fork" : "member";
-  return `Submit ${count} ${regime.toUpperCase()} ${noun}${count === 1 ? "" : "s"} to SLURM`;
+  return `Submit ${count} ${noun}${count === 1 ? "" : "s"} to SLURM`;
 }
 
 /** "members 199–202" for a contiguous run, else the numbers. */

@@ -154,18 +154,18 @@ describe("links back to the source", () => {
 
   it("opens a synthetic stamp in Models › Images (it has HR truth, so it is synthetic validation)", () => {
     expect(viewerLink(result({ source: { collection: "evaluation", object: { id: "syn-lens_0007", grade: "syn-lens" } } })))
-      .toEqual({ to: "/models/starfull/images?set=stamps&g=syn-lens&id=syn-lens_0007", label: "Open in Models › Images" });
+      .toEqual({ to: "/models/images?set=stamps&g=syn-lens&id=syn-lens_0007", label: "Open in Models › Images" });
     // the grade is read from the id when the save did not record it
     expect(viewerLink(result({ source: { collection: "evaluation", object: { id: "syn-gal_0100" } } }))?.to)
-      .toBe("/models/starfull/images?set=stamps&g=syn-gal&id=syn-gal_0100");
-    // a stamp saved from a starless view opens in the starless regime
+      .toBe("/models/images?set=stamps&g=syn-gal&id=syn-gal_0100");
+    // a stamp saved from an old starless view opens in Models too (one regime now)
     expect(viewerLink(result({ source: { collection: "evaluation", params: { mode: "starless" }, object: { id: "syn-gal_0100" } } }))?.to)
-      .toBe("/models/starless/images?set=stamps&g=syn-gal&id=syn-gal_0100");
+      .toBe("/models/images?set=stamps&g=syn-gal&id=syn-gal_0100");
   });
 
   it("opens viewer collections on their page with the object id or index", () => {
     expect(viewerLink(result({ source: { collection: "ensemble", index: 3, params: { mode: "starless" } } }))?.to)
-      .toBe("/models/starless/images?v.ens.i=3");
+      .toBe("/models/images?v.ens.i=3");
     expect(viewerLink(result({ source: { collection: "sky", object: { id: "test:5" }, params: { subset: "test" } } }))?.to)
       .toBe("/synthetic/records?v.sky.id=test%3A5&subset=test");
     expect(viewerLink(result({ source: { collection: "psfs", index: 0 } }))?.to).toBe("/synthetic/psf?view=epsf&v.psfs.i=0");

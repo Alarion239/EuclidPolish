@@ -83,8 +83,8 @@ describe("config groups link to the tab that judges them", () => {
     expect(groupHome("psf")?.to).toBe("/synthetic/psf");
     expect(groupHome("cutouts")?.to).toBe("/synthetic/psf");
     expect(groupHome("stars")?.to).toBe("/synthetic/stars");
-    expect(groupHome("lr")).toEqual({ label: "Models › Train", to: "/models/starfull/train" });
-    expect(groupHome("plateau")?.to).toBe("/models/starfull/train");
+    expect(groupHome("lr")).toEqual({ label: "Models › Train", to: "/models/train" });
+    expect(groupHome("plateau")?.to).toBe("/models/train");
     expect(groupHome("other")).toBeNull();
   });
 });
@@ -107,7 +107,7 @@ describe("lineage", () => {
   });
   const stages = [
     { id: "records", label: "Records", state: "stale", reason: "predate the stellar prior", to: "/synthetic/records" },
-    { id: "members", label: "Members", state: "current", reason: "30 active", to: "/models/starfull/members" },
+    { id: "members", label: "Members", state: "current", reason: "30 active", to: "/models/members" },
     { id: "real-sr", label: "Real SR", state: "stale", reason: "449 stale", to: "/sky/targets" },
   ] as const;
   const kinds = { checkpointartifact: 42, generationrun: 209, inferencerun: 6430, srcutoutartifact: 4664, oddkind: 3 };

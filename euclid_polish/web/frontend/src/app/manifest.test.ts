@@ -18,43 +18,47 @@ const CASES = cases as RedirectCase[];
 describe("route manifest (C1)", () => {
   it("expands every workspace path and tab into a page", () => {
     for (const p of [
-      "/", "/sky", "/sky/atlas", "/sky/targets", "/sky/compare", "/models/starfull",
-      "/models/starless/train", "/models/starfull/leaderboard", "/files", "/synthetic",
+      "/", "/sky", "/sky/atlas", "/sky/targets", "/sky/compare", "/models",
+      "/models/train", "/models/leaderboard", "/files", "/synthetic",
       "/synthetic/psf", "/runs/history", "/notebook/sandboxes", "/system/storage", "/figures/sheet",
     ]) expect(isPagePath(p), p).toBe(true);
   });
 
   it("ignores a trailing slash like Flask does", () => {
     expect(isPagePath("/sky/")).toBe(true);
-    expect(isPagePath("/models/starfull/train/")).toBe(true);
+    expect(isPagePath("/models/train/")).toBe(true);
   });
 
   it("rejects data URLs that share a page prefix, and the old pages", () => {
     for (const p of [
       "/ensemble/status.json", "/ensemble/foo", "/ensemble", "/sky/unknown", "/models/foo",
-      "/models/starfull/nope", "/inspect/preview.png", "/api/jobs", "/static/x.js",
+      "/models/starfull", "/models/starless/train", "/inspect/preview.png", "/api/jobs", "/static/x.js",
       "/ensemble/starfull/overview", "/sky/results", "/inspect", "/settings/about", "/overview", "",
     ]) expect(isPagePath(p), p).toBe(false);
   });
 
   it("substitutes params from their allowed values only", () => {
-    const models = MANIFEST.workspaces.find((w) => w.id === "models")!;
-    expect(workspacePaths(models).sort()).toEqual(["/models/starfull", "/models/starless"]);
-    expect(isPagePath("/models/starfree")).toBe(false);
+    const lab: RouteManifest = { version: 2, redirects: {}, workspaces: [
+      { id: "lab", label: "Lab", path: "/lab/:mode", params: { mode: ["wet", "dry"] }, tabs: ["bench"] },
+    ] };
+    expect(workspacePaths(lab.workspaces[0]).sort()).toEqual(["/lab/dry", "/lab/wet"]);
+    expect(isPagePath("/lab/wet/bench", lab)).toBe(true);
+    expect(matchPage("/lab/dry/bench", lab)?.params).toEqual({ mode: "dry" });
+    expect(isPagePath("/lab/damp", lab)).toBe(false);
   });
 
   it("lists every concrete page path once", () => {
     const pages = pagePaths();
     expect(new Set(pages).size).toBe(pages.length);
     expect(pages).toContain("/");
-    expect(pages).toContain("/models/starless/combiner");
+    expect(pages).toContain("/models/combiner");
     expect(pages).not.toContain("//atlas");
   });
 
   it("matches a page to its workspace, params and tab", () => {
-    expect(matchPage("/models/starless/images")).toEqual({
-      workspace: "models", params: { mode: "starless" }, tab: "images",
-      base: "/models/starless",
+    expect(matchPage("/models/images")).toEqual({
+      workspace: "models", params: {}, tab: "images",
+      base: "/models",
     });
     expect(matchPage("/sky")).toEqual({ workspace: "sky", params: {}, tab: null, base: "/sky" });
     expect(matchPage("/")).toEqual({ workspace: "home", params: {}, tab: null, base: "/" });

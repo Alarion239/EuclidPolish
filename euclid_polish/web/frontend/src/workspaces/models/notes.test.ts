@@ -4,7 +4,7 @@ import { benchmarkExperiment, kneeLeaderboard } from "./model";
 import { compareNote, compareRows, evaluationNote, kneeNote, promoteNote, utcText, variantNote } from "./notes";
 
 const OVERVIEW: Overview = {
-  regime: "starfull", active_members: ["196·psnr", "195·psnr"], n_members: 30, test_present: true,
+  active_members: ["196·psnr", "195·psnr"], n_members: 30, test_present: true,
   evaluated_at: "2026-09-25T23:32:26+00:00", summary: {}, eval_subset: "test",
   headline: {
     metric: "vis_asinh", knee_e: 100, n_scored: 100,
@@ -34,8 +34,8 @@ describe("utcText", () => {
 
 describe("evaluation note", () => {
   it("states the Evaluate summary's facts with their definitions", () => {
-    const md = evaluationNote(OVERVIEW, "starfull");
-    expect(md).toContain("**Ensemble evaluation · starfull** — 2026-09-25 23:32 UTC · 30 members · 100 test fields");
+    const md = evaluationNote(OVERVIEW);
+    expect(md).toContain("**Ensemble evaluation** — 2026-09-25 23:32 UTC · 30 members · 100 test fields");
     expect(md).toContain("- Production gate: 44.12 dB (+0.23 dB vs best member, +0.40 dB vs plain mean)");
     expect(md).toContain("- Plain mean: 43.72 dB (+1.20 dB vs mean member)");
     expect(md).toContain("- Best member: #196 43.89 dB");
@@ -46,8 +46,8 @@ describe("evaluation note", () => {
   });
   it("says what is missing instead of printing blanks", () => {
     const md = evaluationNote({ ...OVERVIEW, evaluated_at: null, checks: [],
-      headline: { ...OVERVIEW.headline, production: {}, knee: { available: false, stale: false } } }, "starless");
-    expect(md).toContain("**Ensemble evaluation · starless** — not evaluated yet");
+      headline: { ...OVERVIEW.headline, production: {}, knee: { available: false, stale: false } } });
+    expect(md).toContain("**Ensemble evaluation** — not evaluated yet");
     expect(md).toContain("- Production gate: no score");
     expect(md).not.toContain("∫PSNR");
     expect(md).not.toContain("Open:");
@@ -66,15 +66,15 @@ describe("knee leaderboard note", () => {
   const knees = [0.1, 10000];
   const board = kneeLeaderboard(models, knees, [0.1, 10000]);
   it("is a markdown table with the integration range, band and fields", () => {
-    const md = kneeNote(board, { mode: "starfull", range: [0.1, 10000], full: [0.1, 10000], band: "all", bands: ["VIS", "Y_E", "J_E", "H_E"], nFields: 100 });
-    expect(md).toContain("**Knee-integrated PSNR · starfull** — ∫ over 0.1–10k e⁻ (the full range, uniform in log knee) · all bands · 100 test fields");
+    const md = kneeNote(board, { range: [0.1, 10000], full: [0.1, 10000], band: "all", bands: ["VIS", "Y_E", "J_E", "H_E"], nFields: 100 });
+    expect(md).toContain("**Knee-integrated PSNR** — ∫ over 0.1–10k e⁻ (the full range, uniform in log knee) · all bands · 100 test fields");
     expect(md).toContain("| # | Model | Trained | ∫VIS | ∫Y | ∫J | ∫H | ∫ mean | vs mean |");
     expect(md).toContain("| 1 | production gate | combiner | 40.00 | 41.00 | 42.00 | 43.00 | 41.50 | +1.00 |");
     expect(md).toContain("| 3 | #196 | 100 e⁻ | 38.00 |");
     expect(md.split("\n").filter((l) => l.startsWith("| ") && !l.startsWith("| #") && !l.startsWith("| ---")).length).toBe(5);
   });
   it("keeps the combiners and the mean, and only the top members", () => {
-    const md = kneeNote(board, { mode: "starfull", range: [1, 100], full: [0.1, 10000], band: "VIS", bands: ["VIS", "Y_E", "J_E", "H_E"], nFields: 100, top: 1 });
+    const md = kneeNote(board, { range: [1, 100], full: [0.1, 10000], band: "VIS", bands: ["VIS", "Y_E", "J_E", "H_E"], nFields: 100, top: 1 });
     expect(md).toContain("∫ over 1–100 e⁻ (a sub-range of 0.1–10k e⁻, uniform in log knee) · VIS");
     expect(md).toContain("#196");
     expect(md).not.toContain("#195");
@@ -95,8 +95,8 @@ describe("gate variant note", () => {
     const bench = benchmarkExperiment([{ id: "20260927-x", created: "2026-09-27", label: "cached tile ra0273", summary: {
       "gate:pruned": { n_tiles: 1, per_band: { VIS: { hole_pct: 19 }, Y_E: { hole_pct: 13 }, J_E: { hole_pct: 19 }, H_E: { hole_pct: 30 } } } } }]);
     const md = variantNote({ ...VARIANT, testVis: 44.2, kneeMean: 38.3, bench: bench?.bySpec.get("gate:pruned") ?? null },
-      { mode: "starfull", prod: { testVis: 44.1, kneeMean: 38.21 }, benchmark: bench });
-    expect(md).toContain("**Gate variant `pruned` · starfull** — fitted 2026-09-25 22:30 UTC");
+      { prod: { testVis: 44.1, kneeMean: 38.21 }, benchmark: bench });
+    expect(md).toContain("**Gate variant `pruned`** — fitted 2026-09-25 22:30 UTC");
     expect(md).toContain("- Reads 6 of 20 members (not the active set: missing #171)");
     expect(md).toContain("- Fit: linear mix · width 32 · 2000 steps · loss knees all · no LR input");
     expect(md).toContain("- Held-out (step 1750): loss 0.9123 · VIS 44.10 dB");
@@ -125,23 +125,30 @@ describe("compare report", () => {
     expect(compareRows(REPORT, "blackout")).toEqual([]);
   });
   it("logs the natural-field table", () => {
-    const md = compareNote(REPORT, "starfull");
-    expect(md).toContain("**Gate compare · starfull** — report `cmp-1`, 2026-09-25 22:40 UTC · 100 natural + 40 blackout test fields · 2 cube members");
+    const md = compareNote(REPORT);
+    expect(md).toContain("**Gate compare** — report `cmp-1`, 2026-09-25 22:40 UTC · 100 natural + 40 blackout test fields · 2 cube members");
     expect(md).toContain("| Method | VIS | Y | ∫ mean |");
     expect(md).toContain("| best member #196 | 43.900 | 41.500 | — |");
     expect(md).toContain("| linear | 44.200 | 42.300 | 38.500 |");
     expect(md).toContain("| production | 44.100 | 42.400 | — |");
+  });
+  it("copes with a report scored without blackout fields (an empty group of null PSNRs)", () => {
+    const none = { band_psnr: [null, null], bin_mse: [0], halo_mse: [0], hole_mse: [0] };
+    const empty: CompareReport = { ...REPORT, n_fields: { natural: 100, blackout: 0 },
+      groups: { ...REPORT.groups, blackout: { mean: none, "member:196·psnr": none, "member:195·psnr": none } } };
+    expect(compareRows(empty, "blackout")).toEqual(["mean", "member:196·psnr"]);
+    expect(compareNote(empty)).toContain("· 100 natural test fields ·");
   });
 });
 
 describe("promote note", () => {
   it("records the swap and the rollback backup", () => {
     const md = promoteNote({ promoted: "spatial_gate_linear", backup: "spatial_gate_backup_20260927T120000Z", test_rescored: true },
-      "starfull", { testVis: 44.2, kneeMean: 38.3 });
-    expect(md).toContain("**Promoted `linear` to production · starfull**");
+      { testVis: 44.2, kneeMean: 38.3 });
+    expect(md).toContain("**Promoted `linear` to production**");
     expect(md).toContain("- The previous production gate is backed up as `spatial_gate_backup_20260927T120000Z` (promote it to roll back)");
     expect(md).toContain("- Test cubes re-scored: production now VIS 44.20 dB · ∫PSNR 38.30 dB");
-    const plain = promoteNote({ promoted: "spatial_gate_linear", test_rescored: false }, "starfull", null);
+    const plain = promoteNote({ promoted: "spatial_gate_linear", test_rescored: false }, null);
     expect(plain).toContain("- Test cubes not re-scored (the variant does not read the cached members)");
   });
 });
