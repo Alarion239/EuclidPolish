@@ -16,8 +16,9 @@ Sources (``SOURCES``):
             ``<sample:03d>``
 ``eval``    real evaluation objects (lens candidates, galaxies); id = the
             object's ``out_subdir``
-``poster``  the poster target FITS (``poster/*_results.fits``); TAN WCS built
-            from ``RA``/``DEC``/``PIXSCALE`` (north up); id = file stem
+``poster``  the poster target's LR FITS (``poster/<target>_lr.fits``, one file
+            per target); TAN WCS built from ``RA``/``DEC``/``PIXSCALE``
+            (north up); id = ``<target>``
 ``pair``    saved JWST × Euclid pairs (four-band once
             :func:`jwst_euclid.pair_lr_input` ran; VIS-only before); id = pair id
 ==========  =================================================================
@@ -30,7 +31,7 @@ never contain ``/`` or ``,`` (experiments address tiles as ``source/id``).
 the C9 output store (:mod:`model_catalog`) merged with the SRs the pre-C9
 pipelines wrote next to their inputs — the NEXUS whole-field inference
 (``tiles/starfull_combiner_NNNN.fits``), pair inference
-(``starfull_inference/<slug>.fits``) and the poster's ``SR_*`` HDUs — read in
+(``starfull_inference/<slug>.fits``) — read in
 place (never copied) as *legacy* outputs keyed by the spec their recorded
 identity names. Their WCS is always rebuilt from the tile's LR grid (LR WCS
 ×2), so an SR file written with an older header convention is still served
@@ -86,7 +87,7 @@ SOURCE_INFO: dict[str, dict[str, str]] = {
     "eval": {"label": "Evaluation objects",
              "description": "Real lens candidates and galaxies of the catalogue evaluation."},
     "poster": {"label": "Poster target",
-               "description": "The 102.4″ poster galaxy LR (and its saved SR runs)."},
+               "description": "The 102.4″ poster galaxy LR."},
     "pair": {"label": "JWST × Euclid pairs",
              "description": "Downloaded JWST × Euclid comparison pairs."},
 }
@@ -95,7 +96,7 @@ TILE_SIDE = 256
 TILE_PADDING = 8
 TILE_SIZE_ARCSEC = TILE_SIDE * float(Config.VIS_PIXEL_SCALE_ARCSEC)
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
-_POSTER_GLOB = "*_results.fits"
+_POSTER_GLOB = "*_lr.fits"
 
 
 class RealTileError(Exception):
@@ -328,7 +329,6 @@ def _fits_cube(path: Path, hdu: int = 0) -> tuple[np.ndarray, fits.Header]:
 _LEGACY_KIND_SPECS = {
     model_catalog.PRODUCTION_KIND: model_catalog.SPEC_PRODUCTION,
     model_catalog.RBF_KIND: model_catalog.SPEC_RBF,
-    "mean_explicit_members": model_catalog.SPEC_MEAN,     # poster "new4" runs
 }
 
 
@@ -668,6 +668,12 @@ def poster_root() -> Path:
 
 
 def _poster_entries() -> list[TileEntry]:
+    """One tile per poster target: its LR file (``<target>_lr.fits``) alone.
+
+    The poster script's results FITS (LR + one run's SR) are never listed:
+    each run would otherwise add another row of the same LR. A target's SRs
+    live in the output store under the one id.
+    """
     root = poster_root()
     if not root.is_dir():
         return []
@@ -679,15 +685,13 @@ def _poster_entries() -> list[TileEntry]:
             continue
         shape = (int(lr.get("NAXIS2", 0)), int(lr.get("NAXIS1", 0)))
         header = poster_wcs_header(primary, shape)
-        identifier = re.sub(r"[^A-Za-z0-9._-]+", "-", path.stem.removesuffix("_results"))
-        legacy = _poster_record(path, primary)
+        identifier = re.sub(r"[^A-Za-z0-9._-]+", "-", path.stem.removesuffix("_lr"))
         entries.append(TileEntry(
             source="poster", id=identifier,
             label=f"Poster {identifier}", ra=float(primary["RA"]), dec=float(primary["DEC"]),
             shape=shape, pixscale=float(primary.get("PIXSCALE") or Config.VIS_PIXEL_SCALE_ARCSEC),
             polygon=_footprint(header, shape),
-            extras={"file": path.name, "wcs_constructed": True,
-                    "legacy_sr": legacy, "legacy_outputs": _legacy_outputs(legacy)},
+            extras={"file": path.name, "wcs_constructed": True},
         ))
     return entries
 
@@ -699,42 +703,6 @@ def _poster_load(entry: TileEntry) -> tuple[np.ndarray, fits.Header | None]:
         planes = [np.asarray(hdul[f"LR_{band}"].data, np.float32) for band in BAND_NAMES]
     cube = np.stack(planes, axis=-1)
     return cube, poster_wcs_header(primary, cube.shape[:2])
-
-
-def _poster_record(path: Path, primary: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The SR saved inside a poster FITS (``SR_*`` HDUs) as a legacy record.
-
-    The poster run recorded only ``COMB_KIND`` and ``N_MEMBER`` — no member
-    checkpoint or artifact identity — so its fingerprint is unknown: it can
-    never be *current*, only an older output of the spec its kind names.
-    """
-    if _header(path, f"SR_{BAND_NAMES[0]}") is None:
-        return None
-    kind = str(primary.get("COMB_KIND") or "")
-    count = primary.get("N_MEMBER")
-    spec = legacy_spec({"combiner_kind": kind})
-    return {
-        "spec": spec, "slug": model_catalog.spec_slug(spec) if spec else None,
-        "kind": _spec_kind(spec) if spec else None,
-        "label": f"Poster SR · {kind or 'unknown combiner'}"
-                 + (f" ({count} members)" if count else ""),
-        "fingerprint": None, "member_labels": [], "member_fingerprints": [],
-        "member_count": count, "combiner_kind": kind or None, "combiner_fingerprint": None,
-        "identity": None, "shape": None, "file": path.name, "hdu": "SR_*",
-        "path": str(path), "created": _mtime_iso(path), "origin": "poster",
-        "legacy": True, "experiment_id": None, "lr_sha": None,
-    }
-
-
-def poster_legacy_sr(entry: TileEntry) -> tuple[np.ndarray, fits.Header]:
-    """The SR saved inside a poster FITS (``SR_*`` HDUs) with its WCS."""
-    path = poster_root() / str(entry.extras["file"])
-    with fits.open(path, memmap=False) as hdul:
-        primary = hdul[0].header.copy()
-        planes = [np.asarray(hdul[f"SR_{band}"].data, np.float32) for band in BAND_NAMES]
-    cube = np.stack(planes, axis=-1)
-    lr_shape = entry.shape or (cube.shape[0] // 2, cube.shape[1] // 2)
-    return cube, model_catalog.sr_header(poster_wcs_header(primary, lr_shape))
 
 
 # ---------------------------------------------------------------------------
@@ -966,13 +934,6 @@ def lr_header(entry: TileEntry) -> fits.Header | None:
     return get_tile(entry.source, entry.id, entry=entry).wcs_header
 
 
-def _legacy_cube(entry: TileEntry, record: Mapping[str, Any]) -> np.ndarray:
-    if record.get("origin") == "poster":
-        return poster_legacy_sr(entry)[0]
-    cube, _header_unused = _fits_cube(Path(str(record["path"])))
-    return cube
-
-
 def load_output(entry: TileEntry, spec: str, *, current: str | None = None
                 ) -> tuple[np.ndarray, fits.Header, dict[str, Any]]:
     """``(SR cube (2H, 2W, C) electrons, SR header, sidecar)`` of one spec on
@@ -989,7 +950,7 @@ def load_output(entry: TileEntry, spec: str, *, current: str | None = None
     if not chosen.get("legacy"):
         cube, header, meta = model_catalog.load_output(entry.source, entry.id, spec)
         return cube, header, {"legacy": False, **meta}
-    cube = _legacy_cube(entry, chosen)
+    cube, _header_unused = _fits_cube(Path(str(chosen["path"])))
     header = model_catalog.sr_header(lr_header(entry))
     header["BUNIT"] = ("electron", "SR electrons per SR pixel")
     header["SPEC"] = (spec[:68], "model spec")
@@ -1119,8 +1080,7 @@ def cache_tile(ra: float, dec: float, *,
 def disk_usage(entry: TileEntry) -> dict[str, int]:
     """Bytes a tile occupies: its own cache (``tile`` source), its C9 model
     outputs, its member-SR cache and its legacy SR files (NEXUS / pair
-    inference; the poster SR lives inside the poster FITS and is not
-    counted); ``total_bytes`` sums them."""
+    inference); ``total_bytes`` sums them."""
     def size(path: Path) -> int:
         if not path.exists():
             return 0
@@ -1132,8 +1092,7 @@ def disk_usage(entry: TileEntry) -> dict[str, int]:
     outputs = size(model_catalog.output_dir(entry.source, entry.id))
     cache = size(model_catalog.member_cache_dir(entry.source, entry.id))
     legacy = sum(size(Path(str(record["path"])))
-                 for record in (entry.extras.get("legacy_outputs") or {}).values()
-                 if record.get("origin") != "poster")
+                 for record in (entry.extras.get("legacy_outputs") or {}).values())
     return {"tile_bytes": own, "output_bytes": outputs, "cache_bytes": cache,
             "legacy_bytes": legacy, "total_bytes": own + outputs + cache + legacy}
 
@@ -1223,7 +1182,6 @@ __all__ = [
     "lr_path",
     "output_path",
     "parse_refs",
-    "poster_legacy_sr",
     "poster_root",
     "poster_wcs_header",
     "real_tile_id",

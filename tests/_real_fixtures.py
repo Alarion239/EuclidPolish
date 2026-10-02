@@ -142,21 +142,25 @@ def make_eval_store(side: int = 20) -> str:
     return sub
 
 
-def make_poster(directory: Path, side: int = 32) -> Path:
+def make_poster(directory: Path, side: int = 32, *, run: str | None = None) -> Path:
+    """The poster target's LR file (``<target>_lr.fits``); with ``run``, the
+    poster script's results FITS of that run instead (LR + its SR)."""
     directory.mkdir(parents=True, exist_ok=True)
     primary = fits.PrimaryHDU()
     primary.header["RA"], primary.header["DEC"] = 273.2308875, 68.3636556
     primary.header["PIXSCALE"] = 0.1
-    primary.header["COMB_KIND"] = "raw_incremental_minmeanmax_rbf"
-    primary.header["N_MEMBER"] = 20
     lr = scene(side, seed=3)
     hdus = [primary]
     for index, band in enumerate(Config.LR_INPUT_BAND_NAMES):
         hdus.append(fits.ImageHDU(lr[..., index], name=f"LR_{band}"))
-    for index, band in enumerate(Config.LR_INPUT_BAND_NAMES):
-        hdus.append(fits.ImageHDU(np.kron(lr[..., index], np.ones((2, 2))) / 4.0,
-                                  name=f"SR_{band}"))
-    path = directory / "target_181255_test_results.fits"
+    if run is not None:
+        primary.header["COMB_KIND"] = "raw_incremental_minmeanmax_rbf"
+        primary.header["N_MEMBER"] = 20
+        for index, band in enumerate(Config.LR_INPUT_BAND_NAMES):
+            hdus.append(fits.ImageHDU(np.kron(lr[..., index], np.ones((2, 2))) / 4.0,
+                                      name=f"SR_{band}"))
+    name = "target_181255_test" + (f"_{run}_results" if run is not None else "_lr")
+    path = directory / f"{name}.fits"
     fits.HDUList(hdus).writeto(path)
     return path
 

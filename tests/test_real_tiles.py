@@ -66,10 +66,17 @@ def test_poster_wcs_is_constructed_north_up_at_the_target(store):
     ra, dec = wcs.pixel_to_world_values(15.5, 15.5)                 # grid centre
     assert ra == pytest.approx(273.2308875, abs=1e-9) and dec == pytest.approx(68.3636556, abs=1e-9)
     assert wcs.pixel_scale_matrix[0, 0] < 0 < wcs.pixel_scale_matrix[1, 1]  # east left
-    sr, header = real_tiles.poster_legacy_sr(entry)
-    assert sr.shape == (64, 64, 4)
-    sr_ra, sr_dec = WCS(header).celestial.pixel_to_world_values(31.5, 31.5)
-    assert sr_ra == pytest.approx(ra, abs=1e-9) and sr_dec == pytest.approx(dec, abs=1e-9)
+
+
+def test_poster_lists_one_tile_per_target_never_a_results_file(store):
+    """Every poster-script run wrote a results FITS of the same LR; listing
+    them made one row per run. Only the target's ``_lr.fits`` is a tile."""
+    fx.make_poster(store["poster"])
+    fx.make_poster(store["poster"], run="m169-188")
+    fx.make_poster(store["poster"], run="new4")
+    (entry,) = real_tiles.list_entries("poster")
+    assert entry.id == "target_181255_test" and entry.extras["file"] == "target_181255_test_lr.fits"
+    assert real_tiles.tile_outputs(entry) == {}
 
 
 def test_legacy_real_field_lists_every_sub_tile_with_offset_wcs(store):

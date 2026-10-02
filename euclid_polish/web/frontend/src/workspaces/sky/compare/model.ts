@@ -151,20 +151,12 @@ export function longCsv(record: ExperimentRecord, scope: string): string {
 
 export type CompareSetId = "poster" | "nexus" | "lenses" | "galaxies";
 
-/** The poster file to run on: every poster file holds the same galaxy LR, so
- *  the one with the most model runs (the current poster runs) stands for it. */
-export function posterRef(posters: readonly TileRow[]): string | null {
-  let best: TileRow | null = null;
-  for (const p of posters) if (!best || Object.keys(p.models ?? {}).length > Object.keys(best.models ?? {}).length) best = p;
-  return best?.ref ?? null;
-}
-
 /** A set's tile refs: the poster galaxy, the NEXUS tiles of the shared tile
  *  selection, every lens candidate or Q1 galaxy of the evaluation store. */
 export function setRefs(set: CompareSetId, from: {
   selection: readonly string[]; evals: readonly TileRow[]; posters: readonly TileRow[];
 }): string[] {
-  if (set === "poster") { const ref = posterRef(from.posters); return ref ? [ref] : []; }
+  if (set === "poster") return from.posters.map((t) => t.ref);
   if (set === "nexus") return from.selection.filter((r) => r.startsWith("nexus/"));
   const kind = set === "lenses" ? "lens" : "galaxy";
   return from.evals.filter((t) => t.extras?.kind === kind).map((t) => t.ref);

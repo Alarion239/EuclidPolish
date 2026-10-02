@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Run the current STARFULL combiner on the poster galaxy and render a triptych.
 
-The poster source is the cached four-band Euclid LR cube for the target at
-18:12:55.413 +68:21:49.16 — either the band-first ``original_stack.fits`` or
-the ``LR_<band>`` extensions of an earlier results FITS written here (the same
-electron-domain input).  This script runs the STARFULL members the fitted
-combiner reads (a pruned spatial gate skips the members it gives no weight;
-``--all-members`` runs every fitted member, e.g. for the full contact sheet),
-applies the combiner, and writes a compact FITS product plus a poster-style
+The poster source is the four-band Euclid LR cube of the target at
+18:12:55.413 +68:21:49.16 — the ``LR_<band>`` extensions of the poster
+target file ``poster/target_181255_lr.fits`` (or of a results FITS written
+here), or a band-first ``original_stack.fits`` (the same electron-domain
+input).  This script runs the STARFULL members the fitted combiner reads (a
+pruned spatial gate skips the members it gives no weight; ``--all-members``
+runs every fitted member, e.g. for the full contact sheet), applies the
+combiner, and writes a compact FITS product plus a poster-style
 Euclid/SR/Hubble plate.
+
+The results FITS goes under ``data/`` by default, never next to the target
+file: the console lists ``poster/<target>_lr.fits`` as the one poster target,
+and its SRs belong in the output store (Sky › Targets runs them).
 
 The Hubble panel is the existing WFPC2 F814W poster reference.  It is kept as
 the poster asset rather than redownloaded, so the comparison remains the same
@@ -405,7 +410,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--source",
-        default="data/euclid_inference/cutouts/ra273.23_dec68.36/original_stack.fits",
+        default="poster/target_181255_lr.fits",
     )
     parser.add_argument("--hubble", default="poster/fig/poster/result_hubble.png")
     parser.add_argument("--ckpt-root", default=default_ensemble_dir())
@@ -416,7 +421,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--euclid-pixel-scale", type=float, default=0.10)
     parser.add_argument("--target-ra", type=float, default=273.2308875)
     parser.add_argument("--target-dec", type=float, default=68.3636556)
-    parser.add_argument("--out-fits", default="poster/target_181255_combiner_results.fits")
+    parser.add_argument(
+        "--out-fits", default="data/euclid_inference/poster_runs/target_181255_combiner_results.fits")
     parser.add_argument("--out-png", default="poster/fig/poster/result_triptych_combiner.png")
     parser.add_argument("--individual-dir", default="poster/fig/poster/individual_sr")
     parser.add_argument("--individual-contact", default="poster/fig/poster/individual_sr_grid.png")
@@ -487,6 +493,7 @@ def main() -> int:
         "N_FITTED": len(fitted if fitted is not None else labels),
         "LRSIDE": int(args.side),
     })
+    os.makedirs(os.path.dirname(os.path.abspath(args.out_fits)), exist_ok=True)
     _write_fits(args.out_fits, lr, sr, source_header, metadata=metadata)
     hubble_native_side = round(sr.shape[0] * (args.euclid_pixel_scale / 2.0)
                                / args.hubble_pixel_scale)

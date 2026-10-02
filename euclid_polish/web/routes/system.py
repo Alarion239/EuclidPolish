@@ -403,7 +403,7 @@ _SR_LAYERS = (
     ("nexus-tiles", "nexus", "NEXUS tiles"),
     ("real-tiles", "tile", "Cached 25.6″ tiles"),
     ("real-fields", "field", "Legacy real-field tiles"),
-    ("poster", "poster", "Poster runs"),
+    ("poster", "poster", "Poster galaxy"),
     ("pairs", "pair", "JWST × Euclid pairs"),
 )
 

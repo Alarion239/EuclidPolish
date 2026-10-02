@@ -22,7 +22,7 @@ const TTL = { ttl: 60_000 };
 const plural = (n: number, word: string) => `${formatCount(n)} ${word}${n === 1 ? "" : "s"}`;
 
 const SETS: { id: CompareSetId; label: string; hint: string }[] = [
-  { id: "poster", label: "Poster galaxy", hint: "The poster galaxy's 102.4″ LR (one file; every poster file holds the same LR)." },
+  { id: "poster", label: "Poster galaxy", hint: "The poster galaxy's 102.4″ LR." },
   { id: "nexus", label: "NEXUS selection", hint: "The NEXUS × JWST tiles selected in Sky › Targets or on the atlas." },
   { id: "lenses", label: "Lens candidates", hint: "Every Q1 lens candidate with a reconstruction (grades A–C)." },
   { id: "galaxies", label: "Q1 galaxies", hint: "Every Q1 galaxy of the catalogue evaluation." },

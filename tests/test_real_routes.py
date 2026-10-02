@@ -356,23 +356,15 @@ def test_pair_inference_outputs_are_served_and_tracked(client, world):
         assert hdul[0].data.shape == (60, 60)
 
 
-def test_poster_sr_is_served_as_a_legacy_tier(client, world):
+def test_poster_target_is_one_row_whatever_runs_were_saved(client, world):
     fx.make_poster(world["poster"])
+    fx.make_poster(world["poster"], run="combiner")       # an old run's SR: not a row, not a tier
     real_tiles.invalidate()
+    listing = client.get("/api/real/poster").get_json()
+    assert [tile["ref"] for tile in listing["tiles"]] == ["poster/target_181255_test"]
     card = client.get("/api/real/poster/target_181255_test").get_json()
-    rbf = card["models"]["rbf"]
-    assert rbf["legacy"] and rbf["origin"] == "poster" and rbf["state"] == "unavailable"
-    image = client.get("/api/real/poster/target_181255_test/image.fits?tier=m:rbf&band=J_E")
-    assert image.status_code == 200
-    with fits.open(io.BytesIO(image.data)) as hdul:
-        assert hdul[0].data.shape == (64, 64)
-    # the tier list names what is served (the legacy 20-member poster RBF),
-    # not the current spec's catalogue entry
-    meta = client.get("/viewer/meta/real?source=poster").get_json()
-    labels = {tier["key"]: tier["label"] for tier in meta["tiers"]}
-    assert labels["m:rbf"] == "RBF (20 members, legacy)"
-    cube = client.get("/viewer/cube/real/0?source=poster&tier=m:rbf")
-    assert "legacy" in cube.headers["X-Cube-Label"]
+    assert card["models"] == {} and card["production_state"] == "missing"
+    assert card["model_ready"]
 
 
 def test_real_tier_label_for_legacy_outputs():

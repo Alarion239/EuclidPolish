@@ -37,7 +37,7 @@ export const TARGET_SETS: readonly TargetSet[] = [
     about: "Euclid tiles over the NEXUS F200W mosaic, each with its JWST image.",
     empty: "No NEXUS tiles yet: cache the NEXUS mosaic from the atlas's JWST menu." },
   { id: "poster", label: "Poster galaxy", noun: ["tile", "tiles"], store: "poster",
-    about: "The poster galaxy's 102.4″ LR, one row per saved results file.",
+    about: "The poster galaxy's 102.4″ LR (one row; its SRs are the model outputs).",
     empty: "No poster target file in poster/." },
   { id: "lenses", label: "Lens candidates", noun: ["reconstruction", "reconstructions"], grades: ["A", "B", "C"],
     about: "Euclid Q1 strong-lens candidates (grades A–C) reconstructed by the grouped analysis.",

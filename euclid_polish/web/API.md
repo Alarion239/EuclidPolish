@@ -384,8 +384,9 @@ a local job): **nothing is FASRC-gated**.
   `manifest.json`; id `ra…_dec…`), `field` (every legacy 100-tile real field;
   id `<field id>-NNN`), `archive` (220 archive samples, ADU/s → e⁻ via
   MAGZERO; id `NNN`), `eval` (real evaluation objects; id = `out_subdir`),
-  `poster` (`poster/*_results.fits`; WCS **constructed** north-up TAN from
-  `RA/DEC/PIXSCALE`), `pair` (saved JWST × Euclid pairs; four-band once the
+  `poster` (one tile per target: `poster/<target>_lr.fits`, LR only, id
+  `<target>`; the poster script's `*_results.fits` runs are never listed;
+  WCS **constructed** north-up TAN from `RA/DEC/PIXSCALE`), `pair` (saved JWST × Euclid pairs; four-band once the
   pair's LR input exists, VIS-only before). Field labels are
   position-derived (`q1_field_for`).
 - **Tile entry** (list rows and the card's base):
@@ -394,10 +395,10 @@ a local job): **nothing is FASRC-gated**.
   extras{…source specific: legacy_sr, grade, field_id, position_name…}}`. `extras.legacy_sr` is the SR the pre-C9 production
   pipeline wrote for the tile (a *legacy record*, below; `null` when none):
   NEXUS whole-field inference `tiles/starfull_combiner_NNNN.fits`, pair
-  inference `starfull_inference/starfull_combiner.fits`, the poster's `SR_*`
-  HDUs, the evaluation `SR.fits` (no recorded model: listed, never a tier).
+  inference `starfull_inference/starfull_combiner.fits`, the evaluation
+  `SR.fits` (no recorded model: listed, never a tier).
   Every legacy SR that names a C9 spec (NEXUS / pair `inference` + pair
-  `model_inference`, poster) is one of the tile's model outputs (the `models`
+  `model_inference`) is one of the tile's model outputs (the `models`
   rows below); the entry keeps them internally (`extras.legacy_outputs`, not
   serialised).
 - **Model specs** (`GET /api/models`): `production` (the production spatial
@@ -438,14 +439,13 @@ a local job): **nothing is FASRC-gated**.
   fingerprint, member_labels, member_fingerprints, member_count,
   combiner_kind, combiner_fingerprint, identity{combiner_kind,
   combiner_fingerprint, member_fingerprints}|null, shape, file, path,
-  created, origin: "nexus-field"|"pair"|"poster", legacy: true,
+  created, origin: "nexus-field"|"pair", legacy: true,
   experiment_id: null, lr_sha: null}`. Its spec is the recorded `spec`
   (records since C9) else the `combiner_kind` (`spatial_gate` → `production`,
-  `raw_incremental_minmeanmax_rbf` → `rbf`, poster `mean_explicit_members` →
-  `mean`); its fingerprint is the recorded `spec_fingerprint`, else rebuilt
+  `raw_incremental_minmeanmax_rbf` → `rbf`); its fingerprint is the recorded `spec_fingerprint`, else rebuilt
   from the recorded identity with the catalogue formula
   (`model_catalog.spec_fingerprint`), so its state is decided exactly like a
-  store output's (the poster records no identity: never `current`). A legacy
+  store output's. A legacy
   SR is always served on the LR WCS ×2 (`CRPIX → 2·CRPIX − 0.5`), never its
   file's own header (older NEXUS SR files carry `2·CRPIX − 1`). The 445 cached
   NEXUS SRs (RBF era) therefore appear as `m:rbf` (current while the RBF

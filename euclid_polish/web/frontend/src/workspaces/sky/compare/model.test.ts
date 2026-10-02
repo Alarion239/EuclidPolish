@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExperimentRecord, TileRow } from "../results/api";
 import {
-  comparisonLabel, compareSentence, csvText, deltaMags, headline, headlineText, longCsv, pivotRows, pivotBest, posterRef, setRefs,
+  comparisonLabel, compareSentence, csvText, deltaMags, headline, headlineText, longCsv, pivotRows, pivotBest, setRefs,
 } from "./model";
 
 const RECORD: ExperimentRecord = {
@@ -110,15 +110,12 @@ describe("new comparison target sets", () => {
     const [source, id] = ref.split("/");
     return { source, id, ref, label: ref, ra: 1, dec: 2, extras, models: Object.fromEntries(models.map((m) => [m, { state: "current" }])) };
   };
-  it("picks the poster file that holds the most model runs (all hold the same LR)", () => {
-    expect(posterRef([tile("poster/combiner", ["rbf"]), tile("poster/new4", ["production", "mean", "gate:p20"]), tile("poster/m169", ["rbf"])])).toBe("poster/new4");
-    expect(posterRef([])).toBeNull();
-  });
   it("collects the refs of a set: the NEXUS tiles of the selection, lens candidates, galaxies", () => {
     const evals = [tile("eval/l1", [], { kind: "lens", grade: "A" }), tile("eval/g1", [], { kind: "galaxy", grade: "gal" })];
     expect(setRefs("nexus", { selection: ["nexus/f200w-0001", "poster/p", "nexus/f200w-0002"], evals, posters: [] })).toEqual(["nexus/f200w-0001", "nexus/f200w-0002"]);
     expect(setRefs("lenses", { selection: [], evals, posters: [] })).toEqual(["eval/l1"]);
     expect(setRefs("galaxies", { selection: [], evals, posters: [] })).toEqual(["eval/g1"]);
-    expect(setRefs("poster", { selection: [], evals, posters: [tile("poster/new4", ["production"])] })).toEqual(["poster/new4"]);
+    expect(setRefs("poster", { selection: [], evals, posters: [tile("poster/target_181255", ["production"])] })).toEqual(["poster/target_181255"]);
+    expect(setRefs("poster", { selection: [], evals, posters: [] })).toEqual([]);
   });
 });
