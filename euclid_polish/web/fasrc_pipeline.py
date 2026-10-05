@@ -1314,9 +1314,13 @@ class TngStackStep(FASRCPipelineStep):
 class PosterCutoutStep(FASRCPipelineStep):
     """Generate one random star, lens, TNG galaxy, or full field as
     a clean 4-band HR FITS → ``_poster/poster_cutout.fits`` (+ a preview PNG).
-    For the poster — the idealised, PSF-free, noise-free ground-truth object.
-    TNG-backed modes need the downloaded SKIRT atlas, which is why the job runs
-    on the node. Blank seed re-rolls each submit."""
+    For the poster — the idealised, PSF-free, noise-free ground-truth object;
+    field mode adds its mock-Euclid stack and the production model's SR.
+    Galaxies (lens/tng/field) and stars (star/field) come from the activated
+    population artifacts, frozen at submit and staged as JSON files beside the
+    job script, as for synthetic generation. TNG-backed modes need the
+    downloaded SKIRT atlas, which is why the job runs on the node. Blank seed
+    re-rolls each submit."""
 
     task_params = (
         TaskParam("mode", "choice", "tng", "Object kind.",
@@ -1340,11 +1344,23 @@ class PosterCutoutStep(FASRCPipelineStep):
         )
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Freeze the activated population artifacts the mode draws from."""
         prepared = dict(params)
         mode = str(prepared.get("mode", "tng") or "tng").lower()
         if mode not in ("star", "lens", "tng", "field"):
             mode = "tng"
         prepared["mode"] = mode
+        if mode in ("lens", "tng", "field"):
+            joint_status = population_calibration.joint_galaxy_state()
+            joint = joint_status.get("active") or {}
+            if not joint_status.get("is_active") or not joint:
+                raise ValueError(
+                    "activate the Euclid VIS 2FWHM × Sérsic-R_e galaxy fit "
+                    f"before rendering a poster {mode}"
+                )
+            prepared["_joint_galaxy_population_json"] = json.dumps(
+                joint, separators=(",", ":"), sort_keys=True,
+            )
         if mode in ("star", "field"):
             stars = population_calibration.active_star()
             if not stars:
@@ -1356,6 +1372,52 @@ class PosterCutoutStep(FASRCPipelineStep):
                 stars, separators=(",", ":"), sort_keys=True,
             )
         return prepared
+
+    def prepare_payload_files(
+        self,
+        params: dict[str, Any],
+        *,
+        job_name: str,
+        relative_log_dir: str,
+    ) -> dict[str, str]:
+        """Move the frozen population artifacts out of the process argv.
+
+        The galaxy artifact (packed colour+SFR forest, megabytes) is far
+        larger than the ~128 KiB Linux allows one ``execve`` argument, so
+        both artifacts go next to the job script and the command gets their
+        short paths.
+        """
+        payload_files: dict[str, str] = {}
+        for source_key, path_key, hash_key, fingerprint_key, suffix in (
+            (
+                "_joint_galaxy_population_json",
+                "_joint_galaxy_population_file",
+                "_joint_galaxy_population_sha256",
+                "_joint_galaxy_population_fingerprint",
+                "galaxy-population",
+            ),
+            (
+                "_star_prior_json",
+                "_star_prior_file",
+                "_star_prior_sha256",
+                "_star_prior_fingerprint",
+                "star-population",
+            ),
+        ):
+            content = str(params.pop(source_key, "") or "").strip()
+            if not content:
+                continue
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            payload = json.loads(content)
+            relative_path = (
+                f"{relative_log_dir}/{job_name}.{suffix}.{digest[:12]}.json"
+            )
+            params[path_key] = relative_path
+            params[hash_key] = digest
+            if payload.get("fingerprint"):
+                params[fingerprint_key] = str(payload["fingerprint"])
+            payload_files[relative_path] = content + "\n"
+        return payload_files
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
         mode = str(params.get("mode", "tng") or "tng").lower()
@@ -1370,8 +1432,19 @@ class PosterCutoutStep(FASRCPipelineStep):
             cmd += ["--image-size", str(int(float(size)))]
         seed = str(params.get("seed", "")).strip()
         cmd += ["--seed", seed if seed != "" else "-1"]
-        if params.get("_star_prior_json"):
-            cmd += ["--star-prior-json", str(params["_star_prior_json"])]
+        # Staged artifact paths; the inline JSON remains only for callers
+        # that build the command without staging.
+        for file_key, json_key, file_flag, json_flag in (
+            ("_joint_galaxy_population_file", "_joint_galaxy_population_json",
+             "--joint-galaxy-population-file", "--joint-galaxy-population-json"),
+            ("_star_prior_file", "_star_prior_json",
+             "--star-prior-file", "--star-prior-json"),
+        ):
+            staged = str(params.get(file_key, "") or "").strip()
+            if staged:
+                cmd += [file_flag, staged]
+            elif params.get(json_key):
+                cmd += [json_flag, str(params[json_key])]
         return cmd
 
 

@@ -1,24 +1,26 @@
 #!/usr/bin/env python
-"""Download a real Euclid 4-band cutout, run it through a trained WDSR
-checkpoint, and write two FITS to your local disk:
+"""Download a real Euclid 4-band cutout, run it through the production model,
+and write two FITS to your local disk:
 
   * ``original_stack.fits`` — the stacked 4-band original LR cube
     (VIS, Y_E, J_E, H_E) at 0.10"/pix, in electrons, stored as one image
     plane per band (band 0 = VIS, directly comparable to SR).
-  * ``SR.fits`` — the super-resolved image at 0.05"/pix: a 4-band cube, one
-    image plane per band in the same order (band 0 = VIS); a legacy
-    VIS-output checkpoint gives the single VIS plane.
+  * ``SR.fits`` — the super-resolved 4-band cube at 0.05"/pix, one image
+    plane per band in the same order (band 0 = VIS); its header names the
+    model (combiner and members).
 
-The model takes the 4-band Euclid LR cube (VIS + NIR Y/J/H) as input and
-emits the 4-band HR cube (VIS + Y/J/H), so all four bands are fetched at the
-same sky footprint, converted from the archive's ADU/s to electrons via
-each band's MAGZERO, stacked, and run through ``reconstruct``. The raw
-per-band archive cutouts are also kept as ``raw_<band>.fits``.
+The production model is the ensemble (``load_eval_ensemble``): the spatial
+gate over the STARFULL members it reads, or their plain mean — logged — when
+no current gate loads. It takes the 4-band Euclid LR cube (VIS + NIR Y/J/H)
+and emits the 4-band HR cube, so all four bands are fetched at the same sky
+footprint, converted from the archive's ADU/s to electrons via each band's
+MAGZERO, stacked, and run through ``sr_from_model``. The raw per-band archive
+cutouts are also kept as ``raw_<band>.fits``.
 
 Usage:
     python scripts/infer_euclid_cutout.py \
         --ra 267.4229 --dec 64.8873 --vis-pixels 1024 \
-        --ckpt-dir ckpt/wdsr --out-dir data/euclid_inference/local_cutout
+        --out-dir data/euclid_inference/local_cutout
 """
 
 from __future__ import annotations
@@ -36,49 +38,47 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.config import Config
+from euclid_polish.eval.ensemble_infer import load_eval_ensemble, sr_from_model
 from euclid_polish.photometry import (
     adu_per_s_to_electrons,
     adu_per_s_to_electrons_factor,
     header_magzero,
 )
-from euclid_polish.training.inference import (
-    load_model_from_checkpoint,
-    reconstruct,
-    scaled_wcs_header,
-)
+from euclid_polish.training.inference import scaled_wcs_header
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__)
+def _ascii(value) -> str:
+    """FITS header text must be ASCII (member labels carry a '·')."""
+    return (str(value).replace("·", ".")
+            .encode("ascii", "replace").decode("ascii"))
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ra", type=float, required=True, help="ICRS RA (deg).")
     p.add_argument("--dec", type=float, required=True, help="ICRS Dec (deg).")
     p.add_argument("--vis-pixels", type=int, default=2048,
                    help="VIS cutout side in 0.10\"/pix pixels (default 2048).")
-    p.add_argument("--ckpt-dir", default=Config.DEFAULT_CHECKPOINT_DIR)
+    p.add_argument("--ensemble-dir", default=None,
+                   help="Ensemble base dir (default: <ckpt parent>/ensemble). "
+                        "The production gate picks the members it reads.")
     p.add_argument("--num-res-blocks", type=int,
                    default=Config.DEFAULT_NUM_RES_BLOCKS)
     p.add_argument("--out-dir",
                    default=os.path.join(Config.DATA_DIR,
                                         "euclid_inference", "adhoc"))
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     os.makedirs(args.out_dir, exist_ok=True)
 
-    import tensorflow as tf
-
-    latest = tf.train.latest_checkpoint(args.ckpt_dir)
-    if not latest:
-        print(f"ERROR: no checkpoint in {args.ckpt_dir}")
-        return 1
     scale = Config.DEFAULT_REBIN_FACTOR
-    model = load_model_from_checkpoint(
-        args.ckpt_dir, scale, args.num_res_blocks,
-        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-    )
-    print(f"loaded checkpoint: {latest}")
+    model = load_eval_ensemble(args.ensemble_dir, args.num_res_blocks, log=print)
+    print(f"model: {model.label}")
     print(f"position: RA={args.ra:.5f}  Dec={args.dec:+.5f}  "
           f"VIS size={args.vis_pixels} px")
 
@@ -115,7 +115,7 @@ def main() -> int:
 
     cube = np.stack([bands_e[n] for n in Config.LR_INPUT_BAND_NAMES], axis=-1)
     print(f"running model on cube {cube.shape} …")
-    lr_vis, sr = reconstruct(model, cube)
+    lr_vis, sr, _members = sr_from_model(model, cube)
     print(f"  LR VIS: {lr_vis.shape}   SR: {sr.shape}")
 
     # The ESA cutout header carries an EXTNAME (and possibly other keys)
@@ -149,17 +149,22 @@ def main() -> int:
 
     sr_header = (_clean(scaled_wcs_header(vis_header, scale))
                  if vis_header is not None else fits.Header())
-    sr = np.asarray(sr, dtype=np.float32)
-    if sr.ndim == 3:
-        # 4-band SR cube → one plane per band (same convention as the
-        # original_stack file).
-        sr = np.ascontiguousarray(np.moveaxis(sr, -1, 0))
-        sr_header["OBJECT"] = "Euclid SR (WDSR, 4-band)"
-        sr_header["BANDS"]  = (",".join(Config.LR_INPUT_BAND_NAMES),
-                               "NAXIS3 plane order (band 0 = VIS)")
-    else:
-        sr_header["OBJECT"] = "Euclid SR VIS (WDSR)"
+    # 4-band SR cube → one plane per band (same convention as the
+    # original_stack file).
+    sr = np.ascontiguousarray(np.moveaxis(np.asarray(sr, dtype=np.float32), -1, 0))
+    sr_header["OBJECT"] = "Euclid SR (WDSR, 4-band)"
+    sr_header["BANDS"]  = (",".join(Config.LR_INPUT_BAND_NAMES),
+                           "NAXIS3 plane order (band 0 = VIS)")
     sr_header["BUNIT"]  = "electron"
+    # The model behind the SR: its combiner (member_mean = the plain mean),
+    # the members it was fitted on and the ones that ran (its reads).
+    sr_header["MODEL"] = _ascii(model.label)    # no comment: labels run long
+    sr_header["COMBINER"] = (model.combiner_kind or "member_mean",
+                             "production combiner")
+    sr_header["MEMBERS"] = (",".join(map(_ascii, model.member_labels)),
+                            "fitted member labels")
+    sr_header["RUNMEMB"] = (",".join(map(_ascii, model.run_labels)),
+                            "member labels that ran")
     sr_path = os.path.join(args.out_dir, "SR.fits")
     fits.PrimaryHDU(sr, header=sr_header).writeto(
         sr_path, overwrite=True, output_verify="silentfix")
