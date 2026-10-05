@@ -39,12 +39,19 @@ from euclid_polish.eval import (
     power_spectrum,
     transformation_summary,
 )
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.sky.observation.q1_fields import q1_field_for
 from euclid_polish.web import errors, euclid_session, fasrc_config
 from euclid_polish.web.fasrc_gate import requires_fasrc
+from euclid_polish.web.helpers import sky_records
+from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE
-from euclid_polish.web.security import fresh_requested, refuse_cross_site_cache_fill
+from euclid_polish.web.security import (
+    fresh_requested,
+    is_same_origin_request,
+    refuse_cross_site_cache_fill,
+)
 
 #: The angular power-spectrum curves written beside its PNG (the interactive plot).
 _APS_JSON = "angular_power_spectrum.json"
@@ -264,6 +271,30 @@ def _bad_run_arg(value: str) -> bool:
         "/" in value or "\\" in value
         or value in (".", "..")
     )
+
+
+def _aps_cache_current(run_dir: str) -> bool:
+    """Whether the cached angular power spectrum (the curves JSON beside its
+    PNG) was measured against the record the production SR is scored against
+    now: the same kind (``power_spectrum.SPECTRUM_TARGET_KIND``) and, while
+    that record is synced, the same content fingerprint. A cache without that
+    identity, or of another record or an older copy of it, is stale."""
+    try:
+        with open(os.path.join(run_dir, _APS_JSON)) as handle:
+            cached = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(cached, dict):
+        return False
+    target, subset = cached.get("target"), cached.get("subset")
+    if (not isinstance(target, dict) or subset not in sky_records.SUBSETS
+            or target.get("kind") != power_spectrum.SPECTRUM_TARGET_KIND):
+        return False
+    path = tfrecord_path(_sky_records_local_dir(), power_spectrum.spectrum_target_name(subset))
+    try:
+        return sky_records.records_fingerprint(path) == target.get("fingerprint")
+    except OSError:
+        return True     # the record is not synced: nothing newer to measure against
 
 
 def _resolve_run_dir(
@@ -518,13 +549,17 @@ def register(app):
     def api_evaluation_angular_power_spectrum():
         """Render + serve the per-band HR-vs-SR angular power-spectrum PNG.
 
-        Per-band T(k) and r(k) (linear + asinh) over the **sky validation
-        fields** synced through /sky (HR ``clean`` record vs generated SR cube).
-        404 until the records are synced and SR has been generated. Cached to
-        ``<eval_results>/angular_power_spectrum.png``. ``POST`` re-renders
+        Per-band T(k) and r(k) (linear + asinh) over the synthetic records
+        synced in Synthetic › Records (the held-out test split, else
+        validate): the starfull ``hr`` record vs the production SR cube
+        generated in Models › Images. 404 until the records are synced and SR
+        has been generated. Cached to ``<eval_results>/angular_power_spectrum.png``
+        (+ its curves JSON); a same-origin GET re-renders a cache measured
+        against another target record, or an older copy of it
+        (:func:`_aps_cache_current`), like a missing one. ``POST`` re-renders
         (JSON ``{ok}``); a same-origin ``GET ?fresh=1`` still does (the SPA's
-        button), a cross-site one gets the cached render — or 404 when
-        nothing is rendered yet (a cross-site GET never renders).
+        button), a cross-site one gets the cached render, stale or not — or
+        404 when nothing is rendered yet (a cross-site GET never renders).
         """
         run = (request.values.get("run") or "").strip()
         run_dir, _run_name = _resolve_run_dir(run)
@@ -533,11 +568,13 @@ def register(app):
         out_png = os.path.join(run_dir, "angular_power_spectrum.png")
         refuse_cross_site_cache_fill(out_png)
         fresh = request.method == "POST" or fresh_requested()
-        if ((fresh or not os.path.isfile(out_png))
+        if ((fresh or not os.path.isfile(out_png)
+             or (is_same_origin_request() and not _aps_cache_current(run_dir)))
                 and power_spectrum.render_power_spectrum_summary(
                     out_png, out_json=os.path.join(run_dir, _APS_JSON)) is None):
-            abort(404, description="needs the synced validation records and their generated "
-                                   "SR cube (Models › Images: Generate SR)")
+            abort(404, description="needs the synced synthetic records (Synthetic › Records) and "
+                                   "their generated SR (Models › Images: Generate SR over "
+                                   "local records…)")
         if request.method == "POST":
             return jsonify({"ok": True, "rendered": True})
         return send_file(out_png, mimetype="image/png", max_age=0)
@@ -547,15 +584,20 @@ def register(app):
         """The per-band HR-vs-SR angular power spectrum as curves (Models ›
         Diagnostics › Recovery draws them): per band and space (linear,
         asinh) θ = 1/2k with the per-field median T(k) and r(k), their
-        16–84% spread and the field count. Cache only — written next to the
-        PNG whenever it renders (``POST /api/evaluation/angular-power-spectrum``);
-        404 in words until then."""
+        16–84% spread, the field count and the ``target`` record they were
+        scored against. Cache only — written next to the PNG whenever it
+        renders (``POST /api/evaluation/angular-power-spectrum``); 404 in
+        words until then, and for a cache that is not current
+        (:func:`_aps_cache_current`)."""
         run = (request.values.get("run") or "").strip()
         run_dir, _run_name = _resolve_run_dir(run)
         path = os.path.join(run_dir, _APS_JSON)
         if not os.path.isfile(path):
             abort(404, description="the angular power spectrum is not measured yet — compute it "
-                                   "(it needs the synced validation records and their generated SR)")
+                                   "(it needs the synced synthetic records and their generated SR)")
+        if not _aps_cache_current(run_dir):
+            abort(404, description="the angular power spectrum was measured against another "
+                                   "target record — measure it again")
         return send_file(path, mimetype="application/json", max_age=0)
 
     @app.route("/eval-files/<path:relpath>")

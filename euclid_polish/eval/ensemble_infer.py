@@ -218,8 +218,8 @@ def sr_from_model(model: Any, lr_cube: np.ndarray
 
 
 _NO_MEMBERS = ("no active STARFULL ensemble members — train one "
-               "(scripts/train_ensemble.py --count 1 works) or pull members "
-               "on the /ensemble page.")
+               "(Models › Train, or scripts/train_ensemble.py --count 1) or "
+               "pull members from FASRC in Models › Members.")
 
 
 def load_eval_ensemble(base_dir: str | None = None,

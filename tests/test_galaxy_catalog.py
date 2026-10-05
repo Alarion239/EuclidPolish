@@ -227,9 +227,12 @@ def test_build_relax_forces_breakdown_even_with_data(monkeypatch, tmp_path):
 
 def test_build_requires_auth(monkeypatch, tmp_path):
     monkeypatch.setattr(gc, "_login", lambda **k: False)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as err:
         gc.build(str(tmp_path / "g.csv"), n_galaxies=3,
                  lens_catalog_path=_lens_csv(tmp_path), seed=0)
+    # the console's one Euclid archive login lives in System › Connections
+    assert "System › Connections" in str(err.value)
+    assert "Evaluation page" not in str(err.value)
 
 
 def test_build_with_client_skips_env_login(monkeypatch, tmp_path):

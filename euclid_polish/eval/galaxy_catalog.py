@@ -280,8 +280,8 @@ def build(out_csv: str | None = None, *, n_galaxies: int,
     if client is None and not _login():
         raise RuntimeError(
             "Euclid archive login required to build the galaxy catalog. Log in "
-            "on the Evaluation page, or set EUCLID_USER/EUCLID_PASSWORD (same "
-            "credentials the lens-cutout downloads use).")
+            "under System › Connections, or set EUCLID_USER/EUCLID_PASSWORD "
+            "(same credentials the lens-cutout downloads use).")
 
     lenses = read_eval_catalog(lens_catalog_path)
     rng = random.Random(seed)

@@ -1,6 +1,6 @@
 """Source-centered synthetic evaluation (syn-lens / syn-gal).
 
-Synthetic validation fields have HR truth, so we can measure whether SR moved a
+Synthetic held-out fields have HR truth, so we can measure whether SR moved a
 source *toward* the truth. Unlike real lens cutouts these fields are crowded, so
 we crop M×M HR-pixel postage stamps centered on one known source per field — a lens
 (``syn-lens``) or a field galaxy (``syn-gal``) — using the sidecar source
@@ -45,7 +45,7 @@ from euclid_polish.eval.ensemble_infer import (
 )
 from euclid_polish.eval.progress import tqdm_progress
 from euclid_polish.eval.stamp_geometry import crop_stamp  # re-export (back-compat)
-from euclid_polish.eval.subsets import eval_subset
+from euclid_polish.eval.subsets import EVAL_SUBSET, EVAL_SUBSET_FALLBACK, eval_subset
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.sky.generation.source_catalog import read_sources, source_is_off_field
 from euclid_polish.training.target_blur import blur_target_array
@@ -61,9 +61,12 @@ __all__ = [
 
 
 def default_records_dir() -> str | None:
-    """Local dir holding the validation TFRecords, or ``None`` if not present."""
+    """Local dir holding the eval TFRecords — the held-out ``test`` split or,
+    for datasets generated before it, ``validate`` (what :func:`eval_subset`
+    then reads) — or ``None`` if neither is present."""
     for d in (Config.RECORDS_DIR_V2, _sky_records_local_dir()):
-        if d and os.path.isfile(os.path.join(d, "dirty_validate.tfrecord")):
+        if d and any(os.path.isfile(tfrecord_path(d, f"dirty_{s}"))
+                     for s in (EVAL_SUBSET, EVAL_SUBSET_FALLBACK)):
             return d
     return None
 
@@ -236,8 +239,9 @@ def run_synthetic_eval(
     rdir = records_dir or default_records_dir()
     if rdir is None:
         raise FileNotFoundError(
-            "eval records not found (dirty/hr_test.tfrecord). Open the "
-            "/inference page once to sync them, or set Config.RECORDS_DIR_V2.")
+            f"eval records not found (dirty_{EVAL_SUBSET}.tfrecord, else "
+            f"dirty_{EVAL_SUBSET_FALLBACK}.tfrecord). Sync them in Synthetic › "
+            "Records (Sync from FASRC…), or set Config.RECORDS_DIR_V2.")
     # Held-out test split when present, else validate (pre-test-split datasets).
     sub = eval_subset(rdir)
     field_subset = sub                          # preserve subset; `sub` is reused as the
@@ -274,7 +278,7 @@ def run_synthetic_eval(
     lr_by = {r.index: r for r in lr_recs if r.index is not None}
     common = sorted(set(lr_by) & set(hr_by) & set(by_field))
     if not common:
-        _emit("no validation fields with matching LR/HR + source catalog.")
+        _emit(f"no {sub} fields with matching LR/HR + source catalog.")
         return {"rows": [], "n_ok": 0, "n_skip": 0, "groups": {}}
 
     # HR field size (HR is 2× LR; sources carry HR-grid coords).

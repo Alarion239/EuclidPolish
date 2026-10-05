@@ -17,6 +17,7 @@ from euclid_polish.eval import power_spectrum
 from euclid_polish.web.app import create_app
 from euclid_polish.web.helpers import ensemble_viz as ev
 from euclid_polish.web.routes import ensemble as ensemble_routes
+from euclid_polish.web.routes import evaluation as evaluation_routes
 
 SAME_ORIGIN = {"Sec-Fetch-Site": "same-origin"}
 LABELS = ["196·psnr", "178·psnr", "170·psnr"]
@@ -137,10 +138,13 @@ def test_the_pixel_trace_reads_the_bands_sidecar(client, cubes, monkeypatch):
 def test_the_angular_power_spectrum_is_served_as_curves_cache_only(client, tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
     os.makedirs(Config.EVAL_RESULTS_DIR)
+    # no synced records: the cache's target record cannot have changed since
+    monkeypatch.setattr(evaluation_routes, "_sky_records_local_dir", lambda: str(tmp_path / "records"))
     missing = client.get("/api/evaluation/angular-power-spectrum.json")
     assert missing.status_code == 404 and "not measured yet" in missing.get_json()["error"]
     data = {"subset": "validate", "n_fields": 2, "field_n": 64, "pixel_scale": 0.05, "lr_scale": 0.1,
-            "theta_max": 4.0, "band_names": ["VIS"], "bands": {"VIS": {"psf_fwhm": 0.16, "linear": {}, "asinh": {}}}}
+            "theta_max": 4.0, "band_names": ["VIS"], "bands": {"VIS": {"psf_fwhm": 0.16, "linear": {}, "asinh": {}}},
+            "target": {"kind": "hr", "records": "hr_validate.tfrecord", "fingerprint": "f"}}
     monkeypatch.setattr(power_spectrum, "power_spectrum_summary_data", lambda subset=None: data)
     monkeypatch.setattr(power_spectrum, "render_power_spectrum_figure", lambda out_png, d: out_png)
     assert client.post("/api/evaluation/angular-power-spectrum").get_json() == {"ok": True, "rendered": True}

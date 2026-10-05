@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from euclid_polish.eval.ensemble_infer import sr_from_model
+from euclid_polish.eval.ensemble_infer import load_eval_ensemble, sr_from_model
 
 
 class _FakeEnsemble:
@@ -34,3 +35,11 @@ def test_sr_from_model_singleton_hides_members():
     assert members is None                            # no all-zero std cubes
     assert np.allclose(sr, 5.0)
     assert lr_vis.shape == (3, 3)
+
+
+def test_no_members_says_where_to_pull_them(tmp_path):
+    with pytest.raises(RuntimeError) as err:
+        load_eval_ensemble(str(tmp_path))             # an empty registry
+    message = str(err.value)
+    assert "no active STARFULL ensemble members" in message
+    assert "Models › Members" in message and "/ensemble page" not in message

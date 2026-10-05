@@ -13,7 +13,7 @@ from euclid_polish.config import Config
 from euclid_polish.eval.disagreement import write_disagreement_cubes
 from euclid_polish.eval.ensemble_infer import sr_from_model
 from euclid_polish.eval.sr_provenance import write_sr_provenance
-from euclid_polish.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.photometry import adu_per_s_to_electrons_factor, header_magzero
 from euclid_polish.training.inference import (
     plot_reconstruction,
     scaled_wcs_header,
@@ -38,7 +38,8 @@ def reconstruct_cutout_at(
     This is the per-object body of the batch catalog evaluator
     (``eval/catalog_runner.py``). It fetches each band, converts the
     archive's ADU s⁻¹ to electrons-over-the-stack via the per-band ``MAGZERO``
-    (so the model sees the same scale it trained on), stacks to ``(H, W, 4)``,
+    (so the model sees the same scale it trained on; a band whose header has
+    no finite ``MAGZERO`` raises ``ValueError``), stacks to ``(H, W, 4)``,
     runs the ensemble (``sr_from_model``), and writes ``original_stack.fits``
     + ``SR.fits`` (plus the disagreement cubes when more than one member ran
     and, when ``render``, ``eye.png`` + ``solar.png``) into ``out_dir``.
@@ -87,10 +88,10 @@ def reconstruct_cutout_at(
             header = primary.header
         if band_name == "VIS":
             vis_header = header.copy()
-        magzero = float(cast(str | float, header.get(
-            "MAGZERO", band.sim_zeropoint_e,
-        )))
-        # Single source of truth for archive ADU/s → electrons-over-stack.
+        # Single source of truth for archive ADU/s → electrons-over-stack;
+        # header_magzero raises on a missing MAGZERO rather than converting
+        # by a factor of one.
+        magzero = header_magzero(header, source=f"{band_name} cutout {outf}")
         adu_to_e = adu_per_s_to_electrons_factor(magzero, band)
         data_e = (arr * adu_to_e).astype(np.float32)
         bands_data[band_name] = data_e
