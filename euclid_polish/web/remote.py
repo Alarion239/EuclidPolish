@@ -67,6 +67,14 @@ class SSHError(RuntimeError):
     pass
 
 
+def _remote_path_word(path: str) -> str:
+    """``path`` as one remote shell word: quoted literally, except that a
+    leading ``~/`` becomes ``"$HOME"/`` so it expands on the remote side."""
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
 class SSHSession:
     """Owns the ControlMaster socket. Uses public-key auth — first
     ``connect()`` opens the socket, every later call goes through the
@@ -274,6 +282,7 @@ class SSHSession:
         content: str,
         *,
         executable: bool = False,
+        private: bool = False,
         timeout: int = 60,
     ) -> tuple[int, str, str]:
         """Write text remotely through stdin, not the SSH command packet.
@@ -283,13 +292,26 @@ class SSHSession:
         can exceed the mux request size (``mm_send_fd: Message too long``).
         The remote command stays tiny here; the body streams through stdin and
         is atomically renamed into place only after a complete transfer.
+
+        The body never appears in a command line (neither the local ``ssh``
+        argv nor the remote shell's), which is how secrets reach FASRC:
+        ``private=True`` makes the file owner-only (mode 600, 700 when
+        ``executable``) from the moment it is created. A leading ``~/`` in
+        ``remote_path`` resolves to the remote ``$HOME``.
         """
         if not self.is_connected():
             raise SSHError("not connected")
-        target = shlex.quote(remote_path)
-        temporary = shlex.quote(remote_path + ".tmp")
+        target = _remote_path_word(remote_path)
+        temporary = _remote_path_word(remote_path + ".tmp")
+        start = ""
         finish = f"chmod +x {temporary} && " if executable else ""
-        cmd = f"cat > {temporary} && {finish}mv {temporary} {target}"
+        if private:
+            # umask 077 creates the temporary owner-only; a stale one left by
+            # an interrupted write is removed first so it cannot keep looser
+            # bits while the secret streams in.
+            start = f"umask 077 && rm -f {temporary} && "
+            finish = f"chmod {700 if executable else 600} {temporary} && "
+        cmd = f"{start}cat > {temporary} && {finish}mv {temporary} {target}"
         with self._sem:
             result = subprocess.run(
                 ["ssh", "-S", self.cfg.socket, self.cfg.target, cmd],

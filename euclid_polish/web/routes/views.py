@@ -127,8 +127,8 @@ def register(app):
         if not present:
             return jsonify({"ok": False, "error": "no sky records — sync them first"}), 400
         if not sky_records.checkpoint_present():
-            return jsonify({"ok": False, "error": "no active ensemble members — train or "
-                            "pull them on the /ensemble page"}), 400
+            return jsonify({"ok": False, "error": "no active ensemble members — train them in "
+                            "Models › Train or pull them in Models › Members"}), 400
         raw = str(request.values.get("subsets", "") or "").strip()
         wanted = [s.strip() for s in raw.split(",") if s.strip()] if raw else list(present)
         unknown = [s for s in wanted if s not in sky_records.SUBSETS]

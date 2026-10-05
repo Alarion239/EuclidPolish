@@ -62,6 +62,16 @@ def test_backup_without_campaign_raises(store, tmp_path):
         store.backup_fits(str(src), comment="nope")
 
 
+def test_no_campaign_error_points_at_the_notebook_and_the_cli(store, tmp_path):
+    src = _make_fits(tmp_path / "x.fits")
+    with pytest.raises(TrackingError) as excinfo:
+        store.backup_fits(str(src), comment="nope")
+    message = str(excinfo.value)
+    assert "Notebook › Log → New campaign…" in message
+    assert "scripts/track.py new" in message
+    assert "Tracking page" not in message
+
+
 def test_save_campaign_moves_to_archive(store):
     store.create_campaign("Experiment Alpha")
     res = store.save_campaign()

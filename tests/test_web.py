@@ -451,27 +451,26 @@ def test_euclid_psf_sync_forces_each_band_with_larger_cap(client, monkeypatch, t
 
 
 def test_euclid_auth_save_writes_remote_credentials(client, monkeypatch):
-    """Saving Euclid credentials writes ~/.euclid_credentials on FASRC via a
-    quoted heredoc (password as stdin, not argv), mode 600. Nothing is
-    stored on the laptop."""
+    """Saving Euclid credentials writes ~/.euclid_credentials on FASRC through
+    ``write_text`` (password on stdin, never in a command), owner-only.
+    Nothing is stored on the laptop."""
     captured = {}
 
     class _CapSSH:
         def is_connected(self): return True
         def run(self, cmd, timeout=60):
-            captured["cmd"] = cmd
+            raise AssertionError(f"credentials must not go through run(): {cmd!r}")
+        def write_text(self, remote_path, content, *, executable=False, private=False,
+                       timeout=60):
+            captured.update(path=remote_path, content=content, private=private)
             return (0, "", "")
 
     monkeypatch.setattr(web_remote.STATE, "ssh", _CapSSH())
     r = client.post("/euclid-auth/save",
                     data={"euclid_user": "alice", "euclid_password": "s3cr3t!$x"})
     assert r.status_code == 200 and r.get_json()["ok"] is True
-    cmd = captured["cmd"]
-    assert "alice" in cmd and "s3cr3t!$x" in cmd
-    assert ".euclid_credentials" in cmd
-    assert "umask 077" in cmd and "chmod 600" in cmd
-    # Heredoc terminator present so the password lands as file content.
-    assert "__EUCLID_CREDS_EOF__" in cmd
+    assert captured == {"path": "~/.euclid_credentials", "content": "alice\ns3cr3t!$x\n",
+                        "private": True}
 
 
 def test_euclid_auth_save_rejects_blank(client, monkeypatch):
@@ -524,14 +523,18 @@ def test_local_euclid_login_is_reachable_without_fasrc(client, monkeypatch):
 
 
 def test_tng_auth_save_writes_remote_token(client, monkeypatch):
-    """Saving the TNG token writes ~/.tng_api_key on FASRC via a quoted
-    heredoc (token as stdin, not argv), mode 600. Nothing is stored locally."""
+    """Saving the TNG token writes ~/.tng_api_key on FASRC through
+    ``write_text`` (token on stdin, never in a command), owner-only. Nothing
+    is stored locally."""
     captured = {}
 
     class _CapSSH:
         def is_connected(self): return True
         def run(self, cmd, timeout=60):
-            captured["cmd"] = cmd
+            raise AssertionError(f"the token must not go through run(): {cmd!r}")
+        def write_text(self, remote_path, content, *, executable=False, private=False,
+                       timeout=60):
+            captured.update(path=remote_path, content=content, private=private)
             return (0, "", "")
 
     monkeypatch.setattr(web_remote.STATE, "ssh", _CapSSH())
@@ -539,12 +542,8 @@ def test_tng_auth_save_writes_remote_token(client, monkeypatch):
     assert r.status_code == 200
     d = r.get_json()
     assert d["ok"] is True and d["chars"] == len("abc123DEADBEEF")
-    cmd = captured["cmd"]
-    assert "abc123DEADBEEF" in cmd
-    assert ".tng_api_key" in cmd
-    assert "umask 077" in cmd and "chmod 600" in cmd
-    # Heredoc terminator present so the token lands as file content.
-    assert "__TNG_KEY_EOF__" in cmd
+    assert captured == {"path": "~/.tng_api_key", "content": "abc123DEADBEEF\n",
+                        "private": True}
     # The token must never reach the response payload.
     assert "abc123DEADBEEF" not in r.get_data(as_text=True)
 

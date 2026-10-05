@@ -143,7 +143,7 @@ class TrackingStore:
         if not self.has_current():
             raise TrackingError(
                 "no active tracking campaign — create one first "
-                "(Tracking page → New campaign, or scripts/track.py new)."
+                "(Notebook › Log → New campaign…, or scripts/track.py new)."
             )
         return self.current_dir
 

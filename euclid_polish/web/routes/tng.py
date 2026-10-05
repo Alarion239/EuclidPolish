@@ -86,8 +86,11 @@ def _archive_png_to_vis(kind: str, png_bytes: bytes) -> None:
 
 
 # Remote path of the token file, matching the script's default
-# (``Config.Tng.API_KEY_FILE`` = ``~/.tng_api_key``). Quoted so a literal
-# ``$HOME`` expands on the remote shell, mirroring ``_EUCLID_CREDS_REMOTE``.
+# (``Config.Tng.API_KEY_FILE`` = ``~/.tng_api_key``): ``_TNG_KEY_PATH`` for
+# ``SSHSession.write_text`` (which resolves the ``~/``), ``_TNG_KEY_REMOTE``
+# as a shell word whose ``$HOME`` expands on the remote shell, mirroring
+# ``_EUCLID_CREDS_REMOTE``.
+_TNG_KEY_PATH = "~/" + os.path.basename(Config.Tng.API_KEY_FILE)
 _TNG_KEY_REMOTE = '"$HOME/' + os.path.basename(Config.Tng.API_KEY_FILE) + '"'
 
 
@@ -294,9 +297,10 @@ def register(app):
     # ---------------- IllustrisTNG API token (for the FASRC job) ----------
     # The download job runs on FASRC and authenticates to the TNG API there.
     # We write the token to the remote ``~/.tng_api_key`` (the file the script
-    # falls back to) via the SSH channel — the token is sent as heredoc stdin
-    # (never in a process argv), stored mode-600, and never touches the laptop
-    # disk or the job DB.
+    # falls back to) via the SSH channel — the token streams over the
+    # channel's stdin (``SSHSession.write_text``; never in the local ssh argv
+    # or the remote command line), is stored mode-600, and never touches the
+    # laptop disk or the job DB.
 
     @app.route("/tng-auth/save", methods=["POST"])
     @requires_fasrc
@@ -308,15 +312,10 @@ def register(app):
             return jsonify({"ok": False, "error": "token is required"}), 400
         if "\n" in token or "\r" in token:
             return jsonify({"ok": False, "error": "invalid characters"}), 400
-        # Quoted heredoc → body is literal (no shell expansion of the token);
-        # umask 077 + chmod 600 keep it private on the remote.
-        write_cmd = (
-            f"umask 077; cat > {_TNG_KEY_REMOTE} <<'__TNG_KEY_EOF__'\n"
-            f"{token}\n"
-            "__TNG_KEY_EOF__\n"
-            f"chmod 600 {_TNG_KEY_REMOTE}"
-        )
-        rc, _out, err = STATE.ssh.run(write_cmd, timeout=15)
+        # stdin carries the token verbatim (no shell sees it), and
+        # private=True keeps the file owner-only.
+        rc, _out, err = STATE.ssh.write_text(
+            _TNG_KEY_PATH, f"{token}\n", private=True, timeout=15)
         if rc != 0:
             return jsonify({"ok": False,
                             "error": f"failed to write token: {err.strip()}"}), 500

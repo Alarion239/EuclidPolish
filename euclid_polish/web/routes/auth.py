@@ -93,9 +93,12 @@ def register(app):
     # archive there. We write the credentials to the remote
     # ``~/.euclid_credentials`` (``scripts/download_all_bands.py`` bridges it
     # into ``EUCLID_USER``/``EUCLID_PASSWORD`` for ``EuclidCatalog``) via
-    # the SSH channel — the password is sent as heredoc stdin (never in a
-    # process argv), is stored mode-600 on the remote, and never touches
+    # the SSH channel — the password streams over the channel's stdin
+    # (``SSHSession.write_text``; never in the local ssh argv or the remote
+    # command line), is stored mode-600 on the remote, and never touches
     # the laptop disk or the job DB.
+    _EUCLID_CREDS_PATH = "~/.euclid_credentials"
+    # The same file as a remote shell word, for the status probe.
     _EUCLID_CREDS_REMOTE = '"$HOME/.euclid_credentials"'
 
     @app.route("/euclid-auth/save", methods=["POST"])
@@ -110,15 +113,10 @@ def register(app):
                             "error": "username and password are required"}), 400
         if "\n" in user or "\n" in pw:
             return jsonify({"ok": False, "error": "invalid characters"}), 400
-        # Quoted heredoc → body is literal (no shell expansion of the
-        # password); umask 077 + chmod 600 keep it private on the remote.
-        write_cmd = (
-            f"umask 077; cat > {_EUCLID_CREDS_REMOTE} <<'__EUCLID_CREDS_EOF__'\n"
-            f"{user}\n{pw}\n"
-            "__EUCLID_CREDS_EOF__\n"
-            f"chmod 600 {_EUCLID_CREDS_REMOTE}"
-        )
-        rc, _out, err = STATE.ssh.run(write_cmd, timeout=15)
+        # Line 1 user, line 2 password; stdin carries both verbatim (no shell
+        # sees them), and private=True keeps the file owner-only.
+        rc, _out, err = STATE.ssh.write_text(
+            _EUCLID_CREDS_PATH, f"{user}\n{pw}\n", private=True, timeout=15)
         if rc != 0:
             return jsonify({"ok": False,
                             "error": f"failed to write credentials: {err.strip()}"}), 500

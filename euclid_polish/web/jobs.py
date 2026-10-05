@@ -40,6 +40,8 @@ from typing import Any
 import tqdm as _tqdm_module
 from tqdm import auto as _tqdm_auto
 
+from euclid_polish.web.json_provider import finite_or_none
+
 # Results larger than this (as compact JSON) are not echoed to the UI.
 MAX_RESULT_BYTES = 64 * 1024
 # Finished jobs kept by a registry before the oldest are evicted.
@@ -55,11 +57,16 @@ class JobCancelled(BaseException):  # noqa: N818 - public contract name (C2)
 
 
 def _json_safe(value: Any) -> Any:
-    """``value`` when it is strict JSON of at most 64 KB, else ``None``."""
+    """``value`` as strict JSON of at most 64 KB, else ``None``.
+
+    A non-finite float anywhere in it is sent as ``null``
+    (:func:`finite_or_none`); the rest of the result is kept. A value that
+    is not JSON at all (a set, an object) or is too large gives ``None``.
+    """
     if value is None:
         return None
     try:
-        encoded = json.dumps(value, allow_nan=False, separators=(",", ":"))
+        encoded = json.dumps(finite_or_none(value), allow_nan=False, separators=(",", ":"))
     except (TypeError, ValueError, RecursionError):
         return None
     if len(encoded.encode("utf-8")) > MAX_RESULT_BYTES:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -224,9 +225,37 @@ def test_result_passthrough_only_for_small_json_values():
     assert registry.get(small).to_dict()["result"] == {"path": "/tmp/x", "n": [1, 2]}
     assert registry.get(big).to_dict()["result"] is None
     assert registry.get(odd).to_dict()["result"] is None
-    assert registry.get(nan).to_dict()["result"] is None
+    assert registry.get(nan).to_dict()["result"] == {"value": None}
     # The raw return value is still available to in-process callers.
     assert registry.get(odd).result == {"set": {1, 2}}
+
+
+def test_non_finite_values_become_null_and_the_rest_of_the_result_survives():
+    """One NaN/Infinity (an empty group's mean, say) is sent as ``null``; the
+    other fields of the result still reach the UI."""
+    registry = JobRegistry()
+    job_id = registry.spawn("metrics", lambda _cap: {
+        "ok": True,
+        "psnr": float("nan"),
+        "per_band": {"VIS": 41.5, "Y_E": float("inf"), "J_E": float("-inf")},
+        "curve": (1.0, float("nan"), 3.0),
+    })
+    _wait_for_done(registry, job_id)
+    result = registry.get(job_id).to_dict()["result"]
+    assert result == {"ok": True, "psnr": None,
+                      "per_band": {"VIS": 41.5, "Y_E": None, "J_E": None},
+                      "curve": [1.0, None, 3.0]}
+    # Strict JSON: the payload never carries a bare NaN/Infinity token.
+    json.dumps(registry.get(job_id).to_dict(), allow_nan=False)
+
+
+def test_json_safe_still_drops_oversized_and_unserialisable_results():
+    assert jobs._json_safe(float("nan")) is None
+    assert jobs._json_safe({"blob": "x" * (jobs.MAX_RESULT_BYTES + 1)}) is None
+    assert jobs._json_safe({"obj": object()}) is None
+    looped: list = []
+    looped.append(looped)
+    assert jobs._json_safe(looped) is None
 
 
 def test_failed_job_has_no_result_and_is_not_cancellable():
