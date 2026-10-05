@@ -19,6 +19,8 @@ export const DENSITY_KEYS = {
   fourBand: "Euclid four-band",
   model: "model",
   synthetic: "generated",
+  gaia: "Gaia G",
+  gaiaFit: "Gaia fit",
 } as const;
 
 export const densityColor = {
@@ -28,16 +30,26 @@ export const densityColor = {
   fourBand: () => categorical(7),
   model: () => categorical(3),
   synthetic: () => categorical(4),
+  gaia: () => categorical(2),
+  gaiaFit: () => categorical(2),
 };
 
 /** One panel's curves. On the VIS panel the Euclid curve is the Q1 PHZ counts; on a colour panel it
- *  is the matched fixed-field stars' four-band colours. No Gaia series is drawn (deleted: the native
- *  Gaia counts and the Gaia projection say nothing about the synthetic stars). */
+ *  is the matched fixed-field stars' four-band colours. The VIS panel also draws the native Gaia G_AB
+ *  counts and their shared-slope fit. */
 export function densitySeries(parameter: StarDensityParameter, trainingIncluded: boolean, panel: StarDensityKey = "vis"): Series[] {
   const out: Series[] = [];
   if (parameter.point_sources) {
     out.push({ x: parameter.x, y: positiveOrNull(parameter.point_sources), color: densityColor.pointSources(), width: 2.2,
       name: "Q1 point sources (VIS)", key: DENSITY_KEYS.pointSources });
+  }
+  if (panel === "vis" && parameter.gaia_x && parameter.gaia) {
+    out.push({ x: parameter.gaia_x, y: positiveOrNull(parameter.gaia), color: densityColor.gaia(), width: 2, mode: "scatter",
+      marker: "ring", name: "native Gaia G (AB) counts", key: DENSITY_KEYS.gaia });
+    if (parameter.gaia_fit) {
+      out.push({ x: parameter.gaia_x, y: positiveOrNull(parameter.gaia_fit), color: densityColor.gaiaFit(), width: 1.8, dash: [4, 3],
+        name: "Gaia-intercept shared-slope fit", key: DENSITY_KEYS.gaiaFit });
+    }
   }
   out.push(panel === "vis"
     ? { x: parameter.x, y: positiveOrNull(parameter.euclid), color: densityColor.q1(), width: 2.2, name: "Q1 PHZ (VIS)", key: DENSITY_KEYS.q1 }
@@ -53,7 +65,7 @@ export function densitySeries(parameter: StarDensityParameter, trainingIncluded:
 
 /** Density y domain: the positive values, at most 5 decades below the peak. */
 export function densityDomain(parameter: StarDensityParameter): [number, number] {
-  const positive = [parameter.euclid, parameter.model, parameter.synthetic, parameter.point_sources ?? []].flat().filter((v) => Number.isFinite(v) && v > 0);
+  const positive = [parameter.euclid, parameter.model, parameter.synthetic, parameter.point_sources ?? [], parameter.gaia ?? []].flat().filter((v) => Number.isFinite(v) && v > 0);
   const span = extent(positive);
   if (!span) return [1e-4, 1];
   const high = Math.ceil(Math.log10(span[1]));
@@ -115,6 +127,8 @@ export const STAR_LEGEND = {
   q1: "Q1 PHZ stars",
   fourBand: "Gaia-matched Q1 stars",
   synthetic: "generated stars",
+  gaia: "Gaia G (AB) counts",
+  gaiaFit: "Gaia-intercept fit",
 } as const;
 
 /** The model curve's legend name: the VIS law, and whether its colour draws

@@ -290,13 +290,10 @@ def _stellar_density_comparison(
 ) -> dict[str, Any] | None:
     """Compare measured and generator stellar densities.
 
-    The VIS panel shows the Q1 counts, the fitted law and the generated
-    stars. No Gaia series is drawn: the native Gaia G_AB counts and the Gaia
-    projection were deleted from the console (the Gaia counts still enter
-    the shared-slope fit itself, see :func:`_fit_straight_star_magnitude_law`,
-    and the paper's calibration figure can draw them). ``gaia_rows`` and
-    ``gaia_area_arcmin2`` stay in the signature for the colour sample's
-    callers.
+    The VIS panel shows the Q1 counts, the fitted law, the generated stars
+    and the native Gaia G_AB counts with their Gaia-intercept shared-slope
+    fit (``gaia_x`` / ``gaia`` / ``gaia_fit``). The colour panels carry no
+    Gaia series; the Gaia projection was deleted from the console.
     """
     if (
         euclid_area_arcmin2 <= 0.0 or gaia_area_arcmin2 <= 0.0
@@ -468,9 +465,37 @@ def _stellar_density_comparison(
         )
     )
     q1_fit_diagnostics = magnitude_diagnostics.get("q1") or {}
+    # Native Gaia G_AB counts (Vega→AB) over the fixed Q1 Gaia fields, and the
+    # Gaia-intercept shared-slope line the prior was fitted with.
+    gaia_g_ab = np.asarray([
+        float(value) + _GAIA_G_AB_MINUS_VEGA_MAG
+        for row in gaia_rows
+        if str(row.get("central_selected_star") or "0").strip() != "1"
+        and (value := _finite(row.get("g_mag"))) is not None
+    ], dtype=np.float64)
+    gaia_fit_diagnostics = magnitude_diagnostics.get("gaia") or {}
+    gaia_bin_width = float(
+        gaia_fit_diagnostics.get("bin_width_mag") or _GAIA_COUNT_FIT_BIN_WIDTH_MAG
+    )
+    gaia_edges = _fixed_width_edges(bright, faint, gaia_bin_width)
+    gaia_centres = 0.5 * (gaia_edges[:-1] + gaia_edges[1:])
+    gaia_counts, _ = np.histogram(gaia_g_ab, bins=gaia_edges)
+    gaia_density = (
+        gaia_counts / (gaia_area_arcmin2 * np.diff(gaia_edges))
+    ).tolist()
+    gaia_intercept = _finite(gaia_fit_diagnostics.get("intercept"))
+    gaia_fit = (
+        np.power(
+            10.0, model_magnitude_law.slope * gaia_centres + gaia_intercept,
+        ).tolist()
+        if gaia_intercept is not None else None
+    )
     parameters: dict[str, Any] = {
         "vis": {
             "label": "VIS brightness",
+            "gaia_x": gaia_centres.tolist(),
+            "gaia": gaia_density,
+            "gaia_fit": gaia_fit,
             "x_label": "apparent magnitude [AB]",
             "x": (0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])).tolist(),
             "x_domain": [bright, faint],
@@ -1897,8 +1922,8 @@ def fit_star_population(
 ) -> dict[str, Any]:
     """Fit the required flux-aware empirical stellar prior.
 
-    The legacy exponential/blackbody fit is intentionally no longer selected
-    implicitly: a population artifact must be tied to raw Euclid fluxes and
+    The legacy exponential/blackbody fit was deleted (2acd91f) and there is
+    no fallback: a population artifact must be tied to raw Euclid fluxes and
     errors so generation cannot silently change statistical models.
     """
     if faint_limit is not None or bright_limit is not None:

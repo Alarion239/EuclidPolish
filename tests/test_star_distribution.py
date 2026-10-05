@@ -218,8 +218,9 @@ def test_star_distribution_payload_keeps_the_density_and_colour_panels(
         assert "gaia" not in panel, key               # the deleted projection
     vis = comparison["parameters"]["vis"]
     assert {"euclid", "model"} <= set(vis)
-    # The native Gaia G_AB counts and their fit are not drawn in the console.
-    assert not {"gaia", "gaia_x", "gaia_fit"} & set(vis)
+    # The native Gaia G_AB counts (and the fit, when the prior carries one) ride on the VIS panel.
+    assert {"gaia", "gaia_x", "gaia_fit"} <= set(vis)
+    assert len(vis["gaia"]) == len(vis["gaia_x"]) and sum(vis["gaia"]) > 0
     assert "gaia_count" not in comparison
     assert "gaia_native_g_count" not in comparison
 
@@ -276,7 +277,7 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     assert result["synthetic_area_arcmin2"] == pytest.approx(4.0)
     assert "selected synthetic test + validation" in result["note"]
     magnitude = result["parameters"]["vis"]
-    assert "gaia" not in magnitude and "gaia_fit" not in magnitude
+    assert sum(magnitude["gaia"]) > 0 and len(magnitude["gaia"]) == len(magnitude["gaia_x"])
     assert magnitude["fit_ranges"] == {"q1": [18.0, 23.0]}
     assert result["q1_expected_point_sources"] is None
     assert set(result["parameters"]) == {
@@ -414,7 +415,7 @@ def test_star_page_has_its_own_stellar_query_routes():
     """Stars are queried, fitted and activated through their own endpoints
     (never the galaxy MER + PHZ query). pytest pins only this backend
     contract; how the page renders is not tested by pytest (the dropped
-    page-source checks are handed to the Realism workspace WP's vitest
+    page-source checks are handed to the Synthetic workspace's vitest
     suite)."""
 
     rules: dict[str, set[str]] = {}

@@ -227,12 +227,13 @@ export type GalaxyPayload = {
 
 export type StarColorKey = "vis_y" | "vis_j" | "vis_h" | "y_j" | "y_h" | "j_h";
 export type StarDensityKey = "vis" | StarColorKey;
-/** One density panel. Only the VIS panel carries the Q1 point sources and the Q1 fit window. No
- *  panel carries a Gaia series (the native Gaia counts and the Gaia projection were deleted). */
+/** One density panel. Only the VIS panel carries the Q1 point sources, the Q1 fit window and the
+ *  native Gaia G_AB counts (`gaia` on the coarser `gaia_x` bins) with their shared-slope fit. */
 export type StarDensityParameter = {
   label: string; x_label: string; x: number[]; x_domain: [number, number];
   euclid: number[]; model: number[]; synthetic: number[];
   point_sources?: number[] | null;
+  gaia_x?: number[]; gaia?: number[] | null; gaia_fit?: number[] | null;
   fit_ranges?: { q1?: [number | null, number | null] };
 };
 export type StarDistribution = {

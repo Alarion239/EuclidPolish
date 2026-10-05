@@ -3,7 +3,7 @@
    the verdict line (generated vs prior density, the trusted fit window),
    the legend with the sample sizes, the wide VIS density panel with the
    trusted window shaded (Q1 point sources, Q1 PHZ stars, the model law, the
-   generated stars; the native Gaia counts are not drawn), then
+   generated stars; the native Gaia G counts and their fit), then
    the six colour panels as unit-area PDFs (Gaia-matched Q1 stars, the
    model's colour draws, the generated stars) and one caption (the Q1 area,
    the matched stars and their fields). Then the drawers: Prior (`?prior=1`:
@@ -70,6 +70,8 @@ function Density({ distribution }: { distribution: StarDistribution }) {
     { label: withSize(STAR_LEGEND.q1, formatApprox(comparison.q1_phz_expected_stars)), key: DENSITY_KEYS.q1, color: densityColor.q1() },
     ...(hasColours ? [{ label: withSize(STAR_LEGEND.fourBand, formatCount(comparison.euclid_color_count)), key: DENSITY_KEYS.fourBand,
       color: densityColor.fourBand() }] : []),
+    ...(vis.gaia?.length ? [{ label: STAR_LEGEND.gaia, key: DENSITY_KEYS.gaia, color: densityColor.gaia(), marker: "ring" as const }] : []),
+    ...(vis.gaia_fit?.length ? [{ label: STAR_LEGEND.gaiaFit, key: DENSITY_KEYS.gaiaFit, color: densityColor.gaiaFit(), dash: true }] : []),
     { label: starModelLabel(comparison.model_color_noise), key: DENSITY_KEYS.model, color: densityColor.model(), dash: true },
     { label: withSize(`${STAR_LEGEND.synthetic} (${distribution.training_included ? "train + test + validate" : "test + validate"})`,
       comparison.synthetic_star_count != null && generatedArea
@@ -134,6 +136,8 @@ function legendName(key: string | undefined, noise?: ModelNoise | null): string 
   switch (key) {
     case DENSITY_KEYS.pointSources: return STAR_LEGEND.pointSources;
     case DENSITY_KEYS.q1: return STAR_LEGEND.q1;
+    case DENSITY_KEYS.gaia: return STAR_LEGEND.gaia;
+    case DENSITY_KEYS.gaiaFit: return STAR_LEGEND.gaiaFit;
     case DENSITY_KEYS.model: return starModelLabel(noise);
     case DENSITY_KEYS.synthetic: return STAR_LEGEND.synthetic;
     default: return undefined;
