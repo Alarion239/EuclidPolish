@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseCssColor } from "../viewer/colormaps";
 import {
   COLOR_MODES,
   COLORMAPS,
@@ -71,7 +72,7 @@ describe("display store (C7)", () => {
     const s = useDisplay.getState();
     expect(s.color).toBe("lupton");
     expect(s.colormap).toBe("magma");
-    expect(s.nanColor).toBe("#000");
+    expect(s.nanColor).toBe("#000000");
     expect(s.invert).toBe(true);
   });
 
@@ -136,6 +137,25 @@ describe("display store (C7)", () => {
     localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify({ state: { nanColor: "#00ff00" }, version: 1 }));
     await useDisplay.persist.rehydrate();
     expect(useDisplay.getState().nanColor).toBe("#00ff00");
+  });
+
+  it("keeps the NaN colour a #rrggbb hex, so the rendered colour and the pickers agree", async () => {
+    for (const bad of ["red", "rgb(0, 0, 0)", "#12345", "#ggg", "transparent", 7, null]) {
+      expect(sanitizeDisplay({ nanColor: bad }).nanColor, String(bad)).toBe(DEFAULT_DISPLAY.nanColor);
+    }
+    // #rgb is expanded: <input type=color> (both pickers) only reads #rrggbb
+    expect(sanitizeDisplay({ nanColor: " #0A0 " }).nanColor).toBe("#00AA00");
+    expect(sanitizeDisplay({ nanColor: "#00ff00" }).nanColor).toBe("#00ff00");
+    // a hand-edited persisted value renders the grey the picker shows, not magenta
+    localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify({ state: { nanColor: "salmon" }, version: 3 }));
+    await useDisplay.persist.rehydrate();
+    expect(useDisplay.getState().nanColor).toBe(DEFAULT_DISPLAY.nanColor);
+    expect(parseCssColor(useDisplay.getState().nanColor)).toEqual([0x40, 0x40, 0x40]);
+    // an invalid override keeps the current colour
+    useDisplay.getState().set({ nanColor: "#123456" });
+    useDisplay.getState().set({ nanColor: "blue" });
+    expect(useDisplay.getState().nanColor).toBe("#123456");
+    expect(mergeDisplay(useDisplay.getState(), { nanColor: "hsl(0 0% 0%)" }).nanColor).toBe("#123456");
   });
 
   it("the locked defaults are deeply frozen (a stray write cannot change reset())", () => {

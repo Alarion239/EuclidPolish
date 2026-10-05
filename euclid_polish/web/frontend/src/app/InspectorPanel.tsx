@@ -21,9 +21,9 @@ import { useTokenRerender } from "./workspace";
 function UnknownKind({ target }: { target: InspectTarget }) {
   return (
     <div className="insp-unknown">
-      <Callout tone="info" title={`No inspector for “${target.kind}” yet`}>
-        The workspace that owns this kind registers its inspector when it loads. The target is
-        kept in the URL, so this link opens it once it exists.
+      <Callout tone="info" title={`No inspector for “${target.kind}”`}>
+        Every workspace registers its inspectors at start and none handles this kind, so the
+        link is probably mistyped or from another version of the console. Its target is below.
       </Callout>
       <JsonTree data={target} expandDepth={1} />
     </div>

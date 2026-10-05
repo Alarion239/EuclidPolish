@@ -406,7 +406,8 @@ function BlackPoint({ value, scale, unit, label, onChange }: { value: number; sc
   );
 }
 
-/** <input type=color> needs #rrggbb. */
+/** <input type=color> needs #rrggbb (sanitizeDisplay already keeps the NaN
+ *  colour in that form; the rest is a guard). */
 function toHex(css: string): string {
   const s = String(css || "").trim();
   if (/^#[0-9a-f]{6}$/i.test(s)) return s;

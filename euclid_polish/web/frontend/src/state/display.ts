@@ -30,7 +30,8 @@ export type DisplaySettings = {
   colormap: Colormap;
   residualColormap: Colormap;
   invert: boolean;
-  /** CSS colour painted for NaN pixels (a neutral dark grey by default). */
+  /** Colour painted for NaN pixels, "#rrggbb" (a neutral dark grey by
+   *  default; sanitising expands "#rgb"). */
   nanColor: string;
   /** Show every e⁻ tier per unit area of the coarsest linked pixel scale
    *  (viewer/area.ts): values × (ref / pixscale)² before the stretch, so HR
@@ -106,6 +107,15 @@ const positive = (v: unknown, fallback: number) =>
   (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : fallback);
 const finite = (v: unknown, fallback: number) =>
   (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+/** "#rrggbb" ("#rgb" expanded, trimmed), else `fallback`: the one form both
+ *  the renderer (viewer/colormaps.ts parseCssColor) and the <input
+ *  type=color> pickers read, so the NaN colour drawn is the one they show. */
+const hexColor = (v: unknown, fallback: string) => {
+  const s = typeof v === "string" ? v.trim() : "";
+  if (/^#[0-9a-f]{6}$/i.test(s)) return s;
+  if (/^#[0-9a-f]{3}$/i.test(s)) return `#${[...s.slice(1)].map((c) => c + c).join("")}`;
+  return fallback;
+};
 
 function sanitizeGroup(raw: unknown, base: TransferGroup = DEFAULT_TRANSFER): TransferGroup {
   const g = (raw && typeof raw === "object" ? raw : {}) as Partial<TransferGroup>;
@@ -138,7 +148,7 @@ export function sanitizeDisplay(raw: unknown, fallback: DisplaySettings = DEFAUL
     colormap: oneOf(r.colormap, COLORMAPS, f.colormap),
     residualColormap: oneOf(r.residualColormap, COLORMAPS, f.residualColormap),
     invert: typeof r.invert === "boolean" ? r.invert : f.invert,
-    nanColor: typeof r.nanColor === "string" && r.nanColor.trim() ? r.nanColor : f.nanColor,
+    nanColor: hexColor(r.nanColor, f.nanColor),
     matchSurfaceBrightness: typeof r.matchSurfaceBrightness === "boolean" ? r.matchSurfaceBrightness : f.matchSurfaceBrightness,
     jwstFollowsEuclid: typeof r.jwstFollowsEuclid === "boolean" ? r.jwstFollowsEuclid : f.jwstFollowsEuclid,
     linked: typeof r.linked === "boolean" ? r.linked : f.linked,

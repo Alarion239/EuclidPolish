@@ -11,9 +11,10 @@
  *   });
  *   export default function Synthetic() { return <Workspace id="synthetic" tabs={TABS} />; }
  *
- * <Workspace> validates the URL against the manifest (`/sky/unknown`,
- * `/models/foo` → Not found), redirects a bare workspace path to its default
- * tab (or `redirectTab`; query and hash kept), renders the router-linked tab
+ * <Workspace> validates the URL against the manifest and its tabs
+ * (`/sky/unknown`, `/models/foo`, a tab with no module → Not found),
+ * redirects a bare workspace path to its default tab (or `redirectTab`;
+ * query and hash kept), renders the router-linked tab
  * strip (<WorkspaceTabs>) and the active tab inside a per-tab error boundary
  * and a Suspense skeleton, under a visually hidden h1 ("Members, Models";
  * dropped by CSS when the page has its own h1, e.g. a PageHead).
@@ -37,11 +38,10 @@ import * as RMenu from "@radix-ui/react-dropdown-menu";
 import { Link, Navigate, useLocation } from "react-router-dom";
 import { useUrlState } from "../hooks/useUrlState";
 import { usePrefs, useResolvedTheme } from "../state/prefs";
-import { Button, EmptyState, Icon, Page, Skeleton } from "../ui";
-import type { IconName } from "../ui/icons";
+import { Icon, Skeleton } from "../ui";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { matchPage, workspace } from "./manifest";
-import { landingPath, pageHeading, pagePath, tabLabel, workspaceLabel, workspaceMeta } from "./nav";
+import { pageHeading, pagePath, tabLabel, workspaceLabel } from "./nav";
 import { NotFound } from "./NotFound";
 import { fitTabs, sameIndices } from "./tabFit";
 
@@ -235,13 +235,12 @@ export function Workspace(
     return <Navigate replace to={to} />;
   }
   const tab = m.tab ? tabs?.[m.tab] : null;
+  // A manifest tab without a module (workspaces.test.ts rules it out).
+  if (m.tab && !tab) return <NotFound />;
   const label = m.tab ? `${workspaceLabel(id)} › ${tabLabel(id, m.tab)}` : workspaceLabel(id);
-  let body: ReactNode;
-  if (tab) body = <tab.Component />;
-  else if (m.tab) body = <PendingTab workspace={id} tab={m.tab} />;
   // `children` was created by the (static) workspace component: clone it so
   // this render — e.g. a theme flip — reaches the page instead of bailing out.
-  else body = isValidElement(children) ? cloneElement(children) : children;
+  const body = tab ? <tab.Component /> : isValidElement(children) ? cloneElement(children) : children;
   return (
     <div className={`ws ws--${id}`} data-workspace={id}>
       {/* The page's h1 for screen readers and the outline; hidden (CSS) when
@@ -256,35 +255,5 @@ export function Workspace(
         </ErrorBoundary>
       </div>
     </div>
-  );
-}
-
-/** The fallback for a manifest tab the workspace's `defineTabs` lacks (a
- *  placeholder from the console rework, whose phase 3 has since landed). */
-export function PendingTab(
-  { workspace: id, tab, icon, children, links }: {
-    workspace: string; tab: string; icon?: IconName; children?: ReactNode;
-    /** Related pages that already exist: [label, path]. */
-    links?: [string, string][];
-  },
-) {
-  const meta = workspaceMeta(id);
-  const description = meta.tabs[tab]?.description;
-  return (
-    <Page>
-      <EmptyState icon={icon ?? meta.icon} title={`${tabLabel(id, tab)} arrives in phase 3`}
-        action={links?.length ? (
-          <div className="row" style={{ gap: "var(--s2)", justifyContent: "center" }}>
-            {links.map(([text, to]) => (
-              <Button key={to} asChild size="sm"><Link to={to}>{text}</Link></Button>
-            ))}
-          </div>
-        ) : (
-          <Button asChild size="sm" variant="ghost"><Link to={landingPath(id)}>{workspaceLabel(id)} home</Link></Button>
-        )}>
-        {description ? `${description}. ` : ""}
-        {children ?? "This tab is part of the console rework and is not built yet."}
-      </EmptyState>
-    </Page>
   );
 }

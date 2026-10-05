@@ -324,6 +324,20 @@ describe("System › Code", () => {
     await waitFor(() => expect(posts("/git/commit")[0]?.form).toEqual({ message: "msg", paths: "a.py" }));
   });
 
+  it("confirms Update env with the command the backend runs, and cancelling starts nothing", async () => {
+    routes["GET /api/fasrc/status"] = () => ({ body: { ssh_connected: true } });
+    routes["GET /api/fasrc/git-status"] = () => ({ body: { ok: true, repo: "/n/repo", branch: "main", ahead: 0, behind: 0,
+      head: "2222222ffff", local_head: "2222222bbbb", relation: { relation: "same", ahead: 0, behind: 0 }, dirty: false, last: {} } });
+    show(<Code />);
+    fireEvent.click(await screen.findByRole("button", { name: "Update env" }));
+    const dlg = await answer("Update the conda environment on FASRC?", "Cancel");
+    // routes/fasrc.py _build_env_update_cmd: module load python, then mamba on the env prefix
+    expect(dlg.textContent).toContain("module load python");
+    expect(dlg.textContent).toContain("yes | mamba env update -p");
+    expect(dlg.textContent).toContain("-f environment.yml");
+    expect(posts("/api/fasrc/env-update")).toHaveLength(0);
+  });
+
   it("confirms before pushing", async () => {
     routes["POST /git/push"] = () => ({ body: { ok: true, stdout: "pushed" } });
     show(<Code />);

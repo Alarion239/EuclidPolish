@@ -307,8 +307,15 @@ function useBarLayout(ref: React.RefObject<HTMLDivElement>, specs: GroupSpec[]):
   return lay;
 }
 
-/** The More menu lists its groups in the bar's own order. */
+/** The More menu lists its groups in the bar's own order, each under its
+ *  plain-words name. */
 const MORE_ORDER = ["compare", "tools", "zoom", "layout", "export"];
+const MORE_LABEL: Record<string, string> = { compare: "Compare", tools: "Tools", zoom: "Zoom", layout: "Arrange", export: "Export" };
+
+/** The More button's tooltip: the groups in its menu, in the menu's order. */
+export function moreTooltip(ids: string[]): string {
+  return `More controls: ${MORE_ORDER.filter((id) => ids.includes(id)).map((id) => MORE_LABEL[id].toLowerCase()).join(", ")}`;
+}
 
 /** The groups a narrow bar moved into its More menu, in a popover (it
  *  follows the app theme): each with its plain-words name. */
@@ -322,13 +329,13 @@ function MoreMenu({ ids, mode, onPng, onFigure, onRecord, onFullscreen }: {
   );
   return (
     <Popover label="More controls" align="end" width={300} trigger={
-      <IconButton size="sm" className="cv-ib" icon={<VIcon name="more" />} label="More controls" tooltip="More controls: compare, zoom, tools, arrange, export" data-g="more" />}>
+      <IconButton size="sm" className="cv-ib" icon={<VIcon name="more" />} label="More controls" tooltip={moreTooltip(ids)} data-g="more" />}>
       <div className="cv-menu cv-more">
         {MORE_ORDER.filter((id) => ids.includes(id)).map((id) => {
-          if (id === "compare") return row(id, "Compare", <CompareChoice />);
-          if (id === "zoom") return row(id, "Zoom", <Zoom />);
+          if (id === "compare") return row(id, MORE_LABEL[id], <CompareChoice />);
+          if (id === "zoom") return row(id, MORE_LABEL[id], <Zoom />);
           if (id === "tools") {
-            return row(id, "Tools", mode === "full" ? (
+            return row(id, MORE_LABEL[id], mode === "full" ? (
               <Popover label="Tools" width={400} trigger={<Button size="sm" variant="ghost" icon={<VIcon name={tool === "lens" ? "lens" : "tools"} />}>Lens, profiles and residuals</Button>}>
                 <ToolsMenu />
               </Popover>
@@ -337,8 +344,8 @@ function MoreMenu({ ids, mode, onPng, onFigure, onRecord, onFullscreen }: {
                 onClick={() => ctrl.setTool(tool === "lens" ? "pan" : "lens")}>Magnifier lens <Kbd keys="L" /></Button>
             ));
           }
-          if (id === "layout") return row(id, "Arrange", <LayoutMenu onFullscreen={onFullscreen} />);
-          if (id === "export") return row(id, "Export", <ExportMenu onPng={onPng} onFigure={onFigure} onRecord={onRecord} />);
+          if (id === "layout") return row(id, MORE_LABEL[id], <LayoutMenu onFullscreen={onFullscreen} />);
+          if (id === "export") return row(id, MORE_LABEL[id], <ExportMenu onPng={onPng} onFigure={onFigure} onRecord={onRecord} />);
           return null;
         })}
       </div>

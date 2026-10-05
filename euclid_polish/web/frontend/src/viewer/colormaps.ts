@@ -60,7 +60,8 @@ export function colormapGradient(name: Colormap, stops = 9): string {
 }
 
 /** "#rgb" / "#rrggbb" → [r, g, b]; anything else → magenta (the v1 C7 NaN
- *  default; today's DEFAULT_DISPLAY.nanColor is #404040). */
+ *  default). The NaN colour of the display settings never takes the magenta
+ *  path: sanitizeDisplay keeps it a #rrggbb hex (default #404040). */
 export function parseCssColor(css: string): [number, number, number] {
   const s = String(css || "").trim();
   let m = /^#([0-9a-f]{6})$/i.exec(s);

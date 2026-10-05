@@ -333,7 +333,9 @@ function FasrcCheckout({ git, connected }: { git: ReturnType<typeof useResource<
   }
   async function updateEnv() {
     if (!(await confirm({ title: "Update the conda environment on FASRC?",
-      message: "Runs `yes | mamba env update -f environment.yml` (minutes). A cancel can leave the env half-updated; re-run to finish.",
+      message: "In the FASRC checkout: `module load python`, then `yes | mamba env update -p <Conda env> -f environment.yml` "
+        + "(minutes; Conda env is the prefix in System › Connections › SSH settings). A cancel can leave the env half-updated; "
+        + "re-run to finish.",
       confirmLabel: "Update env" }))) return;
     await env.run("/api/fasrc/env-update", {}, {
       onDone: (j) => { if (j.status === "done") toast.success("Conda environment updated"); },
