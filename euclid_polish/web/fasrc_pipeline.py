@@ -2055,8 +2055,9 @@ class SyntheticGenerateStep(RunPipelineStep):
         return payload_files
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
-        # Parallelise generation across the allocated CPUs: one process per
-        # CPU runs the combined generate+forward pass on its index range.
+        # Parallelise generation across the allocated CPUs: one worker process
+        # per CPU takes small shards of the combined generate+forward pass in
+        # whole waves (the worker count fixes the shard plan a seed replays).
         cmd = super().build_command(params)
         try:
             workers = int(params.get("n_cpus") or self.defaults.n_cpus)

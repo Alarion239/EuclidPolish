@@ -35,6 +35,9 @@ class _FakeSim:
     def __init__(self, cat, cfg, vis_psf_set=None):
         pass
 
+    def reset_donor_balance(self):
+        pass
+
     def simulate_field(self, rng, n_stars=None):
         return SimpleNamespace(n_stars=n_stars), {"stars": []}
 
@@ -98,3 +101,24 @@ def test_step1_banner_counts_every_split(tmp_path, n_stars_by_subset, capsys):
     rp.step_generate(_args(tmp_path, onthefly_train=False))
     banner = next(line for line in capsys.readouterr().out.splitlines() if "STEP 1" in line)
     assert "2 train + 1 valid + 1 test" in banner
+
+
+def test_each_split_starts_from_a_fresh_donor_balance(
+    tmp_path, n_stars_by_subset, monkeypatch,
+):
+    """A split's donors never depend on the splits generated before it."""
+    events = []
+    original = _FakeSim.simulate_field
+
+    def simulate_field(self, rng, n_stars=None):
+        events.append("field")
+        return original(self, rng, n_stars=n_stars)
+
+    monkeypatch.setattr(_FakeSim, "simulate_field", simulate_field)
+    monkeypatch.setattr(
+        _FakeSim, "reset_donor_balance", lambda self: events.append("reset"),
+    )
+    rp.step_generate(_args(tmp_path, onthefly_train=False))
+    assert events == [
+        "reset", "field", "field", "reset", "field", "reset", "field",
+    ]

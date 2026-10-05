@@ -372,6 +372,9 @@ class SkySimulator:
         self._sfr_kernel_bandwidth: float | None = None
         self._mass_kernel_bandwidth_by_class: dict[str, float] = {}
         self._ssfr_kernel_bandwidth_by_class: dict[str, float] = {}
+        # Donor-balance state: picks per donor since the last
+        # :meth:`reset_donor_balance`. The only per-instance state that
+        # changes what later draws produce (renderer caches are value-only).
         self._morphology_use_counts = np.zeros(
             len(self.tng_atlas) if self.tng_atlas is not None else 0,
             dtype=np.int64,
@@ -458,6 +461,16 @@ class SkySimulator:
                     self._ssfr_kernel_bandwidth_by_class[str(label)] = float(
                         cross_validated_mass_bandwidth(class_ssfr_quantiles)
                     )
+
+    def reset_donor_balance(self) -> None:
+        """Forget every donor pick, so later draws balance from zero again.
+
+        Each pick down-weights its donor by ``(1 + uses)^-0.5`` for later
+        picks. Generation calls this before every parallel shard and every
+        serial split, making each a pure function of its seed instead of
+        depending on what the same process generated before it.
+        """
+        self._morphology_use_counts.fill(0)
 
     @staticmethod
     def _psf_fwhm_arcsec(psf) -> float:
@@ -623,19 +636,11 @@ class SkySimulator:
             or target_re_arcsec <= 0.0
         ):
             raise ValueError("TNG shrink-only donor selection is unavailable")
-        eligible_galaxies = atlas.eligible_galaxies(
+        # Ascending atlas order, so ``rng.choice`` over it is reproducible.
+        eligible = atlas.eligible_indices(
             target_re_arcsec,
             self.config.pixel_scale,
-        )
-        eligible_ids = {galaxy.subhalo_id for galaxy in eligible_galaxies}
-        eligible = np.asarray(
-            [
-                index
-                for index, galaxy in enumerate(atlas.galaxies)
-                if galaxy.subhalo_id in eligible_ids
-            ],
-            dtype=np.int64,
-        )
+        ).astype(np.int64, copy=False)
         if not eligible.size:
             maximum_arcsec = float(
                 max(atlas.max_native_re_px(galaxy) for galaxy in atlas)
@@ -1068,6 +1073,8 @@ class SkySimulator:
             "morphology_ssfr_kernel_bandwidth_quantile": morphology[
                 "ssfr_kernel_bandwidth_quantile"
             ],
+            # Picks of this donor since the last reset_donor_balance (this
+            # generation shard or serial split), including this one.
             "morphology_worker_use_count": morphology[
                 "worker_donor_use_count"
             ],

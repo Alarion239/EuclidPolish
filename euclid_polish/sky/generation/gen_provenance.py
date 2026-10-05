@@ -56,8 +56,10 @@ class GenerationContext:
     store: ProvStore
     run_id: ProvId
     git: dict[str, Any] | None = None
-    #: The run's master RNG seed (recorded on the ``Process.generation``); the
-    #: single value needed to replay the run. ``None`` if the run is unseeded.
+    #: The run's master RNG seed (recorded on the ``Process.generation``). With
+    #: the same split sizes and ``--gen-workers`` (which fix the shard plan) it
+    #: replays an uninterrupted run's images and source rows. ``None`` if the
+    #: run is unseeded.
     seed: int | None = None
     #: Extra descriptors every record file of the run carries (e.g.
     #: ``psf_kinds``: which bands used an empirical ePSF or the Gaussian
@@ -136,7 +138,9 @@ def begin_generation_run(store: ProvStore, cfg: Any, *,
     """Mint + persist a generation :class:`Process` and return its context.
 
     ``seed`` is the run's master RNG seed; it is recorded on the persisted
-    ``Process.generation`` so the run can be replayed deterministically.
+    ``Process.generation``; with the same split sizes and worker count (the
+    shard plan, recorded per artifact) it replays the run's images and source
+    rows deterministically.
     """
     run = Process.generation(
         id=store.mint(),

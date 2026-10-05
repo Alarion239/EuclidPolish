@@ -220,8 +220,9 @@ class Process(ProvRecord):
     started_at: str | None = None
     ended_at: str | None = None
     status: str = "running"
-    #: The master RNG seed this run was driven by — the single value needed to
-    #: replay it deterministically. ``None`` for legacy / un-seeded runs.
+    #: The master RNG seed this run was driven by; with the run's other recorded
+    #: settings (for generation, the shard plan) it replays the run
+    #: deterministically. ``None`` for legacy / un-seeded runs.
     seed: int | None = None
     kind: str = "process"
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -114,12 +114,18 @@ class TNGAtlas:
 
     Opening an atlas is deliberately read-only. Manifest construction and
     repair remain explicit preparation operations in :mod:`radius_manifest`.
+    Galaxy membership and each galaxy's largest native R_e are precomputed at
+    construction, because generation asks for donor eligibility on every
+    field-galaxy draw.
     """
 
     root: Path
     galaxies: tuple[TNGGalaxy, ...]
     properties: TNGPropertyCatalog
     radii: TNGRadiusManifest
+    _members: frozenset[TNGGalaxy] = field(init=False, repr=False, compare=False)
+    #: ``radii.max_radius`` per galaxy, in ``galaxies`` order (read-only).
+    _max_native_re_px: np.ndarray = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         from euclid_polish.tng.radius_manifest import TNGRadiusManifest
@@ -145,6 +151,14 @@ class TNGAtlas:
                 "TNG atlas galaxies and radius manifest must describe the "
                 "same complete views"
             )
+        object.__setattr__(self, "_members", frozenset(self.galaxies))
+        max_native_re_px = np.fromiter(
+            (self.radii.max_radius(subhalo_id) for subhalo_id in subhalo_ids),
+            dtype=np.float64,
+            count=len(subhalo_ids),
+        )
+        max_native_re_px.setflags(write=False)
+        object.__setattr__(self, "_max_native_re_px", max_native_re_px)
 
     @classmethod
     def open(
@@ -234,7 +248,7 @@ class TNGAtlas:
     def _require_galaxy(self, galaxy: TNGGalaxy) -> TNGGalaxy:
         if not isinstance(galaxy, TNGGalaxy):
             raise TypeError("galaxy must be a TNGGalaxy")
-        if galaxy not in self.galaxies:
+        if galaxy not in self._members:
             raise ValueError(
                 f"TNG{galaxy.subhalo_id} is not a complete galaxy in this atlas"
             )
@@ -245,21 +259,35 @@ class TNGAtlas:
         selected = self._require_galaxy(galaxy)
         return self.radii.max_radius(selected.subhalo_id)
 
+    def eligible_indices(
+        self,
+        target_re_arcsec: float,
+        pixel_scale_arcsec: float,
+    ) -> np.ndarray:
+        """Return ascending ``galaxies`` indices with a shrink-only view.
+
+        A galaxy qualifies when its largest native R_e reaches
+        ``target / pixel_scale`` pixels; one vectorised comparison over the
+        precomputed maxima.
+        """
+        target = _positive_finite(target_re_arcsec, "target_re_arcsec")
+        pixel_scale = _positive_finite(
+            pixel_scale_arcsec, "pixel_scale_arcsec"
+        )
+        minimum_native_re_px = target / pixel_scale
+        return np.flatnonzero(self._max_native_re_px >= minimum_native_re_px)
+
     def eligible_galaxies(
         self,
         target_re_arcsec: float,
         pixel_scale_arcsec: float,
     ) -> tuple[TNGGalaxy, ...]:
         """Return galaxies having at least one shrink-only eligible view."""
-        target = _positive_finite(target_re_arcsec, "target_re_arcsec")
-        pixel_scale = _positive_finite(
-            pixel_scale_arcsec, "pixel_scale_arcsec"
-        )
-        minimum_native_re_px = target / pixel_scale
         return tuple(
-            galaxy
-            for galaxy in self.galaxies
-            if self.max_native_re_px(galaxy) >= minimum_native_re_px
+            self.galaxies[index]
+            for index in self.eligible_indices(
+                target_re_arcsec, pixel_scale_arcsec,
+            )
         )
 
     def view(self, galaxy: TNGGalaxy, orientation: int) -> TNGView:

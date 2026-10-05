@@ -203,9 +203,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--gen-workers", type=int, default=1,
                     help="Parallelise synthetic generation across this many "
                          "processes. >1 runs a COMBINED generate+forward pass "
-                         "(each worker renders clean → hr+dirty for a "
-                         "contiguous index range into its own TFRecord "
-                         "shards, then the shards are concatenated in order). "
+                         "(the split is cut into whole waves of small shards, "
+                         "each rendering clean → hr+dirty for a contiguous "
+                         "index range into its own TFRecord parts; workers "
+                         "take shards as they free up, then the parts are "
+                         "concatenated in order). The worker count fixes the "
+                         "shard plan, so a --seed replay needs the same value. "
                          "Requires both generate and convolve (i.e. neither "
                          "--skip-generate nor --skip-convolve); falls back to "
                          "the serial two-step path otherwise.")
@@ -282,8 +285,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="Master RNG seed for generation/forward-model. "
                          "-1 (default) draws a fresh entropy seed each run. The "
                          "seed actually used is recorded on the run's "
-                         "Process.generation provenance record, so passing the "
-                         "stored value here replays a run deterministically.")
+                         "Process.generation provenance record; passing it "
+                         "back with the same split sizes (and the same "
+                         "--gen-workers, which fixes the shard plan) "
+                         "regenerates an uninterrupted run's images and "
+                         "source rows exactly (the records get new "
+                         "provenance ids).")
     ap.add_argument("--skip-generate",  action="store_true")
     ap.add_argument("--skip-convolve",  action="store_true")
     ap.add_argument("--skip-train",     action="store_true")
@@ -321,9 +328,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 #
 # One master ``run_seed`` per invocation (``--seed`` when >= 0, else entropy)
 # is recorded on the run's Process.generation provenance and used to derive
-# every per-(subset, stream) / per-shard RNG. Storing the one int is enough to
-# replay the whole run. Stream tags are kept large so they never collide with
-# the small shard ids the parallel path threads through the 3rd seed slot.
+# every per-(subset, stream) / per-shard RNG. Each split (serial path) or shard
+# (parallel path) also starts from a reset donor balance, so the one int
+# replays the whole run given the same split sizes and, on the parallel path,
+# the same --gen-workers (the shard plan). Stream tags are kept large so they
+# never collide with the small shard ids the parallel path threads through the
+# 3rd seed slot.
 # ---------------------------------------------------------------------------
 
 _STREAM_GEN = 10_000   # clean-scene generation draws
@@ -656,9 +666,11 @@ def step_generate(args: argparse.Namespace) -> None:
             _log(f"  {subset}: clean already complete ({n} records) — skipping")
             reporter.set_step(done, grand_total, f"{subset} already complete")
             continue
-        # Per-subset RNG derived from the run's master seed → the whole run
-        # replays from the single recorded run_seed.
+        # Per-subset RNG derived from the run's master seed, and a fresh donor
+        # balance → each split replays from the single recorded run_seed,
+        # whichever other splits this invocation generates or skips.
         rng = _subset_rng(run_seed, subset, _STREAM_GEN)
+        sim.reset_donor_balance()
         _log(f"  {subset}: generating {n} images  (run_seed={run_seed})")
         t0 = time.perf_counter()
         # Stream each image to disk as it's generated — accumulating
@@ -883,6 +895,69 @@ def _shard_bounds(n: int, n_shards: int) -> list[tuple[int, int]]:
     """Contiguous ``[start, end)`` ranges partitioning ``[0, n)``."""
     return [(round(k * n / n_shards), round((k + 1) * n / n_shards))
             for k in range(n_shards)]
+
+
+#: Most fields one generation shard holds. Small shards bound the idle tail
+#: at the end of a split to one short shard and make a killed run lose little.
+_TARGET_FIELDS_PER_SHARD = 48
+
+
+def _shard_count(remaining: int, workers: int) -> int:
+    """Shards for ``remaining`` fields: whole waves of ``workers`` shards.
+
+    Every worker runs the same number of shards of at most
+    ``_TARGET_FIELDS_PER_SHARD`` fields, so none idles through a partial last
+    wave (25 shards on 20 workers would idle 15 of them for a whole shard).
+    A split of at most ``workers * _TARGET_FIELDS_PER_SHARD`` fields
+    (validate/test) keeps one shard per worker; never more shards than fields.
+    """
+    if remaining <= 0:
+        return 0
+    workers = max(1, int(workers))
+    waves = math.ceil(remaining / (workers * _TARGET_FIELDS_PER_SHARD))
+    return min(remaining, workers * waves)
+
+
+def _plan_shard_tasks(subset: str, remaining: int, workers: int, *,
+                      base_idx: int, base_sid: int, run_seed: int,
+                      plan, write_forward: bool) -> list[tuple]:
+    """Pool tasks covering field indices ``[base_idx, base_idx + remaining)``.
+
+    Shard ids start at ``base_sid`` (above every salvaged shard on a resume,
+    so new parts never clobber a kept one) and fields are contiguous in id
+    order, so merging parts by id keeps index order. Each shard seeds from
+    ``[run_seed, subset tag, shard id]`` (SeedSequence material).
+    """
+    tasks = []
+    n_shards = _shard_count(remaining, workers)
+    for k, (start, end) in enumerate(_shard_bounds(remaining, n_shards)):
+        if end > start:
+            sid = base_sid + k
+            seed = [run_seed, _subset_tag(subset), sid]
+            tasks.append((subset, base_idx + start, end - start,
+                          sid, seed, plan, write_forward))
+    return tasks
+
+
+def _shard_plan_descriptor(tasks: list[tuple], *, workers: int,
+                           salvaged_fields: int) -> dict:
+    """The shard plan a split's record files carry in their provenance.
+
+    With per-shard donor balance, the plan (worker count, shard ids and
+    bounds) is what a ``--seed`` replay must match; runs from before the
+    plan was recorded have no ``shard_plan`` descriptor at all.
+    """
+    counts = [task[2] for task in tasks]
+    return {
+        "workers": int(workers),
+        "target_fields_per_shard": _TARGET_FIELDS_PER_SHARD,
+        "n_shards": len(tasks),
+        "max_fields_per_shard": max(counts, default=0),
+        "new_fields": sum(counts),
+        "salvaged_fields": int(salvaged_fields),
+        "first_shard_id": tasks[0][3] if tasks else None,
+        "donor_balance": "per_shard",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1194,7 +1269,11 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
     runs and ONLY the clean part is written — no hr, no dirty. On-the-fly
     training reads ``clean_train`` and builds the LR + target live (injecting a
     fresh star realization per visit), so both would be dead weight.
+
+    The donor balance is reset first, so the shard's records depend only on
+    ``seed`` and its index range, not on the shards ``sim`` generated before.
     """
+    sim.reset_donor_balance()
     rng = np.random.default_rng(seed)
     tag = f"{subset}.part{shard_id:04d}"
     # Per-worker progress → the parent's events file (shared, append-atomic).
@@ -1415,7 +1494,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                   else args.cosmos_prior)
 
     # One master seed for the whole parallel step, recorded on the generation
-    # run; every shard's RNG is derived from it, so the run replays via --seed.
+    # run; every shard's RNG is derived from it and every shard resets the
+    # donor balance, so the run replays via --seed (same --gen-workers).
     run_seed = _resolve_run_seed(args)
     # Provenance (best-effort): one generation run for the whole parallel step;
     # per-subset ids are pre-minted in this parent and shipped to the workers.
@@ -1503,23 +1583,17 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
 
         # New fields take indices above every salvaged one and shard ids above
         # every salvaged shard, so the index↔sources map stays unique and new
-        # parts never clobber a kept one.
-        tasks = []
-        if remaining > 0:
-            base_idx = (max(used_idx) + 1) if used_idx else 0
-            # More shards than workers → finer progress + load balancing AND a
-            # finer resume granularity (completed shards survive a later kill).
-            # ~256 images/shard, but at least one per worker, never more than
-            # there are images.
-            n_shards = min(remaining, max(workers, math.ceil(remaining / 256)))
-            for k, (start, end) in enumerate(_shard_bounds(remaining, n_shards)):
-                if end > start:
-                    sid = base_sid + k
-                    # SeedSequence material → reproducible, independent per
-                    # shard; all derived from the one recorded run_seed.
-                    seed = [run_seed, _subset_tag(subset), sid]
-                    tasks.append((subset, base_idx + start, end - start,
-                                  sid, seed, plan, write_forward))
+        # parts never clobber a kept one. Whole waves of small shards keep
+        # every worker busy to the end of the split.
+        tasks = _plan_shard_tasks(
+            subset, remaining, workers,
+            base_idx=(max(used_idx) + 1) if used_idx else 0,
+            base_sid=base_sid, run_seed=run_seed,
+            plan=plan, write_forward=write_forward,
+        )
+        if gen_ctx is not None:
+            gen_ctx.descriptors["shard_plan"] = _shard_plan_descriptor(
+                tasks, workers=workers, salvaged_fields=done)
 
         t0 = time.perf_counter()
         if tasks:
@@ -1528,8 +1602,9 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
             # workers report their own progress; the consumer sums a cumulative
             # bar and counts active processes.
             reporter.set_parallel(remaining, workers, label=subset)
-            _log(f"  {subset}: {remaining} pairs across {len(tasks)} shards, "
-                 f"{workers} workers (run_seed={run_seed})")
+            _log(f"  {subset}: {remaining} pairs across {len(tasks)} shards "
+                 f"(≤{_TARGET_FIELDS_PER_SHARD} each), {workers} workers "
+                 f"(run_seed={run_seed})")
             with ProcessPoolExecutor(
                 max_workers=workers, initializer=_gen_init_worker,
                 initargs=(prior_path, args.image_size, args.psf_dir,
