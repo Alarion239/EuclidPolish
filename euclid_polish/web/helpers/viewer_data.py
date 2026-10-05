@@ -75,7 +75,7 @@ from euclid_polish.eval.ensemble_cube_cache import load_cached_field_lr
 from euclid_polish.eval.ensemble_infer import combiner_read_labels
 from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND
 from euclid_polish.image.tfio import read_images, tfrecord_path
-from euclid_polish.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.photometry import adu_per_s_to_electrons_factor, mjy_per_sr_to_electrons_factor
 from euclid_polish.psf.core import PSF
 from euclid_polish.studies.cache import CORE_PRODUCTS, FieldCache, member_product
 from euclid_polish.studies.store import StudyError, StudyStore
@@ -193,12 +193,17 @@ def color_constants() -> dict[str, Any]:
             "solar_ab_mag": float(Config.Color.SOLAR_AB_MAG[name]),
             "pivot_um": float(Config.Color.PIVOT_WAVELENGTH_UM[name]),
             "asinh_scale_e": float(b.asinh_stretch_scale_e),
+            # e⁻ over the stack per 1 MJy/sr, per arcsec² of pixel area: a
+            # pixel of side p collects this × p² (the JWST f_ν scale).
+            "e_per_mjy_sr_arcsec2": mjy_per_sr_to_electrons_factor(b, 1.0),
         }
     return {
         "band_names": list(BAND_NAMES),
         "bands": bands,
         "rgb_scheme": list(Config.Color.RGB_SCHEMES["vis_nisp"]),  # [H_E,J_E,VIS]
         "default_asinh": float(Config.STRETCH_SCALE_E),
+        # Reference pixel of the f_ν scale when no Euclid e⁻ frame is shown.
+        "lr_pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
     }
 
 

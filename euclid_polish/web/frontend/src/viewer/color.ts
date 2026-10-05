@@ -28,6 +28,8 @@ export type BandConstants = {
   t_total_s?: number;
   zeropoint_ab?: number;
   asinh_scale_e?: number;
+  /** e⁻ over the stack per 1 MJy/sr per arcsec² of pixel area (fnu.ts). */
+  e_per_mjy_sr_arcsec2?: number;
   /** A display-only band (JWST F###): no AB zero point, no magnitude. */
   display_only?: boolean;
 };
@@ -39,6 +41,8 @@ export type ColorMeta = {
   rgb_scheme: string[];
   default_asinh?: number;
   render_mode?: string;
+  /** The f_ν scale's fallback reference pixel (″, fnu.ts). */
+  lr_pixscale?: number;
 };
 
 /** The minimum a cube needs to be rendered. */

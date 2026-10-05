@@ -875,6 +875,7 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
   });
 
   it("Display row: knees span 0.1–1e4 on a log slider, each transfer group in its own unit (one group at a time)", async () => {
+    useDisplay.getState().set({ jwstFollowsEuclid: false });   // JWST on its own scale
     const m = meta({
       transfer_groups: ["euclid", "jwst"],
       tiers: [{ key: "lr", label: "LR", unit: "e-" }, { key: "jw", label: "JWST", unit: "MJy/sr" }],
@@ -910,6 +911,34 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     // the default stays absolute asinh at 100 e⁻
     expect(useDisplay.getState().stretch).toBe("asinh-abs");
     expect(useDisplay.getState().groups.jwst.knee).toBe(100);
+  });
+
+  it("JWST on the Euclid f_ν scale (default): one Euclid knee, the JWST knee shown in MJy/sr", async () => {
+    const colorFnu = {
+      ...COLOR, lr_pixscale: 0.1,
+      bands: Object.fromEntries(Object.entries(COLOR.bands).map(([k, b]) => [k, { ...b, e_per_mjy_sr_arcsec2: k === "VIS" ? 338688.8 : 27398.46 }])),
+    };
+    const m = meta({
+      color: colorFnu, transfer_groups: ["euclid", "jwst"],
+      tiers: [{ key: "lr", label: "LR", unit: "e-" }, { key: "jw", label: "JWST", unit: "MJy/sr" }],
+    });
+    const base = defaultHandler(m);
+    mockBackend((url) => {
+      const tier = url.searchParams.get("tier");
+      if (tier === "jw") return cube(8, 8, 1, (i) => 0.01 * i, { "X-Cube-Bands": "F200W", "X-Cube-Unit": "MJy/sr", "X-Cube-Label": "JWST", "X-Cube-Transfer-Group": "jwst", "X-Cube-Display-Scale": "4000", "X-Cube-Pixscale": "0.03" });
+      if (tier === "lr") return cube(4, 4, 4, (i) => i, { "X-Cube-Label": "LR 0", "X-Cube-Transfer-Group": "euclid", "X-Cube-Pixscale": "0.1" });
+      return base(url);
+    });
+    render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "jw"]} /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    fireEvent.click(screen.getByRole("button", { name: "Display settings for this viewer" }));
+    await screen.findByRole("textbox", { name: "knee (e⁻)" });                // one group: no group switch
+    expect(screen.queryByRole("radio", { name: "JWST" })).toBeNull();          // JWST follows Euclid's sliders
+    expect(screen.getByText(/JWST follows Euclid VIS · knee 0\.0295 MJy\/sr/)).toBeTruthy();  // 100 / 3386.9
+    act(() => { useDisplay.getState().set({ color: "H_E" }); });
+    expect(await screen.findByText(/JWST follows Euclid H · knee 0\.365 MJy\/sr/)).toBeTruthy();
+    act(() => { useDisplay.getState().set({ jwstFollowsEuclid: false }); });
+    expect(await screen.findByRole("radio", { name: "JWST" })).toBeTruthy();
   });
 
   it("no band chips for single-plane tiers", async () => {

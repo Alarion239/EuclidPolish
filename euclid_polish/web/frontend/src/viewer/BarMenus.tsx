@@ -15,7 +15,7 @@ import { useRef, useState, type ReactNode } from "react";
 import { openDisplayPanel } from "../app/shellStore";
 import { COLORMAPS, DEFAULT_DISPLAY, STRETCHES, useDisplay, type Colormap, type Stretch } from "../state/display";
 import { Button, Checkbox, IconButton, Kbd, Popover, Segmented, Select, Slider, Switch } from "../ui";
-import { GAIN_SLIDER_RANGE, KNEE_SLIDER_RANGE, MORE_SHAPES, formatSig, groupUnit, moreShape, parseNumber, sentenceLabel } from "./barModel";
+import { GAIN_SLIDER_RANGE, KNEE_SLIDER_RANGE, MORE_SHAPES, bandLabel, formatSig, groupUnit, moreShape, parseNumber, sentenceLabel } from "./barModel";
 import { HistogramPanel } from "./HistogramPanel";
 import { useController, useSettings, useViewer } from "./hooks";
 import { VIcon } from "./icons";
@@ -195,10 +195,15 @@ export function DisplayRow({ basic = false }: { basic?: boolean }) {
   const group = picked && groups.includes(picked) ? picked : groups[0];
   const recs = Object.values(shown).map((sh) => sh.rec);
   const fallbackUnit = meta.tiers?.find((t) => t.unit)?.unit ?? "";
-  const u = groupUnit(recs, (r) => ctrl.groupOf(r as never) === group, group === "jwst" ? "" : fallbackUnit);
+  // A JWST frame following Euclid (fnu.ts) shares the Euclid knee in e⁻;
+  // the group's unit comes from its own Euclid frames.
+  const u = groupUnit(recs, (r) => ctrl.groupOf(r as never) === group && !ctrl.followsEuclid(r as never), group === "jwst" ? "" : fallbackUnit);
   const t = ctrl.transfer(group, settings);
   const title = groups.length > 1 ? GROUP_LABEL[group] ?? group : "";
   const matched = settings.matchSurfaceBrightness && areaRef > 0;
+  const following = recs.some((r) => ctrl.followsEuclid(r as never));
+  const fnu = following ? ctrl.fnuInfo(ctrl.s, settings) : null;
+  const fnuKnee = fnu && fnu.phi > 0 ? ctrl.transfer("euclid", settings).knee / fnu.phi : 0;
   return (
     <div ref={rowRef} className="cv-quick" role="group" aria-label="Display settings for this viewer" data-basic={basic || undefined}>
       {groups.length > 1 && (
@@ -227,6 +232,11 @@ export function DisplayRow({ basic = false }: { basic?: boolean }) {
       )}
       <span className="cv-quick__end">
         {matched && <span className="cv-quick__note" title={`Every e⁻ frame is shown per ${areaRef}″ pixel; pixel values stay native`}>Surface brightness matched</span>}
+        {fnu && fnu.phi > 0 && (
+          <span className="cv-quick__note" title={`1 MJy/sr = ${formatSig(fnu.phi / fnu.refFactor)} e⁻ per ${fnu.pixscale}″ px in ${bandLabel(fnu.band)}; JWST pixel values stay native MJy/sr`}>
+            JWST follows Euclid {bandLabel(fnu.band)} · knee {formatSig(fnuKnee)} MJy/sr
+          </span>
+        )}
         <Popover label="More display settings" align="end" open={more.open} onOpenChange={openMore}
           width={more.shape === "wide" ? `min(${MORE_SHAPES.wide.w}px, calc(100vw - 16px))` : MORE_SHAPES.narrow.w}
           className={`cv-more-pop${more.shape === "wide" ? " cv-more-pop--wide" : ""}`} trigger={
@@ -264,7 +274,9 @@ function DisplayMore({ basic, wide }: { basic: boolean; wide: boolean }) {
   const fallbackUnit = meta.tiers?.find((t) => t.unit)?.unit ?? "";
   const K0 = ctrl.K0();
   const following = globalLinked && !unlinked;
-  const unitOf = (g: string) => groupUnit(recs, (r) => ctrl.groupOf(r as never) === g, g === "jwst" ? "" : fallbackUnit);
+  const unitOf = (g: string) => groupUnit(recs, (r) => ctrl.groupOf(r as never) === g && !ctrl.followsEuclid(r as never), g === "jwst" ? "" : fallbackUnit);
+  const jwstShown = recs.some((r) => (r as { transferGroup?: string }).transferGroup === "jwst");
+  const fnu = ctrl.fnuInfo(ctrl.s, settings);
   const titleOf = (g: string) => (groups.length > 1 ? `${GROUP_LABEL[g] ?? g}` : "");
   if (histOpen) {
     return (
@@ -338,6 +350,19 @@ function DisplayMore({ basic, wide }: { basic: boolean; wide: boolean }) {
                 ? `Every e⁻ frame is shown per ${areaRef}″ pixel; pixel values stay native.`
                 : "Off: 0.05″ grids look about 4× dimmer than 0.1″."
               : "The shown frames share one pixel scale."}
+          </span>
+        </div>
+      )}
+      {!logMode && (
+        <div className="cv-menu__tier">
+          <Switch checked={settings.jwstFollowsEuclid} onChange={(on) => ctrl.setDisplay({ jwstFollowsEuclid: on })}>
+            JWST on the Euclid scale (f_ν)
+          </Switch>
+          <span className="cv-menu__hint cv-menu__hint--flush">
+            {!jwstShown ? "No JWST frame is shown."
+              : settings.jwstFollowsEuclid && fnu.phi > 0
+                ? `JWST follows Euclid ${bandLabel(fnu.band)}: 1 MJy/sr = ${formatSig(fnu.phi / fnu.refFactor)} e⁻ per ${fnu.pixscale}″ px.`
+                : "JWST is scaled to its own brightest pixels."}
           </span>
         </div>
       )}

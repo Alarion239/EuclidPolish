@@ -115,9 +115,10 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
   const empty = shown?.kind === "cube" && cubeIsEmpty(shown.rec);
   const sparse = shown?.kind === "cube" && cubeIsSparse(shown.rec);
   const coverage = shown?.kind === "cube" ? cubeCoverage(shown.rec) : { finite: 0, total: 0, fraction: 1 };
-  // The per-area display factor (area.ts) follows the other shown tiers.
-  // (1 unless the Display option "Match surface brightness" is on.)
-  const area = useViewer((s) => (shown?.kind === "cube" ? ctrl.areaFactorOf(shown.rec, s, settings) : 1));
+  // The per-area (area.ts) and f_ν (fnu.ts) display factors follow the other
+  // shown tiers. (1 unless "Match surface brightness" is on / for a JWST
+  // frame not following Euclid.)
+  const area = useViewer((s) => (shown?.kind === "cube" ? ctrl.displayFactorOf(shown.rec, s, settings) : 1));
 
   // Render the cube with the display settings (the movie draws itself).
   useEffect(() => {

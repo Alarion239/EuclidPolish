@@ -21,6 +21,7 @@ from euclid_polish.photometry import (
     uJy_to_ab_mag,
     uJy_to_electrons,
 )
+from euclid_polish.web.helpers.viewer_data import color_constants as viewer_color_constants
 
 BAND = Config.BAND_VIS
 
@@ -151,8 +152,7 @@ def test_viewer_served_stack_zeropoint_is_the_canonical_anchor():
     # The JS magnitude readout consumes zeropoint_ab_e_total from the meta —
     # it must be BandConfig.sim_zeropoint_e verbatim, and the JS formula
     # zp_total − 2.5·log10(Σe⁻) must equal electrons_to_ab_mag.
-    from euclid_polish.web.helpers.viewer_data import color_constants
-    consts = color_constants()
+    consts = viewer_color_constants()
     for name, served in consts["bands"].items():
         band = Config.get_band(name)
         assert served["zeropoint_ab_e_total"] == band.sim_zeropoint_e
@@ -160,6 +160,20 @@ def test_viewer_served_stack_zeropoint_is_the_canonical_anchor():
         js_mag = served["zeropoint_ab_e_total"] - 2.5 * math.log10(flux)
         assert js_mag == pytest.approx(
             electrons_to_ab_mag(flux, band), abs=1e-12)
+
+
+def test_viewer_serves_the_fnu_scale_constants():
+    # JWST on the Euclid f_ν scale (viewer/fnu.ts): the browser scales the
+    # served 1″ constant by p², which must equal the photometry conversion.
+    consts = viewer_color_constants()
+    assert consts["lr_pixscale"] == Config.VIS_PIXEL_SCALE_ARCSEC
+    for name, served in consts["bands"].items():
+        band = Config.get_band(name)
+        e1 = served["e_per_mjy_sr_arcsec2"]
+        assert e1 == mjy_per_sr_to_electrons_factor(band, 1.0)
+        assert e1 * 0.1 ** 2 == pytest.approx(
+            mjy_per_sr_to_electrons_factor(band, 0.1), rel=1e-12)
+    assert consts["bands"]["VIS"]["e_per_mjy_sr_arcsec2"] * 0.01 == pytest.approx(3386.9, abs=0.1)
 
 
 def test_ab_flux_norm_is_inverse_of_ab_zero_electrons():

@@ -163,6 +163,11 @@ function ImageSection() {
             Match surface brightness across pixel scales
           </Switch>
         </div>
+        <div className="display-switch">
+          <Switch checked={d.jwstFollowsEuclid} onChange={(jwstFollowsEuclid) => d.set({ jwstFollowsEuclid })}>
+            JWST on the Euclid scale (f_ν)
+          </Switch>
+        </div>
       </div>
       <TransferGroups />
     </Section>

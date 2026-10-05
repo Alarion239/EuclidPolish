@@ -12,6 +12,7 @@ import { useShortcutRegistry } from "../hooks/useShortcut";
 import { mergeDisplay, useDisplay, type DisplaySettings, type TransferGroup } from "../state/display";
 import { readStorage, writeStorage } from "../state/storage";
 import { areaFactor, areaReference } from "./area";
+import { fnuBand, fnuFollows, fnuReference, fnuScale } from "./fnu";
 import { COLOR_KEYS, COLOR_MODES_EXTRA, plainLabel, rememberBarRows, reservedBarRows, safeStorage, sameBarLayout, sequencePending, type BarLayout } from "./barModel";
 import { prepareCore, type Prepared } from "./color";
 import { parseCssColor } from "./colormaps";
@@ -287,25 +288,36 @@ export class ViewerController {
     const real = (s.meta?.tiers ?? []).map((t) => t.key).filter((k) => s.tiers.includes(k));
     return [...real, ...s.residuals];
   }
-  /** Transfer groups with their own sliders: meta.transfer_groups ∩ {euclid, jwst}, else default. */
-  activeGroups(): string[] {
-    const g = (this.s.meta?.transfer_groups ?? []).filter((x) => x === "euclid" || x === "jwst");
+  /** Transfer groups with their own sliders: meta.transfer_groups ∩ {euclid, jwst}, else default.
+   *  JWST drops out while the shown JWST frames all follow Euclid (fnu.ts). */
+  activeGroups(s: ViewerStoreState = this.s, settings = this.settings()): string[] {
+    const g = this.servedGroups(s);
+    if (!g.includes("jwst") || !g.includes("euclid")) return g;
+    const jwst = Object.values(s.shown).filter((sh) => sh.kind === "cube" && sh.rec.transferGroup === "jwst").map((sh) => sh.rec);
+    const follow = jwst.filter((r) => this.followsEuclid(r, s, settings));
+    return follow.length && follow.length === jwst.length ? g.filter((x) => x !== "jwst") : g;
+  }
+  private servedGroups(s: ViewerStoreState = this.s): string[] {
+    const g = (s.meta?.transfer_groups ?? []).filter((x) => x === "euclid" || x === "jwst");
     return g.length ? Array.from(new Set(g)) : ["default"];
   }
-  groupOf(rec: { transferGroup?: string } | null | undefined): string {
-    const groups = this.activeGroups();
+  groupOf(rec: { transferGroup?: string; unit?: string; directRgb?: boolean } | null | undefined, settings = this.settings()): string {
+    const groups = this.servedGroups();
     if (groups.length === 1 && groups[0] === "default") return "default";
+    if (this.followsEuclid(rec, this.s, settings)) return "euclid";
     const g = rec?.transferGroup ?? "default";
     return groups.includes(g) ? g : groups[0];
   }
   transfer(group: string, settings = this.settings()): TransferGroup {
     return settings.groups[group] ?? settings.groups.default ?? { knee: 100, gain: 1, black: 0 };
   }
-  displayParams(rec: { transferGroup?: string; pixscale?: number; unit?: string } | null, settings = this.settings(), perArea = true): DisplayParams {
-    const t = this.transfer(this.groupOf(rec), settings);
-    // Per unit area (area.ts): values × f before the stretch ≡ knee, black and
-    // the white reference ÷ f (the same image, native values untouched).
-    const f = perArea && rec ? this.areaFactorOf(rec, this.s, settings) : 1;
+  displayParams(rec: { transferGroup?: string; pixscale?: number; unit?: string; displayScale?: number; directRgb?: boolean } | null,
+    settings = this.settings(), perArea = true): DisplayParams {
+    const t = this.transfer(this.groupOf(rec, settings), settings);
+    // Per unit area (area.ts) and f_ν (fnu.ts): values × f before the stretch
+    // ≡ knee, black and the white reference ÷ f (the same image, native
+    // values untouched).
+    const f = perArea && rec ? this.displayFactorOf(rec, this.s, settings) : 1;
     return {
       stretch: settings.stretch, knee: t.knee / f, gain: t.gain, black: t.black / f, K0: this.K0() / f,
       colormap: settings.colormap, invert: settings.invert, nanColor: parseCssColor(settings.nanColor),
@@ -323,9 +335,41 @@ export class ViewerController {
   areaFactorOf(rec: { pixscale?: number; unit?: string }, s: ViewerStoreState = this.s, settings = this.settings()): number {
     return areaFactor(rec, this.areaRef(s), settings.matchSurfaceBrightness);
   }
-  /** Native → display units of a cube: its served display scale × the per-area factor. */
+  /** Native → display units of a cube: its served display scale × the per-area
+   *  and f_ν factors (for a JWST frame following Euclid: φ, fnu.ts). */
   displayUnitsOf(rec: CubeRec): number {
-    return (rec.displayScale > 0 ? rec.displayScale : 1) * this.areaFactorOf(rec);
+    return (rec.displayScale > 0 ? rec.displayScale : 1) * this.displayFactorOf(rec);
+  }
+
+  // ---- JWST on the Euclid f_ν scale (fnu.ts) --------------------------------
+  /** Whether a JWST frame follows Euclid (the option on, MJy/sr, a Euclid group). */
+  followsEuclid(rec: { transferGroup?: string; unit?: string; directRgb?: boolean } | null | undefined,
+    s: ViewerStoreState = this.s, settings = this.settings()): boolean {
+    // a server without the f_ν constants (fnuBand falls back to VIS) leaves JWST on its own scale
+    const served = Number(s.meta?.color?.bands?.VIS?.e_per_mjy_sr_arcsec2) > 0;
+    return served && fnuFollows(rec, settings.jwstFollowsEuclid, this.servedGroups(s).includes("euclid"));
+  }
+  /** The Euclid band, reference pixel and φ (display units per MJy/sr) of the f_ν scale. */
+  fnuInfo(s: ViewerStoreState = this.s, settings = this.settings()): { band: string; pixscale: number; refFactor: number; phi: number } {
+    const color = s.meta?.color;
+    const band = fnuBand(settings.color, color);
+    const recs = Object.values(s.shown).filter((sh) => sh.kind === "cube").map((sh) => sh.rec as CubeRec);
+    const ref = fnuReference(recs, (r) => (r.displayScale > 0 ? r.displayScale : 1) * this.areaFactorOf(r, s, settings), color);
+    return { band, pixscale: ref.pixscale, refFactor: ref.factor, phi: fnuScale(color, band, ref) };
+  }
+  /** A frame's f_ν display factor: φ ÷ its served display scale when it
+   *  follows Euclid, else 1. */
+  fnuFactorOf(rec: { transferGroup?: string; unit?: string; displayScale?: number; directRgb?: boolean },
+    s: ViewerStoreState = this.s, settings = this.settings()): number {
+    if (!this.followsEuclid(rec, s, settings)) return 1;
+    const phi = this.fnuInfo(s, settings).phi;
+    const d = rec.displayScale && rec.displayScale > 0 ? rec.displayScale : 1;
+    return phi > 0 ? phi / d : 1;
+  }
+  /** The per-area × f_ν display factor of a frame (knee, black, white ÷ it). */
+  displayFactorOf(rec: { transferGroup?: string; pixscale?: number; unit?: string; displayScale?: number; directRgb?: boolean },
+    s: ViewerStoreState = this.s, settings = this.settings()): number {
+    return this.areaFactorOf(rec, s, settings) * this.fnuFactorOf(rec, s, settings);
   }
 
   // ---- display edits (toolbar / keyboard / histogram) -----------------------
@@ -750,7 +794,7 @@ export class ViewerController {
     const shown = this.s.shown[tier];
     if (!shown || !this.s.meta) return null;
     const rec = shown.rec;
-    const t = this.transfer(this.groupOf(rec), settings);
+    const t = this.transfer(this.groupOf(rec, settings), settings);
     const bandLabel = settings.color === "lupton" ? "Lupton RGB"
       : settings.color === "temp" ? "temperature composite"
         : settings.color === "rgb" ? `RGB ${settings.rgb.join("/")}`
@@ -770,16 +814,16 @@ export class ViewerController {
       band: bandLabel, knee: t.knee, gain: t.gain,
       log: prep.mode === "gray-log" || this.s.meta.color?.render_mode === "log",
       unit: publicationUnitLabel(cubeRec.unit || this.tierMeta(tier)?.unit),
-      // native = display ÷ (served display scale × per-area factor)
-      scale: (cubeRec.displayScale > 0 ? cubeRec.displayScale : 1) * this.areaFactorOf(cubeRec, this.s, settings),
+      // native = display ÷ (served display scale × per-area × f_ν factor)
+      scale: (cubeRec.displayScale > 0 ? cubeRec.displayScale : 1) * this.displayFactorOf(cubeRec, this.s, settings),
       stretch: settings.stretch, black: t.black,
       stops: heatbarStops(settings.colormap, settings.invert, prep.mode),
     };
     if (settings.stretch === "asinh-auto" || settings.stretch === "zscale") {
       const st = frameAutoStats(prep);
-      // the frame's limits in the bar's display units (× the per-area factor,
-      // which `scale` divides back out)
-      const f = (prep.factor > 0 ? prep.factor : 1) / this.areaFactorOf(cubeRec, this.s, settings);
+      // the frame's limits in the bar's display units (× the per-area and
+      // f_ν factors, which `scale` divides back out)
+      const f = (prep.factor > 0 ? prep.factor : 1) / this.displayFactorOf(cubeRec, this.s, settings);
       info.auto = settings.stretch === "zscale"
         ? { lo: st.z1 / f, hi: st.z2 / f }
         : { lo: st.lo / f, hi: st.hi / f, knee: st.knee / f };

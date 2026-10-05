@@ -37,6 +37,11 @@ export type DisplaySettings = {
    *  and SR at 0.05″ read as bright as LR at 0.1″. Off by default; the
    *  readout stays native e⁻ per pixel. */
   matchSurfaceBrightness: boolean;
+  /** Show a JWST frame in MJy/sr on the Euclid f_ν scale (viewer/fnu.ts):
+   *  converted through the shown Euclid band into electrons of the reference
+   *  pixel, with the Euclid knee. On by default; off: its own robust scale
+   *  and transfer group. */
+  jwstFollowsEuclid: boolean;
   /** true: every viewer follows these global settings. */
   linked: boolean;
   wheel: WheelMode;
@@ -76,6 +81,7 @@ const DEFAULTS: DisplaySettings = {
   invert: false,
   nanColor: "#404040",
   matchSurfaceBrightness: false,
+  jwstFollowsEuclid: true,
   linked: true,
   wheel: "zoom-when-focused",
 };
@@ -134,6 +140,7 @@ export function sanitizeDisplay(raw: unknown, fallback: DisplaySettings = DEFAUL
     invert: typeof r.invert === "boolean" ? r.invert : f.invert,
     nanColor: typeof r.nanColor === "string" && r.nanColor.trim() ? r.nanColor : f.nanColor,
     matchSurfaceBrightness: typeof r.matchSurfaceBrightness === "boolean" ? r.matchSurfaceBrightness : f.matchSurfaceBrightness,
+    jwstFollowsEuclid: typeof r.jwstFollowsEuclid === "boolean" ? r.jwstFollowsEuclid : f.jwstFollowsEuclid,
     linked: typeof r.linked === "boolean" ? r.linked : f.linked,
     wheel: oneOf(r.wheel, WHEEL_MODES, f.wheel),
   };
@@ -159,7 +166,7 @@ export function transferFor(settings: Pick<DisplaySettings, "groups">, group = "
 const settingsOf = (s: DisplayStore): DisplaySettings => ({
   color: s.color, rgb: s.rgb, stretch: s.stretch, groups: s.groups, colormap: s.colormap,
   residualColormap: s.residualColormap, invert: s.invert, nanColor: s.nanColor,
-  matchSurfaceBrightness: s.matchSurfaceBrightness, linked: s.linked, wheel: s.wheel,
+  matchSurfaceBrightness: s.matchSurfaceBrightness, jwstFollowsEuclid: s.jwstFollowsEuclid, linked: s.linked, wheel: s.wheel,
 });
 
 export const useDisplay = create<DisplayStore>()(
