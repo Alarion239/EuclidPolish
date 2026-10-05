@@ -768,6 +768,8 @@ def register(app):
         ssh = STATE.ssh
         ssh_ok = ssh is not None and ssh.is_connected()
 
+        # Every step's run history from one ledger read.
+        history = fasrc_jobs.JOBLOG.history_by_step()
         steps_payload: list[dict[str, Any]] = []
         for step in STEP_REGISTRY.all():
             steps_payload.append({
@@ -780,8 +782,7 @@ def register(app):
                 # Contract C5: the schema the SPA renders generically, and
                 # the task params of the newest successful run (prefill).
                 "task_params": step.task_param_schema(),
-                "last_params": step.last_task_params(
-                    fasrc_jobs.JOBLOG.history_for_step(step.step_id)),
+                "last_params": step.last_task_params(history.get(step.step_id, [])),
             })
 
         # Cheap probes for "does this artifact exist on FASRC?" — one

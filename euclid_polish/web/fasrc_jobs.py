@@ -1062,10 +1062,12 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
     # reconcile runs on every dashboard poll, retrying here fills the row
     # in as soon as sacct catches up.
     needs_pm: list[str] = list(just_finalised)
-    for jid, stt in db_state_before.items():
-        if jid in needs_pm or stt not in TERMINAL_STATES:
-            continue
-        row = target_log.get(jid)
+    retry = [jid for jid, stt in db_state_before.items()
+             if stt in TERMINAL_STATES and jid not in needs_pm]
+    # One ledger read for all of them, not one per job.
+    ledger_rows = target_log.get_many(retry) if retry else {}
+    for jid in retry:
+        row = ledger_rows.get(jid)
         if row is not None and not (row.get("state") or "").strip():
             needs_pm.append(jid)
 

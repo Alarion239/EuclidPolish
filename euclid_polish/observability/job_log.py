@@ -31,6 +31,7 @@ import json
 import os
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from typing import Any
@@ -51,6 +52,22 @@ def _ensure_csv_field_size_limit() -> None:
 def _utc_now_iso() -> str:
     """ISO 8601 timestamp in UTC, second precision. Stable for CSV diffs."""
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _file_version(st: os.stat_result) -> tuple[int, int, int]:
+    """Identify one version of the ledger file for the read cache.
+
+    A JobLog rewrite replaces the file (new inode), an append grows it, and
+    any other edit moves its modification time.
+    """
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _newest_first(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Sort ``rows`` newest first, in place. ``submitted_at`` is ISO-8601 in
+    UTC, so string order is time order; equal timestamps keep file order."""
+    rows.sort(key=lambda r: r.get("submitted_at", ""), reverse=True)
+    return rows
 
 
 @dataclass
@@ -134,8 +151,14 @@ class JobLog:
     reads and writes, so submission appends and post-mortem updates from
     the reconcile loop don't race. Updates re-write the whole file
     atomically (write to ``.tmp``, then ``os.replace``) — fine at our
-    scale (typically <1000 lifetime rows; the rewrite cost is
-    microseconds for that size).
+    scale (hundreds of rows, a few MB).
+
+    Reads are memoised: the parsed rows are kept with the file version
+    (inode, mtime, size) they came from and re-parsed only when that
+    changes, so a write by another process (``scripts/``, a second console)
+    is still picked up. JobLog's own rewrites refresh the cache with the rows
+    they wrote. Every read returns copies, so callers may change the rows
+    they get without touching the cache.
     """
 
     #: Column order in the CSV. Pinned so consumers (pandas / shell
@@ -147,6 +170,10 @@ class JobLog:
         _ensure_csv_field_size_limit()
         self.csv_path = csv_path
         self._lock = threading.Lock()
+        # Parsed rows of the file version ``_cache_key`` names; shared, so
+        # only ever copied out (see ``_rows_locked``).
+        self._cache_rows: list[dict[str, str]] = []
+        self._cache_key: tuple[int, int, int] | None = None
         os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
         if not os.path.exists(csv_path):
             self._write_header()
@@ -168,6 +195,8 @@ class JobLog:
             w = csv.DictWriter(f, fieldnames=self.COLUMNS,
                                extrasaction="ignore")
             w.writerow(self._stringify(asdict(record)))
+            # The next read parses the grown file.
+            self._cache_key = None
 
     def record_post_mortem(self, jobid: str, stats: dict[str, Any]) -> bool:
         """Fill the post-mortem columns for ``jobid`` from ``stats``.
@@ -178,13 +207,15 @@ class JobLog:
         existed and was updated, ``False`` if no row matched.
         """
         with self._lock:
-            rows = self._read_all_locked()
-            for r in rows:
+            rows = self._rows_locked()
+            for i, r in enumerate(rows):
                 if r.get("jobid") == jobid:
+                    # Change a copy: ``rows`` is the shared cache.
+                    row = dict(r)
                     for k, v in stats.items():
                         if k in self.COLUMNS and v is not None:
-                            r[k] = self._stringify_value(v)
-                    self._write_all_locked(rows)
+                            row[k] = self._stringify_value(v)
+                    self._write_all_locked([*rows[:i], row, *rows[i + 1:]])
                     return True
             return False
 
@@ -208,15 +239,30 @@ class JobLog:
     def get(self, jobid: str) -> dict[str, str] | None:
         """Return the row for ``jobid`` (or ``None`` if not present)."""
         with self._lock:
-            for r in self._read_all_locked():
+            for r in self._rows_locked():
                 if r.get("jobid") == jobid:
-                    return r
+                    return dict(r)
             return None
+
+    def get_many(self, jobids: Iterable[str]) -> dict[str, dict[str, str]]:
+        """``{jobid: row}`` for each of ``jobids`` in the log, from one read.
+
+        The rows :meth:`get` returns (the first row of a repeated jobid);
+        jobids without a row are left out.
+        """
+        wanted = set(jobids)
+        found: dict[str, dict[str, str]] = {}
+        with self._lock:
+            for r in self._rows_locked():
+                jobid = r.get("jobid")
+                if jobid is not None and jobid in wanted and jobid not in found:
+                    found[jobid] = dict(r)
+        return found
 
     def list_all(self) -> list[dict[str, str]]:
         """Return every row in submission order."""
         with self._lock:
-            return self._read_all_locked()
+            return [dict(r) for r in self._rows_locked()]
 
     # ------------------------------------------------------------------
     # Per-step history queries
@@ -231,12 +277,24 @@ class JobLog:
         callers project to whatever subset they want.
         """
         with self._lock:
-            rows = [r for r in self._read_all_locked()
+            rows = [dict(r) for r in self._rows_locked()
                     if r.get("step_id") == step_id]
-        # Newest first. ``submitted_at`` is ISO-8601 in UTC; string
-        # ordering is correct for that format.
-        rows.sort(key=lambda r: r.get("submitted_at", ""), reverse=True)
-        return rows
+        return _newest_first(rows)
+
+    def history_by_step(self) -> dict[str, list[dict[str, str]]]:
+        """:meth:`history_for_step` for every step at once, from one read.
+
+        ``{step_id: rows newest first}``; a step without runs is absent.
+        """
+        by_step: dict[str, list[dict[str, str]]] = {}
+        with self._lock:
+            for r in self._rows_locked():
+                step_id = r.get("step_id")
+                if step_id is not None:
+                    by_step.setdefault(step_id, []).append(dict(r))
+        for rows in by_step.values():
+            _newest_first(rows)
+        return by_step
 
     def latest_match(
         self,
@@ -278,29 +336,52 @@ class JobLog:
             if not os.path.exists(self.csv_path):
                 return
             with open(self.csv_path, newline="", encoding="utf-8") as f:
+                version = _file_version(os.fstat(f.fileno()))
                 reader = csv.DictReader(f)
                 rows = list(reader)
                 header = list(reader.fieldnames or [])
             if header == self.COLUMNS:
+                # Already current: the rows just parsed seed the read cache.
+                self._cache_rows, self._cache_key = rows, version
                 return
             self._write_all_locked(rows)
 
-    def _read_all_locked(self) -> list[dict[str, str]]:
-        if not os.path.exists(self.csv_path):
+    def _rows_locked(self) -> list[dict[str, str]]:
+        """Every row, parsed again only when the file changed on disk.
+
+        The list and its dicts are the cache itself: copy a row before
+        changing it or handing it out.
+        """
+        try:
+            if _file_version(os.stat(self.csv_path)) == self._cache_key:
+                return self._cache_rows
+            with open(self.csv_path, newline="", encoding="utf-8") as f:
+                # The version of the file actually opened, taken before
+                # parsing: a write landing mid-parse changes the file's
+                # version, so the next read parses again.
+                version = _file_version(os.fstat(f.fileno()))
+                rows = list(csv.DictReader(f))
+        except FileNotFoundError:
+            self._cache_rows, self._cache_key = [], None
             return []
-        with open(self.csv_path, newline="", encoding="utf-8") as f:
-            return list(csv.DictReader(f))
+        self._cache_rows, self._cache_key = rows, version
+        return rows
 
     def _write_all_locked(self, rows: list[dict[str, Any]]) -> None:
+        out = [{k: self._stringify_value(r.get(k, "")) for k in self.COLUMNS}
+               for r in rows]
         tmp = self.csv_path + ".tmp"
         with open(tmp, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=self.COLUMNS,
                                extrasaction="ignore")
             w.writeheader()
-            for r in rows:
-                w.writerow({k: self._stringify_value(r.get(k, ""))
-                            for k in self.COLUMNS})
+            w.writerows(out)
+        # A rename keeps the file's inode, mtime and size, so this is the
+        # version the replaced ledger reads as; ``out`` is exactly what a
+        # re-read would parse back.
+        version = _file_version(os.stat(tmp))
         os.replace(tmp, self.csv_path)
+        self._cache_rows, self._cache_key = out, version
 
     # ------------------------------------------------------------------
     # Value normalisation
