@@ -3,12 +3,14 @@
 ``GET /api/system``
     The runtime (Python, platform, key package versions, Node when it is on
     the server's ``PATH``), FREE SPACE on the data disk with a warning level,
-    the last measured disk usage of every data root and the experiments'
-    member-cache budget. Cheap: nothing is walked on a GET.
+    the last measured disk usage of every data root, the experiments'
+    member-cache budget and the FASRC fetch cache's budget with its last
+    measured pinned (synced dataset mirrors, never evicted) and evictable
+    bytes. Cheap: nothing is walked on a GET.
 ``POST /api/system/disk-usage/refresh``
-    Measure every data root in a local job (one at a time, kind
-    ``system-disk-usage``); the result is kept in memory and in a small JSON
-    file so it survives a restart.
+    Measure every data root and the fetch cache's pinned / evictable split in
+    a local job (one at a time, kind ``system-disk-usage``); the result is
+    kept in memory and in a small JSON file so it survives a restart.
 ``GET /api/system/production``
     Home's production numbers without the heavy ensemble status: the scalar
     keys of the STARFULL ``eval_summary.json`` (the production gate's
@@ -53,7 +55,7 @@ from euclid_polish.image.collection import ImageSet
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.provenance.defaults import default_store as provenance_store
 from euclid_polish.tracking.store import TrackingStore
-from euclid_polish.web import errors
+from euclid_polish.web import errors, fasrc_fetcher
 from euclid_polish.web.helpers import experiments, model_catalog, sky_atlas, system_alerts
 from euclid_polish.web.helpers.ensemble_viz import knee_psnr_status
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
@@ -261,8 +263,9 @@ def _write_cache(payload: dict[str, Any]) -> None:
 
 
 def compute_disk_usage(progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
-    """Measure every root (+ the experiments' outputs and member cache), keep
-    the result in memory and in :data:`DISK_USAGE_CACHE_PATH`."""
+    """Measure every root (+ the experiments' outputs and member cache, and the
+    FASRC fetch cache's pinned / evictable split), keep the result in memory
+    and in :data:`DISK_USAGE_CACHE_PATH`."""
     global _DISK_CACHE
     roots = data_roots()
     extra = [
@@ -273,11 +276,18 @@ def compute_disk_usage(progress: Callable[[int, int, str], None] | None = None) 
     ]
     items = []
     todo = [*roots, *extra]
+    steps = len(todo) + 1
     for index, root in enumerate(todo):
         if progress is not None:
-            progress(index, len(todo), root["label"])
-        tick = (lambda i=index, r=root: progress(i, len(todo), r["label"])) if progress else None
+            progress(index, steps, root["label"])
+        tick = (lambda i=index, r=root: progress(i, steps, r["label"])) if progress else None
         items.append({**root, **measure_tree(root["path"], tick=tick)})
+    if progress is not None:
+        progress(len(todo), steps, "FASRC fetch cache")
+    fetch = fasrc_fetcher.cache_usage()
+    for item in items:
+        if os.path.realpath(item["path"]) == os.path.realpath(fetch["path"]):
+            item.update(pinned_bytes=fetch["pinned_bytes"], evictable_bytes=fetch["evictable_bytes"])
     measured = [item for item in items if not item["id"].startswith("experiments/")]
     measured.sort(key=lambda item: item["bytes"], reverse=True)
     by_id = {item["id"]: item for item in items}
@@ -287,9 +297,10 @@ def compute_disk_usage(progress: Callable[[int, int, str], None] | None = None) 
         "total_bytes": sum(item["bytes"] for item in measured),
         "experiments": {"cache_bytes": by_id["experiments/cache"]["bytes"],
                         "outputs_bytes": by_id["experiments/outputs"]["bytes"]},
+        "fasrc_cache": fetch,
     }
     if progress is not None:
-        progress(len(todo), len(todo), "done")
+        progress(steps, steps, "done")
     with _LOCK:
         _DISK_CACHE = payload
     _write_cache(payload)
@@ -349,6 +360,23 @@ def disk_usage_status() -> dict[str, Any]:
         "ttl_s": DISK_USAGE_TTL_S,
         "refresh_job": _running_refresh(),
         "experiments": cache.get("experiments"),
+        "fasrc_cache": cache.get("fasrc_cache"),
+    }
+
+
+def fetch_cache_payload(roots: dict[str, Any]) -> dict[str, Any]:
+    """The FASRC fetch cache: its LRU budget (current) and the last measured
+    split. ``pinned_bytes`` are the synced dataset mirrors, which the LRU never
+    evicts; only ``evictable_bytes`` count against ``budget_bytes``."""
+    fetch = roots.get("fasrc_cache") or {}
+    return {
+        "path": os.path.abspath(Config.FASRC_CACHE_DIR),
+        "budget_bytes": int(Config.WebFetch.MAX_CACHE_BYTES),
+        "total_bytes": fetch.get("total_bytes"),
+        "pinned_bytes": fetch.get("pinned_bytes"),
+        "evictable_bytes": fetch.get("evictable_bytes"),
+        "pinned": list(fetch.get("pinned") or []),
+        "measured_at": roots.get("computed_at") if fetch else None,
     }
 
 
@@ -370,6 +398,7 @@ def system_payload() -> dict[str, Any]:
             "outputs_bytes": measured.get("outputs_bytes"),
             "measured_at": roots.get("computed_at"),
         },
+        "fasrc_cache": fetch_cache_payload(roots),
     }
 
 

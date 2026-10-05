@@ -1015,10 +1015,11 @@ class Config:
         # bounded (K kernels), so the PSF fetch path uses this larger cap.
         MAX_PSF_PULL_BYTES: int    = 512 * 1024 * 1024       # ePSF stack pull cap
         CACHE_TTL_SECONDS: int     = 300                     # re-pull after this
-        # Four multi-extension ePSFs alone use ~1.5 GB; the regular test +
-        # validation TFRecord pairs need another ~1 GB.  A 2 GB generic cap
-        # made a successful validation sync evict ``hr_test`` before ensemble
-        # evaluation could start.
+        # Budget for the evictable pulls only (ePSF stacks, FITS inspects,
+        # archive staging). The synced dataset mirrors (the records_v2
+        # TFRecords and stars.csv) are pinned: never evicted and not counted
+        # here (web/fasrc_fetcher.py). Four multi-extension ePSFs alone use
+        # ~1.5 GB.
         MAX_CACHE_BYTES: int       = 4 * 1024 * 1024 * 1024  # 4 GB LRU budget
         STEP_RATE_EMA_ALPHA: float = 0.1                     # job step-rate EMA
 

@@ -18,8 +18,7 @@ from flask import abort, jsonify
 from werkzeug.exceptions import default_exceptions
 
 from euclid_polish.config import Config
-from euclid_polish.web import fasrc_config
-from euclid_polish.web.fasrc_fetcher import _local_path_for
+from euclid_polish.web.fasrc_fetcher import _local_path_for, records_remote_dir
 
 #: The repository root (``poster/``, ``output/`` live here).
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -37,8 +36,9 @@ SEARCH_MAX_SECONDS = 4.0
 
 
 def _sky_records_remote_dir() -> str:
-    cfg = fasrc_config.load()
-    return f"{cfg.data_dir}/images/records_v2"
+    """The remote synthetic records dir (:func:`fasrc_fetcher.records_remote_dir`,
+    which also pins its local mirror in the fetch cache)."""
+    return records_remote_dir()
 
 
 def _sky_records_local_dir() -> str:
@@ -47,7 +47,9 @@ def _sky_records_local_dir() -> str:
     Same convention as :func:`fasrc_fetcher._local_path_for`, so the
     viewer reads exactly what ``/api/sky/sync`` (fetch_one_file)
     writes. The synthetic generator runs on FASRC, so the preview
-    renders the synced shards — not a stale local copy."""
+    renders the synced shards — not a stale local copy. The dir is a
+    pinned mirror (:func:`fasrc_fetcher.pinned_mirrors`): the fetch
+    cache's LRU never evicts it and its bytes do not count against the cap."""
     any_path = f"{_sky_records_remote_dir()}/clean_validate.tfrecord"
     return os.path.dirname(_local_path_for(any_path))
 

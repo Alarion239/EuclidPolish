@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from euclid_polish.config import Config
+from euclid_polish.web import fasrc_config, fasrc_fetcher
 from euclid_polish.web.app import create_app
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.routes import system
@@ -90,6 +91,15 @@ def test_system_get_never_starts_a_job(client, monkeypatch):
     assert roots["stale"] is True and roots["refresh_job"] is None
 
 
+def test_system_get_reports_the_fetch_cache_budget_without_measuring(client, monkeypatch):
+    monkeypatch.setattr(fasrc_fetcher, "cache_usage",
+                        lambda: (_ for _ in ()).throw(AssertionError("a GET must not walk")))
+    cache = client.get("/api/system").get_json()["fasrc_cache"]
+    assert cache["budget_bytes"] == Config.WebFetch.MAX_CACHE_BYTES
+    assert cache["pinned_bytes"] is None and cache["evictable_bytes"] is None
+    assert cache["measured_at"] is None
+
+
 # ---------------------------------------------------------------------------
 # disk usage per data root (a job; cached)
 # ---------------------------------------------------------------------------
@@ -122,6 +132,7 @@ def test_refresh_job_measures_every_root_and_caches_it(client, tmp_path, monkeyp
     monkeypatch.setattr(Config, "DATA_DIR", str(data))
     monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(tmp_path / "ckpt" / "wdsr"))
     monkeypatch.setattr(Config, "TRACKING_DIR", str(tmp_path / "tracking"))
+    monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(data / "_fasrc_cache"))
     monkeypatch.setattr(system, "REPO_ROOT", str(tmp_path))
     started = client.post("/api/system/disk-usage/refresh").get_json()
     assert started["ok"] is True
@@ -144,6 +155,44 @@ def test_refresh_job_measures_every_root_and_caches_it(client, tmp_path, monkeyp
     again = client.get("/api/system").get_json()["roots"]
     assert {i["id"] for i in again["items"]} == set(by_id)
     assert json.loads(open(system.DISK_USAGE_CACHE_PATH).read())["items"]
+
+
+def test_refresh_splits_the_fetch_cache_into_pinned_and_evictable_bytes(client, tmp_path, monkeypatch):
+    """System › Storage: the synced dataset mirrors (records, star catalogue)
+    are pinned in the fetch cache, so only the rest counts against its cap."""
+    data = _tree(tmp_path)
+    cache = data / "_fasrc_cache"
+    remote = cache / "n" / "data"
+    (remote / "images" / "records_v2").mkdir(parents=True)
+    (remote / "images" / "records_v2" / "hr_test.tfrecord").write_bytes(b"x" * 700)
+    (remote / "images" / "records_v2_local_backup_20260919").mkdir()
+    (remote / "images" / "records_v2_local_backup_20260919" / "hr_test.tfrecord").write_bytes(b"x" * 90)
+    (remote / "euclid_stars").mkdir()
+    (remote / "euclid_stars" / "stars.csv").write_bytes(b"x" * 50)
+    (remote / "euclid_psf").mkdir()
+    (remote / "euclid_psf" / "euclid_psf_VIS.fits").write_bytes(b"x" * 200)
+    monkeypatch.setattr(Config, "DATA_DIR", str(data))
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(tmp_path / "ckpt" / "wdsr"))
+    monkeypatch.setattr(Config, "TRACKING_DIR", str(tmp_path / "tracking"))
+    monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(cache))
+    monkeypatch.setattr(fasrc_config, "load", lambda: fasrc_config.FasrcConfig(data_dir="/n/data"))
+    monkeypatch.setattr(system, "REPO_ROOT", str(tmp_path))
+    fasrc_fetcher.reset_cache_index()
+
+    job = _wait(client.post("/api/system/disk-usage/refresh").get_json()["job_id"])
+    assert job["status"] == "done", job["error"]
+    body = client.get("/api/system").get_json()
+
+    fetch = body["fasrc_cache"]
+    assert fetch["pinned_bytes"] == 750 and fetch["evictable_bytes"] == 290
+    assert fetch["total_bytes"] == 1040
+    assert fetch["budget_bytes"] == Config.WebFetch.MAX_CACHE_BYTES
+    assert fetch["measured_at"] == body["roots"]["computed_at"]
+    assert {p["id"]: p["bytes"] for p in fetch["pinned"]} == {"records": 700, "stars-catalog": 50}
+    item = next(i for i in body["roots"]["items"] if i["id"] == "data/_fasrc_cache")
+    assert item["bytes"] == 1040
+    assert item["pinned_bytes"] == 750 and item["evictable_bytes"] == 290
+    fasrc_fetcher.reset_cache_index()
 
 
 def test_refresh_runs_one_job_at_a_time(client, monkeypatch):

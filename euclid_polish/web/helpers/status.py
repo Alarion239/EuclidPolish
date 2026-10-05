@@ -26,8 +26,7 @@ from euclid_polish.web.remote import STATE
 
 def _fasrc_catalog_remote_path() -> str:
     """Remote path of the catalog the FASRC-side query writes."""
-    cfg = fasrc_config.load()
-    return f"{cfg.data_dir}/euclid_stars/{Config.CATALOG_FILE}"
+    return _fasrc_fetcher.stars_catalog_remote_path()
 
 
 def _fasrc_catalog_dir(force: bool = True) -> str | None:

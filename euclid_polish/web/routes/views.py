@@ -258,19 +258,16 @@ def sync_targets(remote_dir: str, subsets: list[str], kinds: list[str]) -> dict[
 
 
 def _job_sky_sync(cap, targets: dict[str, str], subsets: list[str]) -> dict[str, Any]:
-    # A sky sync is one coherent dataset operation. Do not let the generic
-    # cache's LRU evict an older test shard while the validation shards are
-    # arriving; otherwise an immediate ensemble evaluation fails only after
-    # restoring every checkpoint. The fetcher may evict unrelated cache
-    # entries (such as bulky PSFs), but all requested records survive.
-    protected = {_fasrc_fetcher._local_path_for(remote) for remote in targets.values()}
+    # The records dir is a pinned mirror of the fetch cache
+    # (``fasrc_fetcher.pinned_mirrors``): its shards are never evicted and do
+    # not count against the cap, so a later shard cannot evict an earlier one
+    # and a later ePSF or FITS pull cannot evict the records evaluation reads.
     results: dict[str, dict[str, Any]] = {}
     any_ok = False
     total = len(targets)
     for position, (key, remote) in enumerate(targets.items()):
         cap.tick(position, total, f"pulling {key}")
-        r = _fasrc_fetcher.fetch_one_file(
-            remote, force=True, max_bytes=_SYNC_MAX_BYTES, protect_paths=protected)
+        r = _fasrc_fetcher.fetch_one_file(remote, force=True, max_bytes=_SYNC_MAX_BYTES)
         entry: dict[str, Any] = {"ok": r.ok, "size_bytes": r.size_bytes}
         if r.ok:
             any_ok = True

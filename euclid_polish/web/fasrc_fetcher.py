@@ -17,8 +17,13 @@ https://docs.rc.fas.harvard.edu/kb/rsync/, https://docs.rc.fas.harvard.edu/kb/fa
     5 min) is served from disk without re-rsync-ing.
   * **Single-flight**: a per-path lock prevents concurrent pulls of the
     same file from competing for SSH.
-  * **LRU eviction**: when the cache exceeds ``max_cache_bytes``
-    (default 4 GB) we delete the oldest files.
+  * **LRU eviction**: when the evictable part of the cache exceeds
+    ``max_cache_bytes`` (default 4 GB) we delete the oldest evictable
+    files. The dataset mirrors a sync writes here (:func:`pinned_mirrors`:
+    the synthetic records, the star catalogue) are pinned: never evicted
+    and not counted against the cap. An in-memory size index (one walk
+    per process to build) keeps a pull under the cap from walking the
+    cache; an eviction walks it once.
   * **Allowed roots**: pulls are restricted to known data dirs on the
     remote (``data_dir``, ``ckpt_dir``, ``repo_path/logs``). Anything
     else is refused (``FetchResult(ok=False)``; the remote file browser
@@ -35,7 +40,9 @@ import os
 import shlex
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
@@ -94,6 +101,56 @@ def _ensure_parent_dir(path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Pinned dataset mirrors
+# ---------------------------------------------------------------------------
+
+#: Where the synthetic generator writes its TFRecord shards and sources CSVs,
+#: relative to the FASRC ``data_dir``.
+RECORDS_REMOTE_SUBDIR = "images/records_v2"
+
+
+def records_remote_dir() -> str:
+    """The remote synthetic records dir: what the records sync and the
+    training-catalogue sync pull (``helpers.paths._sky_records_remote_dir``)."""
+    return f"{fasrc_config.load().data_dir}/{RECORDS_REMOTE_SUBDIR}"
+
+
+def stars_catalog_remote_path() -> str:
+    """The remote star catalogue the FASRC-side brightest-N query writes."""
+    return f"{fasrc_config.load().data_dir}/euclid_stars/{Config.CATALOG_FILE}"
+
+
+#: The dataset mirrors a sync writes into the cache, ``(id, label, remote
+#: path)``. Ensemble evaluation, combiner fits and the console read them in
+#: place, so the LRU must never evict them. A directory pins its subtree only:
+#: a sibling such as ``records_v2_local_backup_*`` stays evictable.
+_PINNED_MIRRORS = (
+    ("records", "Synthetic records", records_remote_dir),
+    ("stars-catalog", "Star catalogue", stars_catalog_remote_path),
+)
+
+
+def pinned_mirrors() -> list[dict[str, str]]:
+    """``[{id, label, path}]``: the local mirrors the LRU never evicts."""
+    return [{"id": pin_id, "label": label, "path": _local_path_for(remote())}
+            for pin_id, label, remote in _PINNED_MIRRORS]
+
+
+def _pinned_paths() -> tuple[str, ...]:
+    return tuple(_local_path_for(remote()) for _id, _label, remote in _PINNED_MIRRORS)
+
+
+def _under(path: str, pin: str) -> bool:
+    return path == pin or path.startswith(pin + os.sep)
+
+
+def is_pinned(local_path: str, pins: Iterable[str] | None = None) -> bool:
+    """True iff the cache path ``local_path`` is, or lies under, a pinned mirror."""
+    real = os.path.realpath(local_path)
+    return any(_under(real, pin) for pin in (_pinned_paths() if pins is None else pins))
+
+
+# ---------------------------------------------------------------------------
 # Single-flight locks per path
 # ---------------------------------------------------------------------------
 
@@ -146,12 +203,26 @@ class FetchResult:
 # Cache maintenance
 # ---------------------------------------------------------------------------
 
-def _cache_files() -> list[tuple[str, int, float]]:
-    """List ``(path, size, mtime)`` for every file under ``Config.FASRC_CACHE_DIR``."""
+#: ``path → (size, mtime)`` of every file in the cache: built by one walk on
+#: first use, then kept current by the pulls and evictions below, so a pull
+#: under the cap walks nothing. ``_INDEX_ROOT`` is the cache root it describes
+#: (a re-pointed ``Config.FASRC_CACHE_DIR`` rebuilds it).
+_INDEX: dict[str, tuple[int, float]] = {}
+_INDEX_ROOT: str | None = None
+_INDEX_LOCK = threading.Lock()
+
+
+def _cache_root() -> str:
+    return os.path.realpath(Config.FASRC_CACHE_DIR)
+
+
+def _cache_files(root: str | None = None) -> list[tuple[str, int, float]]:
+    """List ``(path, size, mtime)`` for every file under the cache (one walk)."""
+    root = _cache_root() if root is None else root
     out = []
-    if not os.path.isdir(Config.FASRC_CACHE_DIR):
+    if not os.path.isdir(root):
         return out
-    for dirpath, _dirs, files in os.walk(Config.FASRC_CACHE_DIR):
+    for dirpath, _dirs, files in os.walk(root):
         for fname in files:
             full = os.path.join(dirpath, fname)
             try:
@@ -162,37 +233,138 @@ def _cache_files() -> list[tuple[str, int, float]]:
     return out
 
 
+def reset_cache_index() -> None:
+    """Forget the size index; the next pull rebuilds it with one walk."""
+    global _INDEX_ROOT
+    with _INDEX_LOCK:
+        _INDEX.clear()
+        _INDEX_ROOT = None
+
+
+def _rebuild_index_locked() -> dict[str, tuple[int, float]]:
+    """Re-read the index from disk (one walk). Caller holds ``_INDEX_LOCK``."""
+    global _INDEX_ROOT
+    root = _cache_root()
+    _INDEX.clear()
+    _INDEX.update((path, (size, mtime)) for path, size, mtime in _cache_files(root))
+    _INDEX_ROOT = root
+    return _INDEX
+
+
+def _index_locked() -> dict[str, tuple[int, float]]:
+    """The index of the current cache root. Caller holds ``_INDEX_LOCK``."""
+    if _cache_root() != _INDEX_ROOT:
+        return _rebuild_index_locked()
+    return _INDEX
+
+
+def _record_locked(path: str) -> None:
+    """Re-stat one file into the index. Caller holds ``_INDEX_LOCK``."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        _INDEX.pop(path, None)
+        return
+    _INDEX[path] = (int(st.st_size), float(st.st_mtime))
+
+
+def _split_bytes(index: dict[str, tuple[int, float]], pins: Iterable[str]) -> tuple[int, int]:
+    """``(pinned, evictable)`` bytes of ``index`` (no file system access)."""
+    pinned = evictable = 0
+    for path, (size, _mtime) in index.items():
+        if any(_under(path, pin) for pin in pins):
+            pinned += size
+        else:
+            evictable += size
+    return pinned, evictable
+
+
+def _indexed_usage() -> tuple[int, int]:
+    """``(pinned, evictable)`` bytes per the size index (walks only when cold)."""
+    pins = _pinned_paths()
+    with _INDEX_LOCK:
+        return _split_bytes(_index_locked(), pins)
+
+
 def cache_size_bytes() -> int:
+    """Total bytes in the cache, pinned mirrors included (a fresh walk)."""
     return sum(s for _p, s, _t in _cache_files())
 
 
-def _evict_lru_until_under(limit: int, protect: set | None = None) -> int:
-    """Delete oldest cached files until total size ≤ ``limit``. Returns bytes freed.
+def cache_usage() -> dict[str, Any]:
+    """Measure the cache (one walk, which also refreshes the size index).
 
-    ``protect`` is a set of absolute paths that must never be evicted —
-    pass the file a fetch just pulled so the eviction can't delete the
-    very file the caller is about to ``stat`` (which previously raised
-    a ``FileNotFoundError`` and broke the "never raises" contract). The
-    protected file still counts toward ``total``, so if it alone exceeds
-    ``limit`` the cache simply stays over budget for this call rather
-    than corrupting the fetch.
+    ``{path, budget_bytes, total_bytes, pinned_bytes, evictable_bytes, files,
+    pinned: [{id, label, path, bytes, files}]}``; only ``evictable_bytes``
+    counts against ``budget_bytes`` (``Config.WebFetch.MAX_CACHE_BYTES``).
     """
-    protect = {os.path.abspath(p) for p in (protect or ())}
-    items = _cache_files()
-    items.sort(key=lambda x: x[2])    # oldest first
-    total = sum(s for _p, s, _t in items)
+    mirrors = pinned_mirrors()
+    with _INDEX_LOCK:
+        index = dict(_rebuild_index_locked())
+    totals = {mirror["id"]: [0, 0] for mirror in mirrors}
+    evictable = 0
+    for path, (size, _mtime) in index.items():
+        owner = next((m["id"] for m in mirrors if _under(path, m["path"])), None)
+        if owner is None:
+            evictable += size
+        else:
+            totals[owner][0] += size
+            totals[owner][1] += 1
+    pinned = sum(nbytes for nbytes, _files in totals.values())
+    return {
+        "path": _cache_root(),
+        "budget_bytes": int(Config.WebFetch.MAX_CACHE_BYTES),
+        "total_bytes": pinned + evictable,
+        "pinned_bytes": pinned,
+        "evictable_bytes": evictable,
+        "files": len(index),
+        "pinned": [{**m, "bytes": totals[m["id"]][0], "files": totals[m["id"]][1]}
+                   for m in mirrors],
+    }
+
+
+def _evict_lru_until_under(limit: int, protect: set | None = None, *, rescan: bool = True) -> int:
+    """Delete the oldest evictable files until their total is ≤ ``limit``.
+    Returns bytes freed.
+
+    Pinned mirrors (:func:`pinned_mirrors`) are never deleted and do not
+    count toward ``limit``. The size index is first re-read from disk (one
+    walk), so a file added or removed behind the fetcher's back cannot make
+    it delete the wrong files; it stays current afterwards. ``rescan=False``
+    skips that walk when the caller has just built the index from disk.
+
+    ``protect`` is a set of paths that must never be evicted — pass the
+    file a fetch just pulled so the eviction can't delete the very file the
+    caller is about to ``stat`` (which previously raised a
+    ``FileNotFoundError`` and broke the "never raises" contract). A
+    protected file still counts toward the total, so if it alone exceeds
+    ``limit`` the cache simply stays over budget for this call rather than
+    corrupting the fetch.
+    """
+    protect = {os.path.realpath(p) for p in (protect or ())}
+    pins = _pinned_paths()
     freed = 0
-    for path, size, _t in items:
-        if total <= limit:
-            break
-        if os.path.abspath(path) in protect:
-            continue
-        try:
-            os.remove(path)
-        except OSError:
-            continue
-        total -= size
-        freed += size
+    with _INDEX_LOCK:
+        index = _rebuild_index_locked() if rescan else _index_locked()
+        items = sorted(((path, size, mtime) for path, (size, mtime) in index.items()
+                        if not any(_under(path, pin) for pin in pins)),
+                       key=lambda item: item[2])    # oldest first
+        total = sum(size for _p, size, _t in items)
+        for path, size, _t in items:
+            if total <= limit:
+                break
+            if path in protect:
+                continue
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass                     # already gone: it takes no space either
+            except OSError:
+                continue
+            else:
+                freed += size
+            index.pop(path, None)
+            total -= size
     return freed
 
 
@@ -331,16 +503,24 @@ def fetch_one_file(
         with contextlib.suppress(OSError):
             os.utime(local, None)
 
-        # Background cleanup: keep cache below the cap. Cheap; only walks
-        # the cache subtree. ``protect`` the file we just pulled so the
-        # eviction can never delete it out from under the ``getsize`` below
-        # (it now also has a fresh mtime, so it's the LAST eviction
+        # Keep the evictable part of the cache below the cap. The size index
+        # answers without walking; only an eviction walks (once, and not at
+        # all when this pull has just built the index). Pinned mirrors
+        # neither count nor get evicted. ``protect`` the file we just pulled
+        # so the eviction can never delete it out from under the ``getsize``
+        # below (it now also has a fresh mtime, so it's the LAST eviction
         # candidate anyway — belt and suspenders).
-        if cache_size_bytes() > Config.WebFetch.MAX_CACHE_BYTES:
+        pins = _pinned_paths()
+        with _INDEX_LOCK:
+            built_now = _cache_root() != _INDEX_ROOT
+            index = _index_locked()
+            _record_locked(local)
+            _pinned, evictable = _split_bytes(index, pins)
+        if evictable > Config.WebFetch.MAX_CACHE_BYTES:
             protected = {local}
             protected.update(protect_paths or ())
             _evict_lru_until_under(Config.WebFetch.MAX_CACHE_BYTES,
-                                   protect=protected)
+                                   protect=protected, rescan=not built_now)
 
         # Defensive ``getsize``: honour the "never raises" contract even if
         # a concurrent pull/eviction removed the file in the gap above.
