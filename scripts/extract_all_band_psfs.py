@@ -64,6 +64,7 @@ from euclid_polish.psf import PSF, PSFSet
 from euclid_polish.psf.psf_extractor import (
     PSFExtractionConfig,
     PSFExtractor,
+    odd_output_size,
 )
 
 
@@ -218,17 +219,19 @@ def parse_args() -> argparse.Namespace:
                     help="Desired final PSF side in oversampled pixels. "
                          "Even values are bumped down to odd "
                          "(e.g. 1024 → 1023). None → photutils' default "
-                         "(cutout_size × oversampling + 1).")
+                         "(psf_size × oversampling + 1, psf_size being the "
+                         "odd native crop just inside the cutout).")
     ap.add_argument("--psf-dir", default=Config.EUCLID_PSF_DIR,
                     help="Output directory for the band-keyed PSF FITS files")
     ap.add_argument("--bands", default=",".join(b.name for b in Config.BANDS),
                     help="Comma-separated list of bands to process")
     ap.add_argument("--max-procs", type=int, default=4,
                     help="Parallel ePSF (cluster) builds — set to the number "
-                         "of allocated CPUs. Bands are processed one at a time "
-                         "(VIS, then Y_E, …) and that band's cluster PSFs are "
-                         "built across all these workers, so a 30-cluster band "
-                         "uses every CPU instead of one. The FASRC step passes "
+                         "of allocated CPUs. Every pending (band, cluster) "
+                         "build is queued band-major (VIS clusters, then "
+                         "Y_E, …) and run in chunks of this many workers, so "
+                         "a 30-cluster band uses every CPU instead of one and "
+                         "a chunk can span two bands. The FASRC step passes "
                          "the CPU count you choose in the web form.")
     ap.add_argument("--cache-dir", default=None,
                     help="Where to checkpoint each (band, cluster) ePSF as it "
@@ -367,9 +370,14 @@ def main() -> int:
     if args.cutout_size is not None and args.vis_pixels is not None:
         print("✗ Pass either --cutout-size or --vis-pixels, not both.")
         return 1
+    if args.output_size is not None and args.output_size <= 0:
+        print(f"✗ --output-size must be positive, got {args.output_size}.")
+        return 1
     requested = [name.strip() for name in args.bands.split(",") if name.strip()]
     bands = [Config.get_band(name) for name in requested]
     n_workers = max(1, int(args.max_procs))
+    # The ePSF side actually built: an even --output-size is bumped down to odd.
+    out_side = odd_output_size(args.output_size)
 
     print(f"Extracting ePSF for bands: {[b.name for b in bands]}")
     print(f"  num-stars    = {args.num_stars if args.num_stars else 'all'} (cap)")
@@ -380,7 +388,9 @@ def main() -> int:
         print(f"  vis-pixels   = {args.vis_pixels}  (per-band native size derived)")
     else:
         print(f"  cutout-size  = {args.cutout_size}")
-    print(f"  output-size  = {args.output_size}")
+    print(f"  output-size  = {out_side}"
+          + (f"  (from {args.output_size}, bumped to odd)"
+             if out_side != args.output_size else ""))
     print(f"  psf-dir      = {args.psf_dir}")
     print(f"  workers      = {n_workers} parallel ePSF builds\n")
 
@@ -442,7 +452,7 @@ def main() -> int:
     signature = {
         "version": 1,
         "bands": present,
-        "output_size": args.output_size,
+        "output_size": out_side,
         "stars_per_psf": int(args.stars_per_psf),
         "min_stars_per_psf": int(args.min_stars_per_psf),
         "clusters": [sorted(int(i) for i in c) for c in clusters],

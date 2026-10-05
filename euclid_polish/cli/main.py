@@ -10,6 +10,7 @@ import dataclasses
 import getpass
 import glob
 import os
+import subprocess
 import sys
 import traceback
 from typing import cast
@@ -30,7 +31,11 @@ from euclid_polish.catalog import (
     FitsValidator,
 )
 from euclid_polish.catalog.catalog_object import merge_new, summarize
-from euclid_polish.cli.inference_ops import fetch_and_superresolve, reconstruct_and_render
+from euclid_polish.cli.inference_ops import (
+    evaluate_production_sr,
+    fetch_and_superresolve,
+    reconstruct_and_render,
+)
 from euclid_polish.cli.utils import (
     print_cancelled,
     print_error,
@@ -41,15 +46,21 @@ from euclid_polish.cli.utils import (
     validate_ra,
 )
 from euclid_polish.config import Config
+from euclid_polish.ensemble import evaluate_member_on_records
+from euclid_polish.ensemble_registry import (
+    active_member_dirs,
+    default_ensemble_dir,
+    next_member_names,
+)
+from euclid_polish.eval.ensemble_infer import load_eval_ensemble, sr_from_model
 from euclid_polish.eval.subsets import eval_subset
-from euclid_polish.image import Image, ImageSet
+from euclid_polish.image import Image
 from euclid_polish.image.tfio import (
     deserialize_image,
     open_writer,
     read_images,
     tfrecord_path,
 )
-from euclid_polish.model import Model
 from euclid_polish.psf import PSF
 from euclid_polish.psf import estimate_fwhm_pixels_1d as estimate_fwhm
 from euclid_polish.psf.psf_extractor import PSFExtractionConfig, PSFExtractor
@@ -61,16 +72,16 @@ from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
+    _deposit_star,
+    star_band_magnitudes_from_record,
+)
+from euclid_polish.sky.generation.source_catalog import (
+    SourceCatalogWriter,
+    read_sources,
 )
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
-)
-from euclid_polish.training import Trainer
-from euclid_polish.training.inference import (
-    load_model_from_checkpoint,
-    plot_reconstruction,
-    reconstruct,
 )
 from euclid_polish.training.log_plot import (
     default_log_path,
@@ -84,7 +95,76 @@ from euclid_polish.visualization.methods import (
     draw_dirty_image,
     draw_star_positions,
 )
+from euclid_polish.visualization.reconstruction import plot_reconstruction
 from euclid_polish.web.helpers.population_calibration import active_star
+
+#: ``scripts/train_ensemble.py`` — the entry point every ensemble member is
+#: trained through (the WebUI's FASRC step runs the same script).
+_TRAIN_ENSEMBLE_SCRIPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "scripts", "train_ensemble.py",
+)
+#: The splits the generation and forward steps write.
+_SPLITS = ("train", "validate", "test")
+
+
+def _sources_csv(records_dir: str, subset: str) -> str:
+    """``<records_dir>/sources_<subset>.csv`` — the per-field source sidecar."""
+    return os.path.join(records_dir, f"sources_{subset}.csv")
+
+
+def _recorded_stars(records_dir: str, subset: str) -> dict[int, list[dict]]:
+    """``field_index → star rows`` recorded in ``subset``'s source sidecar
+    (``{}`` when the sidecar is missing or records no stars)."""
+    by_field = {}
+    for field_index, rows in read_sources(_sources_csv(records_dir, subset)).items():
+        stars = [r for r in rows if r.get("type") == "star"]
+        if stars:
+            by_field[field_index] = stars
+    return by_field
+
+
+def _forward_with_recorded_stars(forward, sky_starless: Image, stars, rng) -> tuple:
+    """``(lr, hr)`` of one starless scene with its recorded ``stars``
+    re-deposited (HR deltas, pre-PSF) — the starfull pair: ``lr`` carries the
+    star contamination and ``hr`` is the starfull target. The same rule as
+    ``scripts/run_pipeline.py``'s forward step."""
+    star_scene = None
+    if stars:
+        star_scene = np.zeros_like(sky_starless.data)
+        for s in stars:
+            _deposit_star(
+                star_scene,
+                float(s["x_pix"]),
+                float(s["y_pix"]),
+                float(s["mag_vis"]),
+                band_magnitudes=star_band_magnitudes_from_record(s),
+            )
+    return forward.process(sky_starless, rng=rng, star_hr_4ch=star_scene)
+
+
+def _say(message: str) -> None:
+    """Print a model-loading note (production gate, member-mean fallback)."""
+    print(f"  {message.rstrip()}")
+
+
+def _blurred_target(image: Image) -> Image:
+    """``image`` blurred to the training target PSF — the HR reference the
+    members are supervised and scored against."""
+    return dataclasses.replace(
+        image,
+        data=blur_target_array(
+            image.data,
+            Config.TARGET_PSF_FWHM_ARCSEC,
+            pixel_scale_arcsec=image.pixel_scale_arcsec,
+        ),
+    )
+
+
+def _member_number(member_dir: str) -> int:
+    """``.../member_12`` → 12 (``-1`` for a non-numeric name)."""
+    tail = os.path.basename(member_dir).removeprefix("member_")
+    return int(tail) if tail.isdigit() else -1
 
 
 class InteractiveCLI:
@@ -108,7 +188,7 @@ class InteractiveCLI:
         },
         "training": {
             "name": "Model Training",
-            "description": "Train WDSR super-resolution models",
+            "description": "Train ensemble members, run the production model",
             "icon": "🧠",
         },
         "visualization": {
@@ -467,12 +547,19 @@ class InteractiveCLI:
                       f"(valid={r['valid']}, corrupted={r['corrupted']}, "
                       f"failed={r.get('failed', 0)})")
 
-            # Report bands with failures
+            # Report bands with failures: ``rejected_ids`` failed to download
+            # or validate (or had a saturated core) in this run and are now
+            # flagged corrupted; ``unmatched_ids`` lie outside every tile of
+            # the band.
             for band_name, r in band_results.items():
-                if r.get('corrupted_ids'):
-                    print(f"\n⚠️  {band_name}: corrupted star ids = {r['corrupted_ids']}")
+                if r.get('rejected_ids'):
+                    print(f"\n⚠️  {band_name}: rejected (failed download/validation or "
+                          f"saturated core) star ids = {r['rejected_ids']}")
                 if r.get('unmatched_ids'):
                     print(f"⚠️  {band_name}: no tile coverage for ids = {r['unmatched_ids']}")
+                if r.get('invalid_coordinate_ids'):
+                    print(f"⚠️  {band_name}: missing id or non-finite RA/Dec for ids = "
+                          f"{r['invalid_coordinate_ids']}")
 
         except Exception as e:
             print(f"\n✗ Download failed: {e}")
@@ -481,11 +568,13 @@ class InteractiveCLI:
     def _extract_psf(self):
         """Extract PSF from cutouts for a chosen band (VIS / Y_E / J_E / H_E)."""
         # Choose band first — drives default cutout dir + output filename.
+        # The scale shown is the archive cutouts' (0.10"/pix for VIS and NISP
+        # alike), the grid the ePSF is extracted on.
         band_choices = [
-            {"name": f"VIS  (0.10\"/pix, FWHM≈{Config.BAND_VIS.psf_fwhm_arcsec}\")",  "value": "VIS"},
-            {"name": f"Y_E  (0.30\"/pix, FWHM≈{Config.BAND_Y_E.psf_fwhm_arcsec}\")",  "value": "Y_E"},
-            {"name": f"J_E  (0.30\"/pix, FWHM≈{Config.BAND_J_E.psf_fwhm_arcsec}\")",  "value": "J_E"},
-            {"name": f"H_E  (0.30\"/pix, FWHM≈{Config.BAND_H_E.psf_fwhm_arcsec}\")",  "value": "H_E"},
+            {"name": f"{b.name:<4} ({b.pixel_scale_lr_arcsec:.2f}\"/pix, "
+                     f"FWHM≈{b.psf_fwhm_arcsec}\")",
+             "value": b.name}
+            for b in Config.BANDS
         ]
         band_name = select("Select band:", choices=band_choices).ask()
         if band_name is None:
@@ -532,6 +621,16 @@ class InteractiveCLI:
             return
 
         num_stars_input = input("Number of stars to use (default: all): ").strip()
+        num_stars: int | None = None
+        if num_stars_input:
+            try:
+                num_stars = int(num_stars_input)
+            except ValueError:
+                print("\n✗ Invalid number of stars: must be an integer")
+                return
+            if num_stars <= 0:
+                print(f"\n✗ Number of stars must be positive, got {num_stars}")
+                return
 
         # PSF size — default to the largest odd value <= cutout_size - 1 so
         # the centered crop fits inside the cutout.
@@ -555,7 +654,8 @@ class InteractiveCLI:
             psf_size = default_psf_size
 
         # Optional explicit output size (in oversampled pixels). Even values
-        # are bumped to odd — e.g. user types 1024 → output PSF is 1023×1023.
+        # are bumped down to odd by the extractor — e.g. user types 1024 →
+        # output PSF is 1023×1023.
         output_size_input = input(
             "Output PSF size in oversampled pixels "
             "(blank = photutils default, e.g. 1024 → 1023 odd): "
@@ -579,7 +679,14 @@ class InteractiveCLI:
             oversampling=band.epsf_oversampling,
             progress_bar=True,
         )
-        extractor = PSFExtractor(config)
+        try:
+            extractor = PSFExtractor(config)
+        except ValueError as e:
+            print_error(str(e))
+            return
+        if output_size is not None and config.effective_output_size != output_size:
+            print(f"  output size {output_size} is even → building "
+                  f"{config.effective_output_size}×{config.effective_output_size}")
         print(f"  oversampling = {config.oversampling}  →  ePSF pixel "
               f"scale = {band.epsf_pixel_scale_arcsec:.4f}\"/pix")
 
@@ -593,8 +700,7 @@ class InteractiveCLI:
         print(f"\nFound {len(all_files)} cutout files at size {cutout_size}")
 
         # Select files
-        if num_stars_input:
-            num_stars = int(num_stars_input)
+        if num_stars is not None:
             selected_files = extractor.select_files(all_files, num_stars=num_stars)
             print(f"Using first {num_stars} stars")
         else:
@@ -641,18 +747,24 @@ class InteractiveCLI:
         if output_dir == "custom":
             output_dir = input("Enter path: ").strip()
 
-        cutout_dir = f"{output_dir}/cutouts"
+        cutout_dir = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
 
         # Check if directory exists
         if not os.path.exists(cutout_dir):
             print(f"\n✗ Cutout directory not found: {cutout_dir}")
             return
 
-        # Get all FITS files
-        fits_files = glob.glob(os.path.join(cutout_dir, "*.fits"))
+        # Cutouts live in one sub-directory per band
+        # (``cutouts/<band>/star_<id>_<size>.fits``); keep each file's band.
+        fits_files = [
+            (band.name, path)
+            for band in Config.BANDS
+            for path in sorted(glob.glob(os.path.join(
+                Config.cutout_dir_for_band(band.name, root=cutout_dir), "*.fits")))
+        ]
 
         if len(fits_files) == 0:
-            print(f"\n✗ No FITS files found in {cutout_dir}")
+            print(f"\n✗ No FITS files found in {cutout_dir}/<band>/")
             return
 
         print(f"\nChecking {len(fits_files)} FITS files...")
@@ -664,12 +776,12 @@ class InteractiveCLI:
             "corrupted": [],
         }
 
-        for filepath in tqdm(fits_files, desc="Validating"):
+        for band_name, filepath in tqdm(fits_files, desc="Validating"):
             is_valid, error_msg = validator.validate_basic_integrity(filepath)
             if is_valid:
-                results["valid"].append(filepath)
+                results["valid"].append((band_name, filepath))
             else:
-                results["corrupted"].append((filepath, error_msg))
+                results["corrupted"].append((band_name, filepath, error_msg))
 
         # Display results
         print_header("Integrity Check Results")
@@ -679,9 +791,9 @@ class InteractiveCLI:
 
         if results['corrupted']:
             print("\nCorrupted files:")
-            for filepath, error_msg in results['corrupted'][:10]:  # Show first 10
+            for band_name, filepath, error_msg in results['corrupted'][:10]:  # Show first 10
                 filename = os.path.basename(filepath)
-                print(f"  🔴 {filename}: {error_msg}")
+                print(f"  🔴 {band_name}/{filename}: {error_msg}")
             if len(results['corrupted']) > 10:
                 print(f"  ... and {len(results['corrupted']) - 10} more")
 
@@ -691,8 +803,9 @@ class InteractiveCLI:
             objects = CatalogObject.read(catalog_path)
             by_id = {o.id: o for o in objects}
 
-            # Update star status based on validation — per-size, not whole-star
-            for filepath, _error_msg in results['corrupted']:
+            # Update star status based on validation — per (band, size), not
+            # whole-star.
+            for band_name, filepath, _error_msg in results['corrupted']:
                 filename = os.path.basename(filepath)
                 parts = filename.split('_')
                 if len(parts) >= 3 and parts[0] == 'star':
@@ -703,7 +816,7 @@ class InteractiveCLI:
                         continue
                     o = by_id.get(star_id)
                     if o is not None:
-                        o.set_corrupted(size)
+                        o.set_corrupted(size, band=band_name)
 
             CatalogObject.write(objects, catalog_path)
             print("\n✓ Updated catalog with validation results")
@@ -874,7 +987,13 @@ class InteractiveCLI:
                 self._convolve_hr_to_lr()
 
     def _convolve_hr_to_lr(self):
-        """Apply the multi-band forward model: HR 4-channel → LR 4-channel + HR 4-channel clean target."""
+        """Apply the multi-band forward model to every ``clean_<split>`` record.
+
+        Each starless scene gets its recorded stars (``sources_<split>.csv``)
+        re-injected before the forward, which writes the 4-band LR to
+        ``dirty_<split>`` and the starfull 4-band HR target to ``hr_<split>``.
+        ``clean_<split>`` is only read, never rewritten.
+        """
         psf_dir = input(
             f"PSF directory (default {Config.EUCLID_PSF_DIR}): "
         ).strip() or Config.EUCLID_PSF_DIR
@@ -903,7 +1022,7 @@ class InteractiveCLI:
 
         # Discover which subsets have v2 clean TFRecords.
         subsets_to_run = []
-        for subset in ("train", "validate", "test"):
+        for subset in _SPLITS:
             clean_path = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
             if os.path.exists(clean_path):
                 n_images = sum(1 for _ in tf.data.TFRecordDataset(clean_path))
@@ -917,8 +1036,11 @@ class InteractiveCLI:
 
         print(f"\nSource: {Config.RECORDS_DIR_V2}")
         for subset, _, n_images in subsets_to_run:
-            print(f"  clean_{subset}.tfrecord → dirty_{subset}.tfrecord ({n_images} images)")
+            print(f"  clean_{subset}.tfrecord → hr_{subset}.tfrecord + "
+                  f"dirty_{subset}.tfrecord ({n_images} images)")
         total = sum(n for _, _, n in subsets_to_run)
+        print("  Stars: each field's recorded stars (sources_<split>.csv) are re-injected; "
+              "clean_ records are kept as they are")
         print("  Noise: per-band Poisson + Gaussian read for VIS / Y_E / J_E / H_E")
         print(f"  NISP→VIS-LR resample: {Config.NISP_RESAMPLE_KERNEL}")
         print("  Output channels: LR=(VIS, Y_E, J_E, H_E) @ 0.10\"/pix; HR=(VIS, Y_E, J_E, H_E) @ 0.05\"/pix")
@@ -937,28 +1059,39 @@ class InteractiveCLI:
             master_seed = int.from_bytes(os.urandom(8), "little")
             rng = np.random.default_rng(master_seed)
             print(f"  forward {subset}: master_seed={master_seed}")
+            # The scenes are starless; the stars drawn with each field were
+            # recorded in the source sidecar (keyed by field index).
+            stars_by_field = _recorded_stars(Config.RECORDS_DIR_V2, subset)
+            if not stars_by_field:
+                print(f"  ⚠️  {subset}: no recorded stars in "
+                      f"{_sources_csv(Config.RECORDS_DIR_V2, subset)} — the fields stay starless")
             n_ok = n_err = 0
 
             # Stream LR + HR pairs directly to disk so memory scales with
             # one image (≈5 MB) instead of the whole set (~13 GB at 6400).
+            # ``clean_`` is the input and is never opened for writing (a
+            # TFRecordWriter truncates its file on open).
             with open_writer(
-                    f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2) as hr_w, \
+                    f"hr_{subset}", records_dir=Config.RECORDS_DIR_V2) as hr_w, \
                  open_writer(
                     f"dirty_{subset}", records_dir=Config.RECORDS_DIR_V2) as lr_w:
-                for raw in tqdm(tf.data.TFRecordDataset(clean_file),
-                                total=n_images, desc=f"Forward {subset}",
-                                unit="img"):
+                for i, raw in enumerate(tqdm(tf.data.TFRecordDataset(clean_file),
+                                             total=n_images, desc=f"Forward {subset}",
+                                             unit="img")):
                     try:
-                        hr_4ch = deserialize_image(raw)
-                        lr, hr = forward.process(hr_4ch, rng=rng)
-                        hr_w.write(hr, index=n_ok)
-                        lr_w.write(lr, index=n_ok)
+                        sky = deserialize_image(raw)
+                        lr, hr = _forward_with_recorded_stars(
+                            forward, sky, stars_by_field.get(i), rng)
+                        # Index = the clean record's position, so dirty_, hr_,
+                        # clean_ and the source sidecar stay paired.
+                        hr_w.write(hr, index=i)
+                        lr_w.write(lr, index=i)
                         n_ok += 1
                     except Exception as e:
                         n_err += 1
                         tqdm.write(f"  ✗ Skipping record (error: {e})")
             print(f"  ✓ {subset}: {n_ok} ok, {n_err} skipped → "
-                  f"clean_{subset}.tfrecord (HR 4-ch) + dirty_{subset}.tfrecord (LR 4-ch)")
+                  f"hr_{subset}.tfrecord (HR 4-ch) + dirty_{subset}.tfrecord (LR 4-ch)")
 
     def _generate_clean_data(self):
         """Generate 4-band clean HR sky data using the COSMOS2025 catalog."""
@@ -1012,9 +1145,11 @@ class InteractiveCLI:
         print(f"  Pixel scale:       {pixel_scale_val} arcsec/pix (HR)")
         print(f"  Image size:        {image_size_val} x {image_size_val} (4 channels)")
         print(f"  Output (TFRecord): {Config.RECORDS_DIR_V2}/")
-        print("    clean_train.tfrecord")
-        print("    clean_validate.tfrecord")
-        print("    clean_test.tfrecord")
+        print("    clean_train.tfrecord     + sources_train.csv")
+        print("    clean_validate.tfrecord  + sources_validate.csv")
+        print("    clean_test.tfrecord      + sources_test.csv")
+        print("    (starless scenes; each field's stars are recorded in its "
+              "sources CSV for the forward step)")
 
         if not confirm("\nGenerate clean multi-band sky data?", default=True).ask():
             return
@@ -1050,14 +1185,19 @@ class InteractiveCLI:
                 print(f"\nGenerating {subset} set ({n} images)  "
                       f"[master_seed={master_seed}]...")
                 # Stream so memory bounded to ~one image (otherwise 6400
-                # 510² × 4-channel fields cost ~26 GB).
+                # 510² × 4-channel fields cost ~26 GB). The scene is starless;
+                # its drawn stars go to the source sidecar (with the galaxies
+                # and lenses) so the forward step can re-inject them.
                 with open_writer(
-                        f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2) as w:
+                        f"clean_{subset}", records_dir=Config.RECORDS_DIR_V2) as w, \
+                     SourceCatalogWriter(
+                        _sources_csv(Config.RECORDS_DIR_V2, subset)) as sources:
                     for i in tqdm(range(n), desc=subset):
-                        sky, _ = sim.simulate_field(rng)
+                        sky, meta = sim.simulate_field(rng)
                         sky.index = i
                         sky.subset = subset
                         w.write(sky, index=i)
+                        sources.add_field(i, meta)
                     path = w.path
                 print(f"  ✓ {path}")
 
@@ -1068,17 +1208,17 @@ class InteractiveCLI:
             traceback.print_exc()
 
     def _training_menu(self):
-        """Model training menu."""
+        """Model training menu: ensemble members and the production model."""
         while True:
             choice = select(
                 "🧠 Model Training - Select an action:",
                 choices=[
-                    {"name": "🏋️  Train WDSR model", "value": "train"},
-                    {"name": "📈 Evaluate model", "value": "evaluate"},
+                    {"name": "🏋️  Train a new ensemble member (WDSR)", "value": "train"},
+                    {"name": "📈 Evaluate the production model", "value": "evaluate"},
                     {"name": "🔬 Reconstruct image (inference)", "value": "reconstruct"},
                     {"name": "🌐 Fetch a sky position & super-resolve", "value": "fetch_sr"},
-                    {"name": "🔄 Inspect checkpoints", "value": "inspect"},
-                    {"name": "📉 Plot training log", "value": "plot_log"},
+                    {"name": "🔄 Inspect member checkpoints", "value": "inspect"},
+                    {"name": "📉 Plot a member's training log", "value": "plot_log"},
                     {"name": "🔙 Back to main menu", "value": "back"},
                 ]
             ).ask()
@@ -1099,15 +1239,26 @@ class InteractiveCLI:
             elif choice == "plot_log":
                 self._plot_training_log()
 
+    @staticmethod
+    def _ask_ensemble_dir() -> str:
+        """Prompt for the ensemble root (default: THE model location)."""
+        default = default_ensemble_dir()
+        return input(f"Ensemble directory (default {default}): ").strip() or default
+
     def _train_model(self):
-        """Train WDSR model on multi-band (4-channel LR → 4-channel VIS+NISP HR) data."""
-        scale = (input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip()
-                 or str(Config.DEFAULT_REBIN_FACTOR))
+        """Train one NEW ensemble member (4-channel LR → 4-channel VIS+NISP HR).
+
+        Runs ``scripts/train_ensemble.py --mode add --count 1``, the entry point
+        the WebUI's FASRC ensemble step runs, so the member is created, seeded,
+        recorded (``origin.json``) and trained like every other member:
+        STARFULL, on the ``dirty_train`` → ``hr_train`` records. Its name comes
+        from the registry (archived indices are never reused) and it joins the
+        active ensemble once it has a checkpoint.
+        """
         num_res_blocks = (
             input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip()
             or str(Config.DEFAULT_NUM_RES_BLOCKS))
-        checkpoint_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
-                          or Config.DEFAULT_CHECKPOINT_DIR)
+        base_dir = self._ask_ensemble_dir()
         steps = (input(f"Training steps (default {Config.DEFAULT_TRAIN_STEPS}): ").strip()
                  or str(Config.DEFAULT_TRAIN_STEPS))
         batch_size = (input(f"Batch size (default {Config.DEFAULT_BATCH_SIZE}): ").strip()
@@ -1117,7 +1268,6 @@ class InteractiveCLI:
             or str(Config.DEFAULT_EVALUATE_EVERY))
 
         try:
-            scale_val = int(scale)
             num_res_blocks_val = int(num_res_blocks)
             steps_val = int(steps)
             batch_size_val = int(batch_size)
@@ -1126,68 +1276,64 @@ class InteractiveCLI:
             print("\n✗ Invalid input: all values must be integers")
             return
 
+        # A record-mode STARFULL member trains on dirty_train → hr_train;
+        # train_ensemble.py checks the validation records it also reads.
         records_dir = Config.RECORDS_DIR_V2
-        clean_train = tfrecord_path(records_dir, "clean_train")
-        dirty_train = tfrecord_path(records_dir, "dirty_train")
-
-        if not os.path.exists(clean_train) or not os.path.exists(dirty_train):
-            print(f"\n✗ Training data not found in {records_dir}")
+        missing = [name for name in ("dirty_train", "hr_train")
+                   if not os.path.exists(tfrecord_path(records_dir, name))]
+        if missing:
+            print(f"\n✗ Training data not found in {records_dir} ({', '.join(missing)})")
             print("  Run multi-band clean sky generation and HR→LR forward first.")
             return
 
-        dirty_valid = tfrecord_path(records_dir, "dirty_validate")
-        if not os.path.exists(dirty_valid):
-            print(f"\n⚠️  No validation data in {records_dir} — will train without validation")
-
+        name = next_member_names(base_dir, 1)[0]
         print("\nConfiguration:")
-        print(f"  Scale: {scale_val}x")
+        print(f"  New member: {name}")
         print(f"  Residual blocks: {num_res_blocks_val}")
         print(f"  Training steps: {steps_val}")
         print(f"  Batch size: {batch_size_val}")
         print(f"  Evaluate every: {evaluate_every_val} steps")
         print(f"  Records: {records_dir}")
-        print(f"  Checkpoint directory: {checkpoint_dir}")
+        print(f"  Ensemble directory: {base_dir}")
         print(f"  Input channels: {Config.NUM_LR_CHANNELS} "
               f"({', '.join(Config.LR_INPUT_BAND_NAMES)})")
-        print(f"  Output channels: {Config.NUM_HR_CHANNELS} ({Config.HR_TARGET_BAND_NAME})")
+        print(f"  Output channels: {Config.NUM_HR_CHANNELS} "
+              f"({', '.join(Config.HR_TARGET_BAND_NAMES)})")
 
         if confirm("\nStart training?", default=True).ask():
             print("\n⚠️  Training will run until interrupted (Ctrl+C) or completion")
 
+            cmd = [sys.executable, "-u", _TRAIN_ENSEMBLE_SCRIPT,
+                   "--mode", "add", "--count", "1", "--member-names", name,
+                   "--base-dir", base_dir, "--records-dir", records_dir,
+                   "--steps", str(steps_val), "--batch-size", str(batch_size_val),
+                   "--evaluate-every", str(evaluate_every_val),
+                   "--num-res-blocks", str(num_res_blocks_val)]
             try:
-                m = Model(checkpoint_dir, scale=scale_val,
-                          num_res_blocks=num_res_blocks_val)
-
-                # Train
                 print("\nStarting training...")
-                m.train(
-                    tfrecord_path(records_dir, "dirty_train"),
-                    tfrecord_path(records_dir, "clean_train"),
-                    steps=steps_val,
-                    evaluate_every=evaluate_every_val,
-                )
+                returncode = subprocess.run(cmd, check=False).returncode
+                if returncode != 0:
+                    print(f"\n✗ Training failed: train_ensemble.py exited with "
+                          f"status {returncode}")
+                    return
 
-                # Post-training evaluation on the held-out test set (else
-                # validate, for datasets predating the test split).
-                eval_sub = eval_subset(records_dir)
-                lr_val = ImageSet.read(tfrecord_path(records_dir, f"dirty_{eval_sub}"))
-                hr_val = ImageSet.read(tfrecord_path(records_dir, f"clean_{eval_sub}"))
-                lr_source = lr_val.source_path
-                hr_source = hr_val.source_path
-                if lr_source is None or hr_source is None:
-                    raise RuntimeError("TFRecord image sets must retain their source paths")
-                valid_ds = m._build_training_pipeline(
-                    lr_source, hr_source, 1, augment=False
-                )
-                metrics = Trainer(model=m._tf_model,
-                                  checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
-                print(
-                    f"\nFinal metrics ({eval_sub} set):\n"
-                    f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"
-                    f"  PSNR (raw e⁻):                 {float(metrics['psnr_raw']):.3f} dB"
-                )
+                # Post-training score of the new member on the held-out test
+                # set (else validate), in the space it trained in. The member
+                # is trained either way, so a failed score is only a warning.
+                try:
+                    metrics = evaluate_member_on_records(
+                        os.path.join(base_dir, name), records_dir)
+                    print(
+                        f"\nFinal metrics ({metrics['subset']} set, {name}, "
+                        f"{metrics['n_scored']} fields):\n"
+                        f"  PSNR (stretched, loss-aligned): "
+                        f"{float(metrics['psnr_stretched']):.3f} dB"
+                    )
+                except Exception as e:
+                    print(f"\n⚠️  Post-training evaluation of {name} failed: {e}")
 
-                print("\n✓ Training completed!")
+                print(f"\n✓ Training completed! {name} is an active ensemble member; "
+                      "the production combiner reads it after its next refit.")
 
             except KeyboardInterrupt:
                 print("\n\n⚠️  Training interrupted by user")
@@ -1196,55 +1342,54 @@ class InteractiveCLI:
                 traceback.print_exc()
 
     def _evaluate_model(self):
-        """Evaluate a trained model on the held-out test set (else validate)."""
-        checkpoint_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
-                          or Config.DEFAULT_CHECKPOINT_DIR)
-        scale = (input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip()
-                 or str(Config.DEFAULT_REBIN_FACTOR))
-        num_res_blocks = (
-            input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip()
-            or str(Config.DEFAULT_NUM_RES_BLOCKS))
+        """Evaluate the production model on the held-out test set (else validate).
 
+        The production model is the STARFULL ensemble through its production
+        combiner (:func:`load_eval_ensemble`), scored against the starfull
+        ``hr_`` target blurred to the training target PSF.
+        """
+        base_dir = self._ask_ensemble_dir()
+        n_fields_str = (
+            input(f"Number of fields to evaluate "
+                  f"(default {Config.DEFAULT_VALIDATE_IMAGES}): ").strip()
+            or str(Config.DEFAULT_VALIDATE_IMAGES))
         try:
-            scale_val = int(scale)
-            num_res_blocks_val = int(num_res_blocks)
+            n_fields = int(n_fields_str)
+            if n_fields <= 0:
+                raise ValueError
         except ValueError:
-            print("\n✗ Invalid input: scale and num_res_blocks must be integers")
-            return
-
-        if not tf.train.latest_checkpoint(checkpoint_dir):
-            print(f"\n✗ No checkpoints found in {checkpoint_dir}")
+            print("\n✗ Invalid input: the number of fields must be a positive integer")
             return
 
         # Evaluate on the held-out test set (else validate) — v2 multi-band.
         records_dir = Config.RECORDS_DIR_V2
         eval_sub = eval_subset(records_dir)
         dirty_eval = tfrecord_path(records_dir, f"dirty_{eval_sub}")
-        if not os.path.exists(dirty_eval):
-            print(f"\n✗ No {eval_sub} data found in {records_dir}")
+        hr_eval = tfrecord_path(records_dir, f"hr_{eval_sub}")
+        if not (os.path.exists(dirty_eval) and os.path.exists(hr_eval)):
+            print(f"\n✗ No {eval_sub} data (dirty_{eval_sub} + hr_{eval_sub}) "
+                  f"found in {records_dir}")
             return
 
         try:
-
-            print(f"\nLoading model from {checkpoint_dir}...")
-            m = Model(checkpoint_dir, scale=scale_val,
-                      num_res_blocks=num_res_blocks_val)
-            lr_val = ImageSet.read(tfrecord_path(records_dir, f"dirty_{eval_sub}"))
-            hr_val = ImageSet.read(tfrecord_path(records_dir, f"clean_{eval_sub}"))
-            lr_source = lr_val.source_path
-            hr_source = hr_val.source_path
-            if lr_source is None or hr_source is None:
-                raise RuntimeError("TFRecord image sets must retain their source paths")
-            valid_ds = m._build_training_pipeline(
-                lr_source, hr_source, 1, augment=False
-            )
+            print(f"\nLoading the production model from {base_dir}...")
+            model = load_eval_ensemble(base_dir, log=_say)
+            lr_images = read_images(dirty_eval, num_images=n_fields)
+            hr_images = [_blurred_target(h)
+                         for h in read_images(hr_eval, num_images=n_fields)]
 
             print(f"Evaluating on {eval_sub} set...")
-            metrics = Trainer(model=m._tf_model, checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
+            with tqdm(total=len(lr_images), desc=f"Evaluate {eval_sub}",
+                      unit="field") as bar:
+                def _tick(_i: int, _n: int) -> None:
+                    bar.update(1)
+                metrics = evaluate_production_sr(
+                    model, lr_images, hr_images, on_progress=_tick)
             print(
-                f"\n✓ Validation metrics:\n"
-                f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"
-                f"  PSNR (raw e⁻):                 {float(metrics['psnr_raw']):.3f} dB"
+                f"\n✓ {eval_sub} set metrics ({model.label}, "
+                f"{metrics['n_scored']} fields):\n"
+                f"  PSNR (stretched, loss-aligned): {metrics['psnr_stretched']:.3f} dB\n"
+                f"  PSNR (raw e⁻):                 {metrics['psnr_raw']:.3f} dB"
             )
 
         except Exception as e:
@@ -1252,36 +1397,35 @@ class InteractiveCLI:
             traceback.print_exc()
 
     def _inspect_checkpoints(self):
-        """List available checkpoints in a directory."""
-        checkpoint_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
-                          or Config.DEFAULT_CHECKPOINT_DIR)
+        """List the checkpoints of every active ensemble member."""
+        base_dir = self._ask_ensemble_dir()
 
-        if not os.path.isdir(checkpoint_dir):
-            print(f"\n✗ Directory not found: {checkpoint_dir}")
+        members = [d for d in active_member_dirs(base_dir) if os.path.isdir(d)]
+        if not members:
+            print(f"\n✗ No active ensemble members in {base_dir}")
             return
 
-        ckpt_state = tf.train.get_checkpoint_state(checkpoint_dir)
-        if ckpt_state is None or not ckpt_state.all_model_checkpoint_paths:
-            print(f"\n✗ No checkpoints found in {checkpoint_dir}")
-            return
+        print(f"\nActive members in {base_dir}:\n")
+        for member_dir in members:
+            ckpt_state = tf.train.get_checkpoint_state(member_dir)
+            paths = list(ckpt_state.all_model_checkpoint_paths) if ckpt_state else []
+            latest = tf.train.latest_checkpoint(member_dir)
+            tail = f"latest {os.path.basename(latest)}" if latest else "no checkpoint"
+            print(f"  {os.path.basename(member_dir)}: {len(paths)} checkpoint(s), {tail}")
 
-        latest = tf.train.latest_checkpoint(checkpoint_dir)
-        print(f"\nCheckpoints in {checkpoint_dir}:\n")
-
-        for path in ckpt_state.all_model_checkpoint_paths:
-            marker = " ← latest" if path == latest else ""
-            print(f"  {os.path.basename(path)}{marker}")
-
-        print(f"\n  Total: {len(ckpt_state.all_model_checkpoint_paths)} checkpoint(s)")
+        print(f"\n  Total: {len(members)} member(s)")
 
     def _plot_training_log(self):
-        """Plot the per-evaluation loss / PSNR curves from a training log."""
+        """Plot the per-evaluation loss / PSNR curves from a member's training log."""
 
-        checkpoint_dir = input(
-            f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): "
-        ).strip() or Config.DEFAULT_CHECKPOINT_DIR
+        members = active_member_dirs(default_ensemble_dir())
+        default_dir = (max(members, key=_member_number) if members
+                       else default_ensemble_dir())
+        member_dir = input(
+            f"Member directory (default {default_dir}): "
+        ).strip() or default_dir
 
-        log_path = default_log_path(checkpoint_dir)
+        log_path = default_log_path(member_dir)
         if not os.path.exists(log_path):
             print(f"\n✗ No training log at {log_path}")
             print("  (Logs are written automatically by the trainer at each evaluation.)")
@@ -1305,33 +1449,37 @@ class InteractiveCLI:
             traceback.print_exc()
 
     def _reconstruct_image(self):
-        """Apply super-resolution to a single LR image."""
-        # Branch-local inputs, pre-bound so the later `input_source`-guarded
-        # reads are always defined (one of the two branches below fills them).
+        """Super-resolve LR images with the production model (the STARFULL
+        ensemble through its production combiner)."""
+        # Branch-local inputs, pre-bound so the later reads are always defined
+        # (one of the two branches below fills them).
         chosen_lr: list[Image] | None = None
         chosen_hr: list[Image | None] | None = None
-        num_reconstruct = 0
-        lr_data_input = lr_path = None
+        lr_file: str | None = None
         input_source = select(
             "Load LR image from:",
             choices=[
-                {"name": "TFRecords (dirty images from training data)", "value": "tfrecord"},
-                {"name": "File path (.npy or .png)", "value": "file"},
+                {"name": "TFRecords (dirty images from the generated records)",
+                 "value": "tfrecord"},
+                {"name": "File path (.npy LR cube in electrons)", "value": "file"},
             ]
         ).ask()
 
         if input_source == "tfrecord":
-            dirty_train = tfrecord_path(Config.RECORDS_DIR, "dirty_train")
-            dirty_valid = tfrecord_path(Config.RECORDS_DIR, "dirty_validate")
-            available = []
-            if os.path.exists(dirty_train):
-                available.append({"name": "dirty_train.tfrecord", "value": dirty_train})
-            if os.path.exists(dirty_valid):
-                available.append({"name": "dirty_validate.tfrecord", "value": dirty_valid})
+            records_dir = Config.RECORDS_DIR_V2
+            available = [
+                {"name": f"dirty_{subset}.tfrecord", "value": subset}
+                for subset in _SPLITS
+                if os.path.exists(tfrecord_path(records_dir, f"dirty_{subset}"))
+            ]
             if not available:
-                print(f"\n✗ No dirty TFRecords found in {Config.RECORDS_DIR}")
+                print(f"\n✗ No dirty TFRecords found in {records_dir}")
                 return
-            tfr_path = select("Which dataset:", choices=available).ask()
+            subset = select("Which dataset:", choices=available).ask()
+            if subset is None:
+                print_cancelled()
+                return
+            tfr_path = tfrecord_path(records_dir, f"dirty_{subset}")
             num_str = input("Number of random images to reconstruct (default 5): ").strip() or "5"
             try:
                 num_reconstruct = int(num_str)
@@ -1347,66 +1495,34 @@ class InteractiveCLI:
             chosen_indices = rng.choice(len(images), size=num_reconstruct, replace=False)
             chosen_lr = [images[i] for i in chosen_indices]
 
-            # Also try to load matching HR for comparison
-            clean_file = tfr_path.replace("dirty_", "clean_")
+            # Also load the matching starfull HR target (the one the dirty
+            # records were forward-modelled to) for comparison.
+            hr_file = tfrecord_path(records_dir, f"hr_{subset}")
             matched_hr = [cast(Image | None, None)] * num_reconstruct
-            if os.path.exists(clean_file):
-                clean_images = read_images(clean_file, num_images=9999)
-                clean_by_idx = {img.index: img for img in clean_images}
+            if os.path.exists(hr_file):
+                hr_by_idx = {img.index: img for img in read_images(hr_file, num_images=9999)}
                 for i, lr_img in enumerate(chosen_lr):
-                    hr_match = clean_by_idx.get(lr_img.index)
+                    hr_match = hr_by_idx.get(lr_img.index)
                     if hr_match is not None:
-                        matched_hr[i] = dataclasses.replace(
-                            hr_match,
-                            data=blur_target_array(
-                                hr_match.data,
-                                Config.TARGET_PSF_FWHM_ARCSEC,
-                                pixel_scale_arcsec=hr_match.pixel_scale_arcsec,
-                            ),
-                        )
+                        matched_hr[i] = _blurred_target(hr_match)
             chosen_hr = matched_hr
-        else:
-            lr_file = input("Path to LR image (.npy or .png): ").strip()
+        elif input_source == "file":
+            lr_file = input("Path to LR cube (.npy, (H, W, 4) electrons): ").strip()
             if not lr_file or not os.path.exists(lr_file):
                 print(f"\n✗ File not found: {lr_file}")
                 return
-            lr_data_input = lr_file
-            lr_path = lr_file
-
-        scale = (input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip()
-                 or str(Config.DEFAULT_REBIN_FACTOR))
-        num_res_blocks = (
-            input(f"Number of residual blocks (default {Config.DEFAULT_NUM_RES_BLOCKS}): ").strip()
-            or str(Config.DEFAULT_NUM_RES_BLOCKS))
-
-        try:
-            scale_val = int(scale)
-            num_res_blocks_val = int(num_res_blocks)
-        except ValueError:
-            print("\n✗ Invalid input: scale and num_res_blocks must be integers")
+            if not lr_file.endswith(".npy"):
+                print(f"\n✗ Unsupported LR file {lr_file}: expected a .npy cube in electrons")
+                return
+        else:
+            print_cancelled()
             return
 
+        base_dir = self._ask_ensemble_dir()
         try:
-
-            ckpt_dir = (
-                input(
-                    "Checkpoint directory "
-                    f"(default {Config.DEFAULT_CHECKPOINT_DIR}): "
-                ).strip()
-                or Config.DEFAULT_CHECKPOINT_DIR
-            )
-            if not tf.train.latest_checkpoint(ckpt_dir):
-                print(f"\n✗ No checkpoints found in {ckpt_dir}")
-                return
-            print(f"\nLoading model from checkpoint {ckpt_dir}...")
-            if input_source == "tfrecord":
-                if chosen_lr is None or chosen_hr is None:
-                    raise RuntimeError("TFRecord reconstruction inputs were not loaded")
-                model = Model(
-                    ckpt_dir,
-                    scale=scale_val,
-                    num_res_blocks=num_res_blocks_val,
-                )
+            print(f"\nLoading the production model from {base_dir}...")
+            model = load_eval_ensemble(base_dir, log=_say)
+            if chosen_lr is not None and chosen_hr is not None:
                 hr_for_render = [h for h in chosen_hr if h is not None]
                 saved = reconstruct_and_render(
                     chosen_lr,
@@ -1425,14 +1541,8 @@ class InteractiveCLI:
                     f"{Config.VIS_RECONSTRUCTION_DIR}"
                 )
                 return
-            if lr_data_input is None or lr_path is None:
+            if lr_file is None:
                 raise RuntimeError("file reconstruction input was not loaded")
-            model = load_model_from_checkpoint(
-                ckpt_dir,
-                scale_val,
-                num_res_blocks_val,
-                nchan_out=Config.NUM_HR_CHANNELS,
-            )
 
             os.makedirs(Config.VIS_RECONSTRUCTION_DIR, exist_ok=True)
             vmax = self._ask_vmax()
@@ -1455,8 +1565,9 @@ class InteractiveCLI:
                         hr_data = hr_data[..., 0]
 
             print("Running super-resolution...")
-            lr_data, sr_data = reconstruct(model, lr_data_input)
-            basename = os.path.basename(lr_path).replace(".", "_")
+            lr_cube = np.load(lr_file).astype(np.float32)
+            lr_data, sr_data, _members = sr_from_model(model, lr_cube)
+            basename = os.path.basename(lr_file).replace(".", "_")
             output_path = os.path.join(
                 Config.VIS_RECONSTRUCTION_DIR,
                 f"reconstruct_{basename}.png",
@@ -1476,12 +1587,12 @@ class InteractiveCLI:
 
 
     def _fetch_and_superresolve(self):
-        """Fetch a real Euclid sky position from the archive and super-resolve it."""
+        """Fetch a real Euclid sky position from the archive and super-resolve
+        it with the production model."""
         ra_str = input("RA in degrees (ICRS): ").strip()
         dec_str = input("Dec in degrees (ICRS): ").strip()
         size_str = input("Cutout side in VIS pixels (default 256): ").strip() or "256"
-        ckpt_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
-                    or Config.DEFAULT_CHECKPOINT_DIR)
+        base_dir = self._ask_ensemble_dir()
 
         try:
             ra = float(ra_str)
@@ -1493,8 +1604,8 @@ class InteractiveCLI:
 
         out_dir = os.path.join(Config.EUCLID_INFERENCE_DIR, "adhoc")
         try:
-            model = Model(ckpt_dir, scale=Config.DEFAULT_REBIN_FACTOR,
-                          num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS)
+            print(f"\nLoading the production model from {base_dir}...")
+            model = load_eval_ensemble(base_dir, log=_say)
             fits_path, png_path = fetch_and_superresolve(
                 ra=ra, dec=dec, size=size, model=model, out_dir=out_dir,
                 catalog=self._euclid_client(),
@@ -1596,6 +1707,15 @@ class InteractiveCLI:
         if output_dir == "custom":
             output_dir = input("Enter path: ").strip()
 
+        # Cutouts are stored per band (``cutouts/<band>/``).
+        band_name = select(
+            "Select band:",
+            choices=[{"name": b.name, "value": b.name} for b in Config.BANDS],
+        ).ask()
+        if band_name is None:
+            print_cancelled()
+            return
+
         num_stars_input = input("Number of stars to visualize (default 5): ").strip() or "5"
         try:
             num_stars = int(num_stars_input)
@@ -1621,17 +1741,19 @@ class InteractiveCLI:
         selected_stars = stars[:min(num_stars, len(stars))]
 
         # Visualize each star
-        cutout_dir = os.path.join(output_dir, Config.CUTOUTS_SUBDIR)
+        cutout_dir = Config.cutout_dir_for_band(
+            band_name, root=os.path.join(output_dir, Config.CUTOUTS_SUBDIR))
         vis_dir = Config.VIS_CUTOUTS_DIR
         os.makedirs(vis_dir, exist_ok=True)
 
-        print(f"\nVisualizing {len(selected_stars)} stars...")
+        print(f"\nVisualizing {len(selected_stars)} stars ({band_name})...")
 
         for star in tqdm(selected_stars, desc="Creating visualizations"):
-            # Load FITS data
-            fits_files = glob.glob(os.path.join(cutout_dir, f"star_{star.id:04d}_*.fits"))
+            # Load FITS data (any downloaded size; the first in name order)
+            fits_files = sorted(glob.glob(
+                os.path.join(cutout_dir, f"star_{star.id:04d}_*.fits")))
             if not fits_files:
-                print(f"  Warning: No cutout for star {star.id}")
+                print(f"  Warning: No {band_name} cutout for star {star.id}")
                 continue
 
             try:
@@ -1651,6 +1773,7 @@ class InteractiveCLI:
                     'title': 'Star Information:',
                     'stats': {
                         'ID': f"{star.id:04d}",
+                        'Band': band_name,
                         'RA': f"{star.ra:.6f}°",
                         'Dec': f"{star.dec:.6f}°",
                         'Magnitude': mag_str,
@@ -1659,7 +1782,7 @@ class InteractiveCLI:
                 })
 
                 # Save figure
-                output_path = os.path.join(vis_dir, f'star_{star.id:04d}.png')
+                output_path = os.path.join(vis_dir, f'star_{star.id:04d}_{band_name}.png')
                 visualizer.save_figure(output_path)
 
             except Exception as e:
@@ -1668,7 +1791,7 @@ class InteractiveCLI:
         print(f"\n✓ Visualizations saved to {vis_dir}")
 
     def _visualize_psf(self):
-        """Visualize PSF."""
+        """Visualize one band's empirical ePSF (``<psf dir>/<band's PSF file>``)."""
         psf_dir = select(
             "Select PSF directory:",
             choices=[
@@ -1676,6 +1799,9 @@ class InteractiveCLI:
                 {"name": "Custom path...", "value": "custom"},
             ]
         ).ask()
+        if psf_dir is None:
+            print_cancelled()
+            return
 
         if psf_dir == "custom":
             psf_dir = input("Enter path: ").strip()
@@ -1685,15 +1811,21 @@ class InteractiveCLI:
             print(f"\n✗ PSF directory not found: {psf_dir}")
             return
 
-        # Look for PSF FITS file
-        psf_file = os.path.join(psf_dir, Config.DEFAULT_PSF_FITS_FILENAME)
+        # PSFs are saved per band (``euclid_psf_<band>.fits``).
+        band_name = select(
+            "Select band:",
+            choices=[{"name": b.name, "value": b.name} for b in Config.BANDS],
+        ).ask()
+        if band_name is None:
+            print_cancelled()
+            return
+        psf_file = os.path.join(psf_dir, Config.get_band(band_name).psf_fits_filename)
         if not os.path.exists(psf_file):
             print(f"\n✗ PSF file not found: {psf_file}")
             return
 
-
-
-        # Load PSF
+        # Load PSF (for a per-cluster PSF set, the primary HDU is the
+        # field-averaged kernel)
         print(f"\nLoading PSF from {psf_file}...")
         psf = PSF.from_fits(psf_file)
         psf_data = psf.data
@@ -1702,7 +1834,7 @@ class InteractiveCLI:
         visualizer = BaseVisualizer(rows=1, cols=3, figsize=(18, 6),
                                     vmin=float(np.min(psf_data)), vmax=float(np.max(psf_data)))
 
-        visualizer.add_scale_panel(psf_data, title_suffix='\nEuclid VIS PSF')
+        visualizer.add_scale_panel(psf_data, title_suffix=f'\nEuclid {band_name} PSF')
         visualizer.add_scale_panel(psf_data, stretch="log10")
 
         center_y, center_x = psf_data.shape[0] // 2, psf_data.shape[1] // 2
@@ -1731,24 +1863,25 @@ class InteractiveCLI:
             'include_data_stats': True,
         })
 
-        plt.suptitle('Euclid VIS PSF', fontsize=16, y=1.02)
+        plt.suptitle(f'Euclid {band_name} PSF', fontsize=16, y=1.02)
 
-        # Save figure — name after the PSF directory
+        # Save figure — name after the PSF directory and the band
         os.makedirs(Config.VIS_PSF_DIR, exist_ok=True)
         dir_name = os.path.basename(os.path.normpath(psf_dir))
-        output_path = os.path.join(Config.VIS_PSF_DIR, f'{dir_name}.png')
+        output_path = os.path.join(Config.VIS_PSF_DIR, f'{dir_name}_{band_name}.png')
         visualizer.save_figure(output_path)
 
         print(f"\n✓ PSF visualization saved to: {output_path}")
 
     def _visualize_training_data(self):
-        """Visualize training data (clean, dirty, or paired)."""
+        """Visualize the v2 training records: clean (starless HR scene), dirty
+        (LR), or the training pairs (starfull HR target + its dirty LR)."""
         mode = select(
             "What to visualize:",
             choices=[
                 {"name": "Clean (HR) images", "value": "clean"},
                 {"name": "Dirty (LR) images", "value": "dirty"},
-                {"name": "Clean + Dirty pairs", "value": "pair"},
+                {"name": "HR target + Dirty (LR) pairs", "value": "pair"},
             ]
         ).ask()
 
@@ -1761,13 +1894,14 @@ class InteractiveCLI:
 
         vmax = self._ask_vmax()
 
-        need_clean = mode in ("clean", "pair")
-        need_dirty = mode in ("dirty", "pair")
+        records_dir = Config.RECORDS_DIR_V2
+        need_clean = mode == "clean"
+        need_dirty = mode == "dirty"
 
         def _find_subsets(prefix):
             found = []
-            for subset in ("train", "validate"):
-                path = tfrecord_path(Config.RECORDS_DIR, f"{prefix}_{subset}")
+            for subset in _SPLITS:
+                path = tfrecord_path(records_dir, f"{prefix}_{subset}")
                 if os.path.exists(path):
                     found.append((subset, path))
             return found
@@ -1776,10 +1910,10 @@ class InteractiveCLI:
         dirty_files = _find_subsets("dirty") if need_dirty else []
 
         if need_clean and not clean_files:
-            print(f"\n✗ No clean TFRecords found in {Config.RECORDS_DIR}")
+            print(f"\n✗ No clean TFRecords found in {records_dir}")
             return
         if need_dirty and not dirty_files:
-            print(f"\n✗ No dirty TFRecords found in {Config.RECORDS_DIR}")
+            print(f"\n✗ No dirty TFRecords found in {records_dir}")
             return
 
         try:
@@ -1817,32 +1951,26 @@ class InteractiveCLI:
                 n_drawn = 0
 
                 # Collect matched pairs per subset to avoid index-space collisions.
-                # Multi-band v2 records: HR and LR are both 4-channel (VIS+NISP).
+                # Multi-band v2 records: HR and LR are both 4-channel (VIS+NISP);
+                # the HR side is the starfull ``hr_`` target the dirty LR was
+                # forward-modelled with, blurred to the training target PSF.
                 all_pairs: list[tuple[Image, Image]] = []
-                for subset in ("train", "validate"):
-                    clean_sub = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")
-                    dirty_sub = tfrecord_path(Config.RECORDS_DIR_V2, f"dirty_{subset}")
-                    if not os.path.exists(clean_sub) or not os.path.exists(dirty_sub):
+                for subset in _SPLITS:
+                    hr_sub = tfrecord_path(records_dir, f"hr_{subset}")
+                    dirty_sub = tfrecord_path(records_dir, f"dirty_{subset}")
+                    if not os.path.exists(hr_sub) or not os.path.exists(dirty_sub):
                         continue
                     dirty_by_index = {
                         img.index: img
                         for img in read_images(dirty_sub, num_images=9999)
                     }
-                    for hr in read_images(clean_sub, num_images=9999):
-                        hr = dataclasses.replace(
-                            hr,
-                            data=blur_target_array(
-                                hr.data,
-                                Config.TARGET_PSF_FWHM_ARCSEC,
-                                pixel_scale_arcsec=hr.pixel_scale_arcsec,
-                            ),
-                        )
+                    for hr in read_images(hr_sub, num_images=9999):
                         lr = dirty_by_index.get(hr.index)
                         if lr is not None:
-                            all_pairs.append((hr, lr))
+                            all_pairs.append((_blurred_target(hr), lr))
 
                 if not all_pairs:
-                    print("\n✗ No matched clean/dirty pairs found")
+                    print(f"\n✗ No matched hr/dirty pairs found in {records_dir}")
                     return
 
                 rng = np.random.default_rng(42)

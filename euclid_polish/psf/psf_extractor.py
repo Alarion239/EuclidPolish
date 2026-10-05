@@ -30,6 +30,15 @@ class _EPSFImageModel(Protocol):
     oversampling: Any
 
 
+def odd_output_size(output_size: int | None) -> int | None:
+    """The ePSF side actually built for a requested ``output_size``: an even
+    value is bumped down to the nearest odd one (``1024 → 1023``) so the
+    kernel keeps a central pixel; odd values and ``None`` pass through."""
+    if output_size is None:
+        return None
+    return output_size if output_size % 2 == 1 else output_size - 1
+
+
 @dataclass
 class PSFExtractionConfig:
     """Configuration for PSF extraction.
@@ -40,9 +49,9 @@ class PSFExtractionConfig:
                       pixels). ``None`` → photutils' default for the
                       ``oversampling`` setting (typically
                       ``psf_size × oversampling + 1``). When set, the
-                      output PSF is exactly ``output_size × output_size``
-                      (any even value is silently bumped down to the
-                      nearest odd, e.g. ``1024 → 1023``).
+                      output PSF is ``output_size × output_size``, with an
+                      even value bumped down to the nearest odd
+                      (``1024 → 1023``; see :func:`odd_output_size`).
     """
     psf_size: int = Config.DEFAULT_PSF_SIZE
     fwhm: float = Config.DEFAULT_PSF_FWHM
@@ -76,16 +85,12 @@ class PSFExtractionConfig:
             return False, "Accuracy must be positive"
         if self.output_size is not None and self.output_size <= 0:
             return False, "output_size must be positive when set"
-        if self.output_size is not None and self.output_size % 2 == 0:
-            return False, "output_size must be odd when set"
         return True, None
 
     @property
     def effective_output_size(self) -> int | None:
         """Force-odd the output_size (1024 → 1023). ``None`` if unset."""
-        if self.output_size is None:
-            return None
-        return self.output_size if self.output_size % 2 == 1 else self.output_size - 1
+        return odd_output_size(self.output_size)
 
 
 class PSFExtractor:

@@ -439,3 +439,91 @@ def test_parallel_path_resumes_after_pool_break(tmp_path, monkeypatch):
     vis = PSFSet.from_fits(str(tmp_path / "psf" / Config.BAND_VIS.psf_fits_filename))
     y_e = PSFSet.from_fits(str(tmp_path / "psf" / Config.get_band("Y_E").psf_fits_filename))
     assert vis.n == y_e.n == 2                        # the failed one was retried
+
+
+# ---------------------------------------------------------------------------
+# --output-size: an even side is bumped down to odd (help-text contract)
+# ---------------------------------------------------------------------------
+
+def test_load_accepted_band_accepts_even_output_size(tmp_path, monkeypatch):
+    """``--output-size 1024`` builds 1023² ePSFs instead of aborting the band
+    on the extractor's config validation."""
+    cutdir = tmp_path / "cutouts"
+    cutdir.mkdir()
+    monkeypatch.setattr(gen, "_cutout_dir_for_band", lambda b: str(cutdir))
+    monkeypatch.setattr(PSFExtractor, "get_cutout_files",
+                        lambda self, d, cutout_size=None: [(0, "f0")])
+    monkeypatch.setattr(PSFExtractor, "extract_accepted_files",
+                        lambda self, files: list(files))
+    d = gen.load_accepted_band(Config.BAND_VIS, _fake_args(tmp_path, output_size=1024),
+                               Reporter(events_path=None))
+    assert d is not None
+    assert d["cfg"].output_size == 1024
+    assert d["cfg"].effective_output_size == 1023
+
+
+def test_cache_signature_records_the_built_odd_size(tmp_path, monkeypatch):
+    """1024 and 1023 build the same kernels, so they share one cache signature."""
+    _patch_main(tmp_path, monkeypatch,
+                accepts={"VIS": set(range(6)), "Y_E": set(range(6))},
+                idx_clusters=[[0, 1, 2, 3, 4, 5]])
+    monkeypatch.setattr(gen, "_build_cluster_psf",
+                        lambda payload: PSF(np.full((5, 5), 1.0 / 25, np.float32),
+                                            pixel_scale=payload[1]))
+    monkeypatch.setattr(gen, "parse_args",
+                        lambda: _fake_args(tmp_path, bands="VIS,Y_E", max_procs=1,
+                                           output_size=1024, keep_cache=True))
+    assert gen.main() == 0
+    sig = json.loads((tmp_path / "psf" / ".epsf_cache" / "signature.json").read_text())
+    assert sig["output_size"] == 1023
+
+
+def test_help_text_describes_odd_bump_and_band_major_chunks(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["extract_all_band_psfs.py", "--help"])
+    with pytest.raises(SystemExit):
+        gen.parse_args()
+    text = " ".join(capsys.readouterr().out.split())
+    assert "Even values are bumped down to odd (e.g. 1024 → 1023)" in text
+    start = text.rindex("--max-procs MAX_PROCS")          # the option entry, not usage
+    max_procs = text[start:text.index("--cache-dir CACHE_DIR", start)]
+    assert "one at a time" not in max_procs        # bands are NOT built one at a time
+    assert "band-major" in max_procs and "span two bands" in max_procs
+
+
+def test_parallel_chunks_are_band_major_and_can_span_bands(tmp_path, monkeypatch):
+    """Pending (band, cluster) builds run band-major in chunks of --max-procs,
+    so a chunk can hold the last clusters of one band and the first of the
+    next (what the --max-procs help describes)."""
+    _patch_main(tmp_path, monkeypatch,
+                accepts={"VIS": set(range(6)), "Y_E": set(range(6))},
+                idx_clusters=[[0, 1], [2, 3], [4, 5]])
+    built = []
+
+    def record(payload):
+        built.append(payload[2][0][1].split("-")[0])        # band of the payload
+        return PSF(np.full((5, 5), 1.0 / 25, np.float32), pixel_scale=payload[1])
+    monkeypatch.setattr(gen, "_build_cluster_psf", record)
+
+    batches = []
+
+    class _RecordingPool(_SyncPool):
+        def __init__(self, *a, **k):
+            batches.append([])
+
+        def submit(self, fn, *args):
+            fut = _SyncFuture(fn, *args)
+            batches[-1].append(built[-1])
+            return fut
+    monkeypatch.setattr(gen, "ProcessPoolExecutor", _RecordingPool)
+    monkeypatch.setattr(gen, "as_completed", lambda futs: list(futs))
+    monkeypatch.setattr(gen, "parse_args",
+                        lambda: _fake_args(tmp_path, bands="VIS,Y_E", max_procs=2))
+    assert gen.main() == 0
+    assert batches == [["VIS", "VIS"], ["VIS", "Y_E"], ["Y_E", "Y_E"]]
+
+
+def test_non_positive_output_size_is_rejected_up_front(tmp_path, monkeypatch):
+    monkeypatch.setattr(gen, "parse_args", lambda: _fake_args(tmp_path, output_size=0))
+    monkeypatch.setattr(gen, "load_accepted_band",
+                        lambda *a: pytest.fail("no band is loaded for a bad --output-size"))
+    assert gen.main() == 1
