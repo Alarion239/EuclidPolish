@@ -9,8 +9,8 @@ from euclid_polish.training.augmentation import expand_to_knees
 
 # PSNR peak references — derived from a mag-17 star's expected electron
 # count over the stacked integration (a "very bright" but plausible source).
-# Stretched peak is asinh(peak_e / STRETCH_SCALE_E) under the same scale the
-# loader uses.
+# Stretched peak is asinh(peak_e / STRETCH_SCALE_E), the loader's default
+# knee (a single-knee member with its own knee keeps this peak too).
 _PSNR_MAX_VAL_STRETCHED = tf.constant(float(Config.PSNR_PEAK_STRETCHED), dtype=tf.float32)
 _PSNR_MAX_VAL_RAW       = tf.constant(float(Config.PSNR_PEAK_E),         dtype=tf.float32)
 
@@ -28,19 +28,24 @@ def resolve_single(model, lr):
     return sr[0]
 
 
-def _to_electrons(stretched: tf.Tensor) -> tf.Tensor:
-    """Invert the loader's asinh: stretched → raw electrons."""
-    return tf.sinh(tf.clip_by_value(stretched, -_SINH_CLIP, _SINH_CLIP)) * _STRETCH_SCALE
+def _to_electrons(stretched: tf.Tensor, knee: float | None = None) -> tf.Tensor:
+    """Invert the loader's asinh: stretched → raw electrons, at the member's
+    ``knee`` (e⁻), else the config default ``STRETCH_SCALE_E``."""
+    scale = _STRETCH_SCALE if knee is None else tf.constant(float(knee), dtype=tf.float32)
+    return tf.sinh(tf.clip_by_value(stretched, -_SINH_CLIP, _SINH_CLIP)) * scale
 
 
 def evaluate(model, dataset, knees: Sequence[float] | None = None,
-             output_knee: float | None = None):
+             output_knee: float | None = None, knee: float | None = None):
     """Validation metrics — PSNR in both stretched and raw space.
 
     ``knees`` marks a multi-knee member (channels = knee-major blocks of
     bands, see ``asinh_stretch_multi_knee``); its metrics come from
     :func:`_evaluate_multi_knee`. ``output_knee`` marks one that outputs a
-    single image at that knee, scored at every knee.
+    single image at that knee, scored at every knee. ``knee`` is a
+    single-knee member's asinh knee (e⁻) — the scale its data were stretched
+    with — which ``psnr_raw`` un-stretches with (``None`` → the config
+    default, 100 e⁻).
 
     Peaks come from ``Config.PSNR_PEAK_*`` (mag-17 star electron count and
     its asinh-mapped value under STRETCH_SCALE_E). Set-mean of per-image
@@ -54,9 +59,13 @@ def evaluate(model, dataset, knees: Sequence[float] | None = None,
                            pooled over all H×W×C pixels (all bands for
                            the 4-band model), max_val ≈
                            asinh(mag17_e / k) ≈ 12.0. Loss-aligned, used
-                           for save-best decisions.
+                           for save-best decisions. ``k`` is the config
+                           default whatever the member's knee, so it ranks
+                           checkpoints of one member, not members with
+                           different knees.
         ``psnr_raw``:       mean joint PSNR in raw electrons
-                           (max_val = mag-17 star ≈ 8.29×10⁶ e⁻).
+                           (max_val = mag-17 star ≈ 8.29×10⁶ e⁻) — the
+                           knee-independent number across members.
         ``psnr_band_stretched``: ``(C,)`` tensor of per-band stretched
                            PSNRs (channel k of HR vs channel k of SR) —
                            MONITORING ONLY, never feeds save-best. Lets
@@ -90,8 +99,8 @@ def evaluate(model, dataset, knees: Sequence[float] | None = None,
             peak2 / tf.maximum(mse_band, 1e-12)) / ln10
         psnr_band_list.append(psnr_band)
 
-        hr_e = _to_electrons(hr)
-        sr_e = _to_electrons(sr)
+        hr_e = _to_electrons(hr, knee)
+        sr_e = _to_electrons(sr, knee)
         psnr_raw_list.append(tf.image.psnr(hr_e, sr_e, max_val=_PSNR_MAX_VAL_RAW))
 
     return {

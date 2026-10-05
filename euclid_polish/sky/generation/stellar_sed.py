@@ -25,8 +25,8 @@ class EmpiricalStellarPrior:
 
     bp_rp_quantiles: np.ndarray
     temperature_quantiles_k: np.ndarray
-    band_coefficients: np.ndarray
-    residual_covariance: np.ndarray
+    band_coefficients: np.ndarray       # (4, 3) Gaia→Euclid offset fit per band
+    residual_covariance: np.ndarray     # (4, 4) residual of that fit across bands
     magnitude_law: StraightMagnitudeLaw | None = None
     color_model: dict[str, np.ndarray] | None = None
 
@@ -43,10 +43,12 @@ class EmpiricalStellarPrior:
             coefficients_by_name.get(key, [])
             for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
         ], dtype=np.float64)
-        covariance = np.asarray(mapping.get("residual_covariance"), dtype=np.float64)
+        residual_covariance = np.asarray(
+            mapping.get("residual_covariance"), dtype=np.float64,
+        )
         if colors.size < 2 or temperatures.size < 2:
             raise ValueError("stellar prior requires Gaia colour and temperature CDFs")
-        if coefficients.shape != (4, 3) or covariance.shape != (4, 4):
+        if coefficients.shape != (4, 3) or residual_covariance.shape != (4, 4):
             raise ValueError("stellar prior has invalid Euclid mapping dimensions")
         distribution = payload.get("population", {}).get("magnitude_distribution", {})
         try:
@@ -91,10 +93,9 @@ class EmpiricalStellarPrior:
                     or np.any(~np.isfinite(parsed["magnitude_node_weights"]))
                 ):
                     raise ValueError("latent stellar locus contains non-finite values")
-                covariance = _positive_semidefinite_covariance(
+                parsed["intrinsic_color_covariance"] = _positive_semidefinite_covariance(
                     parsed["intrinsic_color_covariance"], floor=1e-4,
                 )
-                parsed["intrinsic_color_covariance"] = covariance
                 parsed["magnitude_node_weights"] = _normalise_rows(
                     parsed["magnitude_node_weights"],
                 )
@@ -104,7 +105,7 @@ class EmpiricalStellarPrior:
         if color_model is None:
             raise ValueError("stellar prior requires a valid latent colour model")
         return cls(
-            colors, temperatures, coefficients, covariance,
+            colors, temperatures, coefficients, residual_covariance,
             magnitude_law, color_model,
         )
 

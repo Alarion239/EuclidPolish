@@ -33,6 +33,7 @@ import pandas as pd
 
 from euclid_polish.catalog.validator import angular_separation_arcsec
 from euclid_polish.config import Config
+from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 
@@ -229,7 +230,9 @@ class CatalogObject:
 
         The write renders to a unique temp file then renames, keeps a one-deep
         ``.bak`` of the prior catalog, and is serialised across threads. A stable
-        :class:`ProvId` is minted once into ``<path>.prov.json`` and reused.
+        :class:`ProvId` is minted once through the provenance store into
+        ``<path>.prov.json`` and reused; a store failure leaves the catalog
+        unstamped (the next write tries again) rather than failing the write.
         """
         out_dir = os.path.dirname(path) or "."
         os.makedirs(out_dir, exist_ok=True)
@@ -273,7 +276,7 @@ class CatalogObject:
         try:
             if CatalogObject.prov_id(path) is not None:
                 return
-            stamp = Stamp(id=ProvId.mint(lambda _id: False), schema_version=3)
+            stamp = Stamp(id=default_store().mint(), schema_version=3)
             tmp = path + ".prov.json.tmp"
             with open(tmp, "w") as f:
                 f.write(stamp.to_json())

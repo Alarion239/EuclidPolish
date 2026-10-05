@@ -28,7 +28,7 @@ and exposes:
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar, cast
 
 import numpy as np
@@ -162,15 +162,19 @@ class PSFSet(StampCarrier):
 
         Valid because every member is sum=1 → the unweighted mean is
         also sum=1. This is the single-PSF representative the legacy
-        consumers (inference forward op, viz) get from ``HDU[0]``.
+        consumers (inference forward op, viz) get from ``HDU[0]``. Its
+        ``fwhm_arcsec`` is measured from the averaged kernel (as the
+        extractor measures each member), so it is available for a set
+        loaded from any file, with or without HDU0's ``FWHM`` card.
         """
         stack = np.mean([np.asarray(p.data, dtype=np.float64)
                          for p in self.psfs], axis=0)
-        return PSF(
+        mean = PSF(
             data=stack.astype(np.float32),
             pixel_scale=self.pixel_scale,
             oversampling=self.oversampling,
         ).with_unit_sum()
+        return replace(mean, fwhm_arcsec=mean.measure_fwhm_arcsec())
 
     def _pick_weights(self) -> np.ndarray | None:
         """Per-PSF sampling probabilities ∝ star count, or ``None`` (→
@@ -330,10 +334,11 @@ class PSFSet(StampCarrier):
     def save(self, output_dir: str, filename: str) -> str:
         """Write the set as a multi-extension FITS file.
 
-        ``HDU[0]`` (Primary) is the **mean** PSF, sum=1 — so every
-        existing reader that does ``PSF.from_fits`` / ``load_band_psf``
-        transparently gets a single representative PSF. ``HDU[1..K]``
-        are the cluster kernels (sum=1) with provenance headers.
+        ``HDU[0]`` (Primary) is the **mean** PSF, sum=1, with its measured
+        ``FWHM`` card — so every existing reader that does
+        ``PSF.from_fits`` / ``load_band_psf`` transparently gets a single
+        representative PSF. ``HDU[1..K]`` are the cluster kernels (sum=1)
+        with provenance headers.
         """
         os.makedirs(output_dir, exist_ok=True)
         fits_path = os.path.join(output_dir, filename)

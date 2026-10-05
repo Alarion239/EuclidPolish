@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 
+import euclid_polish.catalog.catalog_object as catalog_mod
 from euclid_polish.catalog.catalog_object import (
     CatalogObject,
     by_status,
@@ -10,6 +11,7 @@ from euclid_polish.catalog.catalog_object import (
     next_id,
     summarize,
 )
+from euclid_polish.provenance.store import ProvStore
 
 
 def _obj(i=0, ra=10.0, dec=-5.0, mag=18.0):
@@ -57,7 +59,9 @@ def test_to_row_from_row_roundtrip():
     assert back.is_valid(64, "VIS") and back.is_corrupted(128, "Y_E")
 
 
-def test_write_read_roundtrip_and_stable_prov(tmp_path):
+def test_write_read_roundtrip_and_stable_prov(tmp_path, monkeypatch):
+    store = ProvStore(str(tmp_path / "prov"))
+    monkeypatch.setattr(catalog_mod, "default_store", lambda: store)
     path = str(tmp_path / "stars.csv")
     objs = [_obj(0, ra=0.0, dec=0.0), _obj(1)]
     objs[0].kind = "galaxy"

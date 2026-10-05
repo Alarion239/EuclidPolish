@@ -5,8 +5,19 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
+import euclid_polish.catalog.catalog_object as catalog_mod
 from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.config import Config
+from euclid_polish.provenance.store import ProvStore
+
+
+@pytest.fixture(autouse=True)
+def _tmp_store(tmp_path, monkeypatch):
+    """Mint the catalog id through a store under tmp, not the live data dir."""
+    store = ProvStore(str(tmp_path / "prov"))
+    monkeypatch.setattr(catalog_mod, "default_store", lambda: store)
 
 
 def _path(tmp_path):

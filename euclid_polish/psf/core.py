@@ -140,6 +140,16 @@ class PSF(StampCarrier):
             f"choose row | radial | area_eq"
         )
 
+    def measure_fwhm_arcsec(self) -> float | None:
+        """FWHM in arcsec measured from the kernel (radial profile × pixel
+        scale — how the ePSF extractor records each kernel's ``FWHM``).
+
+        Ignores the cached ``fwhm_arcsec``. ``None`` when it can't be measured
+        (no pixel scale, or a kernel with no positive peak).
+        """
+        fwhm = float(self.fwhm_pixels("radial")) * float(self.pixel_scale)
+        return fwhm if np.isfinite(fwhm) and fwhm > 0 else None
+
     def flux_centroid(self) -> tuple[float, float]:
         return _meas.flux_centroid(self.data)
 

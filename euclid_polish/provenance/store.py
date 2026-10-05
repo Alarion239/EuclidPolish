@@ -4,6 +4,10 @@ Truth lives on disk as one ``<id>.<kind>.json`` sidecar per object, written
 next to the data it describes (so it rsyncs with the data and survives the
 time-travel worktrees). The in-memory index is a *derived* lookup, rebuildable
 at any time by scanning for sidecars — it is never the source of truth.
+
+Two producers keep their id inside a *stamp file* instead of a sidecar name: a
+checkpoint dir's ``provenance.json`` and a catalog's ``<path>.prov.json``. The
+scan reads those too, so a fresh mint never reuses a checkpoint or catalog id.
 """
 
 from __future__ import annotations
@@ -14,11 +18,30 @@ import os
 import re
 
 from euclid_polish.provenance._util import _atomic_write_json
+from euclid_polish.provenance.checkpoint import PROVENANCE_FILENAME
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ProvRecord, record_from_dict
 
 # Sidecar filename: <8-hex id>.<kind>.json
 _SIDECAR_RE = re.compile(r"([0-9a-f]{8})\.[a-z0-9_]+\.json")
+
+# Stamp-file suffix of a catalog's identity (``<catalog path>.prov.json``).
+_CATALOG_STAMP_SUFFIX = ".prov.json"
+
+
+def _stamp_file_id(path: str) -> str | None:
+    """The id held in a stamp file, or ``None`` if it is not a readable stamp.
+
+    ``provenance.json`` is also the name of some non-provenance JSON (e.g. a
+    legacy plate run's manifest), so anything without a valid ``"id"`` is
+    skipped rather than treated as an error.
+    """
+    try:
+        with open(path) as fp:
+            payload = json.load(fp)
+        return str(ProvId(payload["id"]))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
 
 
 class ProvStore:
@@ -26,14 +49,19 @@ class ProvStore:
 
     ``index_dir`` holds records written without an explicit ``sidecar_dir`` (and
     is where a future on-disk index cache would live). ``data_roots`` are the
-    extra directories scanned for sidecars co-located with their data.
+    extra directories scanned for sidecars (and stamp files) co-located with
+    their data.
     """
 
     def __init__(self, index_dir: str, data_roots: list[str] | None = None):
         self.index_dir = index_dir
         self.data_roots = list(data_roots) if data_roots else [index_dir]
         os.makedirs(index_dir, exist_ok=True)
-        self._index: dict[str, str] = {}   # id -> sidecar path
+        self._index: dict[str, str] = {}     # id -> sidecar path
+        self._stamped: dict[str, str] = {}   # id -> stamp file (checkpoint / catalog)
+        # Ids this instance has minted: reserved even before their artifact is
+        # written, so two mints in one process never return the same id.
+        self._minted: set[str] = set()
         self.rebuild_index()
 
     # -- roots / scanning -- #
@@ -42,25 +70,34 @@ class ProvStore:
         return set(self.data_roots) | {self.index_dir}
 
     def rebuild_index(self) -> None:
-        """Re-scan all roots for sidecars and rebuild the in-memory index."""
+        """Re-scan all roots for sidecars and stamp files; rebuild the index."""
         self._index.clear()
+        self._stamped.clear()
         for root in self._roots():
             pattern = os.path.join(root, "**", "*.json")
             for path in _glob.glob(pattern, recursive=True):
-                m = _SIDECAR_RE.fullmatch(os.path.basename(path))
+                name = os.path.basename(path)
+                m = _SIDECAR_RE.fullmatch(name)
                 if m:
                     self._index[m.group(1)] = path
+                elif name == PROVENANCE_FILENAME or name.endswith(_CATALOG_STAMP_SUFFIX):
+                    stamp_id = _stamp_file_id(path)
+                    if stamp_id is not None:
+                        self._stamped[stamp_id] = path
 
     # -- minting / existence -- #
 
     def mint(self) -> ProvId:
-        """Mint a fresh id guaranteed absent from the store."""
-        return ProvId.mint(self.exists)
+        """Mint a fresh id guaranteed absent from the store, and reserve it."""
+        pid = ProvId.mint(self.exists)
+        self._minted.add(str(pid))
+        return pid
 
     def exists(self, pid: ProvId) -> bool:
-        """``True`` if any sidecar or id-tokenized file uses this id."""
+        """``True`` if any sidecar, stamp file or id-tokenized file uses this
+        id, or this store already minted it."""
         s = str(pid)
-        if s in self._index:
+        if s in self._index or s in self._stamped or s in self._minted:
             return True
         for root in self._roots():
             if _glob.glob(os.path.join(root, "**", f"{s}.*.json"), recursive=True):

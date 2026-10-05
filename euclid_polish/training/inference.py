@@ -66,6 +66,10 @@ def scaled_wcs_header(vis_header, scale: int):
     return hdr
 
 
+# A checkpointed model's weighted layers: ``model/layer_with_weights-N/...``.
+_MODEL_LAYER_KEY = re.compile(r"^model/layer_with_weights-(\d+)/")
+
+
 def infer_checkpoint_nchan_in(
     checkpoint_dir: str, skip_kernel_size: int = 5,
 ) -> int | None:
@@ -74,16 +78,20 @@ def infer_checkpoint_nchan_in(
     The checkpoint *is* the source of truth for the architecture — a legacy
     VIS-only run saved a 1-channel WDSR (the retired ``ckpt/wdsr-vis``), an
     ensemble member a 4-channel one (``4·K`` for a ``K``-knee member). We read
-    it straight from the stored weight shapes:
-    excluding the ``skip_kernel_size``-sided skip-branch kernels (the 4-band
-    model's PER-BAND skip convs have in-dim 1 regardless of ``nchan_in``, so
-    they would poison a min over everything), the input conv is the only
-    kernel whose in-channel dim is the LR channel count (1, 4 or 4·K); every
-    body kernel's in-channel dim is at least ``int(0.8 · num_filters)`` (25 at
-    the default 32), so while ``nchan_in`` ≤ 25 (at most 6 knees) the minimum
-    in-channel dim over the remaining 4-D conv kernels is exactly ``nchan_in``.
-    Returns None if no checkpoint or the shapes can't be read (caller falls
-    back to its explicit value)."""
+    it straight from the stored weight shapes: the LR channel count is the
+    in-channel dim of the entry conv, the model's first weighted layer (Keras
+    numbers ``layer_with_weights-N`` in topological order, and every other
+    trunk conv sits downstream of the entry conv). The
+    ``skip_kernel_size``-sided skip-branch kernels are excluded — they also
+    read the input, but a per-band skip conv's in-dim is 1 (or K), not
+    ``nchan_in``. Only the entry conv works for every knee count: the body
+    kernels' in-dims (``int(0.8 · num_filters)`` = 25, ``num_filters`` = 32
+    at the default width) collide with or undercut ``4·K`` from ``K`` = 7 on.
+
+    A checkpoint without the ``model/layer_with_weights-N`` layout falls back
+    to the minimum in-dim over the non-skip 4-D kernels (exact while
+    ``nchan_in`` ≤ 25). Returns None if no checkpoint or the shapes can't be
+    read (caller falls back to its explicit value)."""
     latest = tf.train.latest_checkpoint(checkpoint_dir)
     if latest is None:
         return None
@@ -92,11 +100,18 @@ def infer_checkpoint_nchan_in(
         shapes = reader.get_variable_to_shape_map()
     except Exception:    # pragma: no cover — unreadable ckpt → caller default
         return None
-    in_dims = [shp[2] for shp in shapes.values()
-               if len(shp) == 4
-               and not (shp[0] == skip_kernel_size
-                        and shp[1] == skip_kernel_size)]
-    return int(min(in_dims)) if in_dims else None
+    entry: tuple[int, int] | None = None     # (layer index, in-dim)
+    in_dims = []
+    for key, shp in shapes.items():
+        if len(shp) != 4 or (shp[0] == skip_kernel_size and shp[1] == skip_kernel_size):
+            continue
+        in_dims.append(int(shp[2]))
+        m = _MODEL_LAYER_KEY.match(key)
+        if m is not None and (entry is None or int(m.group(1)) < entry[0]):
+            entry = (int(m.group(1)), int(shp[2]))
+    if entry is not None:
+        return entry[1]
+    return min(in_dims) if in_dims else None
 
 
 def infer_checkpoint_num_res_blocks(checkpoint_dir: str,
@@ -123,11 +138,10 @@ def infer_checkpoint_num_res_blocks(checkpoint_dir: str,
         shapes = reader.get_variable_to_shape_map()
     except Exception:    # pragma: no cover — unreadable ckpt → caller default
         return None
-    layer_re = re.compile(r"^model/layer_with_weights-(\d+)/")
     layers: set[int] = set()
     skip_layers: set[int] = set()
     for key, shp in shapes.items():
-        m = layer_re.match(key)
+        m = _MODEL_LAYER_KEY.match(key)
         if m is None:
             continue
         idx = int(m.group(1))

@@ -25,6 +25,7 @@ from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ConfigSnapshot, Process, Stamp
+from euclid_polish.training.inference import infer_checkpoint_asinh_knee
 from euclid_polish.training.models.common import evaluate
 from euclid_polish.training.plateau import PlateauLRReducer
 
@@ -239,6 +240,7 @@ class Trainer:
         provenance_fields: dict[str, object] | None = None,
         knees: Sequence[float] | None = None,
         output_knee: float | None = None,
+        asinh_knee: float | None = None,
     ):
         """
         Initialize the trainer.
@@ -275,6 +277,12 @@ class Trainer:
             Also enable TF op-determinism for bit-exact GPU replay (slower).
             Without it, cuDNN may introduce small nondeterminism on GPU even
             with a fixed seed; on CPU the seed alone is fully reproducible.
+        asinh_knee : float, optional
+            A single-knee member's asinh knee (e⁻) — the scale its data are
+            stretched with; validation ``psnr_raw`` un-stretches with it.
+            ``None`` → the knee recorded in ``checkpoint_dir``'s
+            ``origin.json`` (written before a member trains), else the config
+            default (100 e⁻).
         """
         self.now = None
         self.loss = loss
@@ -284,6 +292,10 @@ class Trainer:
         # A single-image multi-knee member: its one output, stretched at this
         # knee, is re-stretched at every knee for validation.
         self._output_knee = float(output_knee) if output_knee is not None else None
+        # A single-knee member's stretch knee, for un-stretching psnr_raw.
+        if asinh_knee is None:
+            asinh_knee = infer_checkpoint_asinh_knee(checkpoint_dir)
+        self._asinh_knee = float(asinh_knee) if asinh_knee is not None else None
         self.nonneg_sr_weight = float(nonneg_sr_weight)
         self._provenance_fields = dict(provenance_fields or {})
         # Build Adam with a CONSTANT, settable learning rate so the divergence
@@ -387,16 +399,18 @@ class Trainer:
     def _emit_checkpoint_provenance(self) -> None:
         """Write this checkpoint dir's identity sidecar (best-effort).
 
-        Mints the model :class:`ProvId` once, or reuses the id already on disk
-        so a resumed run keeps its identity. Any failure is swallowed — a
-        provenance hiccup must never break a training run.
+        Mints the model :class:`ProvId` once through the provenance store (so
+        it never reuses an id already on disk), or reuses the id already in
+        this dir's sidecar so a resumed run keeps its identity. Any failure is
+        swallowed — a provenance hiccup must never break a training run; the
+        next save tries again.
         """
         try:
             if self._model_prov_id is None:
                 existing = read_checkpoint_provenance(self.checkpoint_dir)
                 self._model_prov_id = (
                     existing.id if existing is not None
-                    else ProvId.mint(lambda _id: False)
+                    else default_store().mint()
                 )
             stamp = Stamp(id=self._model_prov_id,
                           produced_by=self._training_run_id, schema_version=3)
@@ -1056,7 +1070,7 @@ class Trainer:
         if self._knees:
             return evaluate(self.checkpoint.model, dataset, knees=self._knees,
                             output_knee=self._output_knee)
-        return evaluate(self.checkpoint.model, dataset)
+        return evaluate(self.checkpoint.model, dataset, knee=self._asinh_knee)
 
     def restore(self, track: str = "latest"):
         """Resume from a checkpoint.

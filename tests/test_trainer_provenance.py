@@ -5,10 +5,21 @@ Targeted at the emission method so it needs no full training loop.
 
 from __future__ import annotations
 
+import pytest
 import tensorflow as tf
 
+import euclid_polish.training.trainer as trainer_mod
 from euclid_polish.provenance.checkpoint import read_checkpoint_provenance
+from euclid_polish.provenance.store import ProvStore
 from euclid_polish.training.trainer import Trainer
+
+
+@pytest.fixture(autouse=True)
+def _tmp_store(tmp_path, monkeypatch):
+    """Mint checkpoint ids through a store under tmp, not the live data dir."""
+    store = ProvStore(str(tmp_path / "prov"))
+    monkeypatch.setattr(trainer_mod, "default_store", lambda: store)
+    return store
 
 
 def _tiny_model():
@@ -43,7 +54,6 @@ def test_emit_is_best_effort_and_never_raises(tmp_path, monkeypatch):
     tr = Trainer(_tiny_model(), checkpoint_dir=ckpt)
 
     # Force the write to fail; the trainer must swallow it, not crash training.
-    import euclid_polish.training.trainer as trainer_mod
     monkeypatch.setattr(trainer_mod, "write_checkpoint_provenance",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
     tr._emit_checkpoint_provenance()   # must not raise

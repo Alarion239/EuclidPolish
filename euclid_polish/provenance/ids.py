@@ -1,9 +1,11 @@
 """The :class:`ProvId` value type — an 8-hex provenance identifier.
 
-Eight hex characters give 16**8 ≈ 4.3 billion ids; because the store keeps one
-sidecar per object, ids are *minted-then-checked* (re-drawn on the rare clash)
-so collisions are impossible, not merely unlikely. The id is short enough to
-sit in a filename for greppability (``clean_train.4b1e7a90.tfrecord``).
+Eight hex characters give 16**8 ≈ 4.3 billion ids; every producer mints
+through :meth:`ProvStore.mint`, which re-draws on the rare clash with an id
+already on disk (sidecars, id-tokenized files, checkpoint and catalog stamp
+files) or already minted by that store, so a fresh id never repeats a known
+one. The id is short enough to sit in a filename for greppability
+(``clean_train.4b1e7a90.tfrecord``).
 """
 
 from __future__ import annotations

@@ -34,12 +34,15 @@ def main() -> int:
     for col, (name, psf) in enumerate(psfs.items()):
         kind = "empirical" if inv[name] else "Gaussian fallback"
 
-        # Top: log-scale full kernel (shows wings)
+        # Top: log-scale full kernel (shows wings). An empirical kernel read
+        # from a file without HDU0's FWHM card has no cached value: measure it.
         ax = axes[0, col]
         d = np.clip(psf.data, 1e-8, None)
         ax.imshow(np.log10(d), origin="lower", cmap="viridis")
+        fwhm = psf.fwhm_arcsec if psf.fwhm_arcsec is not None else psf.measure_fwhm_arcsec()
+        fwhm_label = f"{fwhm:.2f}\"" if fwhm is not None else "n/a"
         ax.set_title(f"{name}  ({kind})\nshape={psf.shape}, "
-                     f"FWHM≈{psf.fwhm_arcsec:.2f}\"",
+                     f"FWHM≈{fwhm_label}",
                      fontsize=10)
         ax.set_xticks([]); ax.set_yticks([])
 

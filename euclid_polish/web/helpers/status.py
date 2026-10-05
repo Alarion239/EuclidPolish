@@ -340,11 +340,20 @@ def _header_float(header, *keys: str) -> float | None:
     return None
 
 
+def _measured_mean_fwhm(data, pixel_scale: float | None) -> float | None:
+    """FWHM (arcsec) of HDU0's mean kernel measured from its pixels, the way
+    :meth:`PSFSet.mean` measures it; ``None`` when it can't be measured."""
+    if data is None or getattr(data, "ndim", 0) != 2 or not pixel_scale:
+        return None
+    return PSF(data=data, pixel_scale=float(pixel_scale)).measure_fwhm_arcsec()
+
+
 def psf_file_summary(path: str) -> dict[str, Any]:
-    """Headers-only summary of one cached ePSF file (memoised per file
-    state): ``{n_psf, shape, pixel_scale, fwhm_arcsec, clusters: [{index,
-    ra, dec, n_stars, fwhm_arcsec}]}`` — HDU0 is the mean kernel, HDU1…K the
-    spatial clusters. Pixels are never read."""
+    """Header summary of one cached ePSF file (memoised per file state):
+    ``{n_psf, shape, pixel_scale, fwhm_arcsec, clusters: [{index, ra, dec,
+    n_stars, fwhm_arcsec}]}`` — HDU0 is the mean kernel, HDU1…K the spatial
+    clusters. Only HDU0's pixels are ever read, and only when it has no
+    ``FWHM`` card: the mean kernel's FWHM is then measured from them."""
     key = _catalog_key(path)
     real = os.path.realpath(path)
     if key is not None:
@@ -368,11 +377,15 @@ def psf_file_summary(path: str) -> dict[str, Any]:
                 "fwhm_arcsec": _header_float(header, "FWHM"),
             })
         n_psf = primary.get("NPSF")
+        pixel_scale = _header_float(primary, "PXSCALE", "PIXSCALE")
+        fwhm = _header_float(primary, "FWHM")
+        if fwhm is None:
+            fwhm = _measured_mean_fwhm(hdul[0].data, pixel_scale)
         summary = {
             "n_psf": int(cast(Any, n_psf)) if n_psf is not None else max(1, len(clusters)),
             "shape": shape,
-            "pixel_scale": _header_float(primary, "PXSCALE", "PIXSCALE"),
-            "fwhm_arcsec": _header_float(primary, "FWHM"),
+            "pixel_scale": pixel_scale,
+            "fwhm_arcsec": fwhm,
             "clusters": clusters,
         }
     if key is not None:
