@@ -13,8 +13,9 @@ Two layers:
     the SSH+DB side.
 
 A running job's progress and ETA come from its Reporter ``.events``
-stream (:mod:`euclid_polish.web.job_status`); the old median
-seconds-per-step ETA model was removed (W-Ops, 2026-09-26).
+stream (:mod:`euclid_polish.web.job_status`), folded per poll and never
+stored here (``/api/fasrc/current-submission`` puts each live row's step on
+it); the old median seconds-per-step ETA model was removed (W-Ops, 2026-09-26).
 """
 
 from __future__ import annotations
@@ -57,8 +58,6 @@ CREATE TABLE IF NOT EXISTS fasrc_jobs (
     state           TEXT,
     started_at      REAL,
     ended_at        REAL,
-    progress_step   INTEGER DEFAULT 0,
-    progress_total  INTEGER DEFAULT 0,
     last_seen       REAL,
     runtime_seconds REAL,
     step_id         TEXT

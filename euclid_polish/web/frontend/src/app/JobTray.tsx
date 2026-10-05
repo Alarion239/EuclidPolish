@@ -86,6 +86,9 @@ export function JobRow({ job, onOpen }: { job: Job; onOpen?: () => void }) {
 export function SlurmRow({ job, onOpen }: { job: SlurmJob; onOpen?: () => void }) {
   const [busy, setBusy] = useState(false);
   const live = job.state === "RUNNING" || job.state === "PENDING";
+  // The job's latest Reporter step, folded server-side from its .events
+  // stream(s) (an array: its tasks' share done, in one task's steps); null
+  // until it reports one.
   const total = Number(job.progress_total ?? 0);
   const step = Number(job.progress_step ?? 0);
   const cancel = async () => {

@@ -25,8 +25,9 @@ from euclid_polish.web import fasrc_config
 from euclid_polish.web.remote import STATE
 
 
-def _remote_ensemble_dir(cfg) -> str:
-    """The ensemble dir on FASRC: sibling of the remote checkpoint dir."""
+def remote_ensemble_dir(cfg) -> str:
+    """The ensemble dir on FASRC: sibling of the remote checkpoint dir
+    (members in ``member_NN/``, as :func:`default_ensemble_dir` locally)."""
     parent = os.path.dirname(cfg.ckpt_dir.rstrip("/")) or "."
     return os.path.join(parent, "ensemble")
 
@@ -60,11 +61,8 @@ class Mirror:
             self.status.last_run_at = time.time()
             return
         cfg = fasrc_config.load()
-        remote_base = _remote_ensemble_dir(cfg).rstrip("/")
-        local_base  = (cfg.local_ckpt_mirror or
-                       default_ensemble_dir()).rstrip("/")
-        remote = remote_base + "/"
-        local  = local_base
+        remote = remote_ensemble_dir(cfg).rstrip("/") + "/"
+        local  = (cfg.local_ckpt_mirror or default_ensemble_dir()).rstrip("/")
         os.makedirs(local, exist_ok=True)
         try:
             rc, out, err = STATE.ssh.rsync_pull(
@@ -83,26 +81,6 @@ class Mirror:
         self.status.last_stdout = out.strip()[-2000:]
         self.status.remote_dir  = remote
         self.status.local_dir   = local
-
-        # Best-effort pull of the VIS-only sibling (1-channel model lives in
-        # ``<ckpt_dir>-vis``). It may not exist — no VIS-only run yet — so its
-        # absence is NOT an error: we only append a note, never touch
-        # ``last_error`` / ``last_rc`` (those stay the authoritative base sync).
-        vis_remote = remote_base + "-vis/"
-        vis_local  = local_base + "-vis"
-        try:
-            os.makedirs(vis_local, exist_ok=True)
-            v_rc, v_out, _v_err = STATE.ssh.rsync_pull(
-                vis_remote, vis_local,
-                extra_args=["--delete-after"],
-                timeout=600,
-            )
-            if v_rc == 0 and v_out.strip():
-                self.status.last_stdout = (
-                    self.status.last_stdout + "\n[-vis] " + v_out.strip()
-                )[-2000:]
-        except Exception:    # pragma: no cover — sibling is optional
-            pass
 
 
 MIRROR = Mirror()

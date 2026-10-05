@@ -199,6 +199,15 @@ describe("Runs › Live: one list of local and SLURM jobs", () => {
     expect(items[2]).toMatchObject({ state: "PENDING", where: "(Priority)" });
     expect(scopeCounts(items)).toEqual({ all: 3, local: 1, slurm: 2 });
   });
+
+  it("shows a SLURM job's step from the feed's progress fields", () => {
+    const [running, queued] = liveItems([], [
+      { jobid: "200", state: "RUNNING", step_id: "ensemble_train", progress_step: 10650, progress_total: 70000 },
+      { jobid: "300", state: "PENDING", step_id: "euclid_query", progress_step: null, progress_total: null },
+    ]);
+    expect(running.progress).toBe("step 10,650 / 70,000 (15%)");
+    expect(queued.progress).toBe("");
+  });
 });
 
 describe("Runs › History: one ledger of local and SLURM runs", () => {

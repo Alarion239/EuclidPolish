@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -24,10 +25,10 @@ from euclid_polish.web import (
     job_config,
 )
 from euclid_polish.web.fasrc_gate import requires_fasrc
-from euclid_polish.web.fasrc_mirror import MIRROR
+from euclid_polish.web.fasrc_mirror import MIRROR, remote_ensemble_dir
 from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
 from euclid_polish.web.fasrc_pipeline import StepResources, TaskParamError
-from euclid_polish.web.job_status import JobStatusFetcher
+from euclid_polish.web.job_status import JobStatus, JobStatusFetcher
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE, SSHError, SSHSession, connect_from_config
 
@@ -108,10 +109,12 @@ def _merge_squeue_fields(
 
 
 #: Remote artifacts a step is known to produce (key → path under the FASRC
-#: config); ``/api/fasrc/steps/status`` probes them and lists each step's
-#: outputs. Keys match the ``artifacts`` map of the same payload.
+#: config); ``/api/fasrc/steps/status`` probes them (``_artifact_probe``) and
+#: lists each step's outputs. Keys match the ``artifacts`` map of the same
+#: payload. ``ckpt`` is the ensemble dir (``<ckpt parent>/ensemble``), whose
+#: members train into ``member_NN/``.
 _ARTIFACT_PATHS: dict[str, Any] = {
-    "ckpt":              lambda c: f"{c.ckpt_dir}/checkpoint",
+    "ckpt":              remote_ensemble_dir,
     "euclid_cutouts":    lambda c: f"{c.data_dir}/euclid_stars/cutouts/VIS",
     "euclid_psf":        lambda c: f"{c.data_dir}/euclid_psf/euclid_psf_VIS.fits",
     "synthetic_records": lambda c: f"{c.data_dir}/images/records_v2/clean_train.tfrecord",
@@ -122,6 +125,10 @@ _STEP_OUTPUTS: dict[str, tuple[str, ...]] = {
     "synthetic_generate":      ("synthetic_records",),
     "ensemble_train":          ("ckpt",),
 }
+
+#: ``POST /api/fasrc/cancel`` takes a SLURM job id or one array task's
+#: (``<job>_<task>``). ASCII digits only, so the id goes to ``scancel`` as-is.
+_CANCEL_JOBID = re.compile(r"[0-9]+(?:_[0-9]+)?")
 
 #: ``GET /api/fasrc/history`` page bounds.
 _HISTORY_DEFAULT_LIMIT = 500
@@ -139,6 +146,59 @@ QUEUE_STEP_KEY = "euclid_polish.fasrc_queue_step"
 
 #: At most this many ``grep`` matches are returned per log search.
 _LOG_GREP_MAX = 500
+
+
+def _artifact_probe(key: str, path: str) -> str:
+    """Shell test that one ``_ARTIFACT_PATHS`` artifact exists: ``test -e`` on
+    its path, except the ensemble (``ckpt``), which exists once any member dir
+    holds a checkpoint."""
+    if key == "ckpt":
+        return f"ls -d {shlex.quote(path)}/member_*/checkpoint >/dev/null 2>&1"
+    return f"test -e {shlex.quote(path)}"
+
+
+def _row_params(row: dict[str, Any]) -> dict[str, Any]:
+    """A JobDB row's submitted params (``params_json``); ``{}`` if unreadable."""
+    try:
+        params = json.loads(row.get("params_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return params if isinstance(params, dict) else {}
+
+
+def _events_paths(row: dict[str, Any]) -> list[str | None]:
+    """A JobDB row's Reporter ``.events`` path(s): one per task of an array
+    submission (``array_count`` > 1, SLURM's ``%A``/``%a`` resolved), else
+    the row's own."""
+    jobid = str(row.get("jobid", "")).strip()
+    count = int(_row_params(row).get("array_count", 1) or 1)
+    if count > 1:
+        return [fasrc_jobs.expand_array_path(row.get("events_path"), jobid, i)
+                for i in range(count)]
+    return [row.get("events_path")]
+
+
+def _live_progress(statuses: list[JobStatus]) -> tuple[int | None, int | None]:
+    """A live row's ``(progress_step, progress_total)`` from its folded
+    event streams (one per array task).
+
+    A single job reports its latest ``step`` as-is. An array reports the
+    share of its tasks' steps done, each task against its own total (a
+    continue batch's members run different step counts; a task with no step
+    yet counts as 0 of the largest total), read in the largest task total's
+    steps: with equal totals that is the mean task step. ``(None, None)``
+    until a stream reports a total.
+    """
+    known = [status.step for status in statuses
+             if status.step is not None and status.step.total > 0]
+    if not known:
+        return None, None
+    if len(statuses) == 1:
+        return known[0].current, known[0].total
+    total = max(step.total for step in known)
+    planned = sum(step.total for step in known) + total * (len(statuses) - len(known))
+    done = sum(min(step.current, step.total) for step in known)
+    return round(total * done / planned), total
 
 
 def _history_rows() -> list[dict[str, Any]]:
@@ -724,11 +784,12 @@ def register(app):
                     fasrc_jobs.JOBLOG.history_for_step(step.step_id)),
             })
 
-        # Cheap probes for "does this artifact exist on FASRC?" — single
-        # ``test -e`` per check, batched in one SSH round-trip. Keep
+        # Cheap probes for "does this artifact exist on FASRC?" — one
+        # ``_artifact_probe`` per check, batched in one SSH round-trip. Keep
         # this list's keys in sync with ``_ARTIFACT_PATHS`` (``_STEP_OUTPUTS``
         # maps each step_id to these keys for its ``outputs``).
         artifacts = {
+            # A trained ensemble member (ensemble_train).
             "ckpt": None,
             # Per-page Euclid star-cutout pipeline:
             #   euclid_cutouts — VIS cutout subdir, written by the
@@ -742,7 +803,7 @@ def register(app):
         paths = {key: fn(cfg_loaded) for key, fn in _ARTIFACT_PATHS.items()}
         if ssh_ok and ssh is not None:
             probe = " && ".join(
-                f"(test -e {shlex.quote(p)} && echo {k}=1 || echo {k}=0)"
+                f"({_artifact_probe(k, p)} && echo {k}=1 || echo {k}=0)"
                 for k, p in paths.items()
             )
             try:
@@ -1006,16 +1067,20 @@ def register(app):
     @app.route("/api/fasrc/cancel", methods=["POST"])
     @requires_fasrc
     def api_fasrc_cancel():
+        """``scancel`` one job (``jobid=123``) or one array task (``123_4``)."""
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         jid = request.form.get("jobid", "").strip()
-        if not jid.isdigit():
+        if not _CANCEL_JOBID.fullmatch(jid):
             return jsonify({"ok": False, "error": "bad job id"}), 400
         rc, _, err = STATE.ssh.run(f"scancel {jid}", timeout=10)
         if rc != 0:
             return jsonify({"ok": False, "error": err.strip()}), 500
-        fasrc_jobs.DB.update_state(jid, state="CANCELLED",
-                                   ended_at=time.time())
+        # The JobDB row is the whole job: one cancelled task leaves it live
+        # (its other tasks run on) until the squeue reconcile settles it.
+        if "_" not in jid:
+            fasrc_jobs.DB.update_state(jid, state="CANCELLED",
+                                       ended_at=time.time())
         return jsonify({"ok": True})
 
     @app.route("/api/fasrc/current-submission")
@@ -1038,7 +1103,10 @@ def register(app):
                                        errors, has_events, ... } } }
 
         Every response also carries ``live``: all PENDING/RUNNING rows
-        (newest first, same shape as ``current.job``) for the job tray.
+        (newest first, same shape as ``current.job``) for the job tray. Each
+        carries ``progress_step`` / ``progress_total`` folded from its event
+        stream(s) (``_live_progress``; ``null`` while it reports no step, and
+        on a stale tick).
         """
         ssh = STATE.ssh
         if ssh is None or not ssh.is_connected():
@@ -1075,10 +1143,13 @@ def register(app):
         # ``time`` and assigned ``nodes``. reconcile_with_squeue only persists
         # state + started_at, so these are merged in at the response layer.
         # A stale tick (slow login node) returns the last-known DB rows.
+        # Progress is never stored: it is folded from the events below.
         live_jobs = [
             dict(row) if stale else _merge_squeue_fields(dict(row), squeue_rows)
             for row in fasrc_jobs.DB.list_live()
         ]
+        for row in live_jobs:
+            row["progress_step"] = row["progress_total"] = None
         current_row = live_jobs[0] if live_jobs else None
         if current_row is None:
             return jsonify({"ok": True, "current": None, "queue": queue_public,
@@ -1093,14 +1164,27 @@ def register(app):
         jid = str(current_row.get("jobid", "")).strip()
         live_rows = fasrc_jobs.array_squeue_rows(jid, squeue_rows)
 
-        # Fold the live event stream into a JobStatus. Array submissions have
-        # one Reporter stream per model; expose them separately rather than
-        # inventing a misleading aggregate training curve.
+        # Fold the live event streams into JobStatus values, all in one SSH
+        # round-trip: the current row's and every other RUNNING row's (a
+        # PENDING job has written none yet). Each row's progress comes from
+        # its own streams; the current row also gets the full status. Array
+        # submissions have one Reporter stream per model; the current one
+        # exposes them per task rather than inventing a misleading aggregate
+        # training curve.
         fetcher = JobStatusFetcher(ssh=_job_status_ssh(ssh))
-        try:
-            stored_params = json.loads(current_row.get("params_json") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            stored_params = {}
+        folded = [row for row in live_jobs
+                  if row is current_row or row.get("state") == "RUNNING"]
+        paths = [_events_paths(row) for row in folded]
+        fetched = fetcher.fetch_many([p for row_paths in paths for p in row_paths])
+        current_statuses: list[JobStatus] = []
+        offset = 0
+        for row, row_paths in zip(folded, paths, strict=True):
+            row_statuses = fetched[offset:offset + len(row_paths)]
+            offset += len(row_paths)
+            row["progress_step"], row["progress_total"] = _live_progress(row_statuses)
+            if row is current_row:
+                current_statuses = row_statuses
+        stored_params = _row_params(current_row)
         array_count = int(stored_params.get("array_count", 1) or 1)
         array_tasks = None
         if array_count > 1:
@@ -1108,10 +1192,6 @@ def register(app):
                          if stored_params.get("mode") == "continue"
                          else stored_params.get("member_names"))
             member_names = [n.strip() for n in str(names_raw or "").split(",")]
-            event_paths = [fasrc_jobs.expand_array_path(
-                current_row.get("events_path"), jid, i)
-                for i in range(array_count)]
-            task_statuses = fetcher.fetch_many(event_paths)
             child_by_index = {}
             for row in live_rows:
                 child_id = str(row.get("jobid", ""))
@@ -1119,7 +1199,7 @@ def register(app):
                 if suffix.isdigit():
                     child_by_index[int(suffix)] = row
             array_tasks = []
-            for i, task_status in enumerate(task_statuses):
+            for i, task_status in enumerate(current_statuses):
                 child = child_by_index.get(i, {})
                 completed = bool(
                     task_status.step and task_status.step.total > 0
@@ -1138,8 +1218,7 @@ def register(app):
                 })
             status = None
         else:
-            status = fetcher.fetch(
-                events_path=current_row.get("events_path")).to_dict()
+            status = current_statuses[0].to_dict()
         # Jobstats is richer than the local event sampler, but the endpoint
         # polls frequently.  The helper applies a 30-second per-job TTL and
         # only gets called for a job that is actually running.

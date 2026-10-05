@@ -1050,7 +1050,9 @@ function membersText(names: readonly string[]): string {
 }
 
 /** The Train tab's "Running batch" strip: the live SLURM ensemble_train jobs
- *  (the feed Runs › Live reads), with their members from the job log. */
+ *  (the feed Runs › Live reads), with their members from the job log. A
+ *  batch's step is its members' share of their steps done, in one member's
+ *  steps (the server folds it from the tasks' event streams). */
 export function runningBatches(slurm: readonly SlurmJob[], jobs: readonly Pick<TrainingJob, "jobid" | "member_names" | "mode">[]):
   { jobid: string; state: string; members: string[]; text: string }[] {
   const byId = new Map(jobs.map((j) => [String(j.jobid), j]));
