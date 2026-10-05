@@ -71,7 +71,7 @@ from euclid_polish.eval.combiner import (
     RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
     load_combiner,
 )
-from euclid_polish.eval.ensemble_cube_cache import load_cached_field_lr
+from euclid_polish.eval.ensemble_cube_cache import bucket_member_path, load_cached_field_lr
 from euclid_polish.eval.ensemble_infer import combiner_read_labels
 from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND
 from euclid_polish.image.tfio import read_images, tfrecord_path
@@ -937,7 +937,7 @@ def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int,
 # On-the-fly member-subset PCA. The disagreement movie normally decomposes ALL
 # members' variation about the mean (baked pca0…N cubes). When the viewer asks
 # for a SUBSET (``?members=0,3,7``) we recompute PCA over just those members
-# from their cached ``member{i}`` cubes — the SVD of a k-row residual matrix is
+# from their cached member cubes — the SVD of a k-row residual matrix is
 # tens of ms, so this is fully interactive. A tiny LRU lets the sr + pca0…N
 # fetches for one frame share a single SVD.
 _SUBSET_PCA_CACHE: OrderedDict[tuple, tuple] = OrderedDict()
@@ -959,21 +959,29 @@ def _parse_member_subset(raw: str | None, n_members: int) -> list[int] | None:
     return sorted(out) if len(out) >= 2 else None
 
 
+def _member_cube_file(man: Mapping[str, Any], cdir: str, i: int, rec_index: int) -> str:
+    """The cached cube of member ``i`` (its position in the manifest's
+    ``member_labels``, the viewer's ``member{i}`` key) for one field."""
+    labels = [str(v) for v in man.get("member_labels", []) or []]
+    path = (bucket_member_path(man, cdir, labels[i], rec_index)
+            if 0 <= i < len(labels) else None)
+    if path is None or not os.path.isfile(path):
+        raise ViewerError(404, f"member{i} cube missing")
+    return path
+
+
 def _subset_pca(starless: bool, rec_index: int, subset: list[int]):
     """``(mean, components, amplitudes, var_explained)`` of the member-subset
-    residuals for one field, from the cached ``member{i}`` cubes. LRU-cached."""
+    residuals for one field, from the cached member cubes. LRU-cached."""
     key = ("starless" if starless else "starfull", int(rec_index), tuple(subset))
     hit = _SUBSET_PCA_CACHE.get(key)
     if hit is not None:
         _SUBSET_PCA_CACHE.move_to_end(key)
         return hit
     cdir = _ensemble_cubes_dir(starless)
-    stack = []
-    for i in subset:
-        p = os.path.join(cdir, f"member{i}_{int(rec_index):05d}.npy")
-        if not os.path.isfile(p):
-            raise ViewerError(404, f"member{i} cube missing")
-        stack.append(np.load(p).astype(np.float32))
+    man = _ensemble_manifest(starless)
+    stack = [np.load(_member_cube_file(man, cdir, i, rec_index)).astype(np.float32)
+             for i in subset]
     res = pca_field(np.stack(stack, axis=0), n_components=_MORPH_PCA_COMPONENTS)
     _SUBSET_PCA_CACHE[key] = res
     if len(_SUBSET_PCA_CACHE) > _SUBSET_PCA_MAX:
@@ -1024,14 +1032,11 @@ def _combiner_field_cube(starless: bool, rec_index: int,
     if comb is None:
         raise ViewerError(404, "no combiner for this regime")
     cdir = _ensemble_cubes_dir(starless)
+    # The bucket's layout (label-keyed or positional) with the caller's stack.
+    man = {**_ensemble_manifest(starless), "member_labels": list(member_labels)}
     position = {str(label): i for i, label in enumerate(member_labels)}
-    stack = []
-    for label in combiner_read_labels(comb):
-        i = position[label]
-        p = os.path.join(cdir, f"member{i}_{int(rec_index):05d}.npy")
-        if not os.path.isfile(p):
-            raise ViewerError(404, f"member{i} cube missing")
-        stack.append(np.load(p).astype(np.float32))
+    stack = [np.load(_member_cube_file(man, cdir, position[label], rec_index))
+             .astype(np.float32) for label in combiner_read_labels(comb)]
     lr = None
     if getattr(comb, "use_lr", False):
         try:
@@ -1125,8 +1130,9 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
               or (tier.startswith("pca") and tier[3:].isdigit())
               or (tier.startswith("member") and tier[6:].isdigit()))
     if is_npy:
-        path = os.path.join(_ensemble_cubes_dir(starless),
-                            f"{tier}_{rec_index:05d}.npy")
+        path = (_member_cube_file(man, _ensemble_cubes_dir(starless), int(tier[6:]), rec_index)
+                if tier.startswith("member") else
+                os.path.join(_ensemble_cubes_dir(starless), f"{tier}_{rec_index:05d}.npy"))
         if not os.path.isfile(path):
             raise ViewerError(404, f"{tier} cube missing")
         cube, pix = _as_hwc(np.load(path), layout="hwc"), float(Config.DEFAULT_PIXEL_SCALE)

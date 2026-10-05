@@ -97,6 +97,14 @@ def member_fingerprint(mdir: str) -> str | None:
     return f"{name}:{total}:{int(os.path.getmtime(index))}"
 
 
+def member_fingerprints(base_dir: str, labels: Iterable[str]) -> dict[str, str | None]:
+    """``{label: member_fingerprint}`` for member labels (``"196·psnr"`` →
+    ``<base_dir>/member_196``); ``None`` for a member without a checkpoint."""
+    return {str(label): member_fingerprint(os.path.join(
+                base_dir, "member_" + str(label).split("·")[0].removeprefix("member_")))
+            for label in labels}
+
+
 @dataclass
 class MemberTrainSpec:
     """One member's training job within a run.
@@ -582,102 +590,128 @@ class EnsembleModel:
         finite in the sky floor.
         """
         self._require_members()
-        hr_by = {h.index: h for h in (hr_images or [])}
-        peak = float(Config.PSNR_PEAK_E)
-        knee = float(Config.STRETCH_SCALE_E)
-        peak_str = float(Config.PSNR_PEAK_STRETCHED)
+        return evaluate_member_stacks(
+            lr_images, lambda lr: self.member_arrays(lr.data), self._member_labels,
+            hr_images, rel_floor_e=rel_floor_e,
+            hallucination_rel_tol=hallucination_rel_tol, on_field=on_field,
+            on_progress=on_progress)
 
-        per_member_sum = np.zeros(self.n_members, dtype=np.float64)
-        per_member_str_sum = np.zeros(self.n_members, dtype=np.float64)
-        ens_sum = 0.0
-        n_scored = 0                       # fields with a matched HR (for PSNR)
-        n_fields = 0
-        std_e_sum = 0.0
-        rel_sum = 0.0
-        hall_flux = 0.0
-        total_flux = 0.0
 
-        lr_list = list(lr_images)
-        total = len(lr_list)
-        for i, lr in enumerate(lr_list):
-            preds = self.member_arrays(lr.data)            # (M,H,W,C)
-            mean = preds.mean(axis=0)
-            std = preds.std(axis=0)
-            n_fields += 1
+def evaluate_member_stacks(
+    lr_images: Iterable[Image],
+    member_stack: Callable[[Image], np.ndarray],
+    member_labels: Sequence[str],
+    hr_images: Iterable[Image] | None = None,
+    *,
+    rel_floor_e: float = Config.STRETCH_SCALE_E,
+    hallucination_rel_tol: float = 0.5,
+    on_field: Callable[
+        [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+         np.ndarray | None], None
+    ] | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> dict:
+    """:meth:`EnsembleModel.evaluate` over member stacks from any source:
+    ``member_stack(lr)`` returns the ``(M, H, W, C)`` SR stack of the members
+    ``member_labels`` names, in that order (the model's run, or cached cubes
+    plus the members that still need running). Same summary dict."""
+    labels = [str(v) for v in member_labels]
+    n_members = len(labels)
+    hr_by = {h.index: h for h in (hr_images or [])}
+    peak = float(Config.PSNR_PEAK_E)
+    knee = float(Config.STRETCH_SCALE_E)
+    peak_str = float(Config.PSNR_PEAK_STRETCHED)
 
-            # Disagreement (no HR needed) — the hallucination cross-check.
-            std_e_sum += float(std.mean())
-            denom = np.abs(mean) + float(rel_floor_e)
-            rel = std / denom
-            rel_sum += float(rel.mean())
-            amean = np.abs(mean)
-            total_flux += float(amean.sum())
-            hall_flux += float(amean[rel > hallucination_rel_tol].sum())
+    per_member_sum = np.zeros(n_members, dtype=np.float64)
+    per_member_str_sum = np.zeros(n_members, dtype=np.float64)
+    ens_sum = 0.0
+    n_scored = 0                       # fields with a matched HR (for PSNR)
+    n_fields = 0
+    std_e_sum = 0.0
+    rel_sum = 0.0
+    hall_flux = 0.0
+    total_flux = 0.0
 
-            # Accuracy vs HR (when present).
-            hr = hr_by.get(lr.index)
-            hr_data = np.asarray(hr.data, np.float32) if hr is not None else None
-            if hr_data is not None:
-                hr_str = np.arcsinh(hr_data / knee)
-                for k in range(self.n_members):
-                    per_member_sum[k] += _psnr(preds[k], hr_data, peak)
-                    # asinh space — the training metric (psnr_stretched), so
-                    # the per-member number is comparable to the curves.
-                    per_member_str_sum[k] += _psnr(
-                        np.arcsinh(preds[k] / knee), hr_str, peak_str)
-                ens_sum += _psnr(mean, hr_data, peak)
-                n_scored += 1
+    lr_list = list(lr_images)
+    total = len(lr_list)
+    for i, lr in enumerate(lr_list):
+        preds = np.asarray(member_stack(lr))           # (M,H,W,C)
+        mean = preds.mean(axis=0)
+        std = preds.std(axis=0)
+        n_fields += 1
 
-            # Per-field hook: hand back LR, the full member stack, ensemble mean
-            # SR, per-pixel std and HR so a caller can persist cubes + the PCA
-            # disagreement basis for the client-side viewer/animation.
-            if on_field is not None:
-                field_index = lr.index
-                if field_index is None:
-                    raise ValueError(
-                        "The per-field ensemble callback requires indexed LR images"
-                    )
-                on_field(field_index, np.asarray(lr.data, np.float32),
-                         preds, mean, std, hr_data)
+        # Disagreement (no HR needed) — the hallucination cross-check.
+        std_e_sum += float(std.mean())
+        denom = np.abs(mean) + float(rel_floor_e)
+        rel = std / denom
+        rel_sum += float(rel.mean())
+        amean = np.abs(mean)
+        total_flux += float(amean.sum())
+        hall_flux += float(amean[rel > hallucination_rel_tol].sum())
 
-            if on_progress is not None:
-                on_progress(i + 1, total, f"field {lr.index}")
+        # Accuracy vs HR (when present).
+        hr = hr_by.get(lr.index)
+        hr_data = np.asarray(hr.data, np.float32) if hr is not None else None
+        if hr_data is not None:
+            hr_str = np.arcsinh(hr_data / knee)
+            for k in range(n_members):
+                per_member_sum[k] += _psnr(preds[k], hr_data, peak)
+                # asinh space — the training metric (psnr_stretched), so
+                # the per-member number is comparable to the curves.
+                per_member_str_sum[k] += _psnr(
+                    np.arcsinh(preds[k] / knee), hr_str, peak_str)
+            ens_sum += _psnr(mean, hr_data, peak)
+            n_scored += 1
 
-        per_member = (per_member_sum / n_scored).tolist() if n_scored else []
-        per_member_str = ((per_member_str_sum / n_scored).tolist()
-                          if n_scored else [])
-        ensemble_psnr = (ens_sum / n_scored) if n_scored else float("nan")
-        mean_member = float(np.mean(per_member)) if per_member else float("nan")
-        best_index = int(np.argmax(per_member)) if per_member else -1
-        best_member = float(per_member[best_index]) if per_member else float("nan")
-        vs_mean = (ensemble_psnr - mean_member) if n_scored else float("nan")
-        vs_best = (ensemble_psnr - best_member) if n_scored else float("nan")
-        return {
-            "n_members": self.n_members,
-            "n_fields": n_fields,
-            "n_scored": n_scored,
-            "per_member_psnr": per_member,
-            "per_member_psnr_stretched": per_member_str,
-            "per_member_labels": list(self._member_labels),
-            "mean_member_psnr": mean_member,
-            "ensemble_psnr": ensemble_psnr,
-            "best_member_psnr": best_member,
-            "best_member_label": (self._member_labels[best_index]
-                                  if 0 <= best_index < len(self._member_labels)
-                                  else None),
-            "ensemble_vs_mean_member_db": vs_mean,
-            "ensemble_vs_best_member_db": vs_best,
-            # One meaning everywhere: the gain over the MEAN member (the eval
-            # summary rebuilt from cached cubes defines it the same way).
-            "ensemble_gain_db": vs_mean,
-            "disagreement": {
-                "mean_std_e": (std_e_sum / n_fields) if n_fields else float("nan"),
-                "mean_rel_disagreement": (rel_sum / n_fields) if n_fields
-                else float("nan"),
-                "frac_flux_hallucinated": (hall_flux / total_flux)
-                if total_flux > 0 else float("nan"),
-            },
-        }
+        # Per-field hook: hand back LR, the full member stack, ensemble mean
+        # SR, per-pixel std and HR so a caller can persist cubes + the PCA
+        # disagreement basis for the client-side viewer/animation.
+        if on_field is not None:
+            field_index = lr.index
+            if field_index is None:
+                raise ValueError(
+                    "The per-field ensemble callback requires indexed LR images"
+                )
+            on_field(field_index, np.asarray(lr.data, np.float32),
+                     preds, mean, std, hr_data)
+
+        if on_progress is not None:
+            on_progress(i + 1, total, f"field {lr.index}")
+
+    per_member = (per_member_sum / n_scored).tolist() if n_scored else []
+    per_member_str = ((per_member_str_sum / n_scored).tolist()
+                      if n_scored else [])
+    ensemble_psnr = (ens_sum / n_scored) if n_scored else float("nan")
+    mean_member = float(np.mean(per_member)) if per_member else float("nan")
+    best_index = int(np.argmax(per_member)) if per_member else -1
+    best_member = float(per_member[best_index]) if per_member else float("nan")
+    vs_mean = (ensemble_psnr - mean_member) if n_scored else float("nan")
+    vs_best = (ensemble_psnr - best_member) if n_scored else float("nan")
+    return {
+        "n_members": n_members,
+        "n_fields": n_fields,
+        "n_scored": n_scored,
+        "per_member_psnr": per_member,
+        "per_member_psnr_stretched": per_member_str,
+        "per_member_labels": list(labels),
+        "mean_member_psnr": mean_member,
+        "ensemble_psnr": ensemble_psnr,
+        "best_member_psnr": best_member,
+        "best_member_label": (labels[best_index]
+                              if 0 <= best_index < len(labels) else None),
+        "ensemble_vs_mean_member_db": vs_mean,
+        "ensemble_vs_best_member_db": vs_best,
+        # One meaning everywhere: the gain over the MEAN member (the eval
+        # summary rebuilt from cached cubes defines it the same way).
+        "ensemble_gain_db": vs_mean,
+        "disagreement": {
+            "mean_std_e": (std_e_sum / n_fields) if n_fields else float("nan"),
+            "mean_rel_disagreement": (rel_sum / n_fields) if n_fields
+            else float("nan"),
+            "frac_flux_hallucinated": (hall_flux / total_flux)
+            if total_flux > 0 else float("nan"),
+        },
+    }
 
 
 def ensemble_available(base_dir: str | None = None) -> bool:
@@ -723,6 +757,8 @@ def evaluate_on_records(
     include_loss_best: bool = False,
     starless: bool | None = None,
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
+    member_stack: Callable[[Image], np.ndarray] | None = None,
+    member_labels: Sequence[str] | None = None,
     on_field: Callable[
         [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
          np.ndarray | None], None
@@ -738,10 +774,25 @@ def evaluate_on_records(
     (``starless=None`` → all members, ``hr_`` target: the legacy behavior).
     Scores each member's PSNR-best checkpoint only; ``include_loss_best=True``
     opts the correlated ``loss_best/`` models back in — see :class:`EnsembleModel`.
+
+    ``member_stack`` (with ``member_labels``) supplies each LR field's member
+    stack instead (e.g. cached cubes plus only the members that must run):
+    no model is loaded here, see :func:`evaluate_member_stacks`.
     """
     sub = subset or eval_subset(records_dir)
-    ens = EnsembleModel(base_dir, scale=scale, num_res_blocks=num_res_blocks,
-                        include_loss_best=include_loss_best, starless=starless)
+    if member_stack is None:
+        ens = EnsembleModel(base_dir, scale=scale, num_res_blocks=num_res_blocks,
+                            include_loss_best=include_loss_best, starless=starless)
+        ens._require_members()
+        labels = ens.member_labels
+
+        def stacks(lr: Image) -> np.ndarray:
+            return ens.member_arrays(lr.data)
+    else:
+        stacks = member_stack
+        labels = [str(v) for v in member_labels or []]
+        if not labels:
+            raise RuntimeError(f"no ensemble members to evaluate under {base_dir!r}")
     target_kind = "clean" if starless else "hr"
     lr = ImageSet.read(tfrecord_path(records_dir, f"dirty_{sub}"),
                        num_images=num_images)
@@ -759,10 +810,10 @@ def evaluate_on_records(
             num_images=num_images,
         )
     ]
-    out = ens.evaluate(list(lr), list(hr), on_field=on_field,
-                       on_progress=on_progress)
+    out = evaluate_member_stacks(list(lr), stacks, labels, list(hr),
+                                 on_field=on_field, on_progress=on_progress)
     out["subset"] = sub
-    out["member_labels"] = ens.member_labels     # aligned with member_arrays order
+    out["member_labels"] = list(labels)          # aligned with the stack order
     return out
 
 

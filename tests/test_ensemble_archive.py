@@ -125,6 +125,8 @@ def test_next_evaluation_consumes_queued_archive_from_cached_cubes(env, monkeypa
     rebuilt = []
     monkeypatch.setattr(ev, "_rebuild_pending_archive_caches",
                         lambda starless: rebuilt.append(starless) or True)
+    # The rebuilt cache is complete and current for the remaining members.
+    monkeypatch.setattr(ev, "_bucket_current", lambda *a: True)
     monkeypatch.setattr(ev, "_reevaluate_from_cached_cubes",
                         lambda starless, num_images: {
                             "regime": "starfull", "recomputed_from_cubes": True})

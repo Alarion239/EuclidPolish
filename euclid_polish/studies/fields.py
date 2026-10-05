@@ -37,7 +37,14 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.eval import spatial_gate_compare as sgc
-from euclid_polish.eval.ensemble_cube_cache import load_cached_field_lr
+from euclid_polish.eval.ensemble_cube_cache import (
+    BLACKOUT_INDEX,
+    VIZ_INDEX,
+    bucket_member_paths,
+    load_cached_field_lr,
+    manifest_member_labels,
+    read_bucket_manifest,
+)
 from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND
 from euclid_polish.eval.spatial_gate_fit import GateField
 from euclid_polish.image.tfio import tfrecord_path
@@ -149,11 +156,21 @@ class FieldSource:
         combiner: Any = gate
         return np.asarray(combiner.apply_field(stack, lr=lr), np.float32)
 
+    def _member_paths(self, directory: Path, manifest_name: str, rec: int) -> list[Path]:
+        """The study members' cubes of one field in a cube bucket (its
+        manifest names the file of each member)."""
+        manifest = read_bucket_manifest(str(directory), manifest_name)
+        paths = bucket_member_paths(manifest, str(directory), self.labels, rec)
+        absent = [label for label, path in zip(self.labels, paths, strict=True) if path is None]
+        if absent:
+            raise RuntimeError(f"{directory.name} holds no cubes of {', '.join(absent)}")
+        return [Path(str(path)) for path in paths]
+
     def _test_products(self) -> Iterator[tuple[str, np.ndarray]]:
         rec = int(self.ref)
         tag = f"{rec:05d}"
         cubes = self._regime() / "cubes"
-        paths = [cubes / f"member{i}_{tag}.npy" for i in range(len(self.labels))]
+        paths = self._member_paths(cubes, VIZ_INDEX, rec)
         lr = load_cached_field_lr(str(cubes), rec, records_dir=ev._sky_records_local_dir(),
                                   subset=self.meta["target"]["subset"])
         if lr is None:                      # refuse before anything is uploaded
@@ -177,7 +194,7 @@ class FieldSource:
         rec = int(self.ref)
         tag = f"{rec:05d}"
         directory = self._regime() / "cubes_blackout"
-        paths = [directory / f"member{i}_{tag}.npy" for i in range(len(self.labels))]
+        paths = self._member_paths(directory, BLACKOUT_INDEX, rec)
         total = None
         for label, path in zip(self.labels, paths, strict=True):
             member = np.load(path)
@@ -282,12 +299,11 @@ def open_field(fid: str, *, starless: bool, labels: Sequence[str]) -> FieldSourc
         if kind == "test" and [str(v) for v in manifest.get("member_labels") or []] != labels:
             raise RuntimeError("the test cubes are not the study's membership")
         if kind == "blackout":
-            index = json.loads((regime / "cubes_blackout" / "blackout_index.json")
+            index = json.loads((regime / "cubes_blackout" / BLACKOUT_INDEX)
                                .read_text("utf-8"))
-            if [str(v) for v in (index.get("identity") or {}).get("member_labels") or []] \
-                    != labels:
+            if manifest_member_labels(index) != labels:
                 raise RuntimeError("the blackout cubes are not the study's membership")
-            meta["blackout"] = index.get("identity")
+            meta["blackout"] = {**(index.get("identity") or {}), "member_labels": labels}
         meta["target"] = {"kind": "clean" if starless else "hr", "subset": subset,
                           "fwhm_arcsec": float(manifest.get("target_psf_fwhm_arcsec")
                                                or Config.TARGET_PSF_FWHM_ARCSEC),

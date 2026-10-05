@@ -36,10 +36,16 @@ import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt, maximum_filter
 
 from euclid_polish.config import Config
+from euclid_polish.ensemble import default_ensemble_dir, member_fingerprints
 from euclid_polish.eval.combiner import (
     COMBINER_MODELS,
     RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
     load_combiner,
+)
+from euclid_polish.eval.ensemble_cube_cache import (
+    bucket_member_paths,
+    manifest_member_labels,
+    stale_bucket_members,
 )
 from euclid_polish.eval.knee_psnr import (
     KNEE_GRID_E,
@@ -58,6 +64,7 @@ from euclid_polish.eval.spatial_gate import (
 from euclid_polish.eval.spatial_gate_fit import (
     ALL_KNEE_LOSS,
     GateField,
+    MemberRunFn,
     build_blackout_fields,
     fit_spatial_gate,
     load_cube_fields,
@@ -356,16 +363,51 @@ def _cube_manifest(cubes_dir: str) -> dict:
         return json.load(handle)
 
 
+def require_current_cubes(cubes_dir: str, manifest: Mapping,
+                          fingerprints: Mapping[str, str | None], refresh: str) -> None:
+    """Refuse a bucket holding member cubes that the members' current
+    checkpoints did not make (a member continued since, or a positional
+    bucket of unknown provenance), or listing a field without every member's
+    cube (a fill stopped half-way): :class:`RuntimeError` naming them and
+    ``refresh`` (what re-infers just those members)."""
+    name = os.path.basename(cubes_dir.rstrip("/"))
+    stale = stale_bucket_members(manifest, fingerprints)
+    if stale:
+        names = ", ".join(label.split("·")[0] for label in stale[:8])
+        more = f" … (+{len(stale) - 8})" if len(stale) > 8 else ""
+        raise RuntimeError(f"{name} holds cubes of member(s) {names}{more} that their "
+                           f"current checkpoints did not make — {refresh}")
+    labels = manifest_member_labels(manifest)
+    gaps = [rec for rec in (int(i) for i in manifest.get("indices", []) or [])
+            if not all(path is not None and os.path.isfile(path)
+                       for path in bucket_member_paths(manifest, cubes_dir, labels, rec))]
+    if gaps:
+        raise RuntimeError(f"{name} lacks member cubes of {len(gaps)} field(s) (a fill "
+                           f"stopped half-way) — {refresh}")
+
+
 def run_compare(*, regime_dir: str, records_dir: str, gates: Sequence[str],
-                runner: Callable[[np.ndarray], np.ndarray] | None,
+                runner: MemberRunFn | None,
                 blackout_fields: int = 40, seed: int = 0, target_name: str = "hr",
                 include_rbf: bool = True, knee: bool = True,
                 progress: ProgressFn | None = None, log: LogFn | None = None) -> CompareResult:
     """Load the regime's test cubes (+ blackouts) and score ``gates`` against
     the mean, the RBF and every member. ``runner`` runs the members on a
-    stamped LR (only for blackout fields not cached yet)."""
+    stamped LR (only the blackout cubes the cache lacks or holds for another
+    checkpoint; the blackout copies are keyed on the test records too). The
+    test cubes are refused unless the members' current checkpoints (the
+    runner's fingerprints, else those under the ensemble dir) made them."""
     cubes = os.path.join(regime_dir, "cubes")
-    fwhm = float(_cube_manifest(cubes)["target_psf_fwhm_arcsec"])
+    cube_manifest = _cube_manifest(cubes)
+    fingerprints = getattr(runner, "fingerprints", None)
+    if fingerprints is None:
+        fingerprints = member_fingerprints(default_ensemble_dir(),
+                                           manifest_member_labels(cube_manifest))
+    # The blackout copies are re-inferred for a changed member; the natural
+    # cubes must be the same checkpoints for the two groups to agree.
+    require_current_cubes(cubes, cube_manifest, fingerprints,
+                          "evaluate the ensemble first (it re-infers only those members)")
+    fwhm = float(cube_manifest["target_psf_fwhm_arcsec"])
     fields, labels = load_cube_fields(cubes, records_dir, "test", target_name=target_name,
                                       target_fwhm_arcsec=fwhm, progress=progress)
     if not fields:
@@ -381,7 +423,8 @@ def run_compare(*, regime_dir: str, records_dir: str, gates: Sequence[str],
     if blackout_fields > 0 and runner is not None:
         blackouts = build_blackout_fields(
             fields, labels, runner, os.path.join(regime_dir, "cubes_blackout"),
-            max_fields=blackout_fields, seed=seed + 1, progress=progress)
+            max_fields=blackout_fields, seed=seed + 1,
+            source_fingerprint=cube_manifest.get("records_fp"), progress=progress)
     rbf_prefix = COMBINER_MODELS[RBF_KIND].cube_prefix
     rbf_method = methods.get("rbf")
 
@@ -549,7 +592,7 @@ def fit_gate_variant(fields: Sequence[GateField], labels: Sequence[str], *,
                      out_dir: str,
                      holdout: int = 15, seed: int = 0,
                      blackout_fields: int = 40,
-                     runner: Callable[[np.ndarray], np.ndarray] | None = None,
+                     runner: MemberRunFn | None = None,
                      blackout_dir: str | None = None,
                      source_fingerprint: str | None = None,
                      width: int = 32, use_lr: bool = False, steps: int = 2000,
@@ -612,9 +655,19 @@ def fit_gate_variant(fields: Sequence[GateField], labels: Sequence[str], *,
 
 
 def load_fit_fields(cubes_dir: str, records_dir: str, *, subset: str = "validate",
-                    target_name: str = "hr", progress: ProgressFn | None = None
+                    target_name: str = "hr", progress: ProgressFn | None = None,
+                    fingerprints: Mapping[str, str | None] | None = None
                     ) -> tuple[list[GateField], list[str]]:
-    """The cached ``subset`` member cubes paired with their target and LR."""
-    fwhm = float(_cube_manifest(cubes_dir)["target_psf_fwhm_arcsec"])
+    """The cached ``subset`` member cubes paired with their target and LR —
+    refused unless every member's cubes were made by its current checkpoint
+    (``fingerprints``; default: the members under the ensemble dir now)."""
+    manifest = _cube_manifest(cubes_dir)
+    if fingerprints is None:
+        fingerprints = member_fingerprints(default_ensemble_dir(),
+                                           manifest_member_labels(manifest))
+    require_current_cubes(cubes_dir, manifest, fingerprints,
+                          "refresh them with a combiner fit in the console (it re-infers "
+                          "only those members)")
+    fwhm = float(manifest["target_psf_fwhm_arcsec"])
     return load_cube_fields(cubes_dir, records_dir, subset, target_name=target_name,
                             target_fwhm_arcsec=fwhm, progress=progress)

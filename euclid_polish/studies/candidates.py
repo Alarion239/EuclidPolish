@@ -37,6 +37,12 @@ from PIL import Image as PILImage
 
 from euclid_polish.config import Config
 from euclid_polish.eval.combiner import BAND_NAMES, COMBINER_MODELS
+from euclid_polish.eval.ensemble_cube_cache import (
+    bucket_member_paths,
+    is_label_keyed,
+    manifest_member_labels,
+    stale_bucket_members,
+)
 from euclid_polish.eval.knee_psnr import KNEE_GRID_E
 from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND, joined_after_fit, reads_available
 from euclid_polish.image.tfio import tfrecord_path
@@ -284,7 +290,8 @@ def _test_fields(starless: bool, active: Sequence[str], cubes: dict[str, Any]
     out = []
     for rec in sorted(int(i) for i in manifest.get("indices") or []):
         tag = f"{rec:05d}"
-        member_paths = [cubes_dir / f"member{i}_{tag}.npy" for i in range(len(labels))]
+        member_paths = [Path(p) for p in bucket_member_paths(manifest, str(cubes_dir),
+                                                             labels, rec)]
         absent = [labels[i] for i, p in enumerate(member_paths) if not p.is_file()]
         reason = None
         if cubes["state"] != "current":
@@ -310,7 +317,7 @@ def _blackout_fields(starless: bool, active: Sequence[str], cubes: dict[str, Any
     index = _manifest(directory / "blackout_index.json")
     if index is None:
         return []
-    labels = [str(v) for v in (index.get("identity") or {}).get("member_labels") or []]
+    labels = manifest_member_labels(index)
     missing = [lb for lb in active if lb not in labels]
     extra = [lb for lb in labels if lb not in active]
     shared = None
@@ -322,21 +329,31 @@ def _blackout_fields(starless: bool, active: Sequence[str], cubes: dict[str, Any
         shared = "the blackout cubes hold members that are no longer active"
     elif cubes["state"] != "current":
         shared = "the test cubes (their HR truth) are stale: " + cubes["detail"]
+    if shared is None and is_label_keyed(index):
+        # The bucket records which checkpoint made each member's cubes.
+        stale = stale_bucket_members(index, model_catalog.member_fingerprints(labels))
+        if stale:
+            shared = (f"member {_number_span(stale)}'s blackout cubes were made by another "
+                      "checkpoint" if len(stale) == 1 else
+                      f"the blackout cubes of members {_number_span(stale)} were made by "
+                      "other checkpoints") + " (run a combiner comparison to refresh them)"
     out = []
-    trained = checkpoint_mtimes(labels) if shared is None else {}
+    # A positional bucket (written before the cubes recorded checkpoint
+    # fingerprints) is judged by file times; the next comparison re-infers it.
+    trained = (checkpoint_mtimes(labels) if shared is None and not is_label_keyed(index)
+               else {})
     for rec in sorted(int(i) for i in index.get("indices") or []):
         tag = f"{rec:05d}"
-        paths = [directory / f"member{i}_{tag}.npy" for i in range(len(labels))]
+        paths = [Path(p) for p in bucket_member_paths(index, str(directory), labels, rec)]
         absent = [labels[i] for i, p in enumerate(paths) if not p.is_file()]
         reason = shared
         if reason is None and absent:
             reason = f"no blackout SR of member(s) {_number_span(absent)} in this field"
-        if reason is None:
+        if reason is None and trained:
             newer = [labels[i] for i, p in enumerate(paths)
                      if (trained.get(labels[i]) or 0.0) > p.stat().st_mtime]
             if newer:
-                rebuild = ("delete cubes_blackout/blackout_index.json and run a combiner "
-                           "comparison to rebuild them")
+                rebuild = "run a combiner comparison to refresh them"
                 reason = (f"member {_number_span(newer)}'s checkpoint is newer than its "
                           f"blackout cube ({rebuild})" if len(newer) == 1 else
                           f"the checkpoints of members {_number_span(newer)} are newer than "

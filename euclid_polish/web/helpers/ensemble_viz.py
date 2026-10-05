@@ -39,6 +39,7 @@ from euclid_polish.ensemble import (
     evaluate_member_on_records,
     evaluate_on_records,
     member_fingerprint,
+    member_fingerprints,
     member_is_starless,
     pca_field,
 )
@@ -56,9 +57,22 @@ from euclid_polish.eval.combiner import (
     save_combiner,
 )
 from euclid_polish.eval.ensemble_cube_cache import (
+    BucketSync,
+    bucket_member_path,
+    bucket_member_paths,
+    is_label_keyed,
     load_cached_field_lr,
     load_cached_member_stack,
+    manifest_member_labels,
+    member_cube_path,
+    migrate_positional_bucket,
+    missing_member_cubes,
+    prune_bucket_fields,
+    read_bucket_manifest,
+    recorded_fingerprints,
     save_cached_field_lr,
+    sync_bucket_members,
+    write_bucket_manifest,
 )
 from euclid_polish.eval.ensemble_diagnostics import EnsembleDiagnosticsAccumulator
 from euclid_polish.eval.gate_members import (
@@ -347,10 +361,8 @@ def _eval_identity(base: str, rdir: str | None, sub: str, regime_dir: str,
     matching identity is reused instead of re-running model inference."""
     target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
     labels = _regime_labels(base, starless)
-    member_fps = [
-        member_fingerprint(os.path.join(base, f"member_{str(lbl).split('·')[0]}"))
-        for lbl in labels
-    ]
+    fingerprints = member_fingerprints(base, labels)
+    member_fps = [fingerprints[str(lbl)] for lbl in labels]
     return {
         "records_fp": _eval_records_fingerprint(rdir, sub, starless=starless),
         "subset": sub,
@@ -379,24 +391,31 @@ def _read_eval_summary(starless: bool) -> dict | None:
 def _reusable_eval(starless: bool, identity: dict) -> dict | None:
     """The cached summary of a completed evaluation whose identity matches
     ``identity`` AND whose cubes are still on disk pointing at the same dataset
-    — else ``None`` (a real re-evaluation is needed). ``eval_summary.json`` is
-    written last, so its presence with a matching identity means that run
-    finished; the cube-manifest ``records_fp`` guards against a cube wipe/regen
-    since then."""
+    and made by the same member checkpoints — else ``None`` (a real
+    re-evaluation is needed). ``eval_summary.json`` is written last, so its
+    presence with a matching identity means that run finished; the
+    cube-manifest ``records_fp`` and ``member_fps`` guard against a cube
+    wipe/regen or a refill since then, and every field the manifest lists must
+    still hold every member's cube."""
     summary = _read_eval_summary(starless)
     if not summary or summary.get("eval_identity") != identity:
         return None
-    man_path = os.path.join(_ensemble_cubes_dir(starless=starless),
-                            "viz_index.json")
-    try:
-        with open(man_path) as f:
-            man = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    cubes_dir = _ensemble_cubes_dir(starless=starless)
+    man = read_bucket_manifest(cubes_dir)
+    if man is None or not is_label_keyed(man):
         return None
     if man.get("records_fp") != identity["records_fp"]:
         return None
     if float(man.get("target_psf_fwhm_arcsec", -1.0)) != float(
             identity["target_psf_fwhm_arcsec"]):
+        return None
+    labels = manifest_member_labels(man)
+    recorded = recorded_fingerprints(man)
+    if [recorded[label] for label in labels] != list(identity.get("member_fps") or []):
+        return None
+    # A run stopped half-way (a forced one empties the bucket first) leaves
+    # the previous run's summary behind: it stands only for a complete bucket.
+    if not _bucket_current(cubes_dir, labels, recorded):
         return None
     return summary
 
@@ -696,10 +715,12 @@ def _lr_on_hr_grid(lr_cube, n: int, band: int = 0) -> np.ndarray | None:
 #: viewer (LR/SR/stdSR/HR). The metrics still use every field; only the viewer
 #: cache is capped so data/vis stays bounded.
 #: Safety ceiling on how many evaluated fields to cache as viewer/animation
-#: cubes (``sr_``, ``std_``, ``pcaN_``, one ``memberi_`` per member, ``lr_``
-#: and each baked combiner's npy per field). ALL evaluated fields up to this
-#: are cached — raised from a flat 24 so the browser + morph aren't limited to
-#: a slice of the test set. ``data/vis`` is transient (cleared each eval).
+#: cubes (``sr_``, ``std_``, ``pcaN_``, one ``member_<key>_`` per member,
+#: ``lr_`` and each baked combiner's npy per field). ALL evaluated fields up to
+#: this are cached — raised from a flat 24 so the browser + morph aren't
+#: limited to a slice of the test set. Member cubes persist across evaluations
+#: (keyed by member label + checkpoint fingerprint); fields outside the
+#: evaluated set are pruned.
 ENSEMBLE_VIZ_FIELDS_MAX = 200
 
 #: How many PCA components of the member-residual subspace to cache per field
@@ -736,24 +757,51 @@ def _cache_field_cubes(cubes_dir: str, rec: int, preds: np.ndarray,
                        lr: np.ndarray | None = None,
                        pca_components: int = ENSEMBLE_PCA_COMPONENTS
                        ) -> tuple[list[float], list[float]]:
-    """Write one field's cubes (``sr_``, ``std_``, ``pcaN_``, ``memberi_`` and,
-    when given, the LR input ``lr_``) into ``cubes_dir`` and return
-    ``(pca_amps, pca_var)``. Shared by the test-eval and the validate
-    combiner-fit caching so both lay out identical buckets."""
+    """Write one field's aggregate cubes (``sr_``, ``std_``, ``pcaN_`` of the
+    member stack ``preds`` and, when given, the LR input ``lr_``) into
+    ``cubes_dir`` and return ``(pca_amps, pca_var)``. Shared by the test-eval,
+    the validate combiner-fit caching and the archive rebuild so all lay out
+    identical buckets; the member cubes themselves are written per member
+    (:func:`_run_missing_members`). ``sr_`` is written last, so its presence
+    means the field's aggregates are complete (:func:`_drop_field_means`)."""
     rec = int(rec)
     if lr is not None:
         save_cached_field_lr(cubes_dir, rec, lr)
-    np.save(os.path.join(cubes_dir, f"sr_{rec:05d}.npy"),
-            np.asarray(mean, dtype=np.float32))
     np.save(os.path.join(cubes_dir, f"std_{rec:05d}.npy"),
             np.asarray(std, dtype=np.float32))
+    for stale in glob.glob(os.path.join(cubes_dir, f"pca*_{rec:05d}.npy")):
+        os.remove(stale)
     _m, comps, amps, var_exp = pca_field(preds, n_components=pca_components)
     for i, comp in enumerate(comps):
         np.save(os.path.join(cubes_dir, f"pca{i}_{rec:05d}.npy"),
                 np.asarray(comp, dtype=np.float32))
-    for i, mem in enumerate(np.asarray(preds, dtype=np.float32)):
-        np.save(os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"), mem)
+    np.save(_field_mean_path(cubes_dir, rec), np.asarray(mean, dtype=np.float32))
     return [float(a) for a in amps], [float(v) for v in var_exp]
+
+
+def _field_mean_path(cubes_dir: str, rec: int) -> str:
+    """A field's cached ensemble mean (``sr_<rec>.npy``)."""
+    return os.path.join(cubes_dir, f"sr_{int(rec):05d}.npy")
+
+
+def _drop_field_means(cubes_dir: str, rec: int | None = None) -> None:
+    """Delete one field's (``rec``) or every field's ``sr_`` before the member
+    stack it averages changes: a fill or rebuild interrupted half-way then
+    leaves the fields it did not reach without one, so the next fill
+    recomputes their aggregates instead of trusting stale ones."""
+    paths = ([_field_mean_path(cubes_dir, rec)] if rec is not None
+             else glob.glob(os.path.join(cubes_dir, "sr_*.npy")))
+    for path in paths:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+
+
+def _drop_combiner_cubes(cubes_dir: str) -> None:
+    """Delete every combiner output cube of a bucket: an evaluation bakes
+    afresh those of the combiners that apply to its member stack."""
+    for kind in COMBINER_MODELS:
+        for path in glob.glob(os.path.join(cubes_dir, f"{_combiner_cube_prefix(kind)}_*.npy")):
+            os.remove(path)
 
 
 def _jsonable(v):
@@ -1046,18 +1094,15 @@ def _hr_weight_diagnostic_from_bucket(comb, *, starless: bool,
 
     The target is used only to label/bin already-computed weights. It is never
     passed to ``comb``. The member stack and target are read from the same
-    position-keyed validation cache, and the manifest/member/fingerprint checks
-    prevent silently pairing weights with a different dataset.
+    validation cache, and the manifest/member/fingerprint checks prevent
+    silently pairing weights with a different dataset.
     """
-    manifest_path = os.path.join(cubes_dir, "viz_index.json")
-    try:
-        with open(manifest_path) as handle:
-            manifest = json.load(handle)
-    except (OSError, ValueError):
+    manifest = read_bucket_manifest(cubes_dir)
+    if manifest is None:
         return _unavailable_hr_weight_diagnostic(
             comb, target=target, reason="validation cube manifest is missing")
 
-    labels = [str(x) for x in manifest.get("member_labels", []) or []]
+    labels = manifest_member_labels(manifest)
     if labels != list(comb.member_labels):
         return _unavailable_hr_weight_diagnostic(
             comb, target=target, reason="validation cubes do not match combiner members")
@@ -1096,9 +1141,8 @@ def _hr_weight_diagnostic_from_bucket(comb, *, starless: bool,
         target_image = targets.get(rec)
         if target_image is None:
             continue
-        paths = [os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy")
-                 for i in range(source_m)]
-        if not all(os.path.isfile(path) for path in paths):
+        paths = bucket_member_paths(manifest, cubes_dir, labels, rec)
+        if not all(path is not None and os.path.isfile(path) for path in paths):
             continue
         stack = np.stack([np.load(path).astype(np.float32) for path in paths], 0)
         truth = np.asarray(target_image.data, np.float32)
@@ -1210,39 +1254,135 @@ def _regime_labels(base: str, starless: bool) -> list[str]:
         return []
 
 
-def _reuse_validate_cubes(val_dir: str, records_fp,
-                          active_labels: list[str] | None = None,
-                          *,
-                          target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
-                          ) -> tuple[list[int], list[str]] | None:
-    """If ``cubes_validate/`` holds a manifest matching the current validate
-    records fingerprint AND the current active member set, return ``(indices,
-    member_labels)`` so the fit can reuse the cached member inference. Otherwise
-    ``None`` (must re-infer).
+def _open_member_bucket(cubes_dir: str, *, records: dict, labels: list[str],
+                        fingerprints: dict[str, str | None],
+                        adopt: dict[str, str | None] | None = None,
+                        wipe: bool = False) -> BucketSync:
+    """Ready a member-cube bucket for an incremental fill: a positional bucket
+    is renamed to the label keying (adopting ``adopt``); a bucket made from
+    other records — any of the ``records`` manifest keys (subset, records
+    fingerprint, target PSF) differs — or ``wipe`` is emptied, the only case
+    in which every member is re-inferred; then its membership is synced to
+    ``labels`` at ``fingerprints`` (departed and changed members' cubes are
+    deleted, :func:`~euclid_polish.eval.ensemble_cube_cache.sync_bucket_members`;
+    a departure also drops every field's mean, so the fill recomputes the
+    aggregates)."""
+    os.makedirs(cubes_dir, exist_ok=True)
+    manifest = migrate_positional_bucket(cubes_dir, adopt=adopt) or {}
+    if wipe or any(manifest.get(key) != value for key, value in records.items()):
+        shutil.rmtree(cubes_dir, ignore_errors=True)
+        os.makedirs(cubes_dir, exist_ok=True)
+        manifest = {}
+    if any(label not in labels for label in manifest_member_labels(manifest)):
+        _drop_field_means(cubes_dir)
+    return sync_bucket_members(cubes_dir, {**manifest, **records}, labels, fingerprints)
 
-    The member-set check is load-bearing: without it a fit after members were
-    added/archived would reuse the OLD validate cubes and fit the combiner over
-    a stale member set — so ``save_combiner`` records the wrong labels and the
-    combiner shows 'stale' the instant it's fitted."""
-    try:
-        with open(os.path.join(val_dir, "viz_index.json")) as f:
-            man = json.load(f)
-    except (OSError, ValueError):
+
+def _bucket_current(cubes_dir: str, labels: list[str],
+                    fingerprints: dict[str, str | None]) -> bool:
+    """Whether a label-keyed bucket holds, for exactly ``labels``, a cube of
+    every listed field made by the checkpoints ``fingerprints`` name."""
+    manifest = read_bucket_manifest(cubes_dir)
+    if not is_label_keyed(manifest) or manifest_member_labels(manifest) != list(labels):
+        return False
+    recorded = recorded_fingerprints(manifest)
+    if any(recorded[label] != fingerprints.get(label) for label in labels):
+        return False
+    indices = [int(i) for i in (manifest or {}).get("indices", []) or []]
+    return bool(indices) and not any(missing_member_cubes(cubes_dir, labels, rec)
+                                     for rec in indices)
+
+
+def _proven_test_fingerprints(starless: bool, manifest: dict) -> dict[str, str | None] | None:
+    """The member fingerprints a positional TEST bucket provably holds: those
+    its evaluation recorded when it RAN the members (``eval_summary.json``
+    identity, same members and records). A summary rebuilt from cubes stamped
+    the checkpoints current at that time, not the ones that made the cubes, so
+    it proves nothing (``None``)."""
+    summary = _read_eval_summary(starless) or {}
+    identity = summary.get("eval_identity") or {}
+    labels = manifest_member_labels(manifest)
+    fps = identity.get("member_fps")
+    if (summary.get("recomputed_from_cubes") or not labels
+            or [str(v) for v in summary.get("member_labels") or []] != labels
+            or not isinstance(fps, list) or len(fps) != len(labels)
+            or identity.get("records_fp") != manifest.get("records_fp")):
         return None
-    if str(man.get("subset")) != "validate":
-        return None
-    if records_fp is not None and man.get("records_fp") != records_fp:
-        return None
-    if float(man.get("target_psf_fwhm_arcsec", -1.0)) != float(
-            validate_target_fwhm_arcsec(target_fwhm_arcsec)):
-        return None
-    labels = [str(x) for x in man.get("member_labels", []) or []]
-    indices = [int(i) for i in man.get("indices", []) or []]
-    if not labels or not indices:
-        return None
-    if active_labels is not None and labels != [str(x) for x in active_labels]:
-        return None                         # member set changed → re-infer
-    return indices, labels
+    return dict(zip(labels, fps, strict=True))
+
+
+def _migrate_test_bucket(starless: bool) -> None:
+    """Rename the regime's positional test bucket to the label keying,
+    adopting the fingerprints its evaluation proves (else its members are
+    re-inferred by the next fill)."""
+    cubes_dir = _ensemble_cubes_dir(starless=starless)
+    manifest = read_bucket_manifest(cubes_dir)
+    if manifest is not None and not is_label_keyed(manifest):
+        migrate_positional_bucket(cubes_dir,
+                                  adopt=_proven_test_fingerprints(starless, manifest))
+
+
+def _run_missing_members(cubes_dir: str, runner, lr: np.ndarray, rec: int,
+                         missing: list[str]) -> dict[str, np.ndarray]:
+    """Run ``missing`` members on one field's LR and store their cubes."""
+    if not missing:
+        return {}
+    ran = dict(zip(missing, np.asarray(runner(lr, missing), np.float32), strict=True))
+    for label, cube in ran.items():
+        np.save(member_cube_path(cubes_dir, label, rec), cube)
+    return ran
+
+
+def _member_stack_of(cubes_dir: str, labels: list[str], rec: int,
+                     ran: dict[str, np.ndarray]) -> np.ndarray:
+    """The ``(M, H, W, C)`` stack of ``labels`` for one field: the members
+    just run, the rest from their cached cubes."""
+    return np.stack([ran[label] if label in ran
+                     else np.load(member_cube_path(cubes_dir, label, rec))
+                     for label in labels]).astype(np.float32)
+
+
+def _fill_validate_cubes(cap, cubes_dir: str, *, base: str, starless: bool,
+                         records_dir: str, records: dict, labels: list[str],
+                         num_images: int) -> list[int]:
+    """Bring the validate bucket to ``labels`` at their current checkpoints,
+    inferring only what it lacks, and return its fields: those it already
+    holds plus the first ``num_images`` records. A field whose member stack
+    changed (a member inferred or dropped — its ``sr_`` is gone) gets its
+    aggregates recomputed from the stack; nothing is read or run when the
+    bucket is already current."""
+    fingerprints = member_fingerprints(base, labels)
+    sync = _open_member_bucket(cubes_dir, records=records, labels=labels,
+                               fingerprints=fingerprints)
+    held = {int(i) for i in sync.manifest.get("indices", []) or []}
+    if len(held) >= int(num_images) and not any(
+            missing_member_cubes(cubes_dir, labels, rec)
+            or not os.path.isfile(_field_mean_path(cubes_dir, rec)) for rec in held):
+        return sorted(held)
+    runner = LazyMemberRunner(base, starless=starless, labels=labels)
+    limit = max(int(num_images), (max(held) + 1) if held else 0)
+    kept: list[int] = []
+    subset = str(records["subset"])
+    for position, image in enumerate(ImageSet.read(
+            tfrecord_path(records_dir, f"dirty_{subset}"), num_images=limit)):
+        rec = _record_index(image)
+        if rec not in held and position >= int(num_images):
+            continue
+        lr = np.asarray(image.data, np.float32)
+        missing = missing_member_cubes(cubes_dir, labels, rec)
+        if missing:
+            _drop_field_means(cubes_dir, rec)
+        ran = _run_missing_members(cubes_dir, runner, lr, rec, missing)
+        if not os.path.isfile(_field_mean_path(cubes_dir, rec)):
+            preds = _member_stack_of(cubes_dir, labels, rec, ran)
+            _cache_field_cubes(cubes_dir, rec, preds, preds.mean(0), preds.std(0), lr=lr)
+        kept.append(rec)
+        cap.tick(position + 1, limit, f"{subset} field {rec}: "
+                 + (f"{len(missing)} member(s) inferred" if missing else "cached"))
+    write_bucket_manifest(cubes_dir, {**sync.manifest, "indices": sorted(kept),
+                                      "pca_n": ENSEMBLE_PCA_COMPONENTS})
+    prune_bucket_fields(cubes_dir, kept)
+    return sorted(kept)
 
 
 def _collect_bounded_ablation_patches(
@@ -1343,10 +1483,12 @@ def _collect_bounded_ablation_patches(
 
 def _prepare_validate_cubes(cap, *, starless: bool, num_images: int,
                             target_fwhm: float):
-    """The regime's cached validate member cubes, (re)inferred when the
-    records, the target PSF or the active members changed since they were
-    written. → ``(base, records_dir, records_fp, validate_dir, indices,
-    labels, target)`` — shared by the production combiner fit and the named
+    """The regime's cached validate member cubes, brought up to the active
+    members: only members whose cubes are missing or were made by another
+    checkpoint are inferred, departed members are dropped, and a change of the
+    records or the target PSF re-infers everyone (:func:`_fill_validate_cubes`).
+    → ``(base, records_dir, records_fp, validate_dir, indices, labels,
+    target)`` — shared by the production combiner fit and the named
     spatial-gate variant fit."""
     base = ensemble_dir()
     records_dir = _sky_records_local_dir()
@@ -1361,34 +1503,15 @@ def _prepare_validate_cubes(cap, *, starless: bool, num_images: int,
     records_fp = _eval_records_fingerprint(
         records_dir, "validate", starless=starless)
     validate_dir = _ensemble_cubes_dir("validate", starless=starless)
-    reuse = _reuse_validate_cubes(
-        validate_dir, records_fp, _regime_labels(base, starless),
-        target_fwhm_arcsec=target_fwhm)
-    if reuse is not None:
-        indices, labels = reuse
-    else:
-        shutil.rmtree(validate_dir, ignore_errors=True)
-        os.makedirs(validate_dir, exist_ok=True)
-        saved: list[int] = []
-
-        def on_field(record_index, lr, predictions, mean, std, _target_image):
-            _cache_field_cubes(
-                validate_dir, record_index, predictions, mean, std, lr=lr)
-            saved.append(int(record_index))
-
-        result = evaluate_on_records(
-            base, records_dir, subset="validate", num_images=int(num_images),
-            starless=bool(starless), on_field=on_field,
-            on_progress=lambda i, n, label: cap.tick(i, n, label))
-        labels = list(result.get("member_labels", []))
-        indices = list(saved)
-        _atomic_json(os.path.join(validate_dir, "viz_index.json"), {
-            "subset": "validate", "indices": saved,
-            "member_labels": labels, "records_fp": records_fp,
-            "target_psf_fwhm_arcsec": target_fwhm,
-            "pca_n": ENSEMBLE_PCA_COMPONENTS,
-        })
-
+    labels = _regime_labels(base, starless)
+    if not labels:
+        raise RuntimeError(f"no active {_regime_slug(starless)} members with a checkpoint "
+                           f"under {base}")
+    indices = _fill_validate_cubes(
+        cap, validate_dir, base=base, starless=starless, records_dir=records_dir,
+        records={"subset": "validate", "records_fp": records_fp,
+                 "target_psf_fwhm_arcsec": float(target_fwhm)},
+        labels=labels, num_images=int(num_images))
     if not indices:
         raise RuntimeError("no validate fields collected — check the records.")
     return base, records_dir, records_fp, validate_dir, indices, labels, target
@@ -1426,6 +1549,8 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
             cap, combiner, starless=starless, model_kind=model_kind,
             score_test=score_test, n_members=len(labels))
 
+    fingerprints = member_fingerprints(base, labels)
+
     def validation_fields(requested_indices):
         wanted = sorted({int(value) for value in requested_indices})
         if not wanted:
@@ -1444,7 +1569,8 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
                 and _record_index(current_target) == int(index)
                 else None)
             stack = load_cached_member_stack(
-                index, subset="validate", cubes_dir=validate_dir, active=labels)
+                index, subset="validate", cubes_dir=validate_dir, active=labels,
+                fingerprints=fingerprints)
             if stack is not None and target_record is not None:
                 target_record = dataclasses.replace(
                     target_record,
@@ -1598,7 +1724,7 @@ def _shared_pca_weight_diagnostic(comb, *, starless: bool,
             break
         stack = load_cached_member_stack(
             rec, subset="validate", cubes_dir=val_dir,
-            active=list(comb.member_labels))
+            active=list(comb.member_labels), require_current=False)
         if stack is None:
             continue
         members, height, width, channels = stack.shape
@@ -1765,7 +1891,7 @@ def _spatial_gate_weight_diagnostic(comb: SpatialGateCombiner, *, starless: bool
     n_pixels = n_source = n_fields = 0
     for rec in fields[:int(max_fields)]:
         stack = load_cached_member_stack(rec, subset="validate", cubes_dir=val_dir,
-                                         active=level_labels)
+                                         active=level_labels, require_current=False)
         lr = (load_cached_field_lr(val_dir, rec, records_dir=records_dir,
                                    subset="validate") if comb.use_lr else None)
         if stack is None or (comb.use_lr and lr is None):
@@ -2304,86 +2430,54 @@ def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str,
                                     *, keep_combiner: bool = False,
                                     keep_combiners: dict[str, bool] | None = None
                                     ) -> bool:
-    """Drop one member from a position-keyed cube bucket, REUSING the cached
-    per-member inference (no model re-run).
+    """Drop one member from a cube bucket, REUSING the cached per-member
+    inference (no model re-run).
 
-    The archived member's per-member cubes are deleted, the higher-indexed
-    members shift down to stay contiguous, and the aggregate ``sr_``/``std_``/
+    The archived member's cubes are deleted and the aggregate ``sr_``/``std_``/
     ``pcaN_`` cubes are recomputed from the remaining stack (the ensemble mean IS
     the plain member mean, so this is exact). ``keep_combiner`` preserves the
     ``comb_`` cubes + the manifest flag — set only when the archived member was
     PRUNED by the combiner (weight 0 everywhere), so its output is unchanged;
-    otherwise the combiner is stale and its cubes are dropped. Returns ``True``
-    iff this bucket contained the member (and was rebuilt)."""
-    man_path = os.path.join(cubes_dir, "viz_index.json")
-    try:
-        with open(man_path) as f:
-            man = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    otherwise the combiner is stale and its cubes are dropped. A positional
+    bucket is first renamed to the label keying (fingerprints unproven).
+    Returns ``True`` iff this bucket contained the member (and was rebuilt)."""
+    old_labels = manifest_member_labels(read_bucket_manifest(cubes_dir))
+    drop = next((lbl for lbl in old_labels if lbl.split("·")[0] == member_nn), None)
+    if drop is None:
         return False
-    old_labels = [str(x) for x in man.get("member_labels", []) or []]
-    drop_pos = next((i for i, lbl in enumerate(old_labels)
-                     if lbl.split("·")[0] == member_nn), None)
-    if drop_pos is None:
-        return False
-    new_labels = [lbl for i, lbl in enumerate(old_labels) if i != drop_pos]
-    old_n, new_n = len(old_labels), len(new_labels)
-    pca_amps: dict[str, list[float]] = {}
-    pca_var: dict[str, list[float]] = {}
     keep_by_kind = {
         kind: bool((keep_combiners or {}).get(
             kind, keep_combiner if kind == _RBF_KIND else False))
         for kind in _ORDINARY_COMBINER_KINDS
     }
+    # An RBF can stay only when the archived member was globally pruned. Drop
+    # stale baked outputs independently.
+    for kind, keep in keep_by_kind.items():
+        if not keep:
+            for path in glob.glob(os.path.join(cubes_dir,
+                                               f"{_combiner_cube_prefix(kind)}_*.npy")):
+                os.remove(path)
+    _drop_field_means(cubes_dir)
+    man = migrate_positional_bucket(cubes_dir) or {}
+    new_labels = [lbl for lbl in old_labels if lbl != drop]
+    recorded = recorded_fingerprints(man)
+    man = sync_bucket_members(cubes_dir, man, new_labels,
+                              {label: recorded[label] for label in new_labels}).manifest
+    pca_amps: dict[str, list[float]] = {}
+    pca_var: dict[str, list[float]] = {}
     for rec in (int(i) for i in man.get("indices", []) or []):
-        tag = f"{rec:05d}"
-        arch = os.path.join(cubes_dir, f"member{drop_pos}_{tag}.npy")
-        if os.path.isfile(arch):
-            os.remove(arch)
-        # Shift member{p} → member{p-1} for p above the gap (ascending order so
-        # each destination slot is already vacated).
-        for p in range(drop_pos + 1, old_n):
-            src = os.path.join(cubes_dir, f"member{p}_{tag}.npy")
-            if os.path.isfile(src):
-                os.replace(src, os.path.join(cubes_dir, f"member{p - 1}_{tag}.npy"))
-        stack = []
-        for p in range(new_n):
-            mf = os.path.join(cubes_dir, f"member{p}_{tag}.npy")
-            if not os.path.isfile(mf):
-                break
-            stack.append(np.load(mf))
-        if len(stack) != new_n or new_n == 0:
+        if not new_labels or missing_member_cubes(cubes_dir, new_labels, rec):
             continue
-        preds = np.stack(stack, 0)
-        np.save(os.path.join(cubes_dir, f"sr_{tag}.npy"),
-                preds.mean(0).astype(np.float32))
-        np.save(os.path.join(cubes_dir, f"std_{tag}.npy"),
-                preds.std(0).astype(np.float32))
-        for f in glob.glob(os.path.join(cubes_dir, f"pca*_{tag}.npy")):
-            os.remove(f)
-        _m, comps, amps, var = pca_field(preds, n_components=ENSEMBLE_PCA_COMPONENTS)
-        for i, comp in enumerate(comps):
-            np.save(os.path.join(cubes_dir, f"pca{i}_{tag}.npy"),
-                    np.asarray(comp, dtype=np.float32))
-        # An RBF can stay only when the archived member was globally pruned.
-        # Drop stale baked outputs independently.
-        for kind, keep in keep_by_kind.items():
-            if not keep:
-                comb = os.path.join(
-                    cubes_dir, f"{_combiner_cube_prefix(kind)}_{tag}.npy")
-                if os.path.isfile(comb):
-                    os.remove(comb)
-        pca_amps[str(rec)] = [float(a) for a in amps]
-        pca_var[str(rec)] = [float(v) for v in var]
-    man["member_labels"] = new_labels
+        preds = _member_stack_of(cubes_dir, new_labels, rec, {})
+        amps, var = _cache_field_cubes(cubes_dir, rec, preds, preds.mean(0), preds.std(0))
+        pca_amps[str(rec)] = amps
+        pca_var[str(rec)] = var
     man["has_combiner"] = bool(keep_by_kind[_RBF_KIND])
-    man[f"has_combiner_{_RBF_KIND}"] = bool(keep_by_kind[_RBF_KIND])
     for kind, keep in keep_by_kind.items():
         man[f"has_combiner_{kind}"] = bool(keep)
     man["pca_amps"] = pca_amps
     man["pca_var"] = pca_var
-    with open(man_path, "w") as f:
-        json.dump(man, f)
+    write_bucket_manifest(cubes_dir, man)
     return True
 
 
@@ -2405,8 +2499,10 @@ def _read_test_manifest(starless: bool) -> dict | None:
 
 
 def _knee_psnr_identity(starless: bool, manifest: dict) -> dict:
-    """What the curves depend on: the scored fields, the members and every
-    baked combiner (a refit changes its artifact fingerprint)."""
+    """What the curves depend on: the scored fields, the members and the
+    checkpoints that made their cubes (a continued member's cubes are
+    re-inferred in place) and every baked combiner (a refit changes its
+    artifact fingerprint)."""
     regime_dir = _ensemble_regime_dir(starless)
     return {
         "schema": _KNEE_PSNR_SCHEMA,
@@ -2415,6 +2511,7 @@ def _knee_psnr_identity(starless: bool, manifest: dict) -> dict:
         "subset": manifest.get("subset"),
         "indices": sorted(int(i) for i in manifest.get("indices", []) or []),
         "member_labels": [str(x) for x in manifest.get("member_labels", []) or []],
+        "member_fps": recorded_fingerprints(manifest),
         "target_psf_fwhm_arcsec": manifest.get("target_psf_fwhm_arcsec"),
         "combiner_fps": {kind: _combiner_fingerprint(regime_dir, kind)
                          for kind in COMBINER_MODELS
@@ -2528,12 +2625,11 @@ def _knee_psnr_field_curves(starless: bool, manifest: dict, identity: dict,
 
     def field_curves(rec: int, target: np.ndarray) -> np.ndarray | None:
         tag = f"{rec:05d}"
-        paths = ([os.path.join(cubes_dir, f"member{i}_{tag}.npy")
-                  for i in range(len(labels))]
+        paths = (bucket_member_paths(manifest, cubes_dir, labels, rec)
                  + [os.path.join(cubes_dir, f"sr_{tag}.npy")]
                  + [os.path.join(cubes_dir, f"{COMBINER_MODELS[k].cube_prefix}_{tag}.npy")
                     for k in combiner_kinds])
-        if not all(os.path.isfile(p) for p in paths):
+        if not all(p is not None and os.path.isfile(p) for p in paths):
             return None
         truth = stretched_truth(target)
         return np.stack([knee_psnr(np.load(p), target, truth_asinh=truth)
@@ -2692,9 +2788,15 @@ def _reevaluate_from_cached_cubes(starless: bool,
         "reused": False,
         **_summary_headline(model_cmet, labels),
     }
-    summary["eval_identity"] = _eval_identity(
+    identity = _eval_identity(
         base, rdir, sub, out_dir, starless=starless, num_images=int(num_images),
         target_fwhm_arcsec=target_fwhm)
+    # The checkpoints that MADE the cubes (none recorded for a positional
+    # bucket), not those current now: a member continued since keeps the next
+    # Evaluate from reusing this summary, so it re-infers that member.
+    recorded = recorded_fingerprints(man)
+    identity["member_fps"] = [recorded.get(label) for label in labels]
+    summary["eval_identity"] = identity
     with open(os.path.join(out_dir, "eval_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     _refresh_knee_psnr(starless, progress)
@@ -2752,8 +2854,8 @@ def _apply_combiner_to_test_cubes(starless: bool,
         tag = f"{rec:05d}"
         stack = []
         for p in positions:
-            mf = os.path.join(cubes_dir, f"member{p}_{tag}.npy")
-            if not os.path.isfile(mf):
+            mf = bucket_member_path(man, cubes_dir, labels[p], rec)
+            if mf is None or not os.path.isfile(mf):
                 break
             stack.append(np.load(mf))
         lr = (load_cached_field_lr(cubes_dir, rec, records_dir=records_dir,
@@ -2773,8 +2875,7 @@ def _apply_combiner_to_test_cubes(starless: bool,
     man[f"has_combiner_{model_kind}"] = True
     if model_kind == _RBF_KIND:  # legacy viewer/cache contract
         man["has_combiner"] = True
-    with open(man_path, "w") as f:
-        json.dump(man, f)
+    write_bucket_manifest(cubes_dir, man)
     return True
 
 
@@ -2885,14 +2986,20 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     member weights, the fitted combiner and the field count all unchanged —
     is never re-run. Its cheap browser figures (payload + back-trace samples) are
     rebuilt from the cached cubes (no model inference) and the cached metrics are
-    returned. Pass ``force=True`` to bypass and re-infer.
+    returned. Pass ``force=True`` to bypass and re-infer every member.
 
-    Also caches every evaluated field's ensemble-mean (SR), per-pixel std
-    (stdSR) and PCA cubes under ``<vis>/ensemble/<regime>/cubes/`` (up to
-    :data:`ENSEMBLE_VIZ_FIELDS_MAX`) so the ``ensemble`` viewer + morph can show
-    the whole test set client-side. Every artifact this writes (cubes, evals
-    payload, power spectrum, diagnostics, summary) lives under the regime dir,
-    so starfull and starless never clobber each other.
+    Otherwise the evaluation reads the cached member cubes (keyed by member
+    label + checkpoint fingerprint) and runs ONLY the members whose cube of a
+    field is missing or was made by another checkpoint (a new or continued
+    member); members that left are dropped from the cache. Only regenerated
+    records or another target PSF re-infer everyone.
+
+    Also caches every evaluated field's member cubes, ensemble-mean (SR),
+    per-pixel std (stdSR) and PCA cubes under ``<vis>/ensemble/<regime>/cubes/``
+    (up to :data:`ENSEMBLE_VIZ_FIELDS_MAX`) so the ``ensemble`` viewer + morph
+    can show the whole test set client-side. Every artifact this writes (cubes,
+    evals payload, power spectrum, diagnostics, summary) lives under the regime
+    dir, so starfull and starless never clobber each other.
     """
     target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
     base = ensemble_dir()
@@ -2910,11 +3017,18 @@ def job_ensemble_evaluate(cap, *, num_images: int,
             f"missing local {sub} record shard(s): {names}. "
             "Use Synthetic › Records › Sync from FASRC; it pulls test + validate together.")
 
+    _migrate_test_bucket(starless)
+    cubes_dir = _ensemble_cubes_dir(starless=starless)
+    labels_now = _regime_labels(base, starless)
+    fingerprints = member_fingerprints(base, labels_now)
+
     pending_archives = _pending_archived_members(starless)
     if pending_archives:
         cap.tick(0, 1, "rebuilding stale ensemble from cached cubes (no re-inference)")
         rebuilt_test = _rebuild_pending_archive_caches(starless)
-        if rebuilt_test:
+        # Only a cache that is complete and current for the active members can
+        # stand in for an evaluation; otherwise the evaluation below fills it.
+        if rebuilt_test and _bucket_current(cubes_dir, labels_now, fingerprints):
             cached_summary = _reevaluate_from_cached_cubes(
                 starless, num_images=int(num_images))
             if cached_summary is not None:
@@ -2953,9 +3067,23 @@ def job_ensemble_evaluate(cap, *, num_images: int,
                   f"{_regime_slug(starless)} (identity unchanged)")
             return summary
 
-    cubes_dir = _ensemble_cubes_dir(starless=starless)
-    shutil.rmtree(cubes_dir, ignore_errors=True)      # fresh viz set per eval
-    os.makedirs(cubes_dir, exist_ok=True)
+    if not labels_now:
+        raise RuntimeError(f"no active {_regime_slug(starless)} members with a checkpoint "
+                           f"under {base}")
+    records_fp = _eval_records_fingerprint(rdir, sub, starless=starless)
+    bucket = _open_member_bucket(
+        cubes_dir, records={"subset": sub, "records_fp": records_fp,
+                            "target_psf_fwhm_arcsec": target_fwhm},
+        labels=labels_now, fingerprints=fingerprints, wipe=bool(force))
+    _drop_combiner_cubes(cubes_dir)
+    # The bucket lists no field until this run writes its manifest: a run
+    # stopped half-way leaves member cubes to reuse, never a partial stack
+    # that a cache re-score, the knee curves or a comparison reads as an
+    # evaluation.
+    write_bucket_manifest(cubes_dir, {
+        **bucket.manifest, "indices": [], "pca_amps": {}, "pca_var": {},
+        **{key: False for key in bucket.manifest if key.startswith("has_combiner")}})
+    runner = LazyMemberRunner(base, starless=starless, labels=labels_now)
     saved: list[int] = []
     pca_amps: dict[int, list[float]] = {}        # rec_index → [a0, a1, a2]
     pca_var: dict[int, list[float]] = {}         # rec_index → variance explained
@@ -2967,9 +3095,20 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     # predictions but retain distinct output cubes and diagnostics.
     # A spatial gate takes the members it reads by label (members that joined
     # after its fit are skipped); the RBF needs exactly the active members.
-    labels_now = _regime_labels(base, starless)
     models = {kind: _combiner_for_stack(out_dir, labels_now, kind)
               for kind in _ORDINARY_COMBINER_KINDS}
+
+    def _member_stack(lr_image) -> np.ndarray:
+        """The field's member stack: cached cubes plus the members that lack a
+        current one (run and stored). Fields past the viewer cap are not
+        cached, so every member runs on them."""
+        lr = np.asarray(lr_image.data, np.float32)
+        if len(saved) >= viz_cap:
+            return np.asarray(runner(lr, labels_now), np.float32)
+        rec = _record_index(lr_image)
+        ran = _run_missing_members(cubes_dir, runner, lr, rec,
+                                   missing_member_cubes(cubes_dir, labels_now, rec))
+        return _member_stack_of(cubes_dir, labels_now, rec, ran)
 
     def _on_field(rec_index, lr_cube, preds, mean, std, hr_cube):
         model_full: dict[str, np.ndarray] = {}
@@ -3025,8 +3164,13 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     out = evaluate_on_records(base, rdir, num_images=int(num_images),
                               starless=bool(starless),
                               target_fwhm_arcsec=target_fwhm,
+                              member_stack=_member_stack, member_labels=labels_now,
                               on_field=_on_field, on_progress=_prog)
     member_labels = list(out.get("member_labels", []))
+    if runner.seconds:
+        print(f"[ensemble evaluate] member inference on {len(runner.seconds)} field(s) "
+              f"({len(bucket.added)} new, {len(bucket.refreshed)} changed, "
+              f"{len(bucket.dropped)} dropped member(s)); the rest from cached cubes")
 
     # The full eval already scored every member — bank the stretched PSNRs in
     # the per-member cache (free ride: no extra inference), but only when this
@@ -3053,18 +3197,19 @@ def job_ensemble_evaluate(cap, *, num_images: int,
         kind: bool(models[kind][0] is not None and cmet.n_comb > 0)
         for kind, cmet in model_cmet.items()
     }
-    with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
-        json.dump({"subset": sub, "indices": saved,
-                   "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps,
-                   "pca_var": pca_var,
-                   "member_labels": member_labels,
-                   "target_psf_fwhm_arcsec": target_fwhm,
-                   "has_combiner": has_by_kind[_RBF_KIND],
-                   **{f"has_combiner_{kind}": has
-                      for kind, has in has_by_kind.items()},
-                   # Eval-dataset identity: the cubes are position-keyed into
-                   # THESE records — regenerated records make them garbage.
-                   "records_fp": _eval_records_fingerprint(rdir, sub, starless=starless)}, f)
+    write_bucket_manifest(cubes_dir, {
+        **bucket.manifest,
+        "subset": sub, "indices": saved,
+        "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps,
+        "pca_var": pca_var,
+        "member_labels": member_labels,
+        "target_psf_fwhm_arcsec": target_fwhm,
+        "has_combiner": has_by_kind[_RBF_KIND],
+        **{f"has_combiner_{kind}": has for kind, has in has_by_kind.items()},
+        # Eval-dataset identity: the cubes are keyed into THESE records —
+        # regenerated records make them garbage.
+        "records_fp": records_fp})
+    prune_bucket_fields(cubes_dir, saved)
 
     # Power-spectrum summary (HR vs ensemble-mean coherence + disagreement).
     curves = None
@@ -3137,7 +3282,7 @@ def _iter_cached_field_bands(starless: bool, bands: tuple[int, ...]):
     and the back-tracing sidecar are stored under. A band a cube lacks is left
     out of that field's dict.
 
-    Streams the mean-SR (``sr_*.npy``) + individual member (``member*_*.npy``)
+    Streams the mean-SR (``sr_*.npy``) + individual member (``member_*_*.npy``)
     cubes the last Evaluate wrote for this regime, paired with the regime's
     TARGET from the records (``clean`` for starless, ``hr`` for starfull) — so
     any evaluation figure can be recomputed (e.g. after a code fix) in seconds
@@ -3146,8 +3291,8 @@ def _iter_cached_field_bands(starless: bool, bands: tuple[int, ...]):
     ``None``). ``lr`` is the LR plane bicubic-resampled onto the HR grid (the no-SR
     baseline for r(k)), or ``None`` when the dirty records are absent. Yields
     nothing when the cache is missing, or when the regime's membership changed
-    since the cubes were written (a member archived/added → position-keyed
-    cubes invalid).
+    since the cubes were written (a member archived/added: the figures would
+    describe another ensemble).
     """
     cubes_dir = _ensemble_cubes_dir(starless=starless)
     man_path = os.path.join(cubes_dir, "viz_index.json")
@@ -3155,12 +3300,12 @@ def _iter_cached_field_bands(starless: bool, bands: tuple[int, ...]):
         return
     with open(man_path) as f:
         man = json.load(f)
-    if ([str(x) for x in man.get("member_labels", []) or []]
-            != _regime_labels(ensemble_dir(), starless)):
+    labels = manifest_member_labels(man)
+    if labels != _regime_labels(ensemble_dir(), starless):
         return
     idxs = [int(i) for i in man.get("indices", [])]
     sub = man.get("subset", "")
-    n_members = len(man.get("member_labels", []))
+    n_members = len(labels)
     target_fwhm = validate_target_fwhm_arcsec(
         man.get("target_psf_fwhm_arcsec", Config.TARGET_PSF_FWHM_ARCSEC))
     rdir = _sky_records_local_dir()
@@ -3199,10 +3344,10 @@ def _iter_cached_field_bands(starless: bool, bands: tuple[int, ...]):
         sr_f = os.path.join(cubes_dir, f"sr_{rec:05d}.npy")
         if not os.path.isfile(sr_f) or hr is None:
             continue
-        members = [np.load(mf) for i in range(n_members)
-                   if os.path.isfile(mf := os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"))]
-        if not members:
-            continue
+        member_paths = bucket_member_paths(man, cubes_dir, labels, rec)
+        if not all(mf is not None and os.path.isfile(mf) for mf in member_paths):
+            continue                  # a fill stopped half-way: no partial stacks
+        members = [np.load(mf) for mf in member_paths]
         model_cubes = {}
         for kind, spec in COMBINER_MODELS.items():
             model_f = os.path.join(cubes_dir, f"{spec.cube_prefix}_{rec:05d}.npy")

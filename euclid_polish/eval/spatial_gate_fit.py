@@ -32,14 +32,24 @@ import shutil
 import tempfile
 import time
 import weakref
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
 import tensorflow as tf
 
 from euclid_polish.config import Config
-from euclid_polish.ensemble import EnsembleModel
+from euclid_polish.ensemble import EnsembleModel, member_fingerprints
+from euclid_polish.eval.ensemble_cube_cache import (
+    BLACKOUT_INDEX,
+    VIZ_INDEX,
+    bucket_member_paths,
+    member_cube_path,
+    migrate_positional_bucket,
+    missing_member_cubes,
+    sync_bucket_members,
+    write_bucket_manifest,
+)
 from euclid_polish.eval.knee_psnr import integrated_psnr, knee_psnr
 from euclid_polish.eval.spatial_gate import (
     BAND_NAMES,
@@ -106,24 +116,37 @@ class GateField:
         return self._lr_feats
 
 
+#: ``run_members(lr, labels)`` → the ``(len(labels), H, W, C)`` SR stack of
+#: those members on one LR field (:class:`LazyMemberRunner`).
+MemberRunFn = Callable[[np.ndarray, Sequence[str]], np.ndarray]
+
+
 class LazyMemberRunner:
-    """Runs the ensemble members on an LR field; loads them on first use, so a
-    fully cached blackout bucket costs no model loading."""
+    """Runs ensemble members (of ``labels``) on an LR field, loading each one
+    on its first run — a cube cache that needs only some members never loads
+    the rest, and a fully cached one loads none. ``fingerprints`` are the
+    members' checkpoint fingerprints, what the cube caches are keyed on."""
 
     def __init__(self, base_dir: str, *, starless: bool, labels: Sequence[str]):
         self.base_dir = base_dir
         self.starless = bool(starless)
         self.labels = [str(v) for v in labels]
+        self.fingerprints = member_fingerprints(base_dir, self.labels)
         self.seconds: list[float] = []
-        self._ensemble: EnsembleModel | None = None
+        self._loaded: dict[str, tuple[EnsembleModel, int]] = {}
 
-    def __call__(self, lr: np.ndarray) -> np.ndarray:
-        if self._ensemble is None:
-            self._ensemble = EnsembleModel(self.base_dir, starless=self.starless)
-            if list(self._ensemble.member_labels) != self.labels:
-                raise RuntimeError("active members differ from the cached cubes")
+    def __call__(self, lr: np.ndarray, labels: Sequence[str] | None = None) -> np.ndarray:
+        wanted = self.labels if labels is None else [str(v) for v in labels]
+        unknown = [label for label in wanted if label not in self.labels]
+        if unknown:
+            raise ValueError(f"not members of this run: {', '.join(unknown)}")
+        todo = [label for label in wanted if label not in self._loaded]
+        if todo:
+            ensemble = EnsembleModel(self.base_dir, starless=self.starless, labels=todo)
+            self._loaded.update({label: (ensemble, i) for i, label in enumerate(todo)})
         started = time.time()
-        out = self._ensemble.member_arrays(lr)
+        out = np.stack([self._loaded[label][0].member_arrays(
+            lr, indices=[self._loaded[label][1]])[0] for label in wanted])
         self.seconds.append(time.time() - started)
         return out
 
@@ -143,7 +166,7 @@ def load_cube_fields(cubes_dir: str, records_dir: str, subset: str, *,
                      indices: Sequence[int] | None = None,
                      progress: ProgressFn | None = None) -> tuple[list[GateField], list[str]]:
     """Pair a cube bucket's member files with its target and LR records."""
-    with open(os.path.join(cubes_dir, "viz_index.json")) as handle:
+    with open(os.path.join(cubes_dir, VIZ_INDEX)) as handle:
         manifest = json.load(handle)
     labels = [str(v) for v in manifest.get("member_labels", [])]
     wanted = sorted(int(i) for i in (indices if indices is not None
@@ -162,16 +185,15 @@ def load_cube_fields(cubes_dir: str, records_dir: str, subset: str, *,
             target_rec = next(targets, None)
         while lr_rec is not None and lr_rec.index < index:
             lr_rec = next(lrs, None)
-        paths = [os.path.join(cubes_dir, f"member{m}_{index:05d}.npy")
-                 for m in range(len(labels))]
+        paths = bucket_member_paths(manifest, cubes_dir, labels, index)
         if (target_rec is None or target_rec.index != index or lr_rec is None
                 or lr_rec.index != index
-                or not all(os.path.isfile(p) for p in paths)):
+                or not all(p is not None and os.path.isfile(p) for p in paths)):
             continue
         target = blur_target_array(
             np.asarray(target_rec.data, np.float32), target_fwhm_arcsec,
             pixel_scale_arcsec=target_rec.pixel_scale_arcsec)
-        fields.append(GateField(index, paths, np.asarray(target, np.float32),
+        fields.append(GateField(index, [str(p) for p in paths], np.asarray(target, np.float32),
                                 np.asarray(lr_rec.data, np.float32)))
         if progress is not None:
             progress(position, len(wanted), f"loading {subset} field {index}")
@@ -194,52 +216,66 @@ def stamp_blackouts(lr_e: np.ndarray, rng: np.random.Generator, *,
 
 
 def build_blackout_fields(fields: Sequence[GateField], member_labels: Sequence[str],
-                          run_members: Callable[[np.ndarray], np.ndarray],
+                          run_members: MemberRunFn,
                           out_dir: str, *, max_fields: int, seed: int,
                           source_fingerprint: str | None = None,
                           well_fractions: Sequence[float] = BLACKOUT_WELL_FRACTIONS,
+                          fingerprints: Mapping[str, str | None] | None = None,
                           progress: ProgressFn | None = None) -> list[GateField]:
     """Stamp synthetic blackouts on field LRs, run the members on them, and
-    cache the resulting member cubes under ``out_dir``. Fields whose stamping
-    zeroes nothing new are skipped. A cache written with the same members,
-    thresholds, seed and source records is reused without inference."""
-    identity = {"member_labels": list(member_labels),
-                "well_fractions": [float(v) for v in well_fractions],
+    cache the member cubes under ``out_dir`` (one ``member_<key>_<field>.npy``
+    per member, see :mod:`euclid_polish.eval.ensemble_cube_cache`). Fields
+    whose stamping zeroes nothing new are skipped.
+
+    The bucket fills incrementally. Its identity is the stamping — thresholds,
+    seed and source records (a change re-stamps and re-runs everything) — and
+    each member's cubes are keyed by its checkpoint fingerprint
+    (``fingerprints``, default ``run_members.fingerprints``): only members
+    whose cube of a field is missing or was made by another checkpoint run
+    (``run_members(lr, labels)``); members not in ``member_labels`` are
+    dropped from the cache."""
+    labels = [str(v) for v in member_labels]
+    if fingerprints is None:
+        fingerprints = getattr(run_members, "fingerprints", None) or {}
+    identity = {"well_fractions": [float(v) for v in well_fractions],
                 "seed": int(seed), "source": source_fingerprint}
-    manifest_path = os.path.join(out_dir, "blackout_index.json")
-    cached: dict = {}
-    if os.path.isfile(manifest_path):
-        with open(manifest_path) as handle:
-            cached = json.load(handle)
-        if cached.get("identity") != identity:
-            cached = {}
-    done = {int(i) for i in cached.get("indices", [])}
     os.makedirs(out_dir, exist_ok=True)
+    manifest = migrate_positional_bucket(out_dir, BLACKOUT_INDEX) or {}
+    if manifest.get("identity") != identity:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        os.makedirs(out_dir, exist_ok=True)
+        manifest = {"identity": identity, "indices": []}
+    manifest = sync_bucket_members(out_dir, manifest, labels,
+                                   {label: fingerprints.get(label) for label in labels},
+                                   name=BLACKOUT_INDEX).manifest
+    done = {int(i) for i in manifest.get("indices", [])}
     by_index = {f.index: f for f in fields}
     out: list[GateField] = []
     for position, source in enumerate(fields, 1):
         if len(out) >= int(max_fields):
             break
         tag = f"{source.index:05d}"
-        member_paths = [os.path.join(out_dir, f"member{m}_{tag}.npy")
-                        for m in range(len(member_labels))]
         lr_path = os.path.join(out_dir, f"lr_{tag}.npy")
-        if source.index in done and os.path.isfile(lr_path) and all(
-                os.path.isfile(p) for p in member_paths):
+        if source.index in done and os.path.isfile(lr_path):
             stamped = np.load(lr_path)
         else:
             rng = np.random.default_rng([int(seed), source.index])
             stamped = stamp_blackouts(source.lr_e, rng, well_fractions=well_fractions)
             if not np.any((stamped == 0) & (source.lr_e != 0)):
                 continue
-            members = np.asarray(run_members(stamped), np.float32)
-            for path, member in zip(member_paths, members, strict=True):
-                np.save(path, member)
+        missing = missing_member_cubes(out_dir, labels, source.index)
+        if missing:
+            members = np.asarray(run_members(stamped, missing), np.float32)
+            for label, member in zip(missing, members, strict=True):
+                np.save(member_cube_path(out_dir, label, source.index), member)
+        if not os.path.isfile(lr_path):
             np.save(lr_path, stamped)
+        if source.index not in done:
             done.add(source.index)
-            with open(manifest_path, "w") as handle:
-                json.dump({"identity": identity, "indices": sorted(done)}, handle)
-        out.append(GateField(source.index, member_paths,
+            manifest["indices"] = sorted(done)
+            write_bucket_manifest(out_dir, manifest, BLACKOUT_INDEX)
+        out.append(GateField(source.index,
+                             [member_cube_path(out_dir, label, source.index) for label in labels],
                              by_index[source.index].target_e, stamped, tag="blackout"))
         if progress is not None:
             progress(position, len(fields), f"blackout field {source.index}")

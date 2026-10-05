@@ -227,4 +227,4 @@ def test_a_member_newer_than_its_blackout_cube_disables_the_field(tmp_path, monk
     assert not fields["blackout-00002"]["available"]
     reason = fields["blackout-00002"]["reason"]
     assert "member 02's checkpoint is newer than its blackout cube" in reason
-    assert "delete cubes_blackout/blackout_index.json and run a combiner comparison" in reason
+    assert "run a combiner comparison to refresh them" in reason
