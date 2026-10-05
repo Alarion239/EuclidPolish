@@ -31,12 +31,13 @@ def _galaxy_calibration():
                 "x": [14.0, 21.5, 29.0], "density": [0.08, 3.0, 100.0],
             },
             "generation_law": {
-                "x": [14.0, 26.3, 29.0], "density": [0.08, 100.0, 100.0],
+                "x": [14.0, 26.3, 29.0], "density": [0.08, 42.5, 42.5],
             },
             "fit_interval": [19.5, 25.0],
             "sampling_interval": [14.0, 29.0],
             "generation_interval": [14.0, 29.0],
             "break_magnitude": 26.3,
+            "differential_density_cap_arcmin2_mag": 42.5,
             "extrapolated_interval": [28.0, 29.0],
         },
         "plots": {
@@ -81,11 +82,33 @@ def test_population_atlas_exports_raster_and_vector_formats():
     assert b"joint-fit" in svg
     assert b"straight conditional mean" in svg
     assert b"generation law: continuous bright bridge" in svg
-    assert b"faint tail = 100" in svg
+    # The faint-tail level is the artifact's own (data-derived) cap.
+    assert b"faint tail = 42.5" in svg
+    assert b"faint tail = 100" not in svg
     assert b"COSMOS" not in svg
     assert b"TNG truth" not in svg
     assert b"20&lt;VIS&lt;28" not in svg
 
+
+
+def test_population_atlas_faint_cap_legend_follows_the_calibration():
+    calibration = _galaxy_calibration()
+    calibration["magnitude_plot"]["differential_density_cap_arcmin2_mag"] = 151.46
+    svg = render_population_atlas(calibration, output_format="svg", dpi=120)
+    assert b"faint tail = 151" in svg
+
+    # An artifact that only records the cap in its generation block.
+    calibration = _galaxy_calibration()
+    del calibration["magnitude_plot"]["differential_density_cap_arcmin2_mag"]
+    calibration["generation"] = {"differential_density_cap_arcmin2_mag": 30.16}
+    svg = render_population_atlas(calibration, output_format="svg", dpi=120)
+    assert b"faint tail = 30.2" in svg
+
+    # No recorded cap: the break is still marked, with no invented level.
+    del calibration["generation"]
+    svg = render_population_atlas(calibration, output_format="svg", dpi=120)
+    assert b"faint tail" not in svg
+    assert b"break" in svg
 
 
 def test_galaxy_distribution_plate_uses_current_generated_measurements():

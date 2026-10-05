@@ -378,6 +378,18 @@ def test_junk_error_rows_cannot_zero_the_intrinsic_variance(tmp_path):
     assert float(np.std(draws[:, 0])) > 0.5 * intrinsic_sigma
 
 
+def test_deconvolution_metadata_names_the_trimmed_mean_noise_estimator(tmp_path):
+    # The sampler's noise term is a weighted MEAN of the reported variances
+    # with rows above 25× the weighted-median variance dropped, not a median.
+    payload, _ = fit_fixture(tmp_path, synthetic_rows(n_rows=80), tree_count=2)
+
+    text = payload["deconvolution"]
+
+    assert "weighted-median reported" not in text
+    assert "trimmed weighted-mean reported noise variance" in text
+    assert "25x the weighted-median variance" in text
+
+
 def test_stale_catalog_version_is_refused(tmp_path):
     rows = synthetic_rows(n_rows=80)
     catalog_path, meta_path = write_fixture_catalog(

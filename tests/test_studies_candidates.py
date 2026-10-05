@@ -51,6 +51,16 @@ def test_candidates_summarise_the_ensemble_and_list_fields(tmp_path, monkeypatch
     assert env["labels"] == LABELS
 
 
+def test_missing_compare_report_points_at_the_combiner_tab(tmp_path, monkeypatch):
+    make_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(remote.STATE, "ssh", None)
+    blocks = {b["id"]: b for b in candidates.candidates(False)["ensemble"]["blocks"]}
+    detail = blocks["compare"]["detail"]
+    # The tab is labelled "Combiner" (nav.ts), not "Combiners".
+    assert "Models › Combiner)" in detail
+    assert "Combiners" not in detail
+
+
 def test_candidates_are_read_only(tmp_path, monkeypatch):
     make_env(tmp_path, monkeypatch)
     before = _snapshot(tmp_path)

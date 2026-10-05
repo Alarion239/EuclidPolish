@@ -386,7 +386,10 @@ _SKY_RECORD_TIERS = [
     {"key": "clean", "label": "Clean (starless)", "unit": "e-",
      "hint": "the starless target: the HR truth without its stars"},
 ]
-_SKY_BHR_HINT = "the HR truth convolved to the LR PSF: what a perfect LR would show"
+_SKY_BHR_HINT = (
+    "the HR truth convolved with the Gaussian target PSF (Target PSF FWHM, "
+    f"{Config.TARGET_PSF_FWHM_ARCSEC:g}″ by default): the SR supervision target"
+)
 _SKY_SR_HINT = "the production model's SR of the record (generated in Models › Images)"
 
 

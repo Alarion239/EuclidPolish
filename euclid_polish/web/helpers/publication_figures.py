@@ -157,6 +157,31 @@ def _physical_radius_ticks(
         raise ValueError("radius tick axis must be x or y")
 
 
+def _faint_density_cap(calibration: Mapping[str, Any]) -> float | None:
+    """The generation law's flat faint-tail density, as the artifact records it.
+
+    The joint fit stores it in ``magnitude_plot`` and in ``generation``
+    (``differential_density_cap_arcmin2_mag``); ``None`` when neither holds a
+    finite positive value.
+    """
+    for block in ("magnitude_plot", "generation"):
+        value = (calibration.get(block) or {}).get(
+            "differential_density_cap_arcmin2_mag",
+        )
+        try:
+            cap = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(cap) and cap > 0.0:
+            return cap
+    return None
+
+
+def _density_text(value: float) -> str:
+    """Three significant figures; whole numbers from 100 up (no ``1e+03``)."""
+    return f"{value:.0f}" if abs(value) >= 100.0 else f"{value:.3g}"
+
+
 def render_population_atlas(
     calibration: Mapping[str, Any], *, output_format: str = "png", dpi: int = 300,
 ) -> bytes:
@@ -223,10 +248,18 @@ def render_population_atlas(
             )
         break_magnitude = brightness.get("break_magnitude")
         if break_magnitude is not None:
+            # The flat faint tail sits at the artifact's own cap (the peak
+            # observed Q1 density), read from the payload; with no recorded
+            # cap only the break is labelled.
+            faint_cap = _faint_density_cap(calibration)
+            break_label = "break" if faint_cap is None else (
+                f"break; faint tail = {_density_text(faint_cap)} "
+                r"arcmin$^{-2}$ mag$^{-1}$"
+            )
             axes[0].axvline(
                 float(break_magnitude), color="#168f65",
                 linewidth=1.3, linestyle=(0, (2, 3)), alpha=0.75,
-                label=r"break; faint tail = 100 arcmin$^{-2}$ mag$^{-1}$",
+                label=break_label,
             )
         axes[0].set_xlim(14, 29)
         _finish_axis(

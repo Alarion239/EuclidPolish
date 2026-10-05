@@ -913,6 +913,56 @@ def test_multi_cone_failure_preserves_complete_previous_cache(
     assert meta_path.read_text() == original_meta
 
 
+def test_multi_cone_meta_reports_the_four_band_sersic_columns_it_keeps(
+    tmp_path, monkeypatch,
+):
+    catalog_path = tmp_path / "euclid_population.csv"
+    meta_path = tmp_path / "euclid_population_meta.json"
+    centers = [
+        {"star_id": "a", "ra": 10.0, "dec": 20.0, "magnitude": 18.0},
+        {"star_id": "b", "ra": 30.0, "dec": 40.0, "magnitude": 19.0},
+    ]
+
+    class FakeJob:
+        def __init__(self, object_id):
+            self.rows = [{
+                "object_id": object_id,
+                "right_ascension": 10.0,
+                "declination": 20.0,
+                "point_like_flag": None,
+                "extended_flag": 1,
+                "flux_vis_psf": 5.0,
+                "flux_vis_3fwhm_aper": 5.0,
+            }]
+
+        def get_results(self):
+            return self.rows
+
+    jobs = iter([FakeJob(1), FakeJob(2)])
+    monkeypatch.setattr(
+        comparison.Euclid, "launch_job_async", lambda _query: next(jobs),
+    )
+    monkeypatch.setattr(
+        comparison, "select_star_cone_centers", lambda **_kwargs: centers,
+    )
+    monkeypatch.setattr(comparison, "euclid_catalog_path", lambda: catalog_path)
+    monkeypatch.setattr(
+        comparison, "euclid_catalog_meta_path", lambda: meta_path,
+    )
+
+    meta = comparison.query_euclid_population_multi(count=2, radius_arcmin=1.0)
+
+    with catalog_path.open(newline="") as handle:
+        header = next(csv.reader(handle))
+    # The aggregated CSV keeps every per-cone study column, including the
+    # segmentation and Y/J/H Sérsic fluxes, so the note must say so.
+    assert {"flux_segmentation_uJy", "flux_vis_sersic_uJy", "flux_y_sersic_uJy",
+            "flux_j_sersic_uJy", "flux_h_sersic_uJy"} <= set(header)
+    assert "four-band Sérsic" in meta["photometry"]
+    assert "segmentation" in meta["photometry"]
+    assert "VIS Sérsic" not in meta["photometry"]
+
+
 def test_synthetic_lenses_are_merged_into_galaxies(tmp_path):
     sources = tmp_path / "sources.csv"
     sources.write_text(

@@ -36,10 +36,14 @@ def test_load_band_psf_falls_back_to_gaussian(tmp_path):
 
 
 def test_load_band_psf_require_empirical_raises(tmp_path):
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(FileNotFoundError) as excinfo:
         load_band_psf(
             Config.BAND_Y_E, psf_dir=str(tmp_path), require_empirical=True,
         )
+    # There is no `polish` console script; the error names the real extractor.
+    message = str(excinfo.value)
+    assert "polish extract-psf" not in message
+    assert "python scripts/extract_all_band_psfs.py --bands Y_E" in message
 
 
 def test_load_band_psf_reads_empirical_when_present(tmp_path):

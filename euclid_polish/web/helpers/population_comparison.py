@@ -123,6 +123,14 @@ EUCLID_MORPHOLOGY_STUDY_COLUMNS = {
     "morph_disk_sersic_angle_deg": "disk_sersic_angle",
     "morph_disk_sersic_angle_err_deg": "disk_sersic_angle_err",
 }
+# What the cached census keeps. The multi-cone census concatenates the
+# per-cone CSVs column for column, so one note describes both caches.
+_PHOTOMETRY_NOTE = (
+    "1, 2, 3, and 4 FWHM PSF-matched aperture fluxes/errors in VIS, "
+    "Y, J, and H; legacy magnitudes and colours use 3 FWHM; VIS PSF, "
+    "segmentation, detection-band Kron total, and four-band Sérsic "
+    "fluxes are retained"
+)
 TILE_SIZE = 256
 ANALYSIS_SIZE = 255
 PIXEL_SCALE_ARCSEC = float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -2517,12 +2525,7 @@ def query_euclid_population(
             "Euclid documents the point-like selector as high-purity but "
             "low-completeness; unknown rows must not be counted as galaxies."
         ),
-        "photometry": (
-            "1, 2, 3, and 4 FWHM PSF-matched aperture fluxes/errors in VIS, "
-            "Y, J, and H; legacy magnitudes and colours use 3 FWHM; VIS PSF, "
-            "segmentation, detection-band Kron total, and four-band Sérsic "
-            "fluxes are retained"
-        ),
+        "photometry": _PHOTOMETRY_NOTE,
         "study_schema": {
             "mer_table": "catalogue.mer_catalogue",
             "morphology_table": "catalogue.mer_morphology",
@@ -2741,11 +2744,7 @@ def query_euclid_population_multi(
             "Aggregated from random non-overlapping cones centred on locally "
             "saved Euclid stars; object_id duplicates are removed."
         ),
-        "photometry": (
-            "1, 2, 3, and 4 FWHM PSF-matched aperture fluxes/errors in VIS, "
-            "Y, J, and H; legacy magnitudes and colours use 3 FWHM; VIS PSF, "
-            "detection-band Kron total, and VIS Sérsic fluxes are retained"
-        ),
+        "photometry": _PHOTOMETRY_NOTE,
         "probability_coverage": {
             "field": "point_like_prob",
             "valid_rows": sum(

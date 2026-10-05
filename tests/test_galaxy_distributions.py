@@ -879,7 +879,24 @@ def test_q1_galaxy_query_requires_login(monkeypatch):
     )
 
     assert response.status_code == 400
-    assert "Log in" in response.get_json()["error"]
+    error = response.get_json()["error"]
+    # The archive login lives on System › Connections (there is no Catalog page).
+    assert "Log in to the Euclid archive" in error
+    assert "System › Connections" in error and "Catalog page" not in error
+
+
+def test_population_cone_refresh_requires_login(monkeypatch):
+    app = Flask(__name__)
+    monkeypatch.setattr(routes.euclid_session, "catalog", lambda: None)
+    routes.register(app)
+
+    response = app.test_client().post(
+        "/api/galaxy-distributions/refresh-population-cones"
+    )
+
+    assert response.status_code == 400
+    error = response.get_json()["error"]
+    assert "System › Connections" in error and "Catalog page" not in error
 
 
 def test_query_mer_phz_runs_only_galaxy_brackets_and_fits(monkeypatch):

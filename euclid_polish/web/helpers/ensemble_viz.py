@@ -126,6 +126,9 @@ def _record_index(record: Image) -> int:
 
 _MEMBER_GLOB = "member_*"
 
+#: Raised by every job that needs the locally synced test/validate records.
+_NO_SKY_RECORDS = "no local sky records — sync them on Synthetic › Records."
+
 
 def ensemble_dir() -> str:
     """Base directory of the ensemble — the canonical
@@ -487,7 +490,7 @@ def job_member_psnr(cap) -> dict:
     base = ensemble_dir()
     rdir = _sky_records_local_dir()
     if not rdir:
-        raise RuntimeError("no local sky records — sync them on the /sky page.")
+        raise RuntimeError(_NO_SKY_RECORDS)
     sub = eval_subset(rdir)
     rec_fp = _member_scoring_records_fingerprint(rdir, sub)
     cache = _load_member_psnr_cache()
@@ -1349,11 +1352,11 @@ def _prepare_validate_cubes(cap, *, starless: bool, num_images: int,
     records_dir = _sky_records_local_dir()
     target = "clean" if starless else "hr"
     if not records_dir:
-        raise RuntimeError("no local sky records — sync them on the /sky page.")
+        raise RuntimeError(_NO_SKY_RECORDS)
     if not _validate_records_present(records_dir, starless=starless):
         raise RuntimeError(
-            "validate records not synced — enable 'Include validate' on the "
-            f"/sky page so dirty_validate + {target}_validate are local.")
+            "validate records not synced — sync the validate split on Synthetic › Records "
+            f"(Sync from FASRC) so dirty_validate + {target}_validate are local.")
 
     records_fp = _eval_records_fingerprint(
         records_dir, "validate", starless=starless)
@@ -2895,7 +2898,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     base = ensemble_dir()
     rdir = _sky_records_local_dir()
     if not rdir:
-        raise RuntimeError("no local sky records — sync them on the /sky page.")
+        raise RuntimeError(_NO_SKY_RECORDS)
     sub = eval_subset(rdir)
     target = "clean" if starless else "hr"
     required_records = [tfrecord_path(rdir, f"dirty_{sub}"),
@@ -3303,7 +3306,7 @@ def job_archive_member(cap, *, name: str) -> dict:
     store = tracking_default_store()
     if not store.has_current():
         raise RuntimeError(
-            "no active tracking campaign — start one on the /tracking page "
+            "no active tracking campaign — start one in Notebook › Log (New campaign…) "
             "so the archived member has somewhere to go.")
     archived_starless = member_is_starless(src)
     cap.tick(0, 3, f"zipping {name}")
@@ -4242,7 +4245,7 @@ def job_combiner_compare(cap, *, starless: bool, gates: list[str] | None = None,
     regime_dir = _ensemble_regime_dir(starless)
     records_dir = _sky_records_local_dir()
     if not records_dir:
-        raise RuntimeError("no local sky records — sync them on Synthetic › Records.")
+        raise RuntimeError(_NO_SKY_RECORDS)
     names = [variant_dir(starless, g) for g in (gates or default_compare_gates(starless))]
     names = [os.path.basename(p) for p in names]
     if not names:

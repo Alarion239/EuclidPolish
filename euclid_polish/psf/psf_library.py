@@ -135,8 +135,8 @@ def load_band_psf(
     if require_empirical:
         raise FileNotFoundError(
             f"No empirical PSF for band {band.name} at {path}. "
-            "Run `polish extract-psf --band ... --cutout-dir ...` or pass "
-            "require_empirical=False to allow a Gaussian fallback."
+            f"Run `python scripts/extract_all_band_psfs.py --bands {band.name}` "
+            "or pass require_empirical=False to allow a Gaussian fallback."
         )
     # Gaussian fallback: size auto-derived from FWHM (the band's
     # ``psf_fwhm_arcsec`` × ``PSF_HALF_SUPPORT_FWHM_FACTOR``).

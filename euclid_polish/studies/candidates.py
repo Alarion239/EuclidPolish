@@ -479,7 +479,7 @@ def ensemble_summary(starless: bool) -> dict[str, Any]:
     if report is None:
         blocks.append({"id": "compare", "title": "Combiner comparison", "state": "missing",
                        "detail": ("No comparison report: the study keeps the weight "
-                                  "diagnostic only (run Compare in Models › Combiners).")})
+                                  "diagnostic only (run Compare in Models › Combiner).")})
     else:
         compared = [str(v) for v in report.get("members") or []]
         same = compared == list(active)

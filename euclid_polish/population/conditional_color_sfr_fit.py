@@ -445,8 +445,9 @@ def fit_conditional_color_sfr_payload(
         "deconvolution": (
             "analytic one-component extreme deconvolution within the forest "
             "neighbourhood, on ROBUST statistics (weighted-median location, "
-            "16-84 half-width observed spread, weighted-median reported "
-            "noise variance): intrinsic variance = observed minus noise, "
+            "16-84 half-width observed spread, trimmed weighted-mean "
+            "reported noise variance over rows at or below 25x the "
+            "weighted-median variance): intrinsic variance = observed minus noise, "
             "floored at zero; the drawn row's true ratio is sampled from "
             "its Gaussian posterior"
         ),
