@@ -96,7 +96,7 @@ def test_make_gaussian_psf_size_forced_odd():
 
 
 # ---------------------------------------------------------------------------
-# load_band_psf — empirical path crops to the band's support
+# load_band_psf — Gaussian fallback is band-sized; empirical size is kept
 # ---------------------------------------------------------------------------
 
 def test_load_band_psf_falls_back_to_gaussian_sized_correctly(tmp_path):

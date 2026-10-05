@@ -577,8 +577,9 @@ class Model:
         # sat there until the fixed 50%-of-steps step-down — the long ~43.5 dB
         # plateau. Decaying smoothly from the start removes that flat region.
         # The warmup also tames the early gradient spikes on the regenerated
-        # (saturation-masked) data. Both LR guards (spike + plateau) apply on
-        # top of this schedule.
+        # (saturation-masked) data. The spike guard and (when enabled; off by
+        # default since 2026-09-25) the plateau guard apply on top of this
+        # schedule.
         lr_schedule = WarmupCosineDecay(
             peak_lr=lr_peak, final_lr=lr_final,
             warmup_steps=lr_warmup_steps, total_steps=steps,

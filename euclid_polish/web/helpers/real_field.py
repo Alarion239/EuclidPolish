@@ -1,4 +1,4 @@
-"""Persistent real-Euclid field inference used by the Inference workspace.
+"""Persistent real-Euclid field inference for the legacy real fields (Models › Diagnostics, Sky tiles).
 
 One archive request per band fetches a 2560-pixel VIS field.  The field is
 then cut deterministically into a 10x10 grid of 256-pixel LR tiles.  Every

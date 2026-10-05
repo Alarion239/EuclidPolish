@@ -293,5 +293,5 @@ export class CubeCache {
   }
 }
 
-/** The cache every viewer shares (≈ 96 full 510²×4 cubes). */
+/** The cache every viewer shares (≈ 100 full 510²×4 cubes). */
 export const sharedCubeCache = new CubeCache(400 * 1024 * 1024);

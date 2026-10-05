@@ -3,7 +3,7 @@
 Covers the generic catalog reader, the local catalog runner (auto-fetch /
 early-out), the shared per-object ``reconstruct_cutout_at`` helper (driven with
 stubbed download + model so no network / TF weights are needed), and the
-``/evaluation`` routes including local grouped-analysis jobs.
+``/api/evaluation`` routes including local grouped-analysis jobs.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from euclid_polish.web.helpers import jobs_impl
 def _isolate_galaxy_cache(tmp_path_factory, monkeypatch):
     """Keep grouped-runner tests hermetic against the machine's galaxy cache.
 
-    ``grouped_runner._cached_galaxy_rows`` reads ``galaxy_catalog.default_out_csv``
+    ``grouped_runner._galaxy_plan`` reads ``galaxy_catalog.default_out_csv``
     (the real data-dir ``galaxies.csv``). If that file exists, it injects real
     ``gal`` rows into every grouped run — forcing a model load / download and
     breaking the lens-reuse tests. Point it at an absent path by default; the

@@ -14,8 +14,9 @@ respect to its input. This module provides that as a Keras layer:
   * **No noise.** Noise is a non-differentiable sampling step; the operator is
     defined on the deterministic image formation only.
 
-:class:`EuclidVISForwardOp` serves the ``/inference`` "forward(SR)" diagnostic
-panel.
+:class:`EuclidVISForwardOp` served the ``/inference`` "forward(SR)" diagnostic
+panel, which was removed with the legacy console (0ad56d9); it currently has no
+caller outside ``tests/test_forward_op.py``.
 
 The numerical contract with the numpy path is tested in
 ``tests/test_forward_op.py``: applying this layer to a known HR input must match
@@ -63,11 +64,11 @@ def _load_vis_psf_kernel(
     """Load + unit-normalise the VIS PSF as a 2-D float32 kernel.
 
     ``crop_half_side`` optionally restricts the kernel to a
-    ``(2 * crop_half_side + 1)``-side central crop — a meaningful speed
-    win for ``tf.nn.conv2d``, which scales linearly with kernel area
-    (a 511×511 kernel on a 256² HR patch is ~256² × 511² ≈ 1.7e10
-    multiplications per call, vs ~256² × 65² ≈ 2.8e8 for a 65-side
-    crop). Default ``None`` keeps the full saved kernel to stay
+    ``(2 * crop_half_side + 1)``-side central crop. The convolution is
+    an FFT (see :meth:`EuclidVISForwardOp.call`), so a smaller kernel
+    shortens the pad length ``H + K − 1`` (rounded up to a power of two):
+    e.g. 1024² → 512² transforms for a 256² HR patch with a 511- vs
+    65-side kernel. Default ``None`` keeps the full saved kernel to stay
     bit-equivalent to the numpy synthetic forward.
     """
 

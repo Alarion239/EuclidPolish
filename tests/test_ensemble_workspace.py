@@ -1,4 +1,4 @@
-"""The Ensemble workspace backend (spec §8.2) in helpers/ensemble_viz.py:
+"""The Models workspace backend (spec §8.2, named Ensemble there) in helpers/ensemble_viz.py:
 curves payload, the joined members table, member detail, the combiner
 variant registry, promote / restore / pull jobs, the overview checks and the
 train-command preview. Local files only; no TensorFlow."""

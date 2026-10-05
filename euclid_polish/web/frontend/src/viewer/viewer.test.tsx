@@ -1,7 +1,7 @@
 /* The React engine against a mocked /viewer
  * backend (no network): loading, verbatim server errors, keyboard, ?id=
- * lookup, per-viewer override, readout through WCS, residual tiers, URL
- * state, and the JWST carousel's no-remount index follow. */
+ * lookup, per-viewer override, readout through WCS, residual tiers and URL
+ * state. */
 import { act, cleanup as cleanupRender, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -870,7 +870,7 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     await screen.findByText(/^LR 0/);
     fireEvent.mouseEnter(rootOf(container));
     fireEvent.keyDown(document.body, { key: "g" });
-    fireEvent.keyDown(document.body, { key: "e" });            // "g e" = go to Ensemble, not J
+    fireEvent.keyDown(document.body, { key: "e" });            // the key after a plain g is the shell's, not J
     expect(useDisplay.getState().color).toBe("VIS");
   });
 

@@ -207,7 +207,8 @@ def main() -> int:
 
     # Log in to the Euclid archive (proprietary cutouts need it). Reads
     # EUCLID_USER/EUCLID_PASSWORD env, bridging ~/.euclid_credentials (written
-    # by the WebUI "Euclid archive login" form) into env first. Non-interactive.
+    # by the WebUI's System › Connections "Euclid credentials · FASRC" card)
+    # into env first. Non-interactive.
     reporter.set_stage("authenticating with Euclid archive")
     _ensure_euclid_env()
     try:

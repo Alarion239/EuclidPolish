@@ -250,7 +250,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
     # LR schedule (warmup → cosine) + reduce-LR-on-plateau guard. Defaults from
-    # Config; the WebUI /config page injects these on FASRC submission.
+    # Config; the WebUI System › Config page (/system/config) injects these on
+    # FASRC submission.
     p.add_argument("--lr-peak", type=float, default=Config.LR_PEAK)
     p.add_argument("--lr-final", type=float, default=Config.LR_FINAL)
     p.add_argument("--lr-warmup-steps", type=int, default=Config.LR_WARMUP_STEPS)

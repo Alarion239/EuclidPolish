@@ -89,7 +89,7 @@ class TestHistoryEndpoint:
 
     def test_returns_history_and_match_via_post(self, app):
         flask_app, log = app
-        # Pre-populate the log with two extract_psf runs at n_stars=200,
+        # Pre-populate the log with two euclid_verify_photometry runs at n_stars=200,
         # one of which COMPLETED, and one unrelated download row.
         log.record_submission(JobRecord(
             jobid="1", step_id="euclid_verify_photometry",

@@ -5,8 +5,8 @@ The visualization layer sits *above* the data layer: it imports
 builds rich figures on top of them. (The image package stays a leaf and never
 imports visualization.) Two entry points:
 
-* :func:`plot_reconstruction` — the array-level renderer (used across the CLI,
-  WebUI and eval runners; ``training.inference`` re-exports it for back-compat).
+* :func:`plot_reconstruction` — the array-level renderer (used by the CLI and
+  WebUI; ``training.inference`` re-exports it for back-compat).
 * :func:`plot_imageset` — the OO entry: hand it an ``ImageSet`` and it picks the
   LR / SR / HR images by role and renders them.
 """
@@ -126,19 +126,20 @@ def plot_reconstruction(
     """
     Visualize LR input, SR output, and (optionally) HR ground truth.
 
-    Layout when HR is provided — 3 rows × 5 cols (4 rows when colour
-    composites are added):
+    Layout when HR is provided — 3 rows × 5 cols (SR / HR cells render in
+    colour when their 4-band cubes exist; LR is always VIS grayscale):
 
-        Row 0 (color, optional):    LR color | (blank) | HR color | ...
         Row 1 (raw / linear):       LR raw | SR raw | HR raw | residual raw | rel-err raw
         Row 2 (asinh):              LR asinh | SR asinh | HR asinh | residual asinh | rel-err asinh
         Row 3 (stats):              LR stats | SR stats | HR stats | asinh-residual | PSNR
 
-    All asinh panels share ``Config.STRETCH_SCALE_E`` (the network's
-    training scale), so brightness is directly comparable to the loss.
+    All asinh panels share ``asinh_scale`` (default ``Config.STRETCH_SCALE_E``,
+    the network's training scale), so brightness is directly comparable to
+    the loss.
 
-    When HR is missing, falls back to a 2 × 3 LR/SR layout (raw + asinh
-    + optional LR color).
+    When HR is missing, falls back to a 2-row LR | SR layout (linear +
+    asinh, plus ``predicted_dirty`` / ``residual`` columns when given), or
+    the per-band grid with ``show_all_bands``.
 
     Color composites: SR and HR render in the regime picked by
     ``rgb_mode``:
@@ -149,7 +150,7 @@ def plot_reconstruction(
         :func:`euclid_polish.visualization.color.eye_rgb`). The
         transform is image-independent, so an SR-vs-HR hue difference is
         a reconstruction error, never a rendering artifact; a
-        blackbody-T legend strip under the asinh HR (or SR) panel
+        blackbody-T legend strip beside the asinh HR (or SR) panel
         translates hue back to SED temperature.
       * ``"calibrated"`` — the solar-balanced adaptive mode (per-image
         [p1, p99.5] windows), the depth-adaptive rendering the /sky
@@ -214,7 +215,8 @@ def plot_reconstruction(
         #       artefacts, persistence) the colour composite would
         #       blend together.
         #
-        #   (b) default → 2 × 2 LR (colour or VIS gray) + SR (gray).
+        #   (b) default → 2 × 2 LR (VIS gray) + SR (colour when 4-band,
+        #       else gray).
         nbands = len(Config.LR_INPUT_BAND_NAMES)
         if (show_all_bands and lr_cube is not None and lr_cube.ndim == 3
                 and lr_cube.shape[-1] == nbands):

@@ -1,7 +1,8 @@
-"""Inspect workspace backend (spec §8.6): roots + browser, header-first HDU
-summaries, planes of any dimensionality (binning, scaling, WCS), statistics,
-table pages / column stats, provenance lookup, the ``fits`` viewer collection
-and the JSON error surface of the ``/api/inspect*`` endpoints."""
+"""Files workspace backend (the former Inspect workspace, spec §8.6): roots +
+browser, header-first HDU summaries, planes of any dimensionality (binning,
+scaling, WCS), statistics, table pages / column stats, provenance lookup, the
+``fits`` viewer collection and the JSON error surface of the ``/api/inspect*``
+endpoints."""
 
 from __future__ import annotations
 

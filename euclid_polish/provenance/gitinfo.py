@@ -1,8 +1,8 @@
 """Best-effort git-commit capture for provenance records.
 
 This lives in the provenance core (the lowest layer) on purpose: the tracking
-module already has an identical ``git_commit_info`` and should, in time, import
-this one — provenance must not depend on tracking.
+module imports it (as ``git_commit_info``) instead of keeping its own copy —
+provenance must not depend on tracking.
 """
 
 from __future__ import annotations

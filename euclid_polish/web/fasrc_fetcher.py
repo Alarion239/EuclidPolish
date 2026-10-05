@@ -21,7 +21,8 @@ https://docs.rc.fas.harvard.edu/kb/rsync/, https://docs.rc.fas.harvard.edu/kb/fa
     (default 4 GB) we delete the oldest files.
   * **Allowed roots**: pulls are restricted to known data dirs on the
     remote (``data_dir``, ``ckpt_dir``, ``repo_path/logs``). Anything
-    else gets a 403.
+    else is refused (``FetchResult(ok=False)``; the remote file browser
+    answers 403).
 
 The web layer NEVER polls this in the background — every call is user-
 initiated by clicking a thumbnail or a "fetch from FASRC" button.
@@ -369,12 +370,9 @@ def list_remote_dir(
     ``{"name": ..., "size": int, "mtime": float}``.
 
     Defaults to ``max_depth=1`` so the listing is fast on a shared
-    login node. Callers that need to see in-progress downloads stranded
-    under a scratch subdirectory (e.g. ``mastDownload/HLSP/<id>/<file>``
-    before the flatten step runs) can pass a larger depth. The caller
-    is responsible for de-duplicating by basename when raising the
-    depth, because the same logical file can briefly exist at both
-    nested and flat layouts during a partial flatten.
+    login node. A caller that passes a larger depth to see nested files
+    is responsible for de-duplicating by basename: ``name`` is the bare
+    file name (``%f``), so files in different subdirectories can share it.
     """
     if not is_allowed_remote_path(remote_dir):
         return False, [], f"path not under allowed FASRC roots: {remote_dir}"

@@ -1085,7 +1085,8 @@ def test_galaxy_distribution_routes_expose_one_galaxy_query_action():
 
     (pytest pins only this backend contract. How the page renders is not
     tested by pytest; the dropped page-source checks are handed to the
-    Realism workspace WP's vitest suite.)"""
+    Synthetic workspace's vitest suite, which absorbed the former Realism
+    workspace.)"""
     rules: dict[str, set[str]] = {}
     for rule in create_app().url_map.iter_rules():
         rules.setdefault(rule.rule, set()).update(rule.methods or ())

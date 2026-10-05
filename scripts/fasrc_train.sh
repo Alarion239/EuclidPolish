@@ -10,10 +10,10 @@
 # -----------------------------------------------------------------------------
 # Harvard FASRC Cannon — full EuclidPolish multi-band pipeline:
 #   1) generate 6400 train + 200 validate clean 4-band HR fields
-#      (510² @ 0.05"/pix from the COSMOS2025 catalog)
+#      (510² @ 0.05"/pix, PHZ-conditioned TNG50 galaxies)
 #   2) forward model HR → 4-band LR (per-band PSF + Poisson + read noise +
 #      cosmic-ray and hot-pixel artefacts)
-#   3) train WDSR for 400 000 steps (4-channel LR → 1-channel VIS HR)
+#   3) train WDSR for 400 000 steps (4-channel LR → 4-channel VIS+NISP HR)
 #
 # Submit from the project root:
 #     sbatch scripts/fasrc_train.sh

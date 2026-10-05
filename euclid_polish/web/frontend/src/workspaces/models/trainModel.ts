@@ -262,7 +262,7 @@ export function lastBatch(jobs: readonly TrainingJob[]): TrainingJob | null {
   return jobs.find((j) => j.mode === "add" && j.member_names.length > 0) ?? null;
 }
 
-/** "4 × L2 · multi ×6 → 10 · 70k" — a one-line summary of a job's recipe. */
+/** "add 2 × L2 · 1 multi-knee, knee 3000 · 70k steps" — a one-line summary of a job's recipe. */
 export function recipeSummary(job: TrainingJob): string {
   const f = formFromJob(job);
   if (f.mode === "continue") {

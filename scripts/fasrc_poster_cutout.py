@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Generate ONE random object as a clean 4-band Euclid cutout — for the poster.
 
-Runs on a FASRC node (as the ``poster_cutout`` SLURM step card on the
-Visualization tab) where the real COSMOS2025 master catalog lives. Picks a
+Runs on a FASRC node (as the ``poster_cutout`` SLURM step — Runs › Steps, also
+embedded in the Figures poster plate) where the downloaded TNG50 SKIRT atlas
+and the COSMOS2025 population prior live. Picks a
 single object of the requested kind, centred in the field, and renders the
 *clean* HR sky (0.05″/pix, no PSF, no noise) in all four Euclid bands
 (VIS, Y_E, J_E, H_E). No forward model is applied — this is the idealised
@@ -11,7 +12,8 @@ before convolution + noise.
 
 Four modes (one object per mode, chosen at random — except ``field``):
 
-  --mode star     a single point source (PSF-free delta; median stellar colour)
+  --mode star     a single point source (PSF-free delta; colour drawn from the
+                  active empirical stellar prior)
   --mode lens     a gravitational lens system — SIE + shear deflection with a
                   real TNG50 deflector and lensed source, the same pure-TNG
                   lens model the main training pipeline uses (needs the TNG
@@ -30,9 +32,11 @@ overwrites the previous result the WebUI then fetches):
                        band (EXTNAME = VIS/Y_E/J_E/H_E), clean HR e⁻.
                        Field mode stacks the whole triplet into this ONE
                        file: CLEAN_VIS…CLEAN_H_E (0.05″), DIRTY_VIS…DIRTY_H_E
-                       (0.10″, noisy), and SR (0.05″, checkpoint in header) —
-                       so a single download carries everything.
-  poster_cutout.png    preview montage (field: clean | dirty | SR VIS).
+                       (0.10″, noisy), and SR_VIS…SR_H_E (0.05″, checkpoint in
+                       header; a single SR HDU for a legacy VIS-only
+                       checkpoint) — so a single download carries everything.
+  poster_cutout.png    preview montage (field: clean | dirty | SR VIS, plus an
+                       SR eye-colour panel for a 4-band checkpoint).
 
 Usage
 -----
@@ -203,7 +207,8 @@ def generate_cutout(
             f"'{mode}' mode requires the active empirical stellar prior"
         )
 
-    # TNG-stamp modes (tng, lens, field) use real TNG50 stamps matching the
+    # TNG-stamp modes (tng, lens, field) use real TNG50 stamps, matching the
+    # training pipeline.
     tng_mode = mode in ("tng", "lens", "field")
     cfg = SkySimulatorConfig(
         image_size=image_size,

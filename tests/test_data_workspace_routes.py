@@ -1,7 +1,8 @@
-"""Backend of the Data workspace (spec §8.4): records (inventory, SR tier
-state, truth sources, sync + generate-SR jobs, the viewer's clean tier), the
-star catalogue explorer and cutouts (offline, FASRC-mirror only), the PSF
-inventory + sync jobs, and the TNG explorer / result pulls.
+"""Backend of the former Data workspace, now Synthetic › Records / PSF /
+Galaxies (spec §8.4): records (inventory, SR tier state, truth sources,
+sync + generate-SR jobs, the viewer's clean tier), the star catalogue
+explorer and cutouts (offline, FASRC-mirror only), the PSF inventory +
+sync jobs, and the TNG explorer / result pulls.
 
 No network, no TensorFlow model: tiny TFRecords/FITS/CSVs in ``tmp_path``
 and stubbed fetches / ensembles.

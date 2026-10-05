@@ -66,7 +66,8 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
                    Defaults to ``nchan_in`` for backward compatibility.
     entry_kernel_size : 2-D kernel size for the first trunk conv.
     skip_kernel_size : kernel of the skip branch's conv(s).
-    icnr         : initialise the three pre-``pixel_shuffle`` convs with
+    icnr         : initialise the pre-``pixel_shuffle`` convs (the main
+                   branch's and every skip conv) with
                    :class:`~euclid_polish.training.models.common.ICNR` so the
                    upsampler starts as a checkerboard-free nearest-neighbour
                    resize (see that class). Init-only — the layer graph is

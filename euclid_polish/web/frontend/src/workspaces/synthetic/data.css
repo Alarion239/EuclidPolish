@@ -1,10 +1,11 @@
-/* Data workspace (records, catalog, cutouts, PSFs, TNG) + its inspector
-   cards. Scoped by .dt-* classes; every colour is a token (the few fixed
+/* Synthetic workspace, the pages that were Data (Records; PSF: catalogue,
+   cutouts, ePSFs; Galaxies › TNG templates) + their inspector cards. Scoped
+   by .dt-* classes; every colour is a token (the few fixed
    image-surround / marker-key colours are declared once on .dt-page and
    mirror the viewer's light table, src/viewer/viewer.css); layouts collapse by
    their container's width (the user's pane is often ~720 px wide).
 
-   Image pages (Records, Cutouts, PSFs; .dt-page--image) are image first
+   Image pages (Records; .dt-page--image) are image first
    (docs/superpowers/specs/2026-09-27-image-first-viewer-design.md): one
    toolbar row, at most one caption row, then the viewer (it fits its first
    frame row under its own top); everything else sits below it. */
@@ -28,7 +29,7 @@
 .page.dt-page--image { padding-top: var(--s3); gap: var(--s2); }
 
 /* The tab's toolbar: ONE plain row (no card around it; it scrolls with the
-   page — nothing is pinned over the images). A long filter bar (Catalog)
+   page — nothing is pinned over the images). A bar too long for one row
    wraps. */
 .dt-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2);
@@ -219,7 +220,7 @@
 .dt-insp .ui-section + .ui-section { margin-top: 0; }
 
 /* toolbar groups: the status badges sit close; the actions are words, and
-   icon-only in a compact bar (common.tsx DataBar `compactable`) */
+   icon-only in a compact bar (dataCommon.tsx DataBar `compactable`) */
 .dt-bar__status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1); min-width: 0; }
 .dt-bar__act { display: inline-flex; align-items: center; gap: var(--s1); flex: none; }
 .dt-bar:not([data-compact]) .dt-bar__act .ui-btn > svg { display: none; }

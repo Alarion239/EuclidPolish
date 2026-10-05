@@ -559,7 +559,8 @@ export function currentSkyEngine(): SkyEngine | null {
   return engineInstance;
 }
 
-/** Tests only: swap the library importer / WebGL2 probe, and forget the singleton. */
+/** Tests only: swap the library importer / WebGL2 probe (`__resetSkyEngineForTests`
+ *  forgets the singleton and restores them). */
 export function __setSkyEngineTestHooks(h: { importer?: Importer; hasWebGL2?: () => boolean }): void {
   if (h.importer) hooks.importer = h.importer;
   if (h.hasWebGL2) hooks.hasWebGL2 = h.hasWebGL2;

@@ -114,7 +114,7 @@ class PSFExtractor:
             raise ValueError(f"Invalid PSFExtractionConfig: {msg}")
         self.epsf: _EPSFImageModel | None = None
         self.fitted_stars: EPSFStars | None = None
-        # Per-run rejection counts populated by extract_psf_stars_from_files.
+        # Per-run rejection counts populated by _extract_accepted.
         self.n_rejected_saturated: int = 0
         self.n_rejected_edge:      int = 0
         self.n_rejected_load:      int = 0
@@ -264,7 +264,7 @@ class PSFExtractor:
         Returns ``None`` for any rejection (saturation, edge, etc.).
         Note: ``self.n_rejected_*`` counters are NOT updated here — they
         are only kept consistent inside
-        :meth:`extract_psf_stars_from_files`, which catalogs the cause.
+        :meth:`_extract_accepted`, which catalogs the cause.
         """
         psf_size = self.config.psf_size
         ny, nx = image_data.shape
@@ -380,7 +380,7 @@ class PSFExtractor:
                 else:
                     accepted_files.append((index, filepath))
                 # Validation must never retain a star stamp. In extraction
-                # mode ``accepted`` owns ``epsf_star``; either way the full
+                # mode ``accepted_stars`` owns ``epsf_star``; either way the full
                 # loaded FITS image can be released before the next file.
             except Exception as e:
                 self.n_rejected_load += 1

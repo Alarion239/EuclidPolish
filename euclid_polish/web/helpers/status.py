@@ -182,7 +182,7 @@ def _valid_4band_select(objects: list[CatalogObject]):
 def _ensure_local_star_cutout(band: str, sid: int, size: int) -> str | None:
     """Local canonical path of star ``sid``'s ``band`` cutout, PERSISTENTLY
     saved under ``data/euclid_stars/cutouts/<band>/`` (the same layout the
-    gallery + /inspect read). Pulled from FASRC once on first request;
+    gallery + Files read). Pulled from FASRC once on first request;
     later views read the saved copy — no re-pull, no LRU eviction. Returns
     None when not cached and FASRC isn't reachable."""
     local_dir = Config.cutout_dir_for_band(
@@ -250,7 +250,7 @@ def _fasrc_psf_dir(force: bool = True) -> str | None:
 
 #: Cluster-metadata sidecar living next to the ePSF FITS on FASRC — per
 #: cluster centroid RA/Dec + star count, dumped from the VIS ePSF headers.
-#: Kilobytes, so the /psfs cluster map can show EVERY FASRC cluster without
+#: Kilobytes, so the Synthetic › PSF cluster map can show EVERY FASRC cluster without
 #: pulling the multi-hundred-MB kernel stack down.
 PSF_CLUSTERS_META = "euclid_psf_clusters.json"
 
@@ -591,9 +591,9 @@ def _list_vis_pngs() -> list[dict[str, Any]]:
     """Recent PNGs under data/vis/, newest first.
 
     Each entry includes ``inspect_fits`` — a project-relative path to a
-    same-stem ``.fits`` sibling if one exists. The visualization gallery
-    uses this to route the thumbnail click to ``/inspect`` instead of
-    just popping the raw PNG.
+    same-stem ``.fits`` sibling if one exists. The Figures › Plates PNG
+    gallery uses this to route the thumbnail click to Files
+    (``/files?fits=…``) instead of just popping the raw PNG.
     """
     pngs: list[dict[str, Any]] = []
     if not os.path.isdir(Config.VIS_DIR):

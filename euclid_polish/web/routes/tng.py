@@ -43,7 +43,7 @@ _INFOGRAPHIC_NAMES = {"grid": "grid.png", "stack": "stack.fits"}
 _CALIBRATION_SUBDIR = "_tng_infographics"
 
 # Pulled grid images are also archived under here so they appear in the
-# Visualization gallery (data/vis/) and get the 📌-track button. ``os.walk``
+# Figures › Plates PNG gallery (data/vis/). ``os.walk``
 # in ``_list_vis_pngs`` recurses, so a ``tng/`` subdir shows up automatically.
 # Written by the pull JOB only (never by a GET); resolved per call so the
 # configured VIS_DIR (tests redirect it) is honoured.
@@ -215,7 +215,7 @@ def _artifact_status(kind: str) -> dict:
 def _job_pull_results(cap, kinds: list[str]) -> dict:
     """Pull the latest grid / stack artifacts from FASRC (force: a fresh job
     result is never masked by the fetcher's TTL); archive a new grid image
-    into the Visualization gallery."""
+    into the Figures › Plates PNG gallery (``data/vis/tng/``)."""
     out: dict[str, dict] = {}
     for position, kind in enumerate(kinds):
         cap.tick(position, len(kinds), f"pulling the {kind}")

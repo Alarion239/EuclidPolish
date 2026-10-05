@@ -8,8 +8,8 @@ The numerical renderer deliberately has two distinct image domains:
 
 The records in this module make that boundary explicit without subclassing
 ``numpy.ndarray`` or storing an open-ended compatibility metadata dictionary.
-They remain dependency-light: FITS I/O and stamp compositing are imported only
-inside the methods that perform those operations.
+They remain dependency-light: FITS I/O, atlas path resolution and arbitrary
+rotation are imported only inside the methods that perform those operations.
 """
 
 from __future__ import annotations

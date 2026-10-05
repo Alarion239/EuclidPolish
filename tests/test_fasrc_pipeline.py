@@ -384,7 +384,7 @@ class TestRegistry:
 
     def test_tng_infographic_steps_run_the_script_and_save(self, monkeypatch):
         """The image-infographic jobs invoke the render script with --save (so
-        they write the standard artifact path the /tng page fetches). The
+        they write the standard artifact path Synthetic › Galaxies fetches). The
         histogram is NOT a job — it renders locally."""
         monkeypatch.setattr(self._PICK, lambda *a, **k: [])
         assert "tng_histograms" not in REGISTRY.by_id
@@ -480,7 +480,7 @@ class TestRegistry:
                               {"n_galaxies": 0, "n_stars": 0, "n_lenses": 0})
 
     def test_synthetic_generate_galaxy_density_flag(self):
-        """Generation has one COSMOS-conditioned TNG population."""
+        """Generation has one TNG galaxy population (one density flag, no Sérsic density)."""
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
                 "batch_size": 4, "steps": 100,
@@ -645,7 +645,8 @@ class TestRegistry:
         assert "--force" not in step.build_command({**base, "force": ""})
 
     def test_synthetic_generate_star_field_flags(self):
-        """Star density from /config reaches run_pipeline; absent is omitted."""
+        """Star density (taken from the active stellar prior) reaches
+        run_pipeline; absent is omitted."""
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
                 "batch_size": 4, "steps": 100,
@@ -657,7 +658,7 @@ class TestRegistry:
         assert "--star-density-arcmin2" not in plain
 
     def test_synthetic_generate_lens_field_flags(self):
-        """Lens density + σ_v range from /config reach run_pipeline."""
+        """Lens density + σ_v range from System › Config reach run_pipeline."""
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
                 "batch_size": 4, "steps": 100,
@@ -698,8 +699,8 @@ class TestRegistry:
 
     def test_euclid_psf_extract_clustering_params(self):
         """Average + minimum stars per cluster come from the step form and are
-        forwarded to the extraction script (they live on the /psfs card now,
-        not the universal Config tab)."""
+        forwarded to the extraction script (they live on the Synthetic › PSF
+        step card now, not the universal Config tab)."""
         step = REGISTRY.get("extract_euclid_psf")
         argv = step.build_command({
             "stars_per_psf": "120", "min_stars_per_psf": "30", "n_cpus": "8",

@@ -43,8 +43,7 @@ os.environ.setdefault("EUCLID_POLISH_DISABLE_AUTO_SSH", "1")
 # every ``.run(...)`` so the gate is satisfied without touching FASRC.
 # Tests of the offline behaviour set ``STATE.ssh = None`` themselves.
 # The submit route would still fail (it tries to parse a sbatch jobid
-# out of the empty string and 500s), so even if a future test bypasses
-# the new arm/nonce guard, no real cluster work happens.
+# out of the empty string and 500s), so no real cluster work happens.
 #
 # Tests that need richer SSH behaviour (test_fasrc_pipeline, _logs,
 # _integration, _fetcher) monkeypatch ``STATE.ssh`` to their own stub

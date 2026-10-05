@@ -1,7 +1,8 @@
-/* A page's lead line (Ops, Settings, Home): the explanatory text with the
- * page's own actions at its right. It replaces the per-tab visible title
- * and eyebrow: the breadcrumb and the active tab already name the page, and
- * <Workspace> renders the page's (visually hidden) h1. */
+/* A page's lead line (Home, Runs, System, Figures › Studies): the
+ * explanatory text with the page's own actions at its right. It replaces the
+ * per-tab visible title and eyebrow: the breadcrumb and the active tab
+ * already name the page, and <Workspace> renders the page's (visually
+ * hidden) h1. */
 import type { ReactNode } from "react";
 import "./shared.css";
 

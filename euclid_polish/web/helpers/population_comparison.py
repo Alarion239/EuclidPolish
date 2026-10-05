@@ -610,11 +610,10 @@ def _synthetic_paths(
 
 
 def _archive_provider() -> Any:
-    """Load the shared, manifest-backed archive-field provider lazily.
+    """Return the shared, manifest-backed archive-field provider.
 
-    Keeping this import narrow lets the comparison page report a missing
-    provider as an unavailable collection instead of silently reverting to
-    the historical one-pointing inference field.
+    The provider module is imported at the top of this file; this
+    indirection is the seam tests patch to substitute a fake provider.
     """
     return archive_fields
 
@@ -883,8 +882,8 @@ _TFRECORD_COUNTS: dict[tuple, int] = {}
 
 
 def _count_tfrecord(path: Path) -> int:
-    """Count framed TFRecord entries without importing TensorFlow
-    (memoised on the file's stat)."""
+    """Count framed TFRecord entries from their length headers, without a
+    TensorFlow dataset pass (memoised on the file's stat)."""
     if not path.is_file():
         return 0
     key = fs_stamp.stat_key(path)

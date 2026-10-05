@@ -1,7 +1,8 @@
 """Generic evaluation-catalog reader.
 
 An *evaluation catalog* is the input contract for catalog-based model
-evaluation (``scripts/fasrc_eval_catalog.py``): a CSV with one row per sky
+evaluation (:mod:`euclid_polish.eval.catalog_runner`,
+:mod:`euclid_polish.eval.grouped_runner`): a CSV with one row per sky
 target the model should be run on. The required columns are::
 
     id, ra, dec

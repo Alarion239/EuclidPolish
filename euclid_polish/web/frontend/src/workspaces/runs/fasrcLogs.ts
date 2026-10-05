@@ -12,9 +12,10 @@ export type RunWithTaskLogs = RunLogFiles & {
 
 export function preferredLogKind(files: RunLogFiles): LogKind | null {
   // `missing` means the remote directory scan did not see the files.  DB rows
-  // still carry their canonical paths and the classic UI lets the log endpoint
-  // make the authoritative read.  Treat paths as usable here too: scans can be
-  // truncated, delayed, or race a newly-created SLURM output file.
+  // still carry their canonical paths and (as in the removed classic UI) the
+  // log endpoint makes the authoritative read.  Treat paths as usable here
+  // too: scans can be truncated, delayed, or race a newly-created SLURM
+  // output file.
   if (files.out_path) return "out";
   if (files.err_path) return "err";
   return null;

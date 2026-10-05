@@ -109,7 +109,7 @@ class SkySimulatorConfig:
     pixel_scale:              float = Config.DEFAULT_PIXEL_SCALE     # arcsec/pix
     galaxy_density_arcmin2:   float = Config.GALAXY_DENSITY_ARCMIN2
     # Galaxy centres outside the saved field are proposed out to half the
-    # 32-block WDSR receptive field (69 LR pixels = 3.4 arcsec = 68 HR
+    # 32-block WDSR receptive field (69 LR pixels; half ≈ 3.4 arcsec = 68 HR
     # pixels).  A source-specific 4 R_e reach test rejects irrelevant
     # proposals before donor selection or TNG rendering.
     galaxy_off_field_padding_hr_pix: int = 68
@@ -218,13 +218,14 @@ def inject_random_stars(
 ) -> list[dict]:
     """Draw ``n_stars`` random point sources and DEPOSIT them onto ``canvas_4ch``.
 
-    The shared star primitive: generation uses it to place a field's fixed
-    stars (validate/test), and the on-the-fly forward calls it to inject a
-    FRESH star realization per visit — stars are HR deltas added *before* the
-    PSF/rebin, so the forward gives them realistic shape and the model learns
-    to erase them (the target stays starless). Returns the per-star metadata
-    (position + four-band magnitudes), so a caller can persist it to the
-    source CSV.
+    The on-the-fly forward calls it to inject a FRESH star realization per
+    visit (generation instead records a field's fixed validate/test stars via
+    :meth:`SkySimulator._draw_star` and re-deposits them with
+    :func:`_deposit_star`) — stars are HR deltas added *before* the
+    PSF/rebin, so the forward gives them realistic shape; the target keeps
+    them in the default starfull regime and drops them in the starless one.
+    Returns the per-star metadata (position + four-band magnitudes), so a
+    caller can persist it to the source CSV.
     """
     N = canvas_4ch.shape[0]
     stars: list[dict] = []
@@ -253,7 +254,8 @@ def inject_random_stars(
 class SkySimulator:
     """Generates ``(H, W, 4)`` HR clean fields in electrons.
 
-    COSMOS supplies the joint population draw; TNG supplies morphology.
+    The population prior (e.g. the Euclid joint prior or the COSMOS prior)
+    supplies the population draw; TNG supplies morphology.
     """
 
     def __init__(
@@ -357,7 +359,8 @@ class SkySimulator:
                 "TNG atlas page's download step, or set "
                 "galaxy_density_arcmin2=0 for star-only fields.")
 
-        # TNG properties for mass → σ_v mapping (redshift mode).
+        # TNG donor properties (stellar mass, SFR, sSFR) for the morphology
+        # donor picks (mass-sSFR / SFR rank transport) and the donor record.
         self._atlas_logm: np.ndarray | None = None
         self._atlas_sfr: np.ndarray | None = None
         self._atlas_logssfr: np.ndarray | None = None
@@ -1457,7 +1460,8 @@ class SkySimulator:
         """Render one clean HR field in 4 bands.
 
         The rendered scene is STARLESS by default (galaxies + lenses only) —
-        the network's target. Stars are still DRAWN and returned in
+        the starless-regime target (the default starfull target adds the
+        stars back). Stars are still DRAWN and returned in
         ``metadata["stars"]`` (positions + four-band magnitudes) so the forward op can
         re-inject them: fresh per visit for on-the-fly training, or from this
         record for the fixed validate/test fields. Pass ``deposit_stars=True``

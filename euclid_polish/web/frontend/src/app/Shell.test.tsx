@@ -70,9 +70,9 @@ afterEach(() => {
   useShortcutRegistry.getState().reset();
 });
 
-/* fake workspaces (no legacy pages) — the sky atlas registers a page action;
+/* fake workspaces (no real pages) — the sky atlas registers a page action;
    synthetic/noise, the home page and the "probe" inspector read the theme during
-   render, like the legacy pages that read colour tokens (categorical(), C.muted). */
+   render, like the pages that read colour tokens (categorical(), C.muted). */
 function SkyAtlas() {
   usePageActions([{ id: "fly", label: "Fly to NEXUS", group: "Sky", run: () => { (window as unknown as { flew: number }).flew = 1; } }]);
   return <p>sky:atlas</p>;
@@ -391,7 +391,7 @@ describe("Shell", () => {
   }, 15_000);
 
   it("keeps the tab strip on one line: tabs that do not fit go to More, the active one stays", async () => {
-    // jsdom has no layout: give every tab its text width and the strip 360 px.
+    // jsdom has no layout: give every tab its text width and the strip 420 px.
     const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
       const w = this.classList.contains("ui-tab") ? 8 * (this.textContent ?? "").length + 28 : 0;
       return { x: 0, y: 0, top: 0, left: 0, bottom: 0, right: w, width: w, height: 30, toJSON: () => ({}) } as DOMRect;

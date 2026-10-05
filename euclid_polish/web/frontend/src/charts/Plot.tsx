@@ -1069,7 +1069,8 @@ function heatAt(heat: Heat, x: number, y: number) {
   return { i, j, z, x0: heat.xEdges[i], x1: heat.xEdges[i + 1], y0: heat.yEdges[j], y1: heat.yEdges[j + 1] };
 }
 
-/** Keep the tooltip inside the plot: flip left/up near the right/bottom edge. */
+/** Keep the tooltip inside the plot: it sits above-right of the point, flips
+ *  left near the right edge and below the point near the top edge. */
 function tipPosition(pt: { x: number; y: number }, W: number, H: number): CSSProperties {
   const right = pt.x > W * 0.6, below = pt.y < H * 0.35;
   return {

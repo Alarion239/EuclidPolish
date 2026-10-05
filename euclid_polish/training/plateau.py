@@ -79,8 +79,8 @@ class PlateauLRReducer:
     def should_reduce(self, step: int, metric: float) -> bool:
         """Feed one eval; return ``True`` iff the LR should be cut now.
 
-        Non-finite metrics (e.g. ``+inf`` combined loss when no lane is active)
-        are ignored so they neither reset nor trip the guard.
+        Non-finite metrics (NaN / ±inf) are ignored so they neither reset nor
+        trip the guard.
         """
         step = int(step)
         if metric != metric or metric in (float("inf"), float("-inf")):  # NaN/inf

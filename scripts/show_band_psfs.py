@@ -43,7 +43,7 @@ def main() -> int:
                      fontsize=10)
         ax.set_xticks([]); ax.set_yticks([])
 
-        # Bottom: 1D radial slice through the centre (linear)
+        # Bottom: 1D central-row slice through the centre (log y-axis)
         ax = axes[1, col]
         cy = psf.data.shape[0] // 2
         slc = psf.data[cy]

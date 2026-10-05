@@ -39,16 +39,18 @@ def reconstruct_cutout_at(
     (``eval/catalog_runner.py``). It fetches each band, converts the
     archive's ADU s⁻¹ to electrons-over-the-stack via the per-band ``MAGZERO``
     (so the model sees the same scale it trained on), stacks to ``(H, W, 4)``,
-    runs ``reconstruct``, forward-models the SR for a self-consistency
-    residual, and writes ``original_stack.fits`` + ``SR.fits`` (and, when
-    ``render``, ``eye.png`` + ``solar.png``) into ``out_dir``.
+    runs the ensemble (``sr_from_model``), and writes ``original_stack.fits``
+    + ``SR.fits`` (plus the disagreement cubes when more than one member ran
+    and, when ``render``, ``eye.png`` + ``solar.png``) into ``out_dir``.
+    There is no forward-model residual for real cutouts (see the NOTE in the
+    body); the metrics are a VIS flux-conservation check.
 
     ``out_dir`` is created if absent and used as-is — callers that want a
     single overwrite slot must wipe it themselves. ``progress`` is an optional
     ``(done, total, label)`` callback (e.g. wrapping a job's ``cap.tick``).
 
     Returns a dict with the output paths, per-band info, and the
-    forward-model residual metrics.
+    flux-conservation metrics (Σ SR_VIS vs Σ LR_VIS).
     """
     scale = Config.DEFAULT_REBIN_FACTOR
     band_names = Config.LR_INPUT_BAND_NAMES

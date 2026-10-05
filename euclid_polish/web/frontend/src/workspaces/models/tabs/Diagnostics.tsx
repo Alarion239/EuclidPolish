@@ -21,8 +21,8 @@
    Evaluate or by a confirmed local job here (never on open); a payload made
    for an earlier evaluation says so. Recovery's angular power spectrum
    follows the same switch. The real field is the legacy VIS field. The old
-   d=stderr|brightness|calibration land on spread (the redirect rules);
-   d=axes and the RBF are gone. State in the URL. */
+   d=stderr|brightness|calibration|axes land on spread (the redirect rules);
+   the axes section and the RBF are gone. State in the URL. */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import Plot, { useLegend, type Guide, type Heat, type LegendItem, type Series } from "../../../charts/Plot";

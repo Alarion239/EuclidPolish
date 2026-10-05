@@ -1,7 +1,9 @@
-/* Pure model of the viewer's control bar (src/viewer/README.md "Control
- * bar"): which tiers get a chip, the colour choices, short labels, the
- * display unit of a transfer group, number formatting for the knee field,
- * and the keyboard-sequence guard. */
+/* Pure model of the viewer's control bar (src/viewer/README.md, the "Bar"
+ * entry of "Look: one light table"): which tiers get a chip, the colour
+ * choices, short labels, the display unit of a transfer group, number
+ * formatting for the knee field, the keyboard-sequence guard, the bar's
+ * row layout and reserved rows, the navigation counter and the shape of
+ * "More display settings". */
 import type { TierMeta } from "./types";
 
 /** Colour keys of the old engine: Q W E R T Y → the bands, then Lupton, Temp. */

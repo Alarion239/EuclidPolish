@@ -11,12 +11,12 @@ the appropriate PSF:
      load it and (optionally) resample it onto the HR grid.
   2. Otherwise return a Gaussian fallback at the band's nominal FWHM.
 
-Two CLI flows fit the same scheme — the user calls
-
-    polish extract-psf --band Y_E --cutout-dir data/euclid_nisp_stars/Y
-
-and the resulting FITS goes to ``data/euclid_psf/euclid_psf_Y.fits`` (the
-path is computed from :attr:`BandConfig.psf_fits_filename`).
+Two flows fit the same scheme — the interactive CLI (``python main.py`` →
+Euclid Operations → "Extract PSF (per band)", reading star cutouts from
+:meth:`Config.cutout_dir_for_band`, e.g. ``data/euclid_stars/cutouts/Y_E``)
+and the batch ``scripts/extract_all_band_psfs.py`` — and the resulting FITS
+goes to ``data/euclid_psf/euclid_psf_Y.fits`` (the path is computed from
+:attr:`BandConfig.psf_fits_filename`).
 """
 
 from __future__ import annotations
@@ -154,7 +154,7 @@ def load_all_band_psfs(
     """Load PSFs for every band in :attr:`Config.BANDS`.
 
     Returned dict is keyed by band name (``'VIS'`` etc.) and is ready to
-    pass to :class:`euclid_polish.sky.observation_simulator.ObservationSimulator`.
+    pass to :class:`euclid_polish.sky.observation.observation_simulator.ObservationSimulator`.
     """
     return {
         band.name: load_band_psf(
@@ -188,8 +188,9 @@ def load_band_psf_set(
          ``target_pixel_scale``.
       2. Otherwise a Gaussian fallback wrapped as a **1-element** set.
 
-    A 1-element set behaves exactly like the single PSF (its ``sample`` is
-    deterministic), so callers can always treat a band uniformly as a set.
+    A 1-element set always yields its single PSF (the cluster pick in
+    :meth:`PSFSet.draw_sample` is deterministic; only the shared roll / warp
+    vary), so callers can always treat a band uniformly as a set.
     """
     path = psf_path_for_band(band, psf_dir)
     if os.path.isfile(path):
@@ -218,7 +219,7 @@ def load_all_band_psf_sets(
 ) -> dict[str, PSFSet]:
     """Load a :class:`PSFSet` for every band in :attr:`Config.BANDS`.
 
-    Ready to pass to :class:`euclid_polish.sky.observation_simulator.ObservationSimulator`
+    Ready to pass to :class:`euclid_polish.sky.observation.observation_simulator.ObservationSimulator`
     as ``psf_sets_by_band`` so generation draws one random cluster PSF per scene
     (optionally roll-rotated; no blending).
     """

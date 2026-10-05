@@ -1,4 +1,4 @@
-"""``routes/system.py``: the console's system facts (Settings › About) and
+"""``routes/system.py``: the console's system facts (System › Code and Storage) and
 the Home health checks (``/api/system/alerts``).
 
 Everything here is local and must work offline; nothing touches FASRC.

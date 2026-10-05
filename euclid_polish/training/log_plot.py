@@ -91,9 +91,9 @@ def plot_training_records(
     smooth_window: int = 0,
     title_suffix: str = "",
 ) -> tuple[int, int]:
-    """Plot the validation metrics (from a pre-loaded record list; used by
-    the FASRC dashboard which fetches the log over SSH and filters by
-    wall-time window).
+    """Plot the validation metrics (from a pre-loaded record list;
+    :func:`plot_training_log` reads the file and calls this — the FASRC
+    dashboard's SSH, wall-time-windowed caller was removed in 0ad56d9).
 
     Stacked panels (shared x): the validation PSNR (with the running-best
     save threshold), the per-band PSNR when ≥ 2 bands are logged, and the

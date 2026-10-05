@@ -166,7 +166,7 @@ def analyse_galaxy(
     crop_frac,
     margin,
 ):
-    """Return ``(rel_rms[K], flux_err[K])`` arrays for one galaxy frame."""
+    """Return ``(rel_rms[K], flux_err[K], window_side)`` for one galaxy frame."""
     win = _central_window(image, crop_frac, margin)
     rotated = _cumulative_rotate(win, angle_step, n_rot, order)
     rms, flux = [], []
@@ -225,7 +225,7 @@ def main() -> int:
           f"band={args.band} O{args.orientation}; "
           f"rotation = {args.n_rot}×{args.angle_step}° (spline order {args.order})")
 
-    results = []  # (label, rms_array, flux_array, win_side)
+    results = []  # (label, rms_array, flux_array, win_side, k_crit)
     for galaxy in galaxies:
         gid = galaxy.subhalo_id
         path = galaxy.fits_path(args.orientation, args.band)

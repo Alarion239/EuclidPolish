@@ -3,8 +3,8 @@
 :func:`apply_archive_noise` is the delivered-MER noise used by generated
 records and on-the-fly training: Euclid's own MER noise level with the pixel
 correlation of a dithered, bilinearly resampled stack.
-:func:`apply_band_noise` is the older detector-grid Poisson/read model, still
-used by :meth:`Image.with_band_noise`.
+:func:`apply_band_noise` is the older detector-grid Poisson/read model; nothing
+in the repository calls it any more (``Image.with_band_noise`` was removed).
 """
 
 from __future__ import annotations
@@ -57,9 +57,9 @@ def apply_band_noise(
     deposit charge → ramp is read with Gaussian read noise →
     sky-subtracted on the ground.
 
-    Module-level so non-class callers (the :class:`ObservationSimulator`
-    per-band pipeline, the :meth:`Image.with_band_noise` method) share
-    one noise model.
+    No longer called: the :class:`ObservationSimulator` per-band pipeline
+    uses :func:`apply_archive_noise`, and ``Image.with_band_noise`` was
+    removed.
     """
 
     t_total = band.t_total_s
@@ -87,7 +87,8 @@ def apply_band_noise(
 # Delivered-MER noise
 # ---------------------------------------------------------------------------
 #
-# Level: Euclid's MER RMS maps (``BandConfig.mer_rms_e``) combined with the
+# Level: Euclid's MER RMS maps (a per-scene level drawn from the measured Q1
+# table, else the median ``BandConfig.mer_rms_e``) combined with the
 # photon noise of the sources. The maps quote per-pixel noise as if pixels
 # were independent, which is the noise that adds up over an aperture.
 #

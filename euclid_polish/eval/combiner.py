@@ -1,8 +1,12 @@
-"""Asinh-space all-inference ensemble combiner.
+"""Asinh-space all-inference ensemble combiner (the RBF member gates), plus the
+registry of every combiner kind (:data:`COMBINER_MODELS`). The production
+combiner is the spatial gate (:mod:`euclid_polish.eval.spatial_gate`, first in
+:data:`ACTIVE_COMBINER_KINDS`); it is registered here and saved/loaded through
+:func:`save_combiner` / :func:`load_combiner`.
 
-The production fit streams every validation pixel through bounded minibatches.
-The older in-memory fitter remains available for small tests and callers that
-already provide a compact array.
+The RBF fit used by the console streams every validation pixel through bounded
+minibatches. The older in-memory fitter remains available for small tests and
+callers that already provide a compact array.
 """
 
 from __future__ import annotations

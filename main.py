@@ -5,10 +5,10 @@ EuclidPolish - Super-resolution for astronomical images.
 Main entry point for the EuclidPolish package.
 
 Usage:
-    python main.py euclid
-    python main.py sky
-    python main.py training
-    python main.py visualization
+    python main.py
+
+Starts the interactive menu (Euclid operations, sky generation, model
+training, visualization); command-line arguments are ignored.
 """
 
 from euclid_polish.cli.main import main

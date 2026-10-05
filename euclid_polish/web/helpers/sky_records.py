@@ -245,7 +245,7 @@ _PSF_RECORD_KINDS = ("dirty", "hr", "clean")
 
 def records_generation(records_dir: str, subset: str) -> dict[str, Any] | None:
     """What the generation run of a local split recorded in its provenance:
-    ``{psf_kinds: {band: empirical | gaussian}, run, kind}`` from the pulled
+    ``{psf_kinds: {band: empirical | gaussian}, run, kind, created}`` from the pulled
     sidecar of its dirty (else hr, clean) records, or ``None`` when the split's
     records are absent, unstamped, or their sidecar was not pulled / predates
     the PSF stamp."""

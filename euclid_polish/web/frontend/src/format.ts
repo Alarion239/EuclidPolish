@@ -173,8 +173,9 @@ export function formatPow10(exp: number): string {
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-/** Split a non-negative total (in the smallest unit, already rounded) into
- *  [big, mid, small] parts with base-60 carries. */
+/** Split a non-negative total (in the big unit: hours or degrees) into
+ *  [big, mid, small] parts with base-60 carries, rounding the small part to
+ *  `decimals` first. */
 function sexagesimal(total: number, decimals: number): [number, number, string] {
   const scale = 10 ** decimals;
   const units = Math.round(total * 3600 * scale);   // integer count of 1/scale small units

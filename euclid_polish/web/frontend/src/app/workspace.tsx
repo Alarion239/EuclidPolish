@@ -20,13 +20,13 @@
  * The strip stays one line and never cuts a label: a fixed run of leading
  * tabs is shown whole, the active tab is always visible (in one reserved
  * slot when it is past the run, so tabs never trade places), the rest sit in
- * a "More" menu of router links inside the strip's <nav> (`tabFit.ts`). A tabless workspace (home, inspect) passes
+ * a "More" menu of router links inside the strip's <nav> (`tabFit.ts`). A tabless workspace (home, files) passes
  * `children`. Tab labels default to `app/nav.ts`; `aside` sits right of the
  * tab strip.
  *
  * A theme or accent flip re-renders the active tab (or `children`): the route
- * elements above a workspace are static, and the legacy pages read colour
- * tokens during render (`categorical()`, `C.muted`, `surfaceRgb()`), so
+ * elements above a workspace are static, and pages read colour tokens
+ * during render (`categorical()`, `C.muted`), so
  * nothing else would repaint them in the new theme (`useTokenRerender`).
  */
 import {
@@ -259,7 +259,8 @@ export function Workspace(
   );
 }
 
-/** A tab whose redesigned page arrives in phase 3 (no legacy page to adapt). */
+/** The fallback for a manifest tab the workspace's `defineTabs` lacks (a
+ *  placeholder from the console rework, whose phase 3 has since landed). */
 export function PendingTab(
   { workspace: id, tab, icon, children, links }: {
     workspace: string; tab: string; icon?: IconName; children?: ReactNode;

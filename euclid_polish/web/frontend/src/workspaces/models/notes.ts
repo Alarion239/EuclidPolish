@@ -21,7 +21,7 @@ const mean = (vs: readonly (number | null | undefined)[] | null | undefined): nu
 };
 const row = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
 
-/* ── Overview: the Evaluate summary ────────────────────────────────────── */
+/* ── Leaderboard: the Evaluate summary ─────────────────────────────────── */
 
 export function evaluationNote(o: Overview): string {
   const h = o.headline;
@@ -55,7 +55,7 @@ export function evaluationNote(o: Overview): string {
   return lines.join("\n");
 }
 
-/* ── Knee: the leaderboard over its integration range ──────────────────── */
+/* ── Leaderboard: the knee ranking over its integration range ──────────── */
 
 export function kneeNote(board: readonly LeaderRow[], opts: {
   range: [number, number]; full: [number, number]; band: string; bands: readonly string[];
@@ -83,7 +83,7 @@ export function kneeNote(board: readonly LeaderRow[], opts: {
   return lines.join("\n");
 }
 
-/* ── Combiners: a gate variant's fit, a compare report, a promote ──────── */
+/* ── Combiner: a gate variant's fit, a compare report, a promote ───────── */
 
 type Scores = { testVis: number | null; kneeMean: number | null };
 

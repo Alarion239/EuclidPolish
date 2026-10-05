@@ -11,8 +11,9 @@ job ``12345`` will have three rows:
 
   * ``12345`` — top-level job record (Start / End / Elapsed / State /
     ExitCode / ReqMem / AllocCPUS / AllocTRES live here).
-  * ``12345.batch`` — the script body's step (MaxRSS / AveRSS /
-    CPUTimeRAW typically live here, not on the top row).
+  * ``12345.batch`` — the script body's step (MaxRSS / AveRSS
+    typically live here, not on the top row; TotalCPU is read from here
+    first, falling back to the top row).
   * ``12345.extern`` — SLURM-internal accounting step, usually empty.
 
 We need fields from both the main row (for state / timing /
@@ -68,7 +69,7 @@ def build_sacct_command(jobid: str) -> str:
     fields = ",".join(_SACCT_FIELDS)
     # ``-P`` pipes, ``--noheader`` skips the header row, ``-j`` filters
     # to one job. ``-X`` would give us only the top-level row but we
-    # need the ``.batch`` step's MaxRSS / CPUTimeRAW too — fold below.
+    # need the ``.batch`` step's MaxRSS / TotalCPU too — fold below.
     return f"sacct -j {shlex.quote(str(jobid))} -P --noheader -o {fields}"
 
 

@@ -342,8 +342,9 @@ export function sameValue(a: unknown, b: unknown): boolean {
 /** True when two Plot prop objects draw the same picture: values compared
  *  structurally (so `series={[{x: data.x, …}]}` rebuilt on every render does
  *  not redraw). Top-level functions are skipped: the handlers never draw, and
- *  `xFormat`/`yFormat` only label zoomed ticks, which Plot compares by their
- *  output. A nested drawn function (`heat.color`) is compared by identity, so
+ *  `xFormat`/`yFormat` only label generated ticks (an axis without caller
+ *  ticks, or a zoomed one) and the DOM text (tooltip, screen-reader summary);
+ *  Plot compares those ticks by their output. A nested drawn function (`heat.color`) is compared by identity, so
  *  a new colour closure redraws; memoise it to avoid needless repaints. */
 export function sameInputs(a: object, b: object): boolean {
   const A = a as Record<string, unknown>, B = b as Record<string, unknown>;

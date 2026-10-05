@@ -1,8 +1,9 @@
-/* Runs workspace (workspaces/runs): Live, History, Steps. Scoped by the runs-
-   prefix (the step card and the SLURM monitor keep their shared ops- classes
-   in steps/steps.css). Tokens only; layouts collapse by the page's own width
-   (container queries), so the ~720 px pane stacks cleanly. Nothing sticks
-   over an image: only the side panel sticks, beside the table. */
+/* Runs workspace (workspaces/runs): Live, History, Resources, Steps. Scoped
+   by the runs- prefix (the step card and the SLURM monitor keep their shared
+   ops- classes in steps/steps.css). Tokens only; layouts collapse by the
+   page's own width (container queries), so the ~720 px pane stacks cleanly.
+   Nothing sticks over an image: only the side panel sticks, beside the
+   table. */
 .runs-page { container-type: inline-size; container-name: runs; min-width: 0; }
 
 .runs-stack { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }

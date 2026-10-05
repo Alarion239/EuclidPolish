@@ -1,7 +1,7 @@
 """Tests for the spatial-clustering helpers + the per-PSF progress reporting
 in ``scripts/extract_all_band_psfs.py`` — the K-Means++ grouping of good stars
 into ~N-sized clusters (one ePSF each), the catalog-position loader, and the
-parallel ``set_worker_step`` reporting (cumulative across bands)."""
+single monotonic ``set_step`` bar over every ePSF (cumulative across bands)."""
 
 from __future__ import annotations
 

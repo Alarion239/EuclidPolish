@@ -341,7 +341,7 @@ def spawn_server(short: str, *, port: int | None = None,
     env["HOME"] = meta["home"]
     env["EUCLID_POLISH_DATA_DIR"] = meta["data_dir"]
     env["EUCLID_POLISH_CKPT_DIR"] = meta["ckpt_dir"]
-    # Keep the sandbox's own tracking + time-travel stores under its HOME so
+    # Keep the sandbox's own tracking + time-travel stores under its root so
     # a replay can't write into the live store or nest sandboxes.
     env["EUCLID_POLISH_TRACKING_DIR"] = os.path.join(meta["root"], "tracking")
     env["EUCLID_POLISH_TIMETRAVEL_DIR"] = os.path.join(meta["root"], ".tt")

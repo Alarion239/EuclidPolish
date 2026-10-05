@@ -138,8 +138,8 @@ export type PlotProps = {
   emphasis?: string | null;
   /** Enables the PNG and CSV export buttons; the files are `<exportName>.png/.csv`. */
   exportName?: string;
-  /** Tooltip / generated-tick formatting (zoomed ticks are compared by their
-   *  labels, so an inline formatter does not force a redraw). */
+  /** Tooltip / generated-tick formatting (generated ticks are compared by
+   *  their labels, so an inline formatter does not force a redraw). */
   xFormat?: (v: number) => string;
   yFormat?: (v: number) => string;
   /** Accessible name (default: the title). */

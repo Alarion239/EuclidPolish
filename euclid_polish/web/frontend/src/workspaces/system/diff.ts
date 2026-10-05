@@ -1,4 +1,4 @@
-/* A unified-diff parser for the Git tab's diff viewer (git diff / git show
+/* A unified-diff parser for System › Code's diff viewer (git diff / git show
  * output): files, hunks and numbered lines. Pure; DiffView.tsx renders it. */
 
 export type DiffLineKind = "meta" | "hunk" | "add" | "del" | "ctx" | "note";

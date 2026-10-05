@@ -120,7 +120,7 @@ def register(app):
 
     # ---------------- Star cutouts (valid in all 4 bands) ----------------
     # The viewer collection ``cutouts`` serves the stars themselves; this
-    # counts them for the Cutouts tab — from the synchronised mirror, so it
+    # counts them for Synthetic › PSF's Cutouts view — from the synchronised mirror, so it
     # answers offline (a stale mirror is flagged by ``age_s``).
     @app.route("/api/star-cutouts/totals")
     def api_star_cutouts_totals():

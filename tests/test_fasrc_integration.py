@@ -1,4 +1,4 @@
-"""Integration tests for the FASRC tab without touching real FASRC.
+"""Integration tests for the FASRC routes without touching real FASRC.
 
 Strategy: swap the global :class:`SSHSession` in
 ``euclid_polish.web.remote.STATE`` for a :class:`LocalSSHSession` that
@@ -9,7 +9,8 @@ runs every command in a tmp directory with ``bash -c``. Put a fake
 This exercises the entire submission pipeline:
 
   * the Flask route receiving the form,
-  * the script body being uploaded via the SSH ``cat <<'EOF'`` heredoc,
+  * the script body being written through the session's ``write_text`` (the
+    ``cat <<'EOF'`` heredoc fallback is not used),
   * the chmod / sbatch invocations,
   * the sqlite write,
   * subsequent ``squeue`` parsing.
@@ -199,7 +200,7 @@ def test_submit_writes_sbatch_script_with_correct_contents(
     assert "#SBATCH --cpus-per-task=16" in body
     assert "#SBATCH --mem=64G" in body
     assert "#SBATCH --time=06:00:00" in body
-    # Generation knobs (from /config's job config) reached the run_pipeline
+    # Generation knobs (from System › Config's job config) reached the run_pipeline
     # command. Each argv token is rendered on its own continuation line.
     for token in (
         "--ntrain", "100",

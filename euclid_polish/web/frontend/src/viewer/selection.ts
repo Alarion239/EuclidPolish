@@ -297,7 +297,8 @@ export function frameToImageClamped(L: FrameLayout, X: number, Y: number): { x: 
  *  positioned canvas and SVG overlays are drawn and what `clientWidth`
  *  measures: the border box (getBoundingClientRect) moved in by the border
  *  widths. Pointer → frame CSS coordinates must subtract this, not the
- *  border-box corner (a `.cv-frame` has a 1 px border). Reads the DOM. */
+ *  border-box corner (`.cv-frame` has no border now, but one would shift
+ *  it). Reads the DOM. */
 export function contentBoxOrigin(el: HTMLElement): { left: number; top: number } {
   const r = el.getBoundingClientRect();
   return { left: r.left + (el.clientLeft || 0), top: r.top + (el.clientTop || 0) };

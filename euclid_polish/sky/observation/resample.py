@@ -1,16 +1,17 @@
 """Image resampling primitives.
 
-The pixel-centred bilinear upsampler is used by the NISP-to-VIS-LR step of
-the multi-band forward model (NISP native 0.30" to the 0.10" MER grid). It
-matches the ``BILINEAR`` interpolation configured in the Euclid Q1 CT_SWarp
-mosaicing pipeline. A cubic-spline alternative remains available for
-experiments through ``kernel="cubic"``.
+The pixel-centred bilinear upsampler backs the resample-to-shared-LR-grid
+step of the multi-band forward model (``ObservationSimulator._process_one_band``).
+Every band's archive scale is 0.10", so that step is currently skipped; the
+NISP 0.30" detector-to-0.10" interpolation of the delivered-MER noise lives in
+:func:`euclid_polish.sky.observation.noise.dithered_unit_noise` instead. The
+bilinear kernel matches the ``BILINEAR`` interpolation configured in the
+Euclid Q1 CT_SWarp mosaicing pipeline. A cubic-spline alternative remains
+available for experiments through ``kernel="cubic"``.
 
 Both implementations use ``grid_mode=True`` so output pixel centres map to
 input coordinate ``(j + 0.5) / factor - 0.5``. Samples beyond the array edge
-use the nearest edge value. The observation model pads its private NISP
-workspace and crops the delivered science region, so this boundary convention
-does not affect the simulated field interior.
+use the nearest edge value.
 """
 
 from __future__ import annotations

@@ -477,7 +477,7 @@ class TestResourceFold:
         assert s.resources is None
 
     def test_smoothed_live_value_is_recent_mean(self):
-        # 10 samples; the smoothed gauge averages only the last few, so a
+        # 11 samples; the smoothed gauge averages only the last few, so a
         # low early run doesn't drag the live reading down.
         evs = [_res(float(i), gpu=10.0) for i in range(5)]
         evs += [_res(float(5 + i), gpu=90.0) for i in range(6)]

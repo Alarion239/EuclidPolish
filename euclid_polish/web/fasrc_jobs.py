@@ -1,10 +1,10 @@
-"""FASRC job tracking, submission helper, ETA heuristics.
+"""FASRC job tracking, submission helper, squeue/sacct reconciliation.
 
 Two layers:
 
   * :class:`JobDB` — persistent record of every job we've submitted from
     this UI. Sqlite at ``~/.euclid_polish/fasrc_jobs.db``. Survives
-    Flask restarts so the ETA model has history to draw from.
+    Flask restarts so job states and the run history outlive the server.
 
   * :func:`submit_sbatch_script` — single helper used by every Flask
     submit handler: write the script over SSH, ``sbatch`` it, parse the
@@ -12,10 +12,9 @@ Two layers:
     :mod:`euclid_polish.web.fasrc_pipeline`; this module just orchestrates
     the SSH+DB side.
 
-The ETA model is intentionally simple: median seconds-per-step across
-the user's last N completed jobs, multiplied by their requested step
-count. If the in-flight job's log emits ``step X/Y`` we refine the ETA
-live.
+A running job's progress and ETA come from its Reporter ``.events``
+stream (:mod:`euclid_polish.web.job_status`); the old median
+seconds-per-step ETA model was removed (W-Ops, 2026-09-26).
 """
 
 from __future__ import annotations
@@ -278,9 +277,10 @@ def _conda_activate_snippet(env_path: str, load_cuda: bool = False) -> str:
     Generates ``module load python`` (plus ``module load cuda`` when
     ``load_cuda=True``) followed by a ``CONDA_SHLVL``-gated conda/mamba
     initialization and ``mamba activate``. Used by the sbatch scripts
-    (:func:`fasrc_pipeline.render_sbatch_body`) and the login-node helpers
-    (``run_remote_python``, the PSF cluster-metadata dump) to eliminate
-    duplicate inline shell snippets.
+    (:func:`fasrc_pipeline.render_sbatch_body`) and the login-node PSF
+    cluster-metadata dump (``routes/psfs.py``) to eliminate duplicate
+    inline shell snippets (``run_remote_python`` keeps its own,
+    unconditional activation — see :func:`build_remote_python_command`).
     """
     env = shlex.quote(env_path)
     cuda_line = "\nmodule load cuda" if load_cuda else ""
@@ -307,15 +307,19 @@ def build_remote_python_command(
     """Build the ``bash -lc '…'`` string that runs a project script on the
     FASRC **login node** (no SLURM).
 
-    Activates the conda/mamba env exactly like the sbatch template's setup
-    block (so it matches what already works on the cluster), exports
+    Activates the conda/mamba env like the sbatch template's setup block
+    (so it matches what already works on the cluster), except that
+    ``conda.sh``/``mamba.sh`` are sourced unconditionally and ``conda
+    activate`` is the fallback when ``mamba`` is missing (inline comment
+    below), exports
     ``EUCLID_POLISH_DATA_DIR`` / ``EUCLID_POLISH_CKPT_DIR`` so the script
     reads/writes the shared netscratch paths, ``cd``s into the remote repo,
     and runs ``python -u <argv>``. ``argv`` is repo-relative (e.g.
     ``["scripts/query_brightest_stars.py", "--num-stars", "200"]``).
 
     A login shell (``bash -l``) is used so the user's conda init runs; the
-    explicit source-conda block is a fallback for non-init shells. The
+    explicit source-conda block also covers non-init shells and an init
+    that defined ``conda`` but not ``mamba``. The
     whole inner command is single-quoted via :func:`shlex.quote`, so the
     embedded ``$(…)`` / ``$CONDA_BASE`` are evaluated remotely, not locally.
     """
@@ -375,8 +379,10 @@ def submit_sbatch_script(
         A connected SSH session (e.g. ``STATE.ssh``). Must expose
         ``run(cmd, timeout=…) -> (rc, stdout, stderr)``.
     built :
-        Return value of :func:`fasrc_pipeline.render_sbatch_body` —
-        the dict with ``body``, ``script``, ``out``, ``err``, ``name``.
+        Return value of ``FASRCPipelineStep.build_sbatch_body``
+        (:func:`fasrc_pipeline.render_sbatch_body`'s dict + ``params`` /
+        ``payload_files``); this reads ``body``, ``script``, ``out``,
+        ``err``, ``events``, ``entry`` and ``payload_files``.
     step_id :
         If given, the row is tagged in :class:`JobDB` via ``set_step_id``
         so the per-step runtime history queries pick it up.
@@ -521,7 +527,7 @@ def submit_sbatch_script(
 
     # Mirror into the CSV submission log. Resource fields come straight
     # from ``params`` (the form values, post-validation by
-    # :class:`StepResources.from_form` → ``to_dict()``) so the log
+    # :class:`StepResources.from_form_strict` → ``to_dict()``) so the log
     # matches what SLURM saw on the ``#SBATCH`` lines. Script-specific
     # params (n_stars, steps, …) are JSON-encoded into
     # the ``params_json`` column. Errors here must not break the
@@ -651,9 +657,10 @@ def expand_array_path(path: str | None, parent_jobid: str, index: int) -> str | 
 
 
 # Terminal states — once a row reaches any of these we stop reconciling
-# it against squeue. ``UNKNOWN`` is here too: it means "this job was
-# tracked but disappeared from squeue without ever showing started_at",
-# so we treat it as a failure mode and leave it alone.
+# it against squeue (except a speculative DONE/UNKNOWN that reappears
+# alive, see ``SPECULATIVE_TERMINAL``). ``UNKNOWN`` is here too: it means
+# "this job was tracked but disappeared from squeue without ever showing
+# started_at", so we treat it as a failure mode.
 TERMINAL_STATES = frozenset({
     "COMPLETED", "DONE", "FAILED", "CANCELLED", "TIMEOUT", "UNKNOWN",
 })
@@ -953,7 +960,7 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
                           job_log: JobLog | None = None) -> dict[str, str]:
     """Cross-check the JobDB against a live ``squeue`` snapshot.
 
-    For every non-terminal DB row:
+    For every non-terminal row among the ``recent_limit`` newest DB rows:
 
       * if its jobid IS in ``squeue_rows`` → set the DB state to whatever
         squeue says it is (RUNNING / PENDING / FAILED / …);
@@ -962,7 +969,12 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
         ``DONE`` with ``ended_at = now``;
       * if its jobid is NOT in ``squeue_rows`` and ``started_at`` is
         missing → we never saw it start *and* it isn't queued anywhere
-        we can ask about, so mark ``UNKNOWN``.
+        we can ask about, so mark ``UNKNOWN`` (only once it is more than
+        :data:`SUBMIT_GRACE_S` past submission).
+
+    A speculatively finalised row (``DONE``/``UNKNOWN``,
+    :data:`SPECULATIVE_TERMINAL`) that is alive in squeue again is re-synced
+    the same way, with its ``ended_at`` cleared.
 
     Side effect: when a job transitions to a terminal state *and* an
     SSH handle is provided, Jobstats plus ``sacct`` are queried for that

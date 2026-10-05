@@ -21,7 +21,7 @@ def _paths() -> list[str]:
 def register(app):
 
     # =========================================================================
-    # Git tab — local commit / push / pull, no remote auth needed.
+    # System › Code — local commit / push / pull, no remote auth needed.
     # =========================================================================
 
     @app.route("/api/git/status")

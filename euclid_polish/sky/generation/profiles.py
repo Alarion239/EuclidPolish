@@ -1,9 +1,10 @@
 """
 Vectorised Sersic-profile rasterisation.
 
-Galaxies are rendered as one or two analytic Sersic profiles (bulge n=4,
+Renders galaxies as one or two analytic Sersic profiles (bulge n=4,
 disk n=1 — both fixed; a joint Sersic with free n is supported for
-single-component fits):
+single-component fits). The scene generator no longer uses it (every field
+galaxy and lens light is a TNG stamp); it is kept as a tested library:
 
 * ``sersic_b_n(n)``           — Ciotti & Bertin 1999 inverse-Gamma constant b_n.
 * ``sersic_amp_from_flux(...)``— closed-form amplitude given the total flux.
@@ -397,7 +398,8 @@ def evaluate_sersic_at_coords(
 
     Unlike :func:`draw_sersic` which rasterises onto a regular pixel grid,
     this evaluates the analytic profile at user-supplied coordinates
-    (typically the ray-shot source-plane positions produced by lenstronomy).
+    (originally the ray-shot source-plane positions produced by lenstronomy,
+    before lensed sources became TNG stamps).
     The flux normalisation matches :func:`draw_sersic`: passing identical
     ``flux, n, r_e, q, theta`` and evaluating on a regular grid yields the
     same per-pixel values as ``draw_sersic`` with ``csub=1``.

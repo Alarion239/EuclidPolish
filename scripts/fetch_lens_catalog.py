@@ -4,7 +4,7 @@
 Thin CLI over :mod:`euclid_polish.eval.lens_catalog` (the shared fetch logic
 also used by the WebUI). Pulls the lightweight discovery catalog CSV from
 Zenodo record 15025832 and writes a normalized ``id,ra,dec,grade,subset`` CSV
-that ``scripts/fasrc_eval_catalog.py`` consumes.
+that ``scripts/eval_catalog.py`` consumes.
 
 Usage::
 

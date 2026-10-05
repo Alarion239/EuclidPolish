@@ -59,7 +59,8 @@ export function colormapGradient(name: Colormap, stops = 9): string {
   return `linear-gradient(90deg, ${parts.join(", ")})`;
 }
 
-/** "#rgb" / "#rrggbb" → [r, g, b]; anything else → magenta (the C7 default). */
+/** "#rgb" / "#rrggbb" → [r, g, b]; anything else → magenta (the v1 C7 NaN
+ *  default; today's DEFAULT_DISPLAY.nanColor is #404040). */
 export function parseCssColor(css: string): [number, number, number] {
   const s = String(css || "").trim();
   let m = /^#([0-9a-f]{6})$/i.exec(s);

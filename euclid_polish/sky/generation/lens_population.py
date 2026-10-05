@@ -9,8 +9,9 @@ source light both come from the current SKIRT/TNG atlas.
 
 Coordinate conventions:
   * The HR canvas is in pixels at ``Config.DEFAULT_PIXEL_SCALE`` (0.05″/pix).
-  * Lens / source positions are in arcsec relative to the *image centre*;
-    angles are in radians (CCW from +x).
+  * The lens centre is placed in HR pixel coordinates (``centre_x_pix`` /
+    ``centre_y_pix``; ``None`` → canvas centre); the source offset is in
+    arcsec relative to the *lens centre*; angles are in radians (CCW from +x).
   * ``theta_E`` is the SIE Einstein radius in arcsec.
 """
 
@@ -64,7 +65,7 @@ class LensParams:
 
 #: Observable Einstein-radius window (arcsec): smaller and the arcs are
 #: unresolved at Euclid resolution; larger is rarer than the simulated sky.
-#: Both samplers rejection-sample θ_E into this window.
+#: :func:`sample_lens_geometry` rejection-samples θ_E into this window.
 THETA_E_RANGE_ARCSEC = (0.10, 3.5)
 
 
@@ -261,7 +262,8 @@ def render_lens_to_multiband_canvas(
     ----------
     canvas_4ch  : ``(H, W, 4)`` float32 array, modified in place.
     params      : :class:`LensParams` instance (already placed with
-                  ``centre_x_pix`` / ``centre_y_pix`` if non-zero).
+                  ``centre_x_pix`` / ``centre_y_pix``; ``None`` → canvas
+                  centre).
     pixel_scale : arcsec/pixel of ``canvas_4ch``.
     lens_light_stamp : foreground electron
                        :class:`~euclid_polish.tng.types.RenderedTNG`.

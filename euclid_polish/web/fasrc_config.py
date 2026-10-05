@@ -1,8 +1,8 @@
-"""Persistent configuration for the FASRC web tab.
+"""Persistent FASRC configuration for the web UI (SSH, remote paths, local mirror).
 
 Lives in ``~/.euclid_polish/fasrc.json`` so it survives Flask restarts
 and isn't tracked by git. The user can edit it directly or via the
-"Settings" form in the FASRC tab.
+settings form in System › Connections (``/api/fasrc/config``).
 
 All fields default to the values that match this developer's setup
 (see git history / fasrc_train.sh); other users override them through
@@ -42,8 +42,8 @@ class FasrcConfig:
     # purged). The local ./tracking folder is rsync'd up to here.
     tracking_remote_dir: str = ""
 
-    # ── Local mirror for auto-pulled checkpoints ───────────────────────────
-    local_ckpt_mirror:  str = ""         # blank → DEFAULT_CHECKPOINT_DIR
+    # ── Local mirror for pulled ensemble checkpoints ───────────────────────
+    local_ckpt_mirror:  str = ""         # blank → default_ensemble_dir()
 
     # No sbatch defaults and no science knobs here: each FASRC step declares
     # its own resources (``StepResources`` defaults, partition fixed per step)

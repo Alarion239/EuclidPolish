@@ -3,9 +3,9 @@
 
 This is the FASRC, all-galaxies counterpart of the single-galaxy
 ``scripts/download_tng_skirt.py``. It lists every entry under the API's
-``files/skirt_atlas/`` endpoint and downloads them concurrently with a thread
-pool (the work is network-I/O bound — one worker per allocated CPU keeps the
-pipe full while a few threads decompress). For each galaxy it keeps **only** the
+``files/skirt_atlas/`` endpoint and downloads them concurrently with a process
+pool (the default; ``--executor thread`` uses threads, which cap the gzip
+extraction at ~2 cores under the GIL). For each galaxy it keeps **only** the
 dusty Euclid frames — ``TNG<id>_O<k>_Euclid_<band>.fits`` for band ∈ {VIS, Y, J,
 H} and orientation k ∈ {1..5} → 20 FITS/galaxy — discarding the ``_nodust``
 twins and the 2MASS/SDSS/GALEX renders, exactly like the single-galaxy script.
@@ -20,14 +20,15 @@ Layout (under ``--out-dir``, default ``Config.TNG_SKIRT_DIR`` =
         … (4 bands × 5 orientations)
         .done                    # completion sentinel — re-runs skip this galaxy
 
-Resumability: a galaxy whose folder holds a ``.done`` marker is skipped, so the
-job can be re-submitted after a time-limit or a transient failure and only the
-unfinished galaxies are fetched.
+Resumability: a galaxy whose folder holds a ``.done`` marker AND the FITS count
+it records is skipped, so the job can be re-submitted after a time-limit or a
+transient failure and only the unfinished galaxies are fetched.
 
 API key — the IllustrisTNG public API needs your *personal* token
 (https://www.tng-project.org/users/profile/ → "API Token"). It is NEVER
-committed and never passes through the WebUI form. Provide it on FASRC via,
-in order of precedence:
+committed and never rides in the job's parameters (the console's System ›
+Connections card can write the key file on FASRC over SSH). Provide it on
+FASRC via, in order of precedence:
 
     1. ``--api-key`` (discouraged — visible in the process table)
     2. ``$TNG_API_KEY``

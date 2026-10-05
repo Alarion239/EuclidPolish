@@ -596,7 +596,7 @@ def currentness(
         sync = source_payload.get("sync")
         if isinstance(sync, Mapping):
             remote_sha = str(sync.get("remote_manifest_sha256") or "").lower()
-            # The sync route deliberately rewrites local paths/status and adds
+            # The archive sync route re-serializes this source manifest and adds
             # this block, so its local byte hash differs from the immutable
             # FASRC source.  The recorded, validated remote digest is the
             # science identity; raw bytes are only a fallback for unsynced

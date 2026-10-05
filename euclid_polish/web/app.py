@@ -151,7 +151,7 @@ def create_app() -> Flask:
 
     @app.route("/api/connection/retry", methods=["POST"])
     def api_connection_retry():
-        """POST-only retry hook so the existing /fasrc tab can also trigger reconnect."""
+        """POST-only retry of the startup auto-connect (System › Connections' retry button)."""
         err = _try_startup_ssh_connect()
         if err is None:
             return jsonify({"ok": True})

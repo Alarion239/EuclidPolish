@@ -194,7 +194,7 @@ class JobStatus:
     #: (older scripts, or one that didn't start the ResourceSampler).
     resources:    ResourceUsage | None  = None
     #: Latest training-metrics sample folded from the ``metric`` event
-    #: stream (loss, PSNR per lane, gradient norms, …) — the live training
+    #: stream (loss, PSNR, gradient norms, …) — the live training
     #: progress the WebUI used to scrape from the ``.out`` log. ``None``
     #: until the first evaluate emits a metric event.
     latest_metrics: dict[str, Any] | None = None
@@ -204,7 +204,8 @@ class JobStatus:
     metrics:        tuple[dict[str, Any], ...] = ()
     #: The latest metric sample that wrote a checkpoint (``saved`` truthy),
     #: as a short ``"step N"`` marker — the events-native replacement for
-    #: the ``Checkpoint saved`` log line that triggers the ckpt mirror.
+    #: the ``Checkpoint saved`` log line (the ckpt auto-mirror that keyed on
+    #: it is gone; checkpoint pulls are manual).
     last_checkpoint: str | None          = None
     warnings:     tuple[Event, ...]        = ()
     errors:       tuple[Event, ...]        = ()
@@ -353,8 +354,8 @@ def fold_events(text: str) -> JobStatus:
             sample.setdefault("wall_time", ts_f)
             metrics.append(sample)
             # ``saved`` truthy ⇒ this eval wrote a checkpoint; remember it as
-            # a compact marker the mirror trigger keys on (cheaper + more
-            # reliable than grepping ".out" for "Checkpoint saved").
+            # a compact marker (cheaper + more reliable than grepping ".out"
+            # for "Checkpoint saved").
             if value.get("saved"):
                 step_no = value.get("step")
                 last_checkpoint = (f"step {int(step_no)}"
@@ -483,9 +484,11 @@ class JobStatusFetcher:
     """Read a remote ``.events`` file and fold it into :class:`JobStatus`.
 
     One SSH ``cat`` per fetch — no local caching, no background loop.
-    Status responses are short-lived (the UI polls every ~1.5 s and
-    rebuilds the card on every response), so a stale cache would only
-    create staleness bugs without buying anything.
+    Status responses are short-lived (while a job runs the console
+    re-polls them every few seconds — each job's SLURM monitor every 3 s,
+    the live SLURM feed every 10 s — and re-renders on every response),
+    so a stale cache would only create staleness bugs without buying
+    anything.
     """
 
     def __init__(self, ssh: _SSHRunner | None) -> None:
@@ -498,7 +501,7 @@ class JobStatusFetcher:
         whenever:
 
         * ``events_path`` is ``None`` (job was submitted by an older
-          script that doesn't write a events file),
+          script that doesn't write an events file),
         * the SSH session is missing or disconnected,
         * the file doesn't exist remotely or is empty.
         """

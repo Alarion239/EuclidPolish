@@ -117,10 +117,10 @@ def test_typical_band_electron_ratios(cat: TinyCosmosCatalog):
     """``typical_band_electron_ratios`` returns a length-4 vector with
     VIS exactly 1.0 and NISP entries in a sensible range.
 
-    Used by the HST→Euclid TFRecord generator to scale a single-band
-    HST cutout into all four NISP channels via a per-pixel global
-    colour. A regression here would silently shift NISP brightness
-    by orders of magnitude in HST-derived training data.
+    Was used by the HST→Euclid TFRecord generator (deleted with the HST
+    lane on 2026-09-20) to scale a single-band HST cutout into the NISP
+    channels via a per-pixel global colour; it has no production caller
+    now.
     """
     ratios = cat.typical_band_electron_ratios()
     assert ratios.shape == (Config.NUM_LR_CHANNELS,)

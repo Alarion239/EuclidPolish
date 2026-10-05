@@ -1,6 +1,6 @@
 /* One commit (`git show`): message, author, --stat and the patch in the diff
- * viewer. The body of the `commit:<hash>` inspector and the Git tab's
- * history detail. */
+ * viewer. The body of the `commit:<hash>` inspector, which System › Code's
+ * history rows open. */
 import { useResource } from "../../../api/query";
 import { formatDateTime } from "../../../format";
 import { Callout, CopyButton, DefList, LogTail, Section, Skeleton } from "../../../ui";

@@ -56,7 +56,7 @@ function BandDots({ star }: { star: Star }) {
   );
 }
 
-/* Widths sum to ~714 px with the select column: the table fits a ~720 px pane
+/* Widths sum to ~698 px with the select column: the table fits a ~720 px pane
    without clipping the coordinates or the Sky button. */
 const COLUMNS: DataColumn<Star>[] = [
   { id: "id", header: "Star", numeric: true, width: 68 },

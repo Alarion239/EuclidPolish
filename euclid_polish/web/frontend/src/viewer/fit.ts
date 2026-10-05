@@ -107,7 +107,7 @@ export function fitFrames(o: { n: number; width: number; height: number; mode: L
 }
 
 /** Height left for the frames: the viewport minus the viewer's own chrome
- *  (bar + readout) and the margin. */
+ *  (bar, Display row, readout) and the margin. */
 export function availableHeight(viewport: number, chrome: number, margin = FIT_MARGIN): number {
   return Math.max(0, Math.floor(viewport - chrome - margin));
 }

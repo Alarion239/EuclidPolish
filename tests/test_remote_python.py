@@ -1,8 +1,10 @@
 """Login-node remote-exec command builder (fasrc_jobs.run_remote_python).
 
-The brightest-N catalog query runs on the FASRC login node over SSH (not a
-SLURM job) so stars.csv lands on the shared netscratch $DATA_DIR. These
-tests pin the shell command that ``build_remote_python_command`` emits.
+Quick project scripts (today the TNG radius-manifest validator,
+``routes/tng.py``) run on the FASRC login node over SSH (not a SLURM job)
+against the shared netscratch $DATA_DIR; the brightest-N catalog query that
+first used this has been a SLURM job since 13be6a2. These tests pin the
+shell command that ``build_remote_python_command`` emits.
 """
 
 from __future__ import annotations

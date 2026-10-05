@@ -1,8 +1,9 @@
 """Tests for the TF-graph Euclid VIS forward op.
 
-The /inference "forward(SR)" diagnostic needs ``Conv(M(LR))`` as a
-TF-graph op. This module pins the four properties that have to hold for
-it to do the right thing:
+The /inference "forward(SR)" diagnostic (removed with the legacy console,
+0ad56d9) needed ``Conv(M(LR))`` as a TF-graph op; the op now has no caller
+outside this file. This module pins the four properties that have to hold
+for it to do the right thing:
 
   1. **Shape contract**: input HR → output LR shrinks by exactly
      ``rebin_factor`` per side.
@@ -18,8 +19,8 @@ it to do the right thing:
 
 A small synthetic Gaussian PSF is written to a tmp FITS in each test
 so we don't depend on the real ``data/euclid_psf/`` files (which
-aren't in the repo) and the kernel size stays small enough for
-``tf.nn.conv2d`` to run quickly on CPU.
+aren't in the repo) and the kernel size stays small enough for the
+op's FFT convolution to run quickly on CPU.
 """
 
 from __future__ import annotations
@@ -155,11 +156,11 @@ class TestNumpyParity:
     """Pin the TF op against the existing scipy-based forward.
 
     The TF op MUST agree with ``ObservationSimulator._process_one_band`` (VIS,
-    noise off) so the forward diagnostic applies the same Conv as
-    synthetic generation
+    noise off) so the op applies the same Conv as synthetic generation
     time. Boundary pixels diverge by O(1) ULP because of how float32
     rounding accumulates across slightly different conv kernel paths
-    (FFT vs spatial); we crop a PSF-sized border before comparing.
+    (scipy's FFT vs the op's power-of-two-padded ``rfft2d``); we crop a
+    PSF-sized border before comparing.
     """
 
     def test_matches_scipy_for_random_hr(self, tmp_psf_fits):
@@ -174,7 +175,7 @@ class TestNumpyParity:
         # TF path.
         lr_tf = op(tf.constant(hr_np[np.newaxis, :, :, np.newaxis])).numpy()[0, :, :, 0]
 
-        # Numpy reference (matches ObservationSimulator._process_one_band:223-228
+        # Numpy reference (matches ObservationSimulator._process_one_band
         # for VIS, noise off — fftconvolve mode='same' + sum-rebin by 2).
         conv = scipy_signal.fftconvolve(hr_np, psf, mode="same").astype(np.float32)
         h_t, w_t = (128 // 2) * 2, (128 // 2) * 2
@@ -184,8 +185,8 @@ class TestNumpyParity:
             .sum(axis=(1, 3))
         )
 
-        # Bulk comparison — crop a half-kernel border (15 LR pixels ≈
-        # 30 HR pixels) to dodge edge-padding numerical drift.
+        # Bulk comparison — crop a 16-LR-pixel border (32 HR pixels, more
+        # than the 31-px kernel side) to dodge edge-padding numerical drift.
         b = 16
         bulk_tf = lr_tf[b:-b, b:-b]
         bulk_np = sumreb[b:-b, b:-b]

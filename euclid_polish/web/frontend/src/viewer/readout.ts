@@ -178,8 +178,8 @@ export function readoutLineWidth(tiers: readonly ReadoutTierPart[], measure: (te
   return Math.ceil(Math.max(sum([...hover.position, ...hover.values]), sum([...idle.position, ...idle.values])));
 }
 
-/** Below this viewer width the readout always takes two lines: the position
- *  on the first, the per-tier values on the second. */
+/** Below this viewer width the readout always takes at least two lines (up
+ *  to READOUT_MAX_LINES): the position first, then the per-tier values. */
 export const READOUT_WRAP_WIDTH = 560;
 export const READOUT_MAX_LINES = 4;
 

@@ -100,7 +100,7 @@ class JobRecord:
     # allocated-core efficiency); ``gpu_*`` come from nvidia-smi.
     gpu_util_mean:   str = ""
     gpu_util_peak:   str = ""
-    gpu_mem_peak:    str = ""           # legacy live-sampler GPU memory %,
+    gpu_mem_peak:    str = ""           # legacy, mixed units: live-sampler GPU memory % or sacct MB
     cpu_util_mean:   str = ""
     cpu_util_peak:   str = ""
 

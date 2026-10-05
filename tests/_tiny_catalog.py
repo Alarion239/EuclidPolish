@@ -1,7 +1,7 @@
 """Test-only minimal catalog fixture.
 
 The production pipeline requires the real COSMOS2025 master FITS file
-(:class:`euclid_polish.sky.cosmos2025.Cosmos2025Catalog`). This module
+(:class:`euclid_polish.sky.generation.cosmos2025.Cosmos2025Catalog`). This module
 provides a tiny synthetic in-memory catalog used by unit / benchmark
 tests that exercise downstream pipeline pieces without needing the
 10-GB FITS file on disk. It is intentionally NOT exported from the

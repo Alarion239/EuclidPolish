@@ -13,7 +13,6 @@
   min-width: 0;
 }
 .fig-bar__spacer { flex: 1 1 0; min-width: 0; }
-/* sentence-case choices ("Real", "All 3"): the kit Segmented lowercases */
 .fig-bar__note { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
 .fig-bar__field { display: inline-flex; align-items: center; gap: var(--s2); min-width: 0; }
 .fig-bar__field .ui-select { max-width: 240px; }

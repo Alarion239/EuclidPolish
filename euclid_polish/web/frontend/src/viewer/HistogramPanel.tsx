@@ -18,7 +18,8 @@ const H = 150, PAD = 28;
 const ANCHORED = new Set(["asinh-abs", "linear", "sqrt", "log"]);
 
 /** `width`: the drawing's width in css px (the SVG scales without distortion
- *  when it is shown at about that width: 640 in a panel, less in a popover). */
+ *  when it is shown at about that width: 640 by default; the More display
+ *  settings popover passes 560 or 300). */
 export function HistogramPanel({ width = 640 }: { width?: number } = {}) {
   const W = width;
   const ctrl = useController();

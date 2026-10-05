@@ -1,6 +1,6 @@
 /* Small shared pieces of the Models tabs: the error / empty states that show
    the server's own message, facet colours, the colour-by control and the
-   status dot line. Tab control bars are the kit's Toolbar. */
+   gate-share bar. Tab control bars are the kit's Toolbar. */
 import { useMemo, type ReactNode } from "react";
 import type { ApiError } from "../../api/client";
 import { openInspector } from "../../app/inspector";

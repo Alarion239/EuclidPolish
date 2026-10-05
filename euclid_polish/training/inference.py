@@ -71,15 +71,17 @@ def infer_checkpoint_nchan_in(
 ) -> int | None:
     """Number of LR input channels a saved checkpoint's model expects, or None.
 
-    The checkpoint *is* the source of truth for the architecture — a VIS-only
-    run saves a 1-channel WDSR (``ckpt/wdsr-vis``), a normal run a 4-channel
-    one (``ckpt/wdsr``). We read it straight from the stored weight shapes:
+    The checkpoint *is* the source of truth for the architecture — a legacy
+    VIS-only run saved a 1-channel WDSR (the retired ``ckpt/wdsr-vis``), an
+    ensemble member a 4-channel one (``4·K`` for a ``K``-knee member). We read
+    it straight from the stored weight shapes:
     excluding the ``skip_kernel_size``-sided skip-branch kernels (the 4-band
     model's PER-BAND skip convs have in-dim 1 regardless of ``nchan_in``, so
     they would poison a min over everything), the input conv is the only
-    kernel whose in-channel dim is the LR channel count (1 or 4); every body
-    kernel is ``num_filters`` (32) wide or wider, so the minimum in-channel
-    dim over the remaining 4-D conv kernels is exactly ``nchan_in``.
+    kernel whose in-channel dim is the LR channel count (1, 4 or 4·K); every
+    body kernel's in-channel dim is at least ``int(0.8 · num_filters)`` (25 at
+    the default 32), so while ``nchan_in`` ≤ 25 (at most 6 knees) the minimum
+    in-channel dim over the remaining 4-D conv kernels is exactly ``nchan_in``.
     Returns None if no checkpoint or the shapes can't be read (caller falls
     back to its explicit value)."""
     latest = tf.train.latest_checkpoint(checkpoint_dir)
@@ -486,7 +488,7 @@ def reconstruct(
     if sr_data.ndim == 3 and sr_data.shape[-1] == 1:
         sr_data = sr_data[..., 0]
     # LR returned for display: if the caller passed a multi-channel cube,
-    # show only the VIS channel (band 0) — that's what the HR target is.
+    # show only the VIS channel (band 0).
     if lr_data.ndim == 3 and lr_data.shape[-1] > 1 or lr_data.ndim == 3 and lr_data.shape[-1] == 1:
         lr_display = lr_data[..., 0]
     else:

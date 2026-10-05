@@ -1,6 +1,7 @@
 """Security boundary for the zero-login, loopback-only Web UI.
 
-Four layers, all registered by :func:`euclid_polish.web.app.create_app`:
+Four layers, wired in :mod:`euclid_polish.web.app` (``main`` checks the bind
+host; :func:`~euclid_polish.web.app.create_app` registers the other three):
 
 * :func:`validate_bind_host` — the server binds to loopback only.
 * :func:`register_host_allowlist` — the ``Host`` header must name the

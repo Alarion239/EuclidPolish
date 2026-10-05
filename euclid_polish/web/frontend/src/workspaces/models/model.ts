@@ -215,7 +215,7 @@ export function kneeModelName(m: { id: string; kind: string; label: string }): s
   return m.id === "spatial_gate" ? "production gate" : m.label;
 }
 
-/* ── the Overview comparison ──────────────────────────────────────────── */
+/* ── the Leaderboard comparison ───────────────────────────────────────── */
 
 export type ComparisonRow = { id: "gate" | "mean" | "best"; label: string; integrated: number | null; bands: (number | null)[] };
 export type Comparison = { rows: ComparisonRow[]; source: "knee" | "headline"; bestNumber: string | null };
@@ -227,7 +227,7 @@ const bandMeanOf = (vs: readonly (number | null | undefined)[] | null | undefine
 };
 const N_BANDS = 4;
 
-/** The Overview's gate / plain mean / best member rows on ONE metric — the
+/** The Leaderboard's gate / plain mean / best member rows on ONE metric — the
  *  knee-integrated PSNR over the full grid (`integrated`, one value per band;
  *  ∫PSNR = their mean) — so "best member" is the best by that same number.
  *  From knee-psnr.json when it is readable; else from the overview headline
@@ -357,9 +357,6 @@ export function variantLabel(name: string): string {
   return dir.replace(/^spatial_gate_/, "");
 }
 
-/** An e⁻ (or any physical) value at 3 significant figures, in exponent form
- *  at the extremes (≥ 1000 or < 0.01): the back-trace stamps and the
- *  diagnostics cell labels. */
 /** The asinh knee of one back-trace row (PixelTrace): the traced pixel's
  *  own level — the largest finite |target|, σ and |err| — so its LR / target
  *  / SR stamps show the structure around a few-e⁻ pixel (a 100 e⁻ knee left
@@ -380,6 +377,9 @@ export function stampBacking(cssWidth: number, dpr: number): { side: number; css
   return { side, css: side / dpr };
 }
 
+/** An e⁻ (or any physical) value at 3 significant figures, in exponent form
+ *  at the extremes (≥ 1000 or < 0.01): the back-trace stamps and the
+ *  diagnostics cell labels. */
 export function formatE(v: number): string {
   if (!Number.isFinite(v)) return "—";
   return Math.abs(v) >= 1000 || (Math.abs(v) > 0 && Math.abs(v) < 0.01)
@@ -397,8 +397,9 @@ export const GATE_BANDS: readonly { band: string; short: string }[] = [
 export type GateUsage = { mean: number | null; max: number | null; bands: { band: string; short: string; v: number | null }[] };
 
 /** A member's share of the production gate's weight, per band and summed up:
- *  the mean over the bands that have a value (the table's "Gate use") and the
- *  largest band. The VIS weight alone hid members the gate uses for NISP
+ *  the mean over the bands that have a value (the "mean" of the Gate share
+ *  readings, and what the bar draws when there is no peak) and the largest
+ *  band. The VIS weight alone hid members the gate uses for NISP
  *  (#190: 0.02 % of VIS but ~35 % of Y/J/H). */
 export function gateUsage(usage: Record<string, number | null | undefined> | null | undefined): GateUsage {
   const bands = GATE_BANDS.map(({ band, short }) => {

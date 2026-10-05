@@ -184,8 +184,8 @@ def _remote_crumbs(path: str, roots: list[str]) -> list[dict[str, str]]:
 
 def register(app):
     # =========================================================================
-    # FASRC tab — Bitwarden-driven SSH ControlMaster, SLURM submission,
-    # live log streaming, checkpoint auto-mirror.
+    # FASRC — public-key SSH ControlMaster, SLURM submission,
+    # live log streaming, checkpoint mirror (manual pull).
     # =========================================================================
 
     # ---- config -----------------------------------------------------------
@@ -277,12 +277,12 @@ def register(app):
     @app.route("/api/fasrc/git-pull", methods=["POST"])
     @requires_fasrc
     def api_fasrc_git_pull():
-        """``git pull`` + auto-update conda env when ``environment.yml`` moved.
+        """``git pull`` + flag a conda env update when ``environment.yml`` moved.
 
         Returns ``env_update_needed: True`` whenever the pull's diff
-        touches ``environment.yml``; the UI then starts the
-        ``POST /api/fasrc/env-update`` job automatically so the user
-        doesn't have to remember.
+        touches ``environment.yml``; the UI (System › Code) then offers an
+        "Update env" action that starts the ``POST /api/fasrc/env-update``
+        job.
         """
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
@@ -499,7 +499,7 @@ def register(app):
     # ---- submission -------------------------------------------------------
 
     def _require_confirm(form):
-        """Shared confirm-token guard for the two FASRC submit endpoints.
+        """Confirm-token guard for the FASRC step-submit endpoint.
 
         Returns ``None`` when the form carries the explicit-confirm
         token; otherwise returns a ``(flask response, 400)`` tuple the
@@ -698,7 +698,7 @@ def register(app):
 
     @app.route("/api/fasrc/steps/status")
     def api_fasrc_steps_status():
-        """Per-step: name, defaults, last-runtime median, on-disk status.
+        """Per-step: label, defaults, task-param schema + last params, on-disk outputs.
 
         Uses ``STATE.ssh`` to ``test`` for each artifact's existence; if
         SSH isn't connected we return only the static defaults so the UI
@@ -726,8 +726,8 @@ def register(app):
 
         # Cheap probes for "does this artifact exist on FASRC?" — single
         # ``test -e`` per check, batched in one SSH round-trip. Keep
-        # this list in sync with the ``produces`` map in fasrc.html
-        # (the JS side maps each step_id to one of these keys).
+        # this list's keys in sync with ``_ARTIFACT_PATHS`` (``_STEP_OUTPUTS``
+        # maps each step_id to these keys for its ``outputs``).
         artifacts = {
             "ckpt": None,
             # Per-page Euclid star-cutout pipeline:
@@ -736,7 +736,7 @@ def register(app):
             #   euclid_psf     — VIS empirical ePSF, written by the
             #                    extract_euclid_psf (all-band) step.
             "euclid_cutouts": None, "euclid_psf": None,
-            # Synthetic generation (/sky page).
+            # Synthetic generation (Synthetic › Status and Records).
             "synthetic_records": None,
         }
         paths = {key: fn(cfg_loaded) for key, fn in _ARTIFACT_PATHS.items()}
@@ -962,7 +962,7 @@ def register(app):
         ```json
         {
           "ok":       true,
-          "step_id":  "extract_psf",
+          "step_id":  "extract_euclid_psf",
           "history":  [<row>, ...],          # newest first, all states
           "match":    <row> | null,          # latest exact-match row
           "task_params_json": "..."          # canonical serialisation
@@ -1047,9 +1047,9 @@ def register(app):
         # Reconcile DB rows against squeue first — without this, a job
         # that already finished still shows up as RUNNING in the DB and
         # the tab would lie. One squeue call per refresh; the same one
-        # the Logs tab already makes. A slow login node can time this out —
-        # skip the reconcile for this tick (flagging the data stale) rather
-        # than 500 the poll; the next tick retries.
+        # the run list (``/api/fasrc/runs``) makes. A slow login node can
+        # time this out — skip the reconcile for this tick (flagging the data
+        # stale) rather than 500 the poll; the next tick retries.
         stale = False
         try:
             rc_q, out_q, _err_q = ssh.run(
@@ -1170,7 +1170,7 @@ def register(app):
 
         Reads the job's ``.events`` JSONL stream (written on FASRC by
         :class:`euclid_polish.observability.Reporter`) and folds it into
-        the :class:`JobStatus` shape the ``JobStatusCard`` widget polls
+        the :class:`JobStatus` shape the SPA's ``SlurmMonitor`` widget polls
         for. Returns an empty status (``has_events=False``) when the
         job is queued / pre-Reporter / disconnected — never 500s on a
         missing file."""
@@ -1210,7 +1210,7 @@ def register(app):
                             if array_tasks is not None else None),
         })
 
-    # ---- past-runs browser (Logs tab) ---------------------------------------
+    # ---- past-runs browser (Runs › History) ---------------------------------
     #
     # Combines two sources so the user sees every run that left a log on
     # FASRC, regardless of how it was submitted:
@@ -1219,8 +1219,8 @@ def register(app):
     #   (2) Remote ``find <repo>/logs -name '*.out' -o -name '*.err'``
     #       — picks up jobs submitted directly via sbatch from the CLI,
     #       which the DB has no record of.
-    # Rows are de-duplicated by base name (the ``euclid-YYYYMMDD-HHMMSS``
-    # prefix that pairs an ``.out`` with its ``.err``); UI-submitted jobs
+    # Rows are de-duplicated by base name (the ``<job_name>-YYYYMMDD-HHMMSS``
+    # stem that pairs an ``.out`` with its ``.err``); UI-submitted jobs
     # therefore get their full DB metadata, CLI-submitted jobs just get
     # the file timestamps + sizes.
 
@@ -1234,10 +1234,10 @@ def register(app):
 
         # 0. Reconcile DB state against the live queue *before* we read
         # rows out of sqlite. Without this, any job that finished
-        # while the Logs tab wasn't open shows up as RUNNING forever,
+        # while Runs › History wasn't open shows up as RUNNING forever,
         # and jobs that disappeared from squeue before ever starting
         # (sbatch rejected, queue purged, etc.) stay PENDING. One
-        # extra cheap squeue call per Logs-tab load is well worth it.
+        # extra cheap squeue call per run-list load is well worth it.
         rc_q, out_q, _err_q = STATE.ssh.run(
             f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=15,
@@ -1301,7 +1301,7 @@ def register(app):
             if row.get("jobid")
         }
         # The same state rule as the history (sacct's final ledger verdict
-        # first), so one job reads the same in the Logs list and the History.
+        # first), so one job reads the same in this run list and ``/api/fasrc/history``.
         ledger_states = {str(r.get("jobid")): r.get("state")
                          for r in fasrc_jobs.JOBLOG.list_all() if r.get("jobid")}
         for db_row in fasrc_jobs.DB.list_recent(5000):
@@ -1462,10 +1462,11 @@ def register(app):
     def _training_run_rows(started_at: float, ended_at: float, *, step_id: str = ""):
         """Windowed training-log records for one run, with the ensemble active-
         member fallback. Returns ``(rows, member_label)`` (rows empty if none in
-        the window). Shared by the training-plot PNG + training-curve JSON
-        endpoints. The trainer writes ``training_log.csv`` (append-only across
-        sessions sharing the ckpt dir); we fetch it over SSH (cap 50k lines) and
-        keep only rows inside ``[started_at, ended_at]``."""
+        the window). Used by the training-curve JSON endpoint (the
+        training-plot PNG went with the classic console). The trainer writes
+        ``training_log.csv`` (append-only across sessions sharing the ckpt
+        dir); we fetch it over SSH (cap 50k lines) and keep only rows inside
+        ``[started_at, ended_at]``."""
         ssh = STATE.ssh
         if ssh is None:
             raise SSHError("not connected")
@@ -1657,7 +1658,7 @@ def register(app):
         return jsonify({"ok": True, "path": path, "lines": lines,
                         "content": out})
 
-    # ---- checkpoint auto-mirror -------------------------------------------
+    # ---- checkpoint mirror (manual pull) ------------------------------------
 
     def _mirror_job() -> str | None:
         running = next((j for j in JOB_REGISTRY.list()

@@ -1,6 +1,6 @@
 """Cover ``SSHSession.connect()`` against a fake ``ssh`` binary.
 
-Connect is just ``ssh -M -S <socket> -o BatchMode=yes <target> true`` now
+Connect is just ``ssh -M -S <socket> -f -N -o BatchMode=yes <target>`` now
 — no pexpect, no prompts. The fake ssh either succeeds (touches the
 socket file and exits 0) or fails with ``Permission denied
 (publickey)``. We assert the success path creates the socket and the

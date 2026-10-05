@@ -162,8 +162,7 @@ class PSFSet(StampCarrier):
 
         Valid because every member is sum=1 → the unweighted mean is
         also sum=1. This is the single-PSF representative the legacy
-        consumers (differential kernel, inference forward op, viz) get
-        from ``HDU[0]``.
+        consumers (inference forward op, viz) get from ``HDU[0]``.
         """
         stack = np.mean([np.asarray(p.data, dtype=np.float64)
                          for p in self.psfs], axis=0)

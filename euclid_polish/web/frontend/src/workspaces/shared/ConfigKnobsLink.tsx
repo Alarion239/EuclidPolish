@@ -1,8 +1,9 @@
 /* "N knobs changed · Edit": the link back to System › Config on a tab that
- * judges a config group's effect (Synthetic › Records, Synthetic › PSF,
- * Models › Train). N counts that group's knobs that differ from their
- * defaults (GET /api/config, read-only); nothing shows while the config
- * loads, when it fails, or when every knob is at its default.
+ * judges a config group's effect (Synthetic › Records, Synthetic › PSF;
+ * Models › Train shows its own per card). N counts that group's knobs that
+ * differ from their defaults (GET /api/config, read-only); nothing shows
+ * while the config loads, when it fails, or when every knob is at its
+ * default.
  *
  *   <ConfigKnobsLink groups={["scenes", "lenses"]} />
  */
@@ -14,7 +15,8 @@ import type { GroupId } from "../system/configFields";
 
 type ConfigResp = { config?: ConfigValues; defaults?: ConfigValues; types?: Record<string, string> };
 
-/** The Config link for these groups: `?group=<first>&changed=1`. */
+/** The Config link for these groups: `?group=<id>&changed=1` for one group,
+ *  `?changed=1` for several. */
 export function configGroupUrl(groups: readonly GroupId[]): string {
   const q = new URLSearchParams({ ...(groups.length === 1 ? { group: groups[0] } : {}), changed: "1" });
   return `${pagePath("system", { tab: "config" })}?${q.toString()}`;

@@ -3,9 +3,9 @@
 
 For each of ``Config.BANDS`` this script:
 
-  1. Looks for cutouts in the band-specific directory:
-       VIS  → ``Config.DEFAULT_OUTPUT_DIR/cutouts``
-       NISP → ``Config.NISP_DEFAULT_OUTPUT_DIR_BY_BAND[band.name]/cutouts``
+  1. Looks for cutouts in the band-specific directory
+     ``Config.DEFAULT_OUTPUT_DIR/cutouts/<band.name>`` (e.g. ``cutouts/VIS``,
+     ``cutouts/Y_E``; see :meth:`Config.cutout_dir_for_band`).
   2. Checks good cutouts (saturation/edge rejection) one at a time without
      retaining their image data, then **clusters ONCE** the stars that are
      valid in ALL four bands,
@@ -40,9 +40,10 @@ import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-# Cap per-process BLAS threads BEFORE numpy/scipy import. We run the bands
-# in a process pool (one worker per band); without this each worker would
-# spawn one BLAS thread per core, oversubscribing the 4 CPUs the job locks.
+# Cap per-process BLAS threads BEFORE numpy/scipy import. We run the ePSF
+# builds in a process pool (``--max-procs`` workers, one (band, cluster) build
+# each); without this each worker would spawn one BLAS thread per core,
+# oversubscribing the CPUs the job allocates.
 # ``setdefault`` honours an explicit override from the environment.
 os.environ.setdefault("OMP_NUM_THREADS",      "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -77,9 +78,10 @@ def _cutout_dir_for_band(band: BandConfig) -> str:
 def _load_star_positions(stars_csv: str) -> dict[int, tuple[float, float]]:
     """Map star ``id → (ra, dec)`` from the catalog CSV.
 
-    Used to spatially cluster each band's good stars before extraction.
-    Returns an empty dict if the file is missing — callers then fall
-    back to a single ePSF from all accepted stars (the old behaviour).
+    Used to spatially cluster the stars accepted in every band before
+    extraction. Returns an empty dict if the file is missing — callers then
+    fall back to a single ePSF per band from all common stars (the old
+    behaviour).
     """
     if not os.path.isfile(stars_csv):
         return {}

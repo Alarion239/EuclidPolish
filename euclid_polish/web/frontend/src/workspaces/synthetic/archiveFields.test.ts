@@ -1,6 +1,6 @@
 /* The multipoint archive provenance strings (was test/archiveFields.test.ts;
    its SyntheticReal/fasrc source-text checks are behaviour tests now: see
-   realism.test.tsx › visual). */
+   synthetic.test.tsx › fields). */
 import { describe, expect, it } from "vitest";
 import {
   archiveFieldBreakdown, archiveOverview, archiveSampleProvenance, shortArchiveFingerprint,

@@ -13,7 +13,7 @@ downloads generic 4-band cutouts inside a circular footprint:
      downstream when the cutout service can't find a covering mosaic
      tile, so we don't need an explicit footprint mask.
   2. Write the positions to ``$output_dir/sky_positions.csv`` (columns
-     ``id, ra, dec``).
+     ``id, ra, dec`` plus an all-NaN ``magnitude``).
   3. For each position, fetch all four Euclid bands (VIS + NISP Y/J/H)
      via :func:`euclid_polish.catalog.downloader.fetch_cutout_at` and
      bundle them into a single multi-HDU FITS at
@@ -985,7 +985,7 @@ def _uniform_disk_positions(
     cos_dec = float(np.cos(np.deg2rad(dec_centre_deg)))
     # cos(90°) is ~6e-17 (positive due to float rounding), so a bare
     # ``cos_dec <= 0`` check would let pole-centred calls through and
-    # blow up RA by 1e16×. Reject anything within ~3° of the poles.
+    # blow up RA by 1e16×. Reject anything within ~0.06° (~3.4′) of the poles.
     if cos_dec < 1e-3:
         raise ValueError(
             f"dec_centre_deg={dec_centre_deg} too close to a pole "
@@ -1290,9 +1290,9 @@ def _write_bundle(
     """Combine per-band tempfile FITS into a single multi-HDU bundle.
 
     ``band_files`` is a ``{band_name: tempfile_path}`` map; one entry
-    per :data:`Config.LR_INPUT_BAND_NAMES` band. The output has a data-
-    less ``PrimaryHDU`` carrying position metadata in its header plus
-    one ``ImageHDU`` per band (``EXTNAME = band_name``).
+    per band in ``band_names`` (default :data:`Config.LR_INPUT_BAND_NAMES`).
+    The output has a dataless ``PrimaryHDU`` carrying position metadata in
+    its header plus one ``ImageHDU`` per band (``EXTNAME = band_name``).
     """
     primary_hdr = fits.Header()
     primary_hdr["POS_ID"]  = (int(pos_id),         "Sky position id (matches sky_positions.csv)")

@@ -1,10 +1,12 @@
 """
 Localhost web interface for EuclidPolish.
 
-Thin Flask layer over the existing modules — every page delegates to
-``EuclidCatalog`` / ``psf_inventory`` / ``SkySimulator`` /
-``ObservationSimulator`` rather than reimplementing pipeline logic. The
-slow operations (generate, forward, extract-psf) run in background
+Thin Flask layer over the existing modules — it serves the React console
+and the API it calls, delegating to the pipeline packages rather than
+reimplementing pipeline logic. Cluster work (generation, PSF extraction,
+training) is submitted to FASRC as SLURM steps
+(:mod:`euclid_polish.web.fasrc_pipeline`); the slow local operations
+(syncs, SR generation, evaluations, combiner fits …) run in background
 threads tracked by :mod:`euclid_polish.web.jobs`; the UI polls the job
 endpoints for live progress.
 

@@ -64,7 +64,8 @@ export type FrameStatus =
   | { kind: "missing"; message: string }
   | { kind: "error"; message: string; hint?: string };
 
-/** What a frame shows: a served cube, a client residual, or the movie. */
+/** What a frame shows: a served cube or a client residual. The movie frame
+ *  holds its base cube as a "cube" and paints its own frames. */
 export type Shown =
   | { kind: "cube"; rec: CubeRec }
   | { kind: "residual"; rec: Residual & { key: string; pixscale: number; wcs: CubeRec["wcs"]; displayScale: 1; transferGroup: string }; op: ResidualOp; a: string; b: string };
@@ -166,10 +167,12 @@ export type ImageViewerProps = {
   urlKey?: string;
   onState?: (s: ViewerState) => void;
   onReady?: (api: ViewerApi | null) => void;
-  /** The control bar: "full" (default), "compact" (no Display, tools or
-   *  export menus) or "none" (no bar; with `nav` a bar of navigation + export only). */
+  /** The control bar: "full" (default), "compact" (a basic Display row, no
+   *  tools or export menus) or "none" (no bar; with `nav` a bar of navigation,
+   *  export and Open large only). */
   toolbar?: ToolbarMode;
-  /** Navigation (◀ index / count ▶, run-through) and the export menu in the bar (default true). */
+  /** Navigation (◀ index / count ▶, run-through) in the bar (default true);
+   *  a full bar keeps its export menu without it. */
   nav?: boolean;
   className?: string;
   /** Per-viewer display override (wins over the Display panel). */

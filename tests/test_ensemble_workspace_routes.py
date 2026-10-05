@@ -1,4 +1,4 @@
-"""HTTP contract of the Ensemble workspace routes (routes/ensemble.py): the
+"""HTTP contract of the Models workspace routes (routes/ensemble.py): the
 new read endpoints, the job endpoints' validation and the knobs they hand
 their jobs (spawn stubbed — nothing runs)."""
 from __future__ import annotations

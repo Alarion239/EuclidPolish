@@ -263,8 +263,8 @@ def load_all_band_rotpools(
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
 ) -> dict[str, PSFSet] | None:
     """All four band pools with a SHARED bagging subset, or ``None`` when any
-    band's pool file is missing (caller falls back to the live-rotation /
-    unrotated sets)."""
+    band's pool file is missing (caller falls back to the unrotated cluster
+    sets)."""
     if not all(os.path.isfile(rotpool_path(b, psf_dir)) for b in Config.BANDS):
         return None
     return {b.name: load_band_rotpool(

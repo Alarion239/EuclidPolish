@@ -1,9 +1,11 @@
-"""Unified grouped evaluation: A / B / C lens grades + synthetic, one run.
+"""Unified grouped evaluation: A / B / C lens grades + real galaxies + synthetic, one run.
 
-Runs the SR model over N real lens cutouts per grade (A/B/C — LR+SR only) plus
-N synthetic validation triptychs (LR+SR+HR), into a single run dir with one
-``manifest.csv`` whose ``grade`` column is the group ∈ {A, B, C, synthetic}.
-Shares the SR model load across all groups and runs locally, in-process.
+Runs the SR model over N real lens cutouts per grade (A/B/C — LR+SR only), up
+to 3N cached real field galaxies (``gal`` — LR+SR only) and up to 3N + 3N
+source-centered synthetic stamps (``syn-lens`` / ``syn-gal`` — LR+SR+HR), into
+a single run dir with one ``manifest.csv`` whose ``grade`` column is the group
+∈ {A, B, C, gal, syn-lens, syn-gal}. Shares the SR model load across all groups
+and runs locally, in-process.
 """
 
 from __future__ import annotations

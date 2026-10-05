@@ -98,7 +98,8 @@ def test_templates_and_classic_assets_are_deleted():
                  "ensemble_train_curves.js", "fasrc_step_card.js",
                  "job_status.js", "style.css"):
         assert not (WEB / "static" / name).exists(), name
-    # static/cutout_viewer.js is WP-V's to port and delete; not pinned here.
+    # static/cutout_viewer.js was ported to TypeScript and deleted (35307ef);
+    # not pinned here.
 
 
 def test_no_python_module_renders_a_template():

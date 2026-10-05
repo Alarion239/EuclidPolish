@@ -48,7 +48,7 @@ describe("star catalogue", () => {
     expect(filterStars(stars, { ...f, cutouts: "none" }).map((s) => s.id)).toEqual([3]);
     expect(filterStars(stars, { ...f, band: "H_E", bandState: "corrupted" }).map((s) => s.id)).toEqual([2]);
     expect(filterStars(stars, { ...f, band: "any", bandState: "failed" }).map((s) => s.id)).toEqual([3]);
-    // "any" = the star's overall (best-band) state, the same rule as the KPI strip:
+    // "any" = the star's overall (best-band) state, the same rule as the backend's summary counts:
     // star 2 has a corrupted H but a valid VIS, so it is overall valid, not corrupted
     expect(filterStars(stars, { ...f, band: "any", bandState: "corrupted" })).toEqual([]);
     expect(filterStars(stars, { ...f, band: "any", bandState: "valid" }).map((s) => s.id)).toEqual([1, 2]);

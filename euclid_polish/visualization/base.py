@@ -1,7 +1,7 @@
 """
 Shared visualization base for EuclidPolish.
 
-Two stretch modes are supported on intensity panels:
+Three stretch modes are supported on intensity panels:
 
 * ``linear``  — straight imshow with percentile-clipped colour bounds. Good
                 for inspecting the noise floor and morphology of typical
@@ -10,9 +10,10 @@ Two stretch modes are supported on intensity panels:
 * ``asinh``   — ``arcsinh(x / scale)`` (Lupton+ 2004). Linear near zero
                 (preserves the sky-subtracted noise structure including
                 negatives) and logarithmic for ``|x| >> scale`` (compresses
-                bright stars). ``scale`` defaults to the median absolute
-                deviation of the image so that ±1 in stretched units roughly
-                corresponds to ±1σ of the noise.
+                bright stars). ``scale`` defaults to
+                ``Config.STRETCH_SCALE_E`` — the knee the network trains in
+                (see :func:`_asinh_scale`); the per-image MAD scale (±1 in
+                stretched units ≈ ±1σ of the noise) is :func:`_asinh_scale_mad`.
 * ``log10``   — legacy log of clamped data. Useful for strictly-positive
                 domains like PSFs and cutouts; misleading on sky-subtracted
                 images that contain negatives.
@@ -392,7 +393,7 @@ class BaseVisualizer:
             in the same units as ``residual``. Anything ≥ noise level works.
         clip : (low, high)
             Log-display range. Default ``[1e-3, 1.0]`` shows three decades:
-            <0.1% (yellow → black), 1% (mid), 10% (orange), ≥100% (saturated
+            ≤0.1% (black), 1% (mid), 10% (orange), ≥100% (saturated
             yellow / model failure).
         cmap : str
             ``magma``: black at low rel-err (good), bright yellow at high

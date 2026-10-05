@@ -1,9 +1,9 @@
 """Universal job configuration shared across the web UI.
 
 A small set of knobs that several pages used to each carry their own copy
-of (VIS cutout size, stars-per-PSF, scene counts, HR image size, asinh
-scale). They now live here, are edited once in System › Config
-(``/settings/config``), persist to ``~/.euclid_polish/job_config.json``
+of (VIS cutout size, scene counts, HR image size, asinh scale). They now
+live here, are edited once in System › Config
+(``/system/config``), persist to ``~/.euclid_polish/job_config.json``
 (survives reloads/relaunches), and are injected into the relevant job
 submissions server-side.
 
@@ -68,7 +68,7 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
 def used_by() -> dict[str, list[str]]:
     """JobConfig field → the FASRC step ids its value is injected into
     (the inverse of :data:`FASRC_STEP_PARAMS`, in step order). Fields no step
-    reads (``asinh_scale``, a local display knob) are absent."""
+    reads (``asinh_scale``, a retired display knob) are absent."""
     out: dict[str, list[str]] = {}
     for step_id, mapping in FASRC_STEP_PARAMS.items():
         for attr in mapping.values():
@@ -127,19 +127,20 @@ class JobConfig:
     # download and the ePSF extraction (so they always match). Must be odd.
     vis_pixels:    int = 511
     # (stars_per_psf / min_stars_per_psf are PSF-extraction-specific and live
-    #  on the /psfs extract step card, not here.)
-    # Synthetic scene counts for generation (/sky).
+    #  on the Synthetic › PSF extract step card, not here.)
+    # Synthetic scene counts for generation (Synthetic › Records).
     n_train:       int = 6400
     n_valid:       int = 100
     # Held-out test scenes — the eval set (train/save-best never touch it).
     n_test:        int = 100
-    # HR scene side in 0.05″/pix pixels — feeds both synthetic generation
-    # and inference. Kept a multiple of 6 (the NISP rebin factor).
+    # HR scene side in 0.05″/pix pixels — feeds synthetic generation.
+    # Kept a multiple of 6 (the NISP rebin factor).
     hr_image_size: int = 510
     # Generated TNG-galaxy density. The activated Q1 continuous
     # bright/main/flat count law owns the exact value.
     galaxy_density_arcmin2: float = Config.GALAXY_DENSITY_ARCMIN2
-    # Brightness knee (e⁻) for the asinh display panels in inference.
+    # Brightness knee (e⁻) of the retired Inference page's asinh panels; no
+    # job or page reads it any more (System › Config hides it).
     asinh_scale:   float = 1000.0
     # WDSR SR training — LR schedule (warmup → cosine) that decays smoothly from
     # the start (kills the old flat-5e-4 "skip-only" plateau) + reduce-LR-on-

@@ -1,9 +1,10 @@
 """paths helpers for the EuclidPolish web UI (extracted from app.py).
 
-The Inspect workspace (spec §8.6) reads FITS files from a fixed set of
-*inspectable roots* (:func:`inspect_roots`): every path the file browser lists
-or the inspector opens must resolve (symlinks expanded) inside one of them,
-so a crafted ``?fits=../../etc/passwd`` can never escape the data tree.
+The Files workspace (the former Inspect workspace, spec §8.6) reads FITS
+files from a fixed set of *inspectable roots* (:func:`inspect_roots`): every
+path the file browser lists or the inspector opens must resolve (symlinks
+expanded) inside one of them, so a crafted ``?fits=../../etc/passwd`` can
+never escape the data tree.
 """
 from __future__ import annotations
 
@@ -307,10 +308,11 @@ def browse_inspectable(raw_dir: str, query: str = "") -> dict[str, Any]:
 def _abort_json(code: int, message: str) -> NoReturn:
     """Abort with ``code`` and a JSON ``{ok: false, error}`` body on ANY path.
 
-    A route outside the JSON-error prefixes (``/api/tracking``) would
-    otherwise answer with Flask's HTML page, and the SPA's toast could only
-    show the status line. The exception keeps ``description`` too, so a
-    JSON-prefix handler (and callers) still read the message.
+    A route outside the JSON-error prefixes (``/api/tracking`` was one until
+    every ``/api/`` error became JSON) would otherwise answer with Flask's
+    HTML page, and the SPA's toast could only show the status line. The
+    exception keeps ``description`` too, so a JSON-prefix handler (and
+    callers) still read the message.
     """
     response = jsonify({"ok": False, "error": message})
     response.status_code = code

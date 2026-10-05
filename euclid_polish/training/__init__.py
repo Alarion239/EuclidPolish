@@ -1,7 +1,7 @@
 """
 Model Training module for EuclidPolish.
 
-Multi-band training pipeline (4-channel LR input, 1-channel VIS HR target).
+Multi-band training pipeline (4-channel LR input, 4-channel VIS+NISP HR target).
 """
 
 from euclid_polish.training.inference import (

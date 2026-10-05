@@ -221,7 +221,7 @@ class ConditionalRadiusLaw:
 
     @classmethod
     def from_payload(cls, payload: dict) -> ConditionalRadiusLaw:
-        """Load the current radius law, ignoring surplus keys in v11 artifacts."""
+        """Load the current radius law, ignoring any surplus payload keys."""
         try:
             covariance = tuple(
                 tuple(float(item) for item in row)

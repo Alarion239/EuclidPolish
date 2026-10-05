@@ -1,4 +1,4 @@
-"""Unit tests for the FASRC ``Logs`` tab endpoints.
+"""Unit tests for the FASRC run-log endpoints (listed in Runs › History).
 
 Both endpoints (``/api/fasrc/runs`` and ``/api/fasrc/runs/log``) parse
 remote command output. We stub the SSH session with a canned-response

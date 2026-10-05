@@ -1,7 +1,8 @@
 """Fit the spatial gating combiner on cached ensemble member cubes.
 
-Training reads random crops straight from the memory-mapped member cubes, so
-the fit never holds the whole validation stack in RAM. The TensorFlow graph
+Training reads random crops from a memory-mapped on-disk copy of the member
+cubes (float16 asinh features, ``_FeatureCache``), so the fit never holds the
+whole validation stack in RAM. The TensorFlow graph
 here mirrors :func:`euclid_polish.eval.spatial_gate.gate_logits` operation for
 operation; the fitted parameters are handed to the NumPy
 :class:`~euclid_polish.eval.spatial_gate.SpatialGateCombiner` for inference.

@@ -328,8 +328,8 @@ class JobRegistry:
         """Run ``target(log_capture)`` in a daemon thread; return the job id.
 
         ``target`` receives a small helper that lets it write to the
-        job's log buffer (and that monkey-patches print() to redirect
-        stdout into the same buffer while it's running). ``kind`` is a
+        job's log buffer (and that routes this thread's stdout/stderr
+        into the same buffer while it's running). ``kind`` is a
         free-form tag (e.g. ``"fasrc-env-update"``) the UI can group by.
         """
         with self._lock:

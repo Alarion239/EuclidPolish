@@ -4,7 +4,6 @@ Coverage:
   * The PSF class methods (normalise, resample, crop, recentre,
     convolve, save/load).
   * The standalone measurement helpers (FWHM, centroid).
-  * The instrument loaders (sum=1, on HR grid, optionally recentred).
 """
 
 from __future__ import annotations
@@ -208,8 +207,8 @@ class TestPSFOperations:
         assert out.total_flux == pytest.approx(1.0, abs=1e-5)
 
     def test_recentred_subpixel_centroid(self):
-        """Sub-pixel centroid recentring (used by the Euclid loader)
-        moves a fractional-offset PSF to within < 0.1 px of centre."""
+        """Sub-pixel centroid recentring moves a fractional-offset PSF to
+        within < 0.1 px of centre."""
         d = _gauss(41, 2.5, centre_offset=(0.4, -0.3))
         psf = PSF(data=d, pixel_scale=0.05)
         out = psf.recentred(on="centroid", subpixel=True)

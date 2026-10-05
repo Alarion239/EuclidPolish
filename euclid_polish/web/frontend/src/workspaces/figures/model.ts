@@ -463,7 +463,7 @@ export function previewPaperCap(vh: number, topbar: number, stacked: boolean): n
   return box - 2 * PREVIEW.pad;
 }
 
-/** The Results gallery's text filter: every word must appear in the label,
+/** The Sheet crop pool gallery's text filter: every word must appear in the label,
  *  id, source object, source or tiers (case-insensitive). */
 export function galleryMatches(r: SavedResult, query: string): boolean {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);

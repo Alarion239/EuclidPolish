@@ -139,7 +139,8 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
 
   // ---- pointer → image ----
   // Frame CSS coordinates are measured from the padding box (the canvas and
-  // the SVG sit there; S = clientWidth), not the 1 px border's outer edge.
+  // the SVG sit there; S = clientWidth), not the border box (the frame has
+  // no border now; contentBoxOrigin would stay exact if it got one).
   // `clamp` pins a point outside the image onto its edge (profile drags).
   const toImage = (clientX: number, clientY: number, clamp = false) => {
     const el = elRef.current, L = layout();

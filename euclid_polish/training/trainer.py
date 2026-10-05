@@ -72,8 +72,9 @@ TRAINING_LOG_COLUMNS  = (
     "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
     # The held-out VALIDATION loss (MAE, asinh space) the SECOND save-best
     # track keys on (lower = better; computed in _validate alongside PSNR —
-    # NOT the training window). Its checkpoints live in ``loss_best/``;
-    # /inference loads PSNR- or loss-best. The name predates the removal of
+    # NOT the training window). Its checkpoints live in ``loss_best/``; the
+    # ensemble loads only the PSNR-best track unless ``include_loss_best``
+    # opts ``loss_best/`` in. The name predates the removal of
     # the multi-lane blend and is kept for config/plot continuity.
     "combined_loss",
     # "1" on the single pre-training row written when a run resumes: the
@@ -344,7 +345,8 @@ class Trainer:
         # Second save-best track, keyed on the held-out validation LOSS
         # (lower = better). Its own checkpoint
         # set lives in a ``loss_best/`` subdir so the two never collide and
-        # the mirror pulls both; /inference can load from either. Wraps the
+        # the mirror pulls both; the ensemble loads only the PSNR-best track
+        # (``loss_best/`` only via ``include_loss_best``). Wraps the
         # SAME checkpoint object — only the save *trigger* and directory
         # differ. ``best_loss`` is the persisted lowest-combined-loss bar.
         self.loss_checkpoint_manager = tf.train.CheckpointManager(
@@ -537,7 +539,9 @@ class Trainer:
         evaluate_every : int
             Evaluate every N steps.
         save_best_only : bool
-            Only save checkpoints when PSNR (stretched) improves.
+            Only save checkpoints when a tracked metric improves: PSNR
+            (stretched) for the root track, the validation loss for
+            ``loss_best/``. ``False`` saves both tracks every eval.
         validate_images : int
             Max number of validation images to evaluate on during training.
         step_callback : Optional[Callable[[int, int], None]]
@@ -1045,8 +1049,9 @@ class Trainer:
         Returns:
         --------
         metrics : dict
-            See ``models.common.evaluate`` — keys are ``psnr_stretched``
-            and ``psnr_raw``.
+            See ``models.common.evaluate`` — keys are ``psnr_stretched``,
+            ``psnr_raw``, ``mae_stretched`` and ``psnr_band_stretched``
+            (plus ``psnr_knee`` for a multi-knee member).
         """
         if self._knees:
             return evaluate(self.checkpoint.model, dataset, knees=self._knees,

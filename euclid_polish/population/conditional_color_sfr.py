@@ -25,7 +25,8 @@ small positive value only against extreme posterior tails.
 A few percent of MER rows report absurd flux errors (tens of µJy against a
 ~0.2 µJy typical σ), so every neighbourhood statistic is ROBUST: the location
 is the weighted median, the observed spread the weighted 16–84 half-width,
-and the noise level the weighted median of the reported variances. A junk-σ
+and the noise level the weighted mean of the reported variances over rows
+below 25× their weighted median. A junk-σ
 row still enters a neighbourhood, but its own posterior gain k ≈ 0 collapses
 it to the local relation, and it cannot poison the neighbourhood estimates.
 

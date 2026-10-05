@@ -3,7 +3,7 @@
 
 For each star in ``data/euclid_stars/stars.csv`` we load its VIS cutout,
 convert it from archive ADU/s to electrons over the stack (same MAGZERO
-conversion the model input uses, ``euclid.photometry.adu_per_s_to_electrons``),
+conversion the model input uses, ``euclid_polish.photometry.adu_per_s_to_electrons``),
 measure its flux in circular apertures, and compare to the electrons implied
 by the catalog magnitude (``ab_mag_to_electrons``). A ratio ≈ 1 in the large
 aperture means catalog-mag electrons ≈ total measured electrons — i.e. a

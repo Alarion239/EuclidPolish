@@ -33,8 +33,9 @@ GAL_GRADE = "gal"
 # MER catalogue (``catalogue.mer_catalogue``) column names. ``det_quality_flag``
 # and the coord/flux columns are already used by EuclidCatalog queries; the
 # morphology/classification columns below are the Euclid Q1 names — confirm them
-# once against the live schema (see scripts/fetch_galaxy_catalog.py --probe), and
-# if a name differs, change it here only (the ADQL is built from these).
+# once against the live schema (a wrong name makes the logged ADQL error; a wrong
+# value shows in the :func:`_diagnose_zero_cone` breakdown), and if a name
+# differs, change it here only (the ADQL is built from these).
 _ID_COL = "object_id"
 _RA_COL = "right_ascension"
 _DEC_COL = "declination"
@@ -71,7 +72,7 @@ def galaxy_adql(ra: float, dec: float, radius_deg: float,
     flags are NULL (unset) for ordinary sources and only set (``= 1``) for the
     point-like / spurious ones, so ``= 0`` matched nothing.
 
-    ``relax=True`` (the default profile) is therefore NULL-safe: keep sources NOT
+    ``relax=True`` (the default profile of :func:`build`) is therefore NULL-safe: keep sources NOT
     flagged point-like or spurious (``flag IS NULL OR flag = 0`` ⇒ *extended,
     non-spurious*) while still dropping anything explicitly flagged ``= 1``. This
     is what keeps the set galaxies rather than stars. Both profiles keep the

@@ -61,7 +61,7 @@ def test_max_mode_watches_for_increase():
 
 def test_non_finite_metric_ignored():
     r = PlateauLRReducer(mode="min", patience=2000, min_delta=1e-4, cooldown=0)
-    # inf metrics (no active lane) neither reset nor trip the guard.
+    # Non-finite metrics (inf / NaN) neither reset nor trip the guard.
     assert not r.should_reduce(1000, float("inf"))
     assert not r.should_reduce(2000, float("nan"))
     # A finite value then flat still fires on the finite baseline.

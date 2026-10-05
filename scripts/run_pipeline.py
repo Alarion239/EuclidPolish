@@ -3,9 +3,11 @@
 
 Mirrors the three CLI menu steps but drives them sequentially without prompts:
 
-    1. Generate clean HR fields with PHZ-conditioned TNG galaxies + stars + lenses
-       (saved as ``clean_{train,validate,test}.tfrecord`` in v2 schema,
-       4 channels).
+    1. Generate clean, starless HR fields with PHZ-conditioned TNG galaxies +
+       lenses (saved as ``clean_{train,validate,test}.tfrecord`` in v2 schema,
+       4 channels). Fixed stars are drawn alongside (none for an on-the-fly
+       train split, which injects fresh stars per visit) but only recorded in
+       the ``sources_*.csv`` sidecar; step 2 re-injects them.
     2. Run the per-band forward model HR → LR (PSF convolution + detector/MER
        noise), including a seeded elastic PSF deformation. NISP Y/J/H noise is
        drawn per native 0.30" dither and resampled to the 0.10" archive grid.
@@ -392,9 +394,12 @@ def _photometric_transfer_from_args(
 ) -> F814WToVisTransfer | None:
     """Return an explicitly embedded transfer, or defer to the local fit.
 
-    Web-submitted FASRC jobs embed all three fitted coefficients because the
-    analysis artifact lives on the web host and may not exist on the cluster.
-    Older CLI invocations without these flags retain the file-based behavior.
+    Web-submitted FASRC jobs embedded all three fitted coefficients (until
+    38c578e) because the analysis artifact lives on the web host and may not
+    exist on the cluster; they now embed the galaxy-population artifact
+    (``--joint-galaxy-population-file``/``-json``) instead, and this transfer
+    only feeds the COSMOS-prior fallback in ``_gen_init_worker``. Invocations
+    without these flags retain the file-based behavior.
     """
     values = (
         getattr(args, "cosmos_vis_offset_mag", None),
@@ -738,8 +743,8 @@ def step_convolve(args: argparse.Namespace) -> None:
     _stamp_psf_kinds(conv_ctx, args.psf_dir)
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
-    # Structured progress for the WebUI — one cumulative bar across both
-    # subsets present. Pre-count the clean records (re-iterating is ~ms).
+    # Structured progress for the WebUI — one cumulative bar across every
+    # selected subset. Pre-count the clean records (re-iterating is ~ms).
     reporter = Reporter.from_env()
     reporter.set_stage("forward-modelling HR → LR")
     counts = {}
@@ -1265,10 +1270,11 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                      tng_properties_csv="",
                      tng_radius_manifest_path="",
                      ) -> None:
-    """ProcessPool initializer: build the (small, filtered) catalog +
-    simulator + forward model once per worker. The COSMOS2025 FITS is
-    memmapped and only the filtered columns are held, so each worker's copy
-    is a few MB — no 10 GB-per-worker blow-up."""
+    """ProcessPool initializer: build the galaxy prior + simulator + forward
+    model once per worker. The prior is the parent's embedded
+    ``joint_galaxy_population_json`` (always set when galaxies are on), else
+    the compact COSMOS2025 prior NPZ at ``prior_path`` — never the full
+    COSMOS2025 FITS, so there is no 10 GB-per-worker blow-up."""
     global _W_SIM, _W_FWD, _W_RECORDS_DIR
     transfer = _photometric_transfer_from_args(argparse.Namespace(
         cosmos_vis_offset_mag=cosmos_vis_offset_mag,
@@ -1632,10 +1638,10 @@ def main() -> int:
     print(f"Pipeline started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  args = {_args_for_log(args)}")
 
-    # Per-stage timings CSV — default sits next to the SLURM .out file
-    # via ``$EUCLID_POLISH_DATA_DIR/images/records_v2/stages_<jobid>.csv``
-    # so the FASRC dashboard can fetch it back without knowing the
-    # exact records-dir layout.
+    # Per-stage timings CSV — defaults to ``<records-dir>/stages_<jobid>.csv``
+    # (``stages_local.csv`` outside SLURM). The FASRC dashboard fetch of it
+    # (``/api/fasrc/stages/<jobid>``) was removed in 0ad56d9; nothing in the
+    # web console reads it now.
     slurm_jobid = os.environ.get("SLURM_JOB_ID", "local")
     stages_path = args.stages_csv or os.path.join(
         args.records_dir, f"stages_{slurm_jobid}.csv",

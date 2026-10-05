@@ -1,5 +1,6 @@
-/* The server / console version state in plain words, shared by Home › Server
- * and System › Code (versionText.test.ts). `behind` (GET /api/version) is
+/* The server / console version state in plain words (versionText.test.ts).
+ * No page imports it since 0934002: System › Code, the rail and the top bar
+ * word these states inline. `behind` (GET /api/version) is
  * set when a backend .py file the server loaded changed on disk since it
  * started; a new console build only needs a page reload. */
 import type { Tone } from "../../ui";

@@ -36,9 +36,10 @@ def test_lr_input_band_names_match_bands_tuple():
 
 def test_native_detector_scale_vis_vs_nisp():
     """VIS samples natively at 0.10″; NISP H2RGs at 0.30″. The field records
-    the native detector pitch (used for cosmic-ray areal density); it is not a
-    forward-model grid scale — the forward model itself works on the uniform
-    0.10″ archive grid (pixel_scale_lr_arcsec) for every band."""
+    the native detector pitch (cosmic-ray areal density, and the grid detector
+    noise is generated on before it is resampled into the mosaic); the optical
+    forward model works on the uniform 0.10″ archive grid
+    (pixel_scale_lr_arcsec) for every band."""
     assert Config.BAND_VIS.native_detector_scale_arcsec == 0.10
     assert Config.BAND_VIS.pixel_scale_lr_arcsec == 0.10
     for b in (Config.BAND_Y_E, Config.BAND_J_E, Config.BAND_H_E):

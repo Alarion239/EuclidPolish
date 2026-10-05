@@ -1,12 +1,13 @@
-"""Detector artifact injection: cosmic rays + hot pixels + masked-trail streaks.
+"""Detector artifact injection: cosmic rays + hot/dead pixels + masked-trail streaks.
 
 Real Euclid LR exposures contain features that pure Poisson + read-noise
-does not reproduce. Three classes are modelled here:
+does not reproduce. Four classes are modelled here:
 
 * **Cosmic rays** — galactic-cosmic-ray (GCR) muons and protons hit the
   detector at ~5 hits/cm²/s at L2. Each hit deposits charge in one or a
   few neighbouring pixels; the full track geometry is approximated as
-  short oriented streaks of length 1–4 native pixels. Most are removed
+  oriented streaks, mostly 1–4 native pixels long with an exponential tail
+  of oblique tracks capped at ``cr_max_track_length``. Most are removed
   by the MER cross-dither median; this models the post-rejection survivors.
 * **Hot pixels** — a sparse residual population remains after detector-mask
   rejection and shows anomalously high dark current in the delivered image.
@@ -21,10 +22,12 @@ does not reproduce. Three classes are modelled here:
   in the final image. Roughly 30–50% of VIS Q1 cutouts show at least
   one such streak.
 
-On native VIS images these are injected after Poisson shot noise and before
-read noise. For NISP the public MER product has already gone through ramp
-fitting, masking, and dither resampling; :func:`apply_archive_noise` therefore
-injects only the rare surviving residuals on the final 0.10" grid.
+The public MER product has already gone through masking and dither
+resampling (and, for NISP, ramp fitting), so :func:`apply_archive_noise`
+(every band alike) injects only the rare surviving residuals, after the
+noise, on the final 0.10" grid.
+The older detector-grid :func:`apply_band_noise` (no longer called by the
+generator) injects them after Poisson shot noise and before read noise.
 
 Rates are quoted per native detector pixel (12 µm VIS, 18 µm NISP). The
 caller passes the band, which sets the pixel area to scale to.
@@ -250,8 +253,9 @@ def inject_dead_pixels(
 
     The replacement value is drawn from ``N(0, dead_pixel_jitter_sigma ·
     local_sigma_e)`` rather than being exactly zero, so the model keys on the
-    spatial anomaly instead of memorising a magic constant. (Read noise, added
-    downstream, jitters it further.) ``local_sigma_e <= 0`` → exactly zero.
+    spatial anomaly instead of memorising a magic constant. (Only the older
+    :func:`apply_band_noise` adds read noise downstream; :func:`apply_archive_noise`
+    injects artifacts after the noise.) ``local_sigma_e <= 0`` → exactly zero.
 
     Positions are randomized per frame (like the hot-pixel mask) so the network
     learns position-independent robustness, not a fixed dead-pixel map.
@@ -309,10 +313,11 @@ def inject_streaks(
       - Gaussian cross-section across the spine (full width ≈ width_pix)
 
     ``local_sigma_e`` is the per-pixel noise RMS at this point in the
-    pipeline (sky + dark + read shot noise quadrature). The caller computes
-    it once per band; this function does not re-derive it from the image,
-    since the image at this stage is sky/dark-subtracted and a per-pixel
-    estimate would be biased by sources.
+    pipeline (the single-pixel sky scatter in :func:`apply_archive_noise`;
+    sky + dark + read in quadrature in the older :func:`apply_band_noise`).
+    The caller computes it once per band; this function does not re-derive
+    it from the image, since the image at this stage is sky/dark-subtracted
+    and a per-pixel estimate would be biased by sources.
 
     The amplitude is intentionally sub-σ (typically 0.3–0.8 σ): the
     streaks are invisible at normal stretches and only emerge under tight
@@ -390,12 +395,13 @@ def inject_artifacts(
     cfg: ArtifactConfig | None = None,
     local_sigma_e: float = 0.0,
 ) -> np.ndarray:
-    """Apply the full artifact stack (CR + hot pixels + streaks) to one band frame.
+    """Apply the full artifact stack (CR + hot + streaks + dead pixels) to one band frame.
 
     ``local_sigma_e`` is the per-pixel noise RMS for the current band's
-    LR grid (Poisson sky + dark + read quadrature); needed by
-    :func:`inject_streaks` to calibrate its sub-σ amplitude. Pass 0.0 to
-    disable streaks even if ``cfg.add_streaks`` is True.
+    LR grid (see :func:`inject_streaks`); needed by :func:`inject_streaks`
+    to calibrate its sub-σ amplitude and by :func:`inject_dead_pixels` for
+    its jitter. It must be positive while ``cfg.add_streaks`` is True
+    (``ValueError`` otherwise); set ``add_streaks=False`` to skip streaks.
     """
     cfg = cfg or ArtifactConfig()
     if cfg.add_streaks and local_sigma_e <= 0:

@@ -5,10 +5,12 @@ checkpoint, and write two FITS to your local disk:
   * ``original_stack.fits`` — the stacked 4-band original LR cube
     (VIS, Y_E, J_E, H_E) at 0.10"/pix, in electrons, stored as one image
     plane per band (band 0 = VIS, directly comparable to SR).
-  * ``SR.fits`` — the super-resolved VIS image at 0.05"/pix.
+  * ``SR.fits`` — the super-resolved image at 0.05"/pix: a 4-band cube, one
+    image plane per band in the same order (band 0 = VIS); a legacy
+    VIS-output checkpoint gives the single VIS plane.
 
 The model takes the 4-band Euclid LR cube (VIS + NIR Y/J/H) as input and
-emits a single-band VIS HR image, so all four bands are fetched at the
+emits the 4-band HR cube (VIS + Y/J/H), so all four bands are fetched at the
 same sky footprint, converted from the archive's ADU/s to electrons via
 each band's MAGZERO, stacked, and run through ``reconstruct``. The raw
 per-band archive cutouts are also kept as ``raw_<band>.fits``.

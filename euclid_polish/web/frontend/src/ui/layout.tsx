@@ -3,7 +3,7 @@
    header instead; WP-F3).
 
    Headings: the page's one h1 is the workspace's visually hidden heading
-   (<Workspace>, "Records, Data"); a CardHead title is an h2, a Section title
+   (<Workspace>, "Records, Synthetic"); a CardHead title is an h2, a Section title
    an h3, a PageHead title an h2 — each keeps its own look. */
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { Icon } from "./icons";

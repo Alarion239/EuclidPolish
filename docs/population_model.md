@@ -39,10 +39,10 @@ area of the field-centred Gaia cones. Gaia informs the shared count slope but
 not the active Q1 normalization.
 
 Gaia remains useful for a different quantity: matched Gaia--Euclid sources
-constrain the temperature/colour locus. Gaia sampling uses twelve 0.35-degree
-cones centred by spherical k-means on the cached Euclid sources with
-`POINT_LIKE_PROB >= 0.9`; these geometric centres are not removed from the
-query. The cones are retrieved synchronously from the ARI Gaia DR3 TAP mirror;
+constrain the temperature/colour locus. Gaia sampling uses three fixed
+0.35-degree cones, one at the centre of each Q1 deep field (EDF-N, EDF-S,
+EDF-F); the matched Euclid colour sample (`POINT_LIKE_PROB >= 0.9`, stratified
+by VIS PSF magnitude) is drawn from the same cones. The cones are retrieved synchronously from the ARI Gaia DR3 TAP mirror;
 any TAP overflow fails closed instead of caching a truncated sample. Euclid flux errors use the fitted
 heavy-tailed likelihood, and local `POINT_LIKE_PROB` weights the colour-locus
 fit. The generator inverse-CDF samples the fitted finite-domain straight law
@@ -53,7 +53,8 @@ the exact artifact version and cuts are project validation choices.
 
 ## Active Euclid-only galaxy model
 
-The active galaxy model uses exactly two Euclid quantities:
+The active galaxy model's brightness and size laws use exactly two Euclid
+quantities:
 
 \[
 m=m_{\rm VIS,2FWHM},\qquad
@@ -123,15 +124,18 @@ Sérsic flux, `POINT_LIKE_FLAG IS NULL`, `SPURIOUS_FLAG = 0`,
 Every grouped bin is weighted by `PHZ_GAL_PROB`.
 
 Generation marginalizes the two-dimensional law over brightness and draws
-circularized VIS Sérsic \(R_e\) first. It chooses a diversity-balanced TNG donor
-only from galaxies with at least one natively large-enough orientation, then
-area-downsamples an eligible orientation to that radius. It never enlarges a
-TNG stamp. The generator then draws \(m\mid R_e\) from the same joint law. The
+circularized VIS Sérsic \(R_e\) first, then draws \(m\mid R_e\) from the same
+joint law (and the empirical colours and SFR below) before choosing a donor.
+It chooses a diversity-balanced TNG donor only from galaxies with at least one
+natively large-enough orientation, then area-downsamples an eligible
+orientation to that radius. It never enlarges a TNG stamp. The
 normalized WebUI radius diagnostics keep two model marginals separate: one
 weights the conditional radius law by the clean Q1 magnitude brackets, while
 the other uses the complete generation law including its flat faint extension.
-A separate empirical VIS PSF is used to measure the resized stamp and one
-shared four-band factor matches the drawn 2FWHM flux. COSMOS,
+A circular Gaussian PSF at a MER photometric FWHM, drawn from the empirical Q1
+FWHM distribution conditional on the sampled VIS 2FWHM magnitude, is used to
+measure the resized stamp (its PSF-convolved VIS flux within a radius of one
+FWHM), and one shared four-band factor matches the drawn 2FWHM flux. COSMOS,
 detection-radius, and Kron-radius plots are diagnostic overlays only.
 
 The image boundary is explicit throughout this path: `TNGView` identifies one
@@ -209,12 +213,13 @@ arrays into the fingerprinted artifact; generation traverses it in NumPy.
 
 ## Current scope and validation status
 
-Version 12 contains the continuous three-slope bright bridge/main/flat
+Version 15 contains the continuous three-slope bright bridge/main/flat
 brightness law, whose flat level is re-derived from the observed Q1 count
-peak, and the single straight, no-tail circularized-Sérsic-radius law. It is
-the only supported population artifact contract; older versions must be
-refitted before use. The fitting step reads no TNG image; TNG is used only
-after activation as a random morphology donor. This deliberately modest
+peak, the single straight, no-tail circularized-Sérsic-radius law, the
+magnitude-conditioned MER aperture-FWHM distribution, and the colour+SFR
+forest above. It is the only supported population artifact contract; older
+versions must be refitted before use. The fitting step reads no TNG image; TNG
+is used only after activation as an SFR-rank-matched morphology donor. This deliberately modest
 model aims for plausible source counts and sizes rather than an exact
 catalogue replica.
 

@@ -106,8 +106,9 @@ class DownloadConfig:
       * which Euclid archive instrument + filter to query
       * which pixel scale to use for the cutout-radius calculation.
 
-    Pass a :class:`BandConfig` directly via :meth:`for_band` for a fully
-    populated config; the bare init exists for back-compat tests.
+    Build one from a band name via :meth:`for_band` for a config fully
+    populated from that band's :class:`BandConfig`; the bare init exists for
+    back-compat tests.
     """
     cutout_size: int = Config.DEFAULT_CUTOUT_SIZE
     position_tolerance: float = Config.Matching.DOWNLOAD_POSITION_TOL_ARCSEC
@@ -141,12 +142,12 @@ class DownloadConfig:
         * ``cutout_size_vis_pixels`` (preferred): the *reference* size in
           VIS pixels at 0.10″/pix. Each band's native cutout size is
           derived so every band covers the same angular field. Example:
-          ``cutout_size_vis_pixels=512`` → 51.2″ on a side → VIS
-          fetches 512 px, NISP fetches ~171 px.
+          ``cutout_size_vis_pixels=512`` → 51.2″ on a side → 512 px in
+          every band (VIS and NISP archive mosaics are all 0.10″/pix).
         * ``cutout_size``: explicit native pixel count for this band
           (bypasses the conversion; useful for band-by-band control).
 
-        Pulls instrument / filter / native pixel scale from the band's
+        Pulls instrument / filter / archive pixel scale from the band's
         :class:`BandConfig`; remaining knobs default unless overridden.
         """
         b = Config.get_band(band_name)

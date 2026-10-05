@@ -14,9 +14,9 @@ This module factors all of that into one abstract base class
 Adding a new step (e.g. "ingest JWST F814W") is then a 30-line
 delta — no Flask, web template, or sbatch-template duplication.
 
-The companion in :mod:`euclid_polish.web.fasrc_jobs` (the existing
-training-only sbatch builder) remains untouched for backwards
-compatibility; new code uses this module instead.
+The companion :mod:`euclid_polish.web.fasrc_jobs` holds the SSH + job-DB
+side (:func:`~euclid_polish.web.fasrc_jobs.submit_sbatch_script`); every
+sbatch script is rendered here.
 """
 
 from __future__ import annotations
@@ -472,8 +472,8 @@ class FASRCPipelineStep(ABC):
 
     #: Subclasses override this class-level constant to control where
     #: their log files land. Pipeline steps live under
-    #: ``logs/pipeline``; legacy training presets live under
-    #: ``logs/jobs``. Declared as ``ClassVar`` so the dataclass
+    #: ``logs/pipeline``; ``run_pipeline.py`` jobs (:class:`RunPipelineStep`)
+    #: live under ``logs/jobs``. Declared as ``ClassVar`` so the dataclass
     #: machinery doesn't promote it to a per-instance field.
     log_dir_prefix:  ClassVar[str] = "logs/pipeline"
 
@@ -496,9 +496,10 @@ class FASRCPipelineStep(ABC):
     ) -> dict[str, Any]:
         """Render the full sbatch script + the relative log paths.
 
-        Returns ``{"body": str, "script": rel, "out": rel, "err": rel,
-        "name": str}``. Thin wrapper that picks the log dir and job-name
-        shape from the step and delegates to :func:`render_sbatch_body`.
+        Returns :func:`render_sbatch_body`'s dict plus ``params`` (the
+        prepared params) and ``payload_files``. Thin wrapper that picks the
+        log dir and job-name shape from the step and delegates to
+        :func:`render_sbatch_body`.
         """
         log_dir   = relative_log_dir or self.log_dir_prefix
         ts        = time.strftime("%Y%m%d-%H%M%S")
@@ -563,7 +564,9 @@ def render_sbatch_body(
     Returns
     -------
     dict
-        ``{"body": str, "script": rel, "out": rel, "err": rel, "name": str}``
+        ``{"body": str, "script": rel, "out": rel, "err": rel,
+        "events": rel, "exit": rel, "name": str, "entry": rel | None,
+        "array_count": int, "array_parallelism": int}``
     """
     script_rel = f"{relative_log_dir}/{job_name}.sh"
     array_count = int(array_shape[0]) if array_shape else 0
@@ -586,23 +589,23 @@ def render_sbatch_body(
     exit_runtime_rel = f"{relative_log_dir}/{job_name}{runtime_array_suffix}.exit"
 
     # 14 spaces of leading indent on continuation lines — must equal
-    # or exceed the heredoc body's 12-space dedent baseline, otherwise
+    # or exceed the heredoc body's 8-space dedent baseline, otherwise
     # textwrap.dedent strips a smaller common prefix and the whole
     # script gets a residual indent that breaks bash syntax.
     cmd_line = " \\\n              ".join(shlex.quote(a) for a in cmd_argv)
 
     n_gpus = int(resources.n_gpus)
-    # IMPORTANT — the trailing 12 spaces on gres_line are required.
+    # IMPORTANT — the trailing 8 spaces on gres_line are required.
     #
-    # The template uses ``textwrap.dedent`` with a 12-space baseline;
+    # The template uses ``textwrap.dedent`` with an 8-space baseline;
     # ``gres_line`` is inlined on the same template line as the next
     # ``#SBATCH`` directive. If we wrote just ``"#SBATCH --gres=...\n"``
     # the newline would break out of the f-string's indentation: the
     # line *after* the gres directive would land at column 0, which
     # makes ``textwrap.dedent`` find a common prefix of "" and strip
-    # nothing — the resulting script's ``#!/bin/bash`` keeps 12 leading
+    # nothing — the resulting script's ``#!/bin/bash`` keeps 8 leading
     # spaces and sbatch rejects it with "first line must start with #!".
-    # Padding the newline with 12 spaces re-aligns the next line back
+    # Padding the newline with 8 spaces re-aligns the next line back
     # onto the template's indent so dedent finds a uniform common
     # prefix again.
     gres_line = (
@@ -1796,8 +1799,8 @@ class RunPipelineStep(FASRCPipelineStep):
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
         # ``.get`` rather than ``[…]`` so missing keys don't blow up the
-        # script renderer (the Flask handler validates numerics up-front
-        # via ``StepResources.from_form`` + an explicit ``int()`` pass).
+        # script renderer (the counts and image size are injected from
+        # /config via ``job_config.FASRC_STEP_PARAMS``).
         cmd = [
             "scripts/run_pipeline.py",
             "--ntrain",     str(int(params.get("n_train",    0))),
@@ -1806,11 +1809,11 @@ class RunPipelineStep(FASRCPipelineStep):
             "--image-size", str(int(params.get("image_size", 0))),
         ]
         cmd.extend(self.skip_flags)
-        # ``extra_flags`` predates the structured split selector. The Sky UI
-        # intentionally mirrors the target into this channel so a resident
-        # pre-upgrade Flask process can still forward the new run_pipeline CLI
-        # option before it is restarted. New backends detect that mirror and
-        # emit the option only once.
+        # ``extra_flags`` predates the structured split selector. The old Sky
+        # page mirrored the target into this channel (so a pre-upgrade Flask
+        # process could still forward the run_pipeline CLI option); the SPA
+        # no longer does, but a ``--regenerate-splits`` already in the extra
+        # flags is still detected so the option is emitted only once.
         extra = (params.get("extra_flags") or "").strip()
         extra_tokens = shlex.split(extra) if extra else []
         extra_has_regenerate_splits = any(
@@ -1854,13 +1857,13 @@ class RunPipelineStep(FASRCPipelineStep):
 
 
 class SyntheticGenerateStep(RunPipelineStep):
-    """Synthetic training-pair generation for the /sky page.
+    """Synthetic training-pair generation for the Synthetic workspace.
 
     Renders synthetic clean HR scenes (PHZ-conditioned TNG galaxies + stars +
     strong lenses) and forward-models them to dirty Euclid LR with the
     empirical band PSFs, writing clean + HR + dirty TFRecords. Runs
     ``run_pipeline.py --skip-train`` as a dedicated, knob-bearing step
-    card on /sky.
+    card on Synthetic › Status / Records.
     """
 
     # Scene counts, image size, densities and PSF knobs come from /config.

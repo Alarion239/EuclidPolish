@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Run the SR model over a catalog of real targets (local CLI).
 
-Thin wrapper over :func:`euclid_polish.eval.catalog_runner.run_catalog_eval` —
-the same loop the WebUI's local "Run evaluation" job uses. Fetches a 4-band
+Thin wrapper over :func:`euclid_polish.eval.catalog_runner.run_catalog_eval`
+(the WebUI's single-catalog "Run evaluation" job that also used it was removed
+in df98a86; the console now runs the grouped eval). Fetches a 4-band
 Euclid cutout at every catalog (RA, Dec), runs the model, and writes per-object
 FITS (``SR.fits`` + ``original_stack.fits``) + ``manifest.csv``. PNG rendering
 is left to the gallery (local, on demand).

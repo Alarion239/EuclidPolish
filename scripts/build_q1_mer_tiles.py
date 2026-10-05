@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 """Build the committed Q1 MER tile table ``q1_mer_tiles.json``.
 
-Input: the IRSA obscore VIS mosaic table cached by
-``scripts/download_mer_noise_levels.py``
+Input: the IRSA obscore VIS mosaic table cached in the legacy 64-px
+noise-campaign directory
 (``data/population_comparison/mer_noise_levels_64px/q1_vis_mosaics.csv``:
-``obs_id, s_ra, s_dec, s_region, access_url``) and the committed noise table
-``euclid_polish/sky/observation/mer_noise_levels.json``.
+``obs_id, s_ra, s_dec, s_region, access_url``; the current
+``scripts/download_mer_noise_levels.py`` runs the same VIS-mosaic obscore
+query, minus ``access_url``, but does not save it) and the committed noise
+table ``euclid_polish/sky/observation/mer_noise_levels.json``.
 
 Output (``euclid_polish/sky/observation/q1_mer_tiles.json``): one row per
 tile — ``tile``, ``ra``, ``dec``, ``polygon`` (4 ``[ra, dec]`` vertices, the

@@ -115,7 +115,7 @@ describe("barLayout", () => {
     expect(barLayout({ items: items([200, 190], [96, 92, 86, 82, 160, 82]), textWidth: 110, gap: 8, available: 1100 })).toEqual({ rows: 1, compact: false, wrap: [], overflow: [], collapsed: [] });
   });
   it("one row icon-only when only the texts overflow (1280 px window)", () => {
-    // 988 + 64 gaps = 1052 > 1000; without the 110 px of text: 942
+    // 988 + 56 gaps = 1044 > 1000; without the 110 px of text: 934
     expect(barLayout({ items: items([200, 190], [96, 92, 86, 82, 160, 82]), textWidth: 110, gap: 8, available: 1000 })).toEqual({ rows: 1, compact: true, wrap: [], overflow: [], collapsed: [] });
   });
   it("two rows below that, texts kept while the second row fits (792 px stage)", () => {
@@ -125,7 +125,7 @@ describe("barLayout", () => {
     expect(barLayout({ items: items([150, 190], [96, 92, 86, 82, 82]), textWidth: 110, gap: 8, available: 360 })).toEqual({ rows: 2, compact: true, wrap: [], overflow: [], collapsed: [] });
   });
   it("a row too wide even icon-only wraps (never hides a control) (a 300 px viewer beside the inspector)", () => {
-    // what: 227 + 8 + 194 = 429 > 288; how: 98 + 26 + 82 + 26 + 26 + 5 gaps = 298, icon-only 248
+    // what: 227 + 8 + 194 = 429 > 288; how: 98 + 26 + 82 + 26 + 26 + 26 + 5 gaps = 324, icon-only 253
     const it2 = items([227, 194], [98, 26, 82, 26, 26, 26]);
     expect(barLayout({ items: it2, textWidth: 71, gap: 8, available: 288 })).toEqual({ rows: 2, compact: true, wrap: [1], overflow: [], collapsed: [] });
     expect(barLayout({ items: it2, textWidth: 71, gap: 8, available: 200 })).toEqual({ rows: 2, compact: true, wrap: [1, 2], overflow: [], collapsed: [] });

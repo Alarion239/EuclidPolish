@@ -3,7 +3,8 @@ import react from "@vitejs/plugin-react";
 
 // Unit tests (vitest + happy-dom + testing-library). Tests live next to the
 // module they cover (`src/**/*.test.ts[x]`); `test/` holds suites ported from
-// the old node:test runner. See src/FOUNDATION.md → "Testing".
+// the old node:test runner. See src/FOUNDATION.md → "2. Tooling" ("How to
+// write tests").
 export default defineConfig({
   plugins: [react()],
   test: {

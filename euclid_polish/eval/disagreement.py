@@ -4,7 +4,7 @@ Given a ``(M, H, W, C)`` member stack, writes ``mean.fits`` (the member mean —
 the centre the ``pcaN`` components are about, i.e. the disagreement movie's
 base frame), ``std.fits`` (per-pixel member std), ``pca0..K.fits`` (the PCA
 eigen-images of the member residuals) and a ``disagreement.json`` sidecar
-``{pca_n, pca_amps}``. FITS are channel-first ``(C, H, W)`` to match
+``{pca_n, pca_amps, pca_var}``. FITS are channel-first ``(C, H, W)`` to match
 ``SR.fits`` so :func:`enforce_object_sizes` crops them consistently."""
 
 from __future__ import annotations

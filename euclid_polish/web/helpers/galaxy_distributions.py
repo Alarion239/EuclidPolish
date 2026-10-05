@@ -73,7 +73,7 @@ LOG_RADIUS_EDGES = np.arange(
     -2.4, np.log10(RADIUS_MAX_ARCSEC) + 0.0001, 0.10,
 )
 COLOR_EDGES = np.arange(-2.0, 4.0001, 0.1)
-#: (parameter key, catalogue flux columns forming the ratio, synthetic column)
+#: (parameter key, label, catalogue flux columns forming the ratio, synthetic column)
 COLOR_PANELS: tuple[tuple[str, str, str, str, str], ...] = (
     (
         "color_vis_y", "VIS − Y colour",
@@ -2201,7 +2201,7 @@ def read_galaxy_distributions(
 
 def artifact_state() -> dict[str, Any]:
     """Freshness of the cached plot artifact, without shaping the payload
-    (the Realism overview's "galaxy plots" item). Read-only."""
+    (the realism overview's "galaxy plots" item on Synthetic › Status). Read-only."""
     path = artifact_path()
     payload = _json(path)
     if not payload:

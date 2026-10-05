@@ -1,6 +1,6 @@
 /* Ids of the Synthetic workspace's viewer objects and inspector kinds (pure, no
  * imports): register.ts is loaded eagerly by the shell, so it reads these
- * from here rather than from the whole of model.ts (which re-exports them). */
+ * from here rather than from the whole of dataModel.ts (which re-exports them). */
 
 /** `sky` viewer object id of a record: `"<split>:<index>"`. */
 export const recordObjectId = (split: string, index: number) => `${split}:${index}`;

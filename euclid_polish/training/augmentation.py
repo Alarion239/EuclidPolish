@@ -209,11 +209,12 @@ def add_lr_noise(lr: tf.Tensor, noise_aug_rn: float) -> tf.Tensor:
 
     ``noise_aug_rn`` is per-band: σ_band = noise_aug_rn · read_noise_band
     (VIS 3.6 e⁻, NISP 6.1 e⁻). This is noise-LEVEL augmentation on top of the
-    realization already baked into the dirty records — it decorrelates
+    realization already in the LR (baked into the dirty records, or drawn per
+    visit by the on-the-fly forward) — it decorrelates
     ensemble members (each sees different draws, and different levels when
     the knob differs per member) at the cost of training at slightly higher
-    noise than test. True noise re-realization needs a noiseless-LR record
-    (TFRecord regen). 0 disables (identity).
+    noise than test. True noise re-realization is the on-the-fly forward's
+    job (:mod:`euclid_polish.training.forward_onthefly`). 0 disables (identity).
     """
     if noise_aug_rn <= 0:
         return lr

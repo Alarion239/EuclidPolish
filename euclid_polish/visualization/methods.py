@@ -7,8 +7,9 @@ preserves the noise structure including negative pixels and compresses bright
 stars; the linear panel is clipped to the 1–99.5 percentile range so a
 single saturated pixel doesn't flatten the colourbar.
 
-For strictly-positive domains (PSFs, Q1 cutouts) the second panel is log10
-instead of asinh.
+For strictly-positive domains (PSFs) the second panel is log10 instead of
+asinh; Q1 cutouts (sky-subtracted, with negatives) keep the asinh panel with a
+per-image MAD scale.
 """
 
 import os
@@ -146,9 +147,9 @@ def draw_clean_dirty_pair(
         [HR linear]  [LR linear]  [HR stats]
         [HR asinh]   [LR asinh]   [LR stats]
 
-    The asinh ``scale`` is taken from the *LR* MAD (the dirty image carries
-    the noise floor that defines the natural unit of "small"). Both panels
-    use the same scale so brightness is comparable across HR/LR.
+    The asinh ``scale`` is ``Config.STRETCH_SCALE_E`` (the knee the network
+    trains in). Both panels use the same scale so brightness is comparable
+    across HR/LR.
     """
     # Use the same asinh scale the network trains in, so the viz is
     # directly comparable to the loss/PSNR metrics.

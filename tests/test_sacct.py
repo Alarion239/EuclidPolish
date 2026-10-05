@@ -78,7 +78,7 @@ class TestGresCount:
 #   Field order matches euclid_polish.web.sacct._SACCT_FIELDS:
 #   JobID | State | ExitCode | Start | End | ElapsedRaw | CPUTimeRAW |
 #   TotalCPU | MaxRSS | ReqMem | ReqCPUS | ReqTRES | AllocCPUS | AllocTRES |
-#   Timelimit
+#   Timelimit | TRESUsageInTot (no GPU usage in any fixture here)
 # TotalCPU is the CPU time actually CONSUMED (duration string); CPUTimeRAW
 # is merely Elapsed × NCPUS (allocated). Efficiency uses TotalCPU.
 # Main rows leave MaxRSS empty (it sits on the .batch step); .batch rows

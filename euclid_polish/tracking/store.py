@@ -238,7 +238,7 @@ class TrackingStore:
             return ""
 
     def write_log(self, text: str) -> None:
-        """Overwrite the whole notebook (Tracking-page editor)."""
+        """Overwrite the whole notebook (Notebook › Log editor)."""
         with _LOCK:
             self._require_current()
             with open(os.path.join(self.current_dir, "log.md"), "w") as fp:

@@ -1,4 +1,4 @@
-/* The campaign bar of Notebook › Log (and Backups): the active campaign with
+/* The campaign bar of Notebook › Log: the active campaign with
  * the commit it started at, Back up…, Push (the store to holylabs) and New
  * campaign…; Save snapshot is secondary (the menu). A new campaign while one
  * is active saves that one first — the dialog says so. Every write is

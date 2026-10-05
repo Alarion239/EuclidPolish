@@ -79,7 +79,7 @@ export type DataTableProps<T> = {
   exportName?: string;
   /** Scroll viewport max-height (px or CSS). "auto" = no inner scroll (disables virtualisation). */
   height?: number | string;
-  /** Row height estimate in px (default 34; rows are measured). */
+  /** Row height estimate in px (default 34, or 28 when `dense`; rows are measured). */
   rowHeight?: number;
   /** true / false, or the row count above which rows are virtualised (default 150). */
   virtualize?: boolean | number;

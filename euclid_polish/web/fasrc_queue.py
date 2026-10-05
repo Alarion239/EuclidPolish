@@ -235,7 +235,7 @@ class JobQueue:
                                  tuple[str | None, dict[str, Any]]]) -> None:
         """Advance the queue: promote on success, halt on failure.
 
-        Idempotent and cheap — safe to call on every dashboard poll. Does
+        Idempotent and cheap — safe to call on every ticker pass. Does
         nothing while halted, while the active job is still pending, or
         when SSH is down (a promotion needs to ``sbatch``).
         """
@@ -266,7 +266,7 @@ class JobQueue:
         item = self.items[0]
         try:
             slurm_id, payload = submit_fn(item["spec"])
-        except Exception as e:                       # never let a submit crash the poll
+        except Exception as e:                       # never let a submit crash the ticker pass
             self._halt(f"submitting queued '{item.get('label')}' raised "
                        f"{type(e).__name__}: {e}")
             return
@@ -280,7 +280,7 @@ class JobQueue:
 
 
 #: Process-wide singleton; tests swap in their own via
-#: ``monkeypatch.setattr(fasrc_queue, "QUEUE", JobQueue(tmp_path))``.
+#: ``monkeypatch.setattr(fasrc_queue, "QUEUE", JobQueue(path=str(tmp_path / "fasrc_queue.json")))``.
 QUEUE = JobQueue()
 
 

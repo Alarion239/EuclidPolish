@@ -83,7 +83,8 @@ class EnsembleDiagnosticsAccumulator:
         self.h_std_err = np.zeros((nb, nb), np.float64)      # [std, |err|]
         # Same disagreement axis, one error distribution per point estimate.
         # This is additive: the legacy ``h_std_err`` / calibration remain tied
-        # to the displayed max-RBF output when available.
+        # to the ``rbf_gate`` estimate (the retired max-RBF combiner) when one
+        # is passed, else to the ensemble mean.
         self.h_std_err_models: dict[str, np.ndarray] = {}
         self.std_err_model_fields: dict[str, int] = {}
         self.h_bright_std = np.zeros((nb, nb), np.float64)   # [bright, std]
@@ -214,8 +215,9 @@ class EnsembleDiagnosticsAccumulator:
             return
         std = members.std(axis=0)
         # Evaluate every available fused point estimate against the same member
-        # disagreement map. The primary legacy diagnostic remains max-RBF when
-        # available, otherwise the ensemble mean.
+        # disagreement map. The primary legacy diagnostic is the ``rbf_gate``
+        # estimate (the retired max-RBF combiner) when given, otherwise the
+        # ensemble mean.
         predictions: dict[str, np.ndarray] = {"ensemble_mean": mean}
         for kind, image in (combiners or {}).items():
             image = np.asarray(image, np.float64) if image is not None else None

@@ -192,7 +192,8 @@ function ViewerBody({ ctrl, toolbar, nav, urlKey, urlBase, onFullscreen }: {
     // The drawn image's rectangle (the snapped whole image, or the zoomed view), not the surround.
     const L = message ? null : ctrl.layoutOf(k);
     return [{
-      // The canvas's own rect: the frame's border box is 2 px larger.
+      // The canvas's own rect (the frame has no border, so its border box is
+      // the same rect).
       canvas: h.visible, rect: h.visible.getBoundingClientRect(),
       crop: L ? { x: L.dx, y: L.dy, width: L.dw, height: L.dh } : undefined,
       label: ctrl.s.overlay[k] ?? ctrl.tierLabel(k),

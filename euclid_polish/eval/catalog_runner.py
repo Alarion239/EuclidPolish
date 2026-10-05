@@ -1,13 +1,14 @@
 """Run the SR model over a catalog of real targets — locally, in-process.
 
-This is the catalog-evaluation loop shared by the WebUI's local background job
-(``/api/evaluation/run-eval``) and the ``scripts/eval_catalog.py`` CLI. It
+This is the catalog-evaluation loop behind the ``scripts/eval_catalog.py`` CLI;
+the WebUI's grouped run (:mod:`euclid_polish.eval.grouped_runner`,
+``/api/evaluation/run-grouped``) reuses its per-object pieces. It
 fetches a 4-band Euclid cutout at every catalog (RA, Dec), runs the model,
 writes per-object FITS (``SR.fits`` + ``original_stack.fits``) and a
 ``manifest.csv``. PNG rendering is left to the gallery (local, on demand).
 
-Progress and logs are reported through plain callbacks so the same loop drives
-the WebUI job's progress bar / log panel and the CLI's stdout:
+Progress and logs are reported through plain callbacks so the same loop can
+drive a WebUI job's progress bar / log panel or the CLI's stdout:
 
     run_catalog_eval(..., on_progress=cap.tick, log=cap.write)
 """
@@ -358,8 +359,8 @@ def enforce_object_sizes(obj_dir: str, *,
     """Crop an object's FITS to the canonical eval sizes; signal drop if smaller.
 
     ``original_stack.fits`` (LR / VIS grid) is held at ``EVAL_LR_SIZE``² and
-    ``SR.fits`` / ``HR.fits`` / ``mean.fits`` / ``std.fits`` / ``pcaN.fits``
-    (2× grid) at ``EVAL_HR_SIZE``². Larger stamps are center-cropped down; a
+    ``SR.fits`` / ``HR.fits`` / ``BHR.fits`` / ``mean.fits`` / ``std.fits`` /
+    ``pcaN.fits`` (2× grid) at ``EVAL_HR_SIZE``². Larger stamps are center-cropped down; a
     stamp smaller than its target in either spatial axis means the object can't
     be represented at the canonical geometry, so this returns ``False`` (the
     caller drops it) **without modifying any file**. ``HR.fits`` is optional

@@ -63,8 +63,8 @@ from euclid_polish.web.security import (
 
 def _mode_starless(default: str = "starfull") -> bool:
     """Star regime for a request (``?mode=`` / form ``mode=``). starfull and
-    starless artifacts are fully detached; the client sends the active regime
-    on every read so the page shows that regime's data. STARFULL is the
+    starless artifacts are fully detached; the console sends ``mode=starfull``
+    on every read (Models is starfull-only since 064fa13). STARFULL is the
     default (the production regime since 3aa5c86); starless is opt-in."""
     src = request.args if request.args.get("mode") is not None else request.form
     return (src.get("mode", default) or default).lower() == "starless"
@@ -111,10 +111,11 @@ def register(app):
 
     @app.route("/ensemble/status.json")
     def ensemble_status_json():
-        """Everything the members table + summary render from — the JSON twin of
-        the classic page's render context (members, archived, eval summary,
-        data presence). Consumed by the React console. ``?mode=`` selects which
-        regime's eval summary + staleness to report (default starfull)."""
+        """The full ensemble status (members, archived, eval summary, data
+        presence) — the removed classic page's render context, as JSON. The
+        React console's Home reads it only as a fallback for a server without
+        ``/api/system/production``. ``?mode=`` selects which regime's eval
+        summary + staleness to report (default starfull)."""
         return jsonify(ensemble_status(_mode_starless()))
 
     @app.route("/ensemble/overview.json")
@@ -318,7 +319,7 @@ def register(app):
 
     @app.route("/ensemble/evals.json")
     def ensemble_evals_json():
-        """The Evaluations card's dataset: power-spectrum curves, diagnostic
+        """Models › Diagnostics' dataset: power-spectrum curves, diagnostic
         histograms, calibration stats and per-member loss/depth meta. The
         FRONTEND renders all figures from this JSON, so styling (member-line
         coloring, tab switches) never recomputes anything. ``?fresh=1``
@@ -421,8 +422,9 @@ def register(app):
     @app.route("/ensemble/archive-member", methods=["POST"])
     def ensemble_archive_member():
         """Retire one member: zip → tracking campaign, registry tombstone,
-        member dir deleted, cube cache purged. Reduces the ensemble. The name
-        is validated (and must be active) before the job starts: 400 JSON."""
+        member dir deleted, regime marked stale (cached cubes kept). Reduces
+        the ensemble. The name is validated (and must be active) before the
+        job starts: 400 JSON."""
         try:
             name = member_name(request.form.get("member") or "")
         except ValueError as exc:

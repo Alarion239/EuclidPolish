@@ -1,7 +1,8 @@
 """Test double for :class:`euclid_polish.web.remote.SSHSession`.
 
 We can't reliably ssh to localhost in CI (port 22 is closed on a default
-macOS install). The interesting code paths in the FASRC tab are:
+macOS install). The interesting code paths behind the Runs workspace
+(the former FASRC tab) are:
 
   * generating the right sbatch script,
   * shelling out, streaming stdout, tracking progress in sqlite,

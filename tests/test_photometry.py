@@ -1,7 +1,7 @@
-"""Pin the magnitude ↔ electrons ↔ ADU/s conversions (Step 0 of the
-star-anchor work). These are the formulas the anchor delta-targets (from
-catalog magnitude) and the model input (from archive ADU/s) must share so
-the two are on one electron-over-the-stack scale."""
+"""Pin the magnitude ↔ electrons ↔ ADU/s conversions (written as Step 0 of
+the star-anchor work; that lane was deleted 2026-09-20). Catalog magnitudes
+(synthetic source fluxes) and the model input (from archive ADU/s) must
+share these formulas so the two are on one electron-over-the-stack scale."""
 
 import math
 

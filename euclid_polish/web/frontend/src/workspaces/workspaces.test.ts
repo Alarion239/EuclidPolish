@@ -1,7 +1,7 @@
 /* Every workspace folder honours the C8 contract: `index.tsx` default-exports
  * the workspace and declares exactly the manifest's tabs, and every tab
  * module loads to a component — so every old page is reachable at its new
- * URL (the legacy adapters) and no manifest tab is left without a module. */
+ * URL and no manifest tab is left without a module. */
 import { describe, expect, it } from "vitest";
 import { MANIFEST } from "../app/manifest";
 import { workspaceComponents } from "../app/routes";

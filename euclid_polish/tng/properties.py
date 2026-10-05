@@ -12,10 +12,11 @@ need as flat scalars:
   * ``sfr``               → star-formation rate [M☉/yr]
   * ``mass_stars``        → stellar mass (code units → ×1e10/h M☉)
   * ``halfmassrad_stars`` → effective radius (code units → /h kpc)
-  * ``mass_log_msun``     → total bound mass, already log₁₀ M☉ (used as the
-                            "halo mass" proxy — for the atlas's central
-                            galaxies it tracks the FoF halo mass, and avoids a
-                            separate group call)
+  * ``mass``              → total bound mass (code units → ×1e10/h M☉; the
+                            undocumented ``mass_log_msun``, already log₁₀ M☉,
+                            is the fallback) — used as the "halo mass" proxy:
+                            for the atlas's central galaxies it tracks the FoF
+                            halo mass, and avoids a separate group call
 
 Why not the obvious alternatives (measured against the live API, TNG50-1 z=0,
 5.7M subhalos): ``/subhalos/{id}/info.json`` does heavy server-side field
@@ -91,9 +92,9 @@ def parse_subhalo(sub: dict) -> dict[str, float]:
 
     Masses: code units → M☉ (×1e10/h); ``mass_log_msun`` is already log₁₀ M☉.
     Lengths: code units → kpc (/h at z=0). Missing → NaN. "Halo mass" uses the
-    subhalo's total bound mass (``mass_log_msun``), which for central galaxies
-    tracks the FoF halo mass — getting the true Group_M_Crit200 would need a
-    separate ~15 s call per galaxy.
+    subhalo's total bound mass (``mass``, else ``mass_log_msun``), which for
+    central galaxies tracks the FoF halo mass — getting the true
+    Group_M_Crit200 would need a separate ~15 s call per galaxy.
     """
     out = dict(_NAN_PROPS)
     sfr = _pick(sub, "sfr", "SubhaloSFR")

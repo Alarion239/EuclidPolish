@@ -7,7 +7,7 @@
 
    Targets reads its v2 keys itself (`?set=`, `?g=`, `?state=`) and, once, the
    interim store ids (`?src=`) of links copied before the merge; Compare reads
-   `?exp=`, `?scope=`, `?metric=`, `?tiles=`, `?new=1` and `?defs=1`. */
+   `?exp=`, `?scope=`, `?metric=`, `?tiles=`, `?models=`, `?new=1` and `?defs=1`. */
 import { Workspace, defineTabs } from "../../app/workspace";
 import "./atlas/inspectors/register";
 import "./results/register";

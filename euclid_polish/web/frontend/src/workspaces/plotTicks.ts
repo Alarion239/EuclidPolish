@@ -1,12 +1,14 @@
 /* Ticks for the workspaces' charts.
  *
- * charts/Plot draws numbers (and the matching grid lines) only for the ticks
- * it is given — generated ticks appear only once the view is zoomed — so a
- * chart whose caller passes no `xTicks` / `yTicks` had bare axes (Ensemble ›
- * Curves, Combiners, the r(k) / T(k) y axis). Every call site that does not
- * pick its own ticks passes `autoTicks(domain, scale, format)`: the same
- * generator the zoomed view uses (charts/plotModel `viewTicks`) — about five
- * nice linear ticks, decades on a log axis. */
+ * charts/Plot once drew numbers (and the matching grid lines) only for the
+ * ticks it was given — generated ticks appeared only once the view was
+ * zoomed — so a chart whose caller passed no `xTicks` / `yTicks` had bare
+ * axes (Ensemble › Curves, Combiners, the r(k) / T(k) y axis). Plot now
+ * generates ticks itself for an axis whose ticks are undefined (and thins
+ * them to the plot's size); `autoTicks(domain, scale, format)` is the
+ * generator underneath (charts/plotModel `viewTicks`, unthinned) for a
+ * caller that wants the ticks up front — about five nice linear ticks,
+ * decades on a log axis. */
 import { viewTicks } from "../charts/plotModel";
 import type { AxisScale } from "../charts/types";
 import type { Tick } from "../ticks";

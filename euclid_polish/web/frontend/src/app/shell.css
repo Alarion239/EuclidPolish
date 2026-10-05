@@ -20,9 +20,10 @@
 /* position: relative: the stage is the containing block of every absolutely
    positioned descendant without a closer one (.sr-only text, overlays), so
    they scroll with the stage instead of growing the document.
-   A flex column: the restart banner (when shown) takes its own height and
-   the page box (.stage__page) exactly the rest, so a page sized to the stage
-   (height: 100% — the Sky atlas) fits under the banner instead of running
+   A flex column: the notice strip (ShellNotices: the newer-build and restart
+   notices, when shown) takes its own height and the page box (.stage__page)
+   exactly the rest, so a page sized to the stage
+   (height: 100% — the Sky atlas) fits under the strip instead of running
    below the fold. A longer page simply overflows that box and the stage
    scrolls as before (min-height 0: the box never grows to its content's
    intrinsic height, which for the atlas is its whole layer list). */

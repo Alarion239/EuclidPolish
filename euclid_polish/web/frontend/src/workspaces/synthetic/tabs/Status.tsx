@@ -5,13 +5,14 @@
    card; the train split is one chip away). Then two groups of rows from GET
    /api/realism/overview: what generation reads (galaxies, stars, noise, PSF,
    TNG radii, the saturation rule, the training catalogue) and the diagnostic
-   caches the realism checks read (galaxy plots, field statistics, the real
-   reference fields). Each row: a state dot, its name, ONE verdict number with
-   its unit (statusModel.ts rowVerdict, from the galaxy / star / field
-   statistics payloads the ingredient tabs share), whether the local records
-   were built with it, its fix where one exists (Validate TNG radii, Rebuild
-   field statistics, …, all confirmed), a link to its tab and the row
-   inspector (fingerprints and facts). Opening the tab starts nothing. */
+   caches the realism checks read (galaxy plots; field statistics, which also
+   owns a missing or changed real reference). Each row: a state dot, its
+   name, ONE verdict number with its unit (statusModel.ts rowVerdict, from
+   the galaxy / star / field statistics payloads the ingredient tabs share),
+   whether the local records were built with it, its fix where one exists
+   (Validate TNG radii, Rebuild field statistics, …, all confirmed), a link
+   to its tab and the row inspector (fingerprints and facts). Opening the tab
+   starts nothing. */
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { openInspector } from "../../../app/inspector";

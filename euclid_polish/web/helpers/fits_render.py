@@ -72,7 +72,7 @@ def _render_fits_to_png_adaptive(fits_path: str, size: int, *, hdu: int | None =
     :func:`fits_inspect.read_plane`, never whole.
 
     The band-aware :func:`_render_fits_to_png` hardcodes an asinh knee
-    (``band.asinh_stretch_scale_e``, ~1000 e⁻ by default) tuned for
+    (``band.asinh_stretch_scale_e``, 100 e⁻ for every band) tuned for
     Euclid sky cutouts. That stretch is meaningless for files outside
     that domain — a unit-flux PSF sums to 1 over 511² pixels (values
     ~10⁻⁶–10⁻²), a differential kernel can have signed wings, dark

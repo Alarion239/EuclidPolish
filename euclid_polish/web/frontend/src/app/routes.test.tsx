@@ -7,7 +7,7 @@ import { ROUTER_FUTURE, buildRoutes, redirectRoutePaths, workspaceComponents, ty
 import { Workspace, defineTabs } from "./workspace";
 
 /* Fake workspaces: each renders <Workspace> with stub tabs, so the route
-   table and the manifest validation are tested without the legacy pages. */
+   table and the manifest validation are tested without the real pages. */
 function Where() {
   const loc = useLocation();
   return <output data-testid="where">{`${loc.pathname}${loc.search}${loc.hash}`}</output>;

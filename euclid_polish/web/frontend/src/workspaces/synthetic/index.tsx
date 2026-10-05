@@ -2,9 +2,10 @@
    a synthetic scene, whether each ingredient matches real Euclid Q1, whether
    the records are built from the current ingredients, and whether you can
    generate. Every ingredient tab has the same layout, top to bottom: the
-   check against real data, the prior (fit / activate, `?prior=1`), then the
-   "How this is produced" drawer (`?how=1`) with the real reference data and
-   its FASRC steps (Fields calls its drawer "Real reference", `?ref=1`).
+   check against real data, the prior (fit / activate, `?prior=1`; Galaxies
+   and Stars only), then the "How this is produced" drawer (`?how=1`) with
+   the real reference data and its FASRC steps (Fields calls its drawer "Real
+   reference", `?ref=1`).
 
    Tabs: Status (can you generate), Records (what comes out), Galaxies (with
    the TNG templates), Stars, Noise, PSF (catalogue → cutouts → ePSF) and

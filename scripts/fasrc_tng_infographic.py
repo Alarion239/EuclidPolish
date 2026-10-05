@@ -2,9 +2,8 @@
 """Render TNG50 SKIRT-atlas image infographics on FASRC for the WebUI.
 
 Runs on a FASRC node (as the ``tng_grid`` / ``tng_stack`` SLURM jobs, or by
-hand), where the downloaded galaxy FITS live. Like
-``scripts/fasrc_inspect_tile.py`` it writes bytes to stdout, or — with
-``--save`` — to the standard artifact path the WebUI then fetches.
+hand), where the downloaded galaxy FITS live. It writes bytes to stdout, or —
+with ``--save`` — to the standard artifact path the WebUI then fetches.
 
   ``--mode grid --band {VIS|Y|J|H|RGB} --downsample {1|2|4} --seed S``
       A 5×5 PNG grid: 5 seeded-random galaxies (rows) × their 5 viewpoints
@@ -17,8 +16,10 @@ hand), where the downloaded galaxy FITS live. Like
 
   ``--mode histograms``
       2×2 property panel (SFR / stellar mass / halo mass / effective radius).
-      The WebUI renders this **locally** (no FITS needed — just the galaxy id
-      list + the TNG API); this CLI mode is kept for debugging on the node.
+      No FITS needed — just the galaxy id list + the TNG API. The WebUI no
+      longer draws this PNG (its ``/tng/histograms.png`` route was removed in
+      9c085b8; Synthetic › Galaxies plots the properties from local CSVs);
+      this CLI mode is kept for debugging on the node.
       The property + plotting logic lives in ``euclid_polish.tng.properties``.
 
 Galaxies are self-enumerated from the download tree — every
@@ -115,8 +116,8 @@ def pick_ids(ids: list[str], k: int, seed: int) -> list[str]:
 
 def render_histograms(tng_dir: str, *, api_key: str = "",
                       max_workers: int = 16, reporter=None) -> bytes:
-    """Enumerate the locally-downloaded galaxies, then plot (CLI/debug path —
-    the WebUI renders histograms locally via euclid_polish.tng.properties)."""
+    """Enumerate the locally-downloaded galaxies, then plot (CLI/debug path;
+    the fetch + plotting live in euclid_polish.tng.properties)."""
     return render_histograms_for_ids(
         tng_dir, list_downloaded_ids(tng_dir), api_key,
         max_workers=max_workers, reporter=reporter)

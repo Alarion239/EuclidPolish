@@ -383,9 +383,9 @@ class InteractiveCLI:
             return
 
         # Size is requested as *VIS pixels* (0.10"/pix), so it maps to a
-        # fixed angular field for every band. Each band's native pixel
-        # count is derived internally — NISP fetches fewer pixels than
-        # VIS to cover the same patch of sky.
+        # fixed angular field for every band. Each band's pixel count is
+        # derived internally from its archive pixel scale (0.10"/pix for
+        # VIS and NISP alike, so every band fetches the same count).
         cutout_size_input = input(
             f"Enter cutout size in VIS pixels (0.10\"/pix; "
             f"default {Config.DEFAULT_CUTOUT_SIZE}): "
@@ -1817,7 +1817,7 @@ class InteractiveCLI:
                 n_drawn = 0
 
                 # Collect matched pairs per subset to avoid index-space collisions.
-                # Multi-band v2 records: HR is 1-channel (VIS), LR is 4-channel.
+                # Multi-band v2 records: HR and LR are both 4-channel (VIS+NISP).
                 all_pairs: list[tuple[Image, Image]] = []
                 for subset in ("train", "validate"):
                     clean_sub = tfrecord_path(Config.RECORDS_DIR_V2, f"clean_{subset}")

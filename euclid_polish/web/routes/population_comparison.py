@@ -62,7 +62,7 @@ def register(app):
     @app.route("/api/population-comparison/sync-training-catalog", methods=["POST"])
     def api_population_comparison_sync_training_catalog():
         """Pull ``sources_train.csv``, refresh the census and (``rebuild=1``,
-        the Realism header's one sync action) rebuild the galaxy plots so
+        the Synthetic header's one sync action) rebuild the galaxy plots so
         their training variant exists — one job instead of a client-side
         chain that breaks when the page is left."""
         remote = f"{_sky_records_remote_dir()}/sources_train.csv"

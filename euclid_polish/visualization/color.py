@@ -2,7 +2,7 @@
 
 The naive (R, G, B) = (H_E, J_E, VIS) stack would make everything look
 blue, because the per-band electron count is dominated by which band
-has the longest exposure (VIS: 4 × 565 s vs NISP: 4 × 112 s) and the
+has the longest exposure (VIS: 4 × 560.52 s vs NISP: 4 × 87.2 s) and the
 highest zeropoint — not by the source's actual SED.
 
 The fix is a two-step calibration before mixing:

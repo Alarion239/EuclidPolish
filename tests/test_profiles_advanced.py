@@ -5,8 +5,9 @@ These cover:
 * :func:`compute_sersic_stamp` — the unit-flux stamp + bounds primitive
   underlying every other Sersic call.
 * :func:`add_sersic_to_bands` — the broadcast-add-into-N-bands helper.
-* :func:`evaluate_sersic_at_coords` — arbitrary-coordinate evaluator used
-  by the lensed-source path.
+* :func:`evaluate_sersic_at_coords` — arbitrary-coordinate evaluator
+  (written for the lensed-source path, before lensed sources became TNG
+  stamps).
 * Adaptive-csub correctness: the core+wings two-tier output must agree
   with a uniform high-csub reference on flux conservation.
 

@@ -1,6 +1,7 @@
 /* Fields › look: keep the real and synthetic viewers on ONE colour transfer
-   while each keeps its own toolbar. A viewer reports its state (onState);
-   an edit there (a colour chip, the knee or brightness slider, a Q–Y key) is
+   (each shows only its navigation bar; the page's shared row sets the
+   transfer). A viewer reports its state (onState);
+   an edit there (a Q–Y colour key, the horizontal-wheel brightness) is
    a change against that viewer's previous report, and becomes the shared
    transfer, which is then applied to both viewers (setView). The first
    report of a viewer only records its state, so opening the page writes

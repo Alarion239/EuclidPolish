@@ -1,4 +1,4 @@
-"""Route-level tests for the Tracking tab (euclid_polish.web.app)."""
+"""Route-level tests for the tracking routes behind the Notebook workspace (euclid_polish.web.app)."""
 
 from __future__ import annotations
 
@@ -195,9 +195,9 @@ def test_backup_model_bundles_training_log_plot(client, tmp_path, monkeypatch):
 
 
 def test_backup_model_accepts_vis_only_sibling(client, tmp_path, monkeypatch):
-    """Tracking the VIS-only model must back up the sibling ``-vis`` dir when
-    the request passes it as ``ckpt_dir`` (the training page sends this when
-    the VIS-only toggle is on)."""
+    """A model backup must use the sibling ``-vis`` dir when the request
+    passes it as ``ckpt_dir`` (the Notebook's backup dialog sends the chosen
+    checkpoint dir this way; the VIS-only model and its toggle are retired)."""
     base = tmp_path / "ckpt" / "wdsr"
     visd = tmp_path / "ckpt" / "wdsr-vis"
     base.mkdir(parents=True)

@@ -5,7 +5,8 @@
  * A runtime error in one tab shows a contained card (message, Retry, Copy
  * details, Reload) instead of blanking the console; the shell, rail and
  * other workspaces keep working. The boundary resets when `resetKey` changes
- * (the shell passes the pathname, so navigating away recovers). `RouteError`
+ * (<Workspace> and the workspace route pass the pathname, so navigating away
+ * recovers; the inspector passes its target). `RouteError`
  * is the data router's `errorElement` for errors outside any tab boundary.
  */
 import { Component, type ErrorInfo, type ReactNode } from "react";

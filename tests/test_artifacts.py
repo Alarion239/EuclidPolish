@@ -147,7 +147,7 @@ def test_inject_cr_charge_scale_matches():
     out = inject_cosmic_rays(img, Config.BAND_VIS, rng, cfg)
     expected_n_hits = expected_cosmic_ray_count((512, 512), Config.BAND_VIS, cfg)
     expected_total  = expected_n_hits * cfg.cr_charge_median_e
-    # Allow ~30% deviation (Poisson + exponential variance on each scale).
+    # Allow ~50% deviation (Poisson + exponential variance on each scale).
     assert 0.5 < out.sum() / expected_total < 1.5
 
 

@@ -1,5 +1,5 @@
 // @vitest-environment node
-/* FASRC run-log helpers (moved from pages/fasrcLogs with the Ops workspace). */
+/* FASRC run-log helpers (moved from pages/fasrcLogs with the Ops workspace, now Runs). */
 import assert from "node:assert/strict";
 import { test } from "vitest";
 

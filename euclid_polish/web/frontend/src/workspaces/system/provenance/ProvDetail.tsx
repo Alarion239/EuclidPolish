@@ -3,7 +3,7 @@
  * /api/system/loop — not a per-record model check, which contradicted
  * Home), direct upstream/downstream, the transitive
  * ancestors/descendants (with hop depth) and the stored JSON. The body of
- * the `prov:<id>` inspector and of the Provenance tab's detail pane.
+ * the `prov:<id>` inspector and of the Lineage tab's detail pane.
  * `onSelect` walks to another record (the tab keeps it in the URL); without
  * it the ids open in the inspector. */
 import { Link } from "react-router-dom";

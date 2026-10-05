@@ -10,14 +10,15 @@ stays trivial:
       - ``"STEP 2: HR → LR ..."``              → stage = ``convolve``
       - ``"STEP 3: Train WDSR ..."``           → stage = ``train``
       - ``"Step N/M: loss = X, PSNR(str/raw) = ..."``  → live training
-      - ``"✓ Checkpoint saved (PSNR str=...)"`` → checkpoint event
+      - ``"✓ Checkpoint saved [best PSNR] (PSNR str=...)"`` → checkpoint event
 
   * ``.err``: tqdm's progress line. Format varies a bit by tqdm version
     but always contains ``current/total`` near the front.
 
   * ``training_log.csv``: header row + one CSV row per validation event,
     with columns ``step,wall_time,loss,psnr_stretched,psnr_raw,
-    gnorm_avg,gnorm_max,clip_norm,duration_s``. We also still accept the
+    psnr_<band>…,gnorm_avg,gnorm_max,clip_norm,duration_s,combined_loss,
+    is_baseline`` (``trainer.TRAINING_LOG_COLUMNS``). We also still accept the
     legacy JSONL format (one JSON object per line) so logs from before
     the CSV switch keep rendering.
 
@@ -128,9 +129,9 @@ def _coerce_validation_row(rec: dict[str, Any]) -> dict[str, Any]:
             return default
 
     def _opt_f(key: str) -> float | None:
-        """Float or ``None`` for the additive multi-source columns —
-        ``None`` means the source wasn't wired for that row (empty cell),
-        so the UI can drop the point instead of plotting a fake 0."""
+        """Float or ``None`` for an optional column (``combined_loss``) —
+        ``None`` means an empty or unparseable cell, so the UI can drop
+        the point instead of plotting a fake 0."""
         v = rec.get(key)
         if v is None or v == "":
             return None

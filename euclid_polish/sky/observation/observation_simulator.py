@@ -70,7 +70,7 @@ _ResampleKernel = Literal["bilinear", "cubic"]
 @dataclass
 class ObservationSimulatorConfig:
     add_noise: bool = True
-    add_artifacts: bool = True       # cosmic rays + hot pixels
+    add_artifacts: bool = True       # CRs, hot/dead pixels, streaks, distant-star wings
     add_saturation: bool = True      # bright-star detector saturation (per band)
     nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "bilinear" or "cubic"
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
@@ -127,8 +127,8 @@ class ObservationSimulatorConfig:
     distant_star_wing_width_max_lr_pix: float = 2.0
     distant_star_wing_fade_length_min_lr_pix: float = 60.0
     distant_star_wing_fade_length_max_lr_pix: float = 220.0
-    # A tiny per-scene depth jitter plus an occasional shared four-band
-    # pointing intersection. Both scale distributions are centred on one.
+    # A tiny per-scene depth jitter plus an occasional per-band pointing
+    # seam. Both scale distributions are centred on one.
     # The jitter stays small on purpose: the drawn Q1 level already carries
     # the real field-to-field spread (sd of log level 19% in VIS, 14-15% in
     # NISP), so a wide knob both inflates that spread and, being a single
@@ -246,8 +246,9 @@ def default_psf_for_band(band: BandConfig, hr_pixel_scale: float) -> PSF:
     The stamp side is derived from the band's FWHM via
     :func:`psf_side_pixels_for_band`, so each band gets a kernel sized
     to its own resolution (a wide H_E PSF is wider than a narrow VIS
-    PSF). For VIS the caller usually supplies the empirical ePSF
-    instead; this Gaussian is the fallback when no PSF is provided.
+    PSF). Callers usually supply an empirical ePSF set for every band
+    (:func:`load_all_band_psf_sets`); this Gaussian is the fallback for a
+    band with no PSF provided.
     """
     side = psf_side_pixels_for_band(band, hr_pixel_scale)
     return make_gaussian_psf(band.psf_fwhm_arcsec, hr_pixel_scale, size=side)
@@ -324,8 +325,9 @@ class ObservationSimulator:
     def target_lr_pixel_scale_arcsec(self) -> float:
         """Pixel scale of the unified LR grid every channel ends up on.
 
-        Anchored to the VIS LR grid. Non-VIS bands are resampled into this
-        grid after their own native rebin + noise stage.
+        Anchored to the VIS LR grid. Every band's archive scale is 0.10″, so
+        the resample step of :meth:`_process_one_band` is skipped for all four
+        bands; it acts only on a band whose LR scale is coarser.
         """
         return Config.BAND_VIS.pixel_scale_lr_arcsec
 
@@ -561,8 +563,9 @@ class ObservationSimulator:
                  ``Config.LR_INPUT_BAND_NAMES``.
         rng    : reproducible noise source; ``np.random.default_rng()`` if None.
         star_hr_4ch : optional sparse star-only HR plane. It is forwarded
-                 separately only so the caller can choose a starless or
-                 starfull target; it shares the scene's observation PSF. The
+                 separately so the caller can choose a starless or starfull
+                 target and so saturation can tell star cores from galaxy
+                 light; it shares the scene's observation PSF. The
                  returned HR target contains ``hr_4ch + star_hr_4ch``.
 
         Returns

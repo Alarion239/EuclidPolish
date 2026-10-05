@@ -1,4 +1,4 @@
-"""Routes for the dedicated galaxy-distribution workspace."""
+"""Routes for the galaxy distributions and prior (Synthetic › Galaxies)."""
 
 import io
 
@@ -175,7 +175,7 @@ def register(app):
 
         def run(cap):
             # This action owns only galaxy-selected aggregate queries.  Star
-            # counts and colours have a separate action on Star Distribution.
+            # counts and colours have a separate action on Synthetic › Stars.
             aperture_total = 560
             radius_total = Q1_GALAXY_RADIUS_TOTAL_QUERIES
             fit_steps = 3

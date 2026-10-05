@@ -15,7 +15,7 @@ def test_generation_only_startup_does_not_import_training_stack(tmp_path):
     """A generation submission must reach its stage without model imports.
 
     Run this check in a clean interpreter so earlier test imports cannot hide
-    an eager dependency. TensorFlow is blocked as well: the stubbed generation
+    an eager dependency. TensorFlow is deliberately not blocked: generation's
     TensorFlow remains parent-preloaded because Linux generation workers fork
     after startup and share its initialized pages copy-on-write.
     """

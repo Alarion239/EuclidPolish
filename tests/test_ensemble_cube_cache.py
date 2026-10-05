@@ -224,9 +224,9 @@ def test_evaluate_reuses_cached_result_without_inference(tmp_path, monkeypatch):
 
 
 def test_rebuild_bucket_drops_member_and_renumbers_from_cache(tmp_path):
-    """Archiving a member rebuilds the bucket from the REMAINING cached member
-    cubes — renumbered contiguous, aggregates (sr/std) recomputed, combiner
-    dropped — with no model re-inference."""
+    """An archived member's bucket is rebuilt (by the next evaluation) from the
+    REMAINING cached member cubes — renumbered contiguous, aggregates (sr/std)
+    recomputed, combiner dropped — with no model re-inference."""
     from euclid_polish.web.helpers import ensemble_viz as ev
 
     d = str(tmp_path / "cubes")

@@ -72,7 +72,7 @@ def _params() -> dict:
         "subset", "mode", "members", "field", "jwst_band",
         # ``real`` collection (C9): real-tile source + model-spec tiers.
         "source", "models",
-        # ``fits`` collection (Inspect workspace): file, HDU, plane stacking,
+        # ``fits`` collection (Files workspace): file, HDU, plane stacking,
         # display bin, log render.
         "path", "hdu", "stack", "bin", "render",
         # ``study`` collection: the model study whose attached fields to show.

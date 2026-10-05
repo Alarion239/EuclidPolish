@@ -1,7 +1,7 @@
 /* The viewer's control bar on the light table: ONE slim row when it fits,
  * else two — what is shown above how it is shown (barModel's barLayout
- * decides from the measured group widths). A narrow viewer (the 380 px
- * inspector panel, the bottom sheet: 300–480 px) keeps two rows: its band
+ * decides from the measured group widths). A narrow viewer (in the
+ * inspector panel or the bottom sheet: 300–480 px) keeps two rows: its band
  * chips collapse into one select and the rarely used groups (export,
  * layout, tools, compare, zoom — in that order) move into a More menu (⋯);
  * only below ~300 px does a row still wrap. No control is ever cut off or

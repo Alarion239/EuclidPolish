@@ -61,7 +61,8 @@ def _load_lr(path: str, side: int) -> tuple[np.ndarray, fits.Header, dict]:
     with fits.open(path, memmap=False) as hdul:
         names = {hdu.name for hdu in hdul}
         if all(f"LR_{band}" in names for band in BANDS):
-            # A results FITS from this script: one LR extension per band.
+            # The poster target file (or a results FITS from this script):
+            # one LR extension per band.
             data = np.stack([np.asarray(hdul[f"LR_{band}"].data, np.float32)
                              for band in BANDS])
         else:

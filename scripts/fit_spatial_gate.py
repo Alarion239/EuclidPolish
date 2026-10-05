@@ -1,8 +1,8 @@
-"""Fit the spatial gating combiner and compare it with the current combiner.
+"""Fit a spatial gating combiner variant and compare gates with the RBF, the mean and the members.
 
 Fits on the cached STARFULL validate member cubes (85 fields train, 15 held
 out), optionally adding blackout-augmented copies of the training fields
-(one extra member-inference pass, cached next to the cubes). ``--compare``
+(one extra member-inference pass, cached next to the cubes). ``compare``
 scores every method on the cached test cubes plus blackout-augmented test
 fields and writes a JSON report and comparison figures.
 
@@ -16,7 +16,7 @@ or any brightness bin of its cached held-out weight diagnostic
 (:mod:`euclid_polish.eval.gate_members`).
 
 The scoring and fitting live in :mod:`euclid_polish.eval.spatial_gate_compare`
-(the web console's Combiners tab runs the same code as local jobs). A fit
+(the web console's Models › Combiner tab runs the same code as local jobs). A fit
 never writes the production gate: promote a variant from the console.
 """
 

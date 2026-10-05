@@ -1,4 +1,4 @@
-"""Data › Records helpers (``web/helpers/sky_records.py``): O(1) TFRecord
+"""Synthetic › Records helpers (``web/helpers/sky_records.py``): O(1) TFRecord
 access through a header-scanned offset index, the truth-source sidecar of a
 record (``sources_<subset>.csv``) and the SR tier's model identity/staleness.
 

@@ -388,7 +388,8 @@ def test_single_psf_set_matches_old_psf_dict(hr_field):
 def test_randomized_psf_varies_scene_to_scene(hr_field):
     """With randomisation on, two scenes draw different PSFs (different pick
     and/or roll), so their VIS LR channels differ. Force always-rotate so the
-    test is robust to the 30% unrotated draws."""
+    roll varies too (the simulator default, psf_unrotated_prob=1.0, never
+    rotates)."""
     sets = {b.name: _vis_psf_set(1, [0.16]) for b in Config.BANDS}
     sets[Config.BAND_VIS.name] = _vis_psf_set(2, [1.0, 5.0])
     fwd = ObservationSimulator(

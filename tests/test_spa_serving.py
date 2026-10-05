@@ -1,8 +1,9 @@
 """Flask serves the SPA shell for manifest page paths and 308s legacy URLs.
 
 Page paths come from ``euclid_polish/web/spa_routes.json`` (contract C1);
-data endpoints that share a prefix with a page (``/ensemble/status.json``,
-``/inspect/preview.png``) must keep reaching their own handlers.
+data endpoints that share a prefix with a legacy (now redirected) page URL
+(``/ensemble/status.json``, ``/inspect/preview.png``) must keep reaching
+their own handlers.
 """
 
 from __future__ import annotations

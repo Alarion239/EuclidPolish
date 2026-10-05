@@ -1,7 +1,7 @@
 """Testable, non-interactive inference operations the CLI menus call.
 
 Pure functions over the OO operator surface — ``Model.upsample``,
-``EuclidArchive.fetch``, ``Image``/``ImageSet`` — with no input()/questionary.
+``EuclidCatalog.fetch``, ``Image``/``ImageSet`` — with no input()/questionary.
 """
 from __future__ import annotations
 

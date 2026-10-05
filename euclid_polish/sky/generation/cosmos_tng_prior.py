@@ -4,6 +4,12 @@ COSMOS supplies redshift, stellar mass, apparent size, and an HST/ACS F814W
 brightness anchor. TNG supplies the Euclid VIS/NISP morphology and colours.
 The F814W anchor is mapped to VIS by the fitted observation transfer, then one
 shared scalar normalizes all four TNG channels so their ratios are preserved.
+
+That describes :class:`CosmosTngPrior`. The module also holds
+:class:`JointGalaxyPopulationPrior`, the Euclid joint prior: it draws a VIS
+radius, a radius-conditioned VIS 2FWHM brightness, and empirical colours+SFR
+from the conditional colour+SFR forest (no redshift, no COSMOS row), so there
+the NISP/VIS ratios come from that draw rather than from TNG.
 """
 from __future__ import annotations
 

@@ -66,9 +66,11 @@ def register(app):
     def serve_inference_files(relpath: str):
         """Serve FITS / PNG files from data/euclid_inference/.
 
-        Used by the inference UI to download the persisted cutouts and
-        SR result. Path is jailed to ``Config.EUCLID_INFERENCE_DIR`` to
-        prevent traversal — anything resolving outside that tree 403s.
+        Downloads any file under that tree (real tiles, real fields,
+        experiment outputs, CLI ad-hoc runs). No console page links here
+        since the inference page was removed; the route is kept wired. Path
+        is jailed to ``Config.EUCLID_INFERENCE_DIR`` to prevent traversal —
+        anything resolving outside that tree 403s.
         """
         root = os.path.realpath(Config.EUCLID_INFERENCE_DIR)
         full = os.path.realpath(os.path.join(root, relpath))
@@ -135,7 +137,7 @@ def register(app):
         return jsonify({"ok": True, "catalog": _catalog_status()})
 
     # =========================================================================
-    # Universal FITS inspector (the Inspect workspace, spec §8.6). Every
+    # Universal FITS inspector (the Files workspace; spec §8.6 Inspect). Every
     # path is jailed to the inspectable roots (helpers/paths.py); headers are
     # read without pixels; planes are memory-mapped and binned.
     # =========================================================================

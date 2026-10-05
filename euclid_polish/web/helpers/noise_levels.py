@@ -296,7 +296,7 @@ def _rows_by_tile() -> dict[str, dict[str, Any]]:
 
 
 def noise_position(tile: str) -> dict[str, Any] | None:
-    """One measured position (the Realism ``noisepos`` inspector): its four
+    """One measured position (the Synthetic ``noisepos`` inspector): its four
     band levels, the 4×4 sub-tile grid of each band and that grid's largest
     straight-line depth step. ``None`` for an unknown tile."""
     row = _rows_by_tile().get(str(tile))

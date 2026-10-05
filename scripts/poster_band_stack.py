@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Transpose per-band TNG stacks into one band-stacked FITS for a single viewpoint.
 
-The ``tng_stack`` step card on http://127.0.0.1:8765/tng ("download latest
-stacked FITS") gives you, per Euclid band, a multi-extension FITS:
+The ``tng_stack`` step card on Synthetic › Galaxies › templates
+(http://127.0.0.1:8765/synthetic/galaxies?view=templates; "Pull stack", then
+"Stacked FITS") gives you, per Euclid band, a multi-extension FITS:
 
     PrimaryHDU (TNGID/BAND/NORIENT) + ImageHDU O1..O5   (one per SKIRT viewpoint)
 

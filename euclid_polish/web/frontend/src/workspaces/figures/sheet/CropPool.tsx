@@ -7,7 +7,8 @@
  * viewer, the sky, Files, a FITS download, Rename and Delete. The ticked
  * crops can be deleted together. The table keeps the console's filter
  * language in the Find box (`collection:real tiers:jwst wcs=wcs side<2`),
- * its column menu (tiers, source, position, saved, size and id start hidden)
+ * its column menu (tiers, source, crop side, position, saved, size and id
+ * start hidden)
  * and a CSV export. */
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";

@@ -12,7 +12,7 @@
 # already exist under ``$EUCLID_POLISH_DATA_DIR/images/records_v2/``:
 #   clean_{train,validate}.tfrecord  — 4-band HR clean (inspection)
 #   dirty_{train,validate}.tfrecord  — 4-band LR dirty (model input)
-#   hr_{train,validate}.tfrecord     — 1-band VIS HR (training target)
+#   hr_{train,validate}.tfrecord     — 4-band VIS+NISP HR (training target)
 #
 # Submit from the project root:
 #     sbatch scripts/fasrc_train_only.sh

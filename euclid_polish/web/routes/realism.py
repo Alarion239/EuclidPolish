@@ -1,4 +1,4 @@
-"""Route for the Realism workspace overview: readiness of every prior."""
+"""Route for the realism overview (Synthetic › Status): readiness of every prior."""
 from __future__ import annotations
 
 from flask import jsonify

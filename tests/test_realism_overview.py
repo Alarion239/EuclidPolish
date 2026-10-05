@@ -1,4 +1,5 @@
-"""Realism workspace backend: the readiness overview, the synthetic_generate
+"""Synthetic-workspace realism backend (the former Realism workspace): the
+readiness overview (Synthetic › Status), the synthetic_generate
 gate parity, read-only GET handlers, the noise-position endpoint and the one
 training-catalogue sync job."""
 

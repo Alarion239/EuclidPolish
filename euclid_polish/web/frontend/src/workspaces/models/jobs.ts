@@ -1,5 +1,5 @@
-/* Job helpers of the Models workspace: the shared job keys (so the palette,
-   Home's quick actions and these tabs never start the same job twice), the
+/* Job helpers of the Models workspace: the shared job keys (so the palette
+   and these tabs never start the same job twice), the
    confirmed starters of the loop's local jobs (evaluate, PSNR vs knee,
    member PSNR) and an end-of-job effect. Jobs start through `startJob`
    (app/RunActions), which confirms, registers the job under its key and

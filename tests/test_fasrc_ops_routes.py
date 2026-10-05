@@ -1,6 +1,7 @@
-"""Ops › FASRC routes added by W-Ops: history across steps, queue detail and
-resume, the accounting-reconcile and checkpoint-mirror jobs, the remote file
-browser, log search, the FASRC-vs-local HEAD comparison and step outputs."""
+"""FASRC routes added by W-Ops (the former Ops › FASRC tab): history across
+steps, queue detail and resume, the accounting-reconcile and checkpoint-mirror
+jobs, the remote file browser, log search, the FASRC-vs-local HEAD comparison
+and step outputs."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-/* Files workspace — typed endpoints (euclid_polish/web/API.md, "Inspect workspace": the /api/inspect URLs keep their name). */
+/* Files workspace — typed endpoints (euclid_polish/web/API.md, "Files workspace": the /api/inspect URLs keep their name). */
 
 export type InspectRoot = { id: string; label: string; path: string; rel: string; exists: boolean };
 

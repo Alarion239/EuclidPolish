@@ -1,9 +1,9 @@
 """Source of truth for which ensemble members are active.
 
 The registry file lives at ``<ensemble parent>/ensemble_registry.json`` — one
-level ABOVE the ensemble dir on purpose: the FASRC checkpoint auto-mirror
-rsyncs the ensemble dir with ``--delete-after``, which would delete any
-local-only file inside it.
+level ABOVE the ensemble dir on purpose: the FASRC checkpoint mirror
+(:mod:`euclid_polish.web.fasrc_mirror`, manual) rsyncs the ensemble dir with
+``--delete-after``, which would delete any local-only file inside it.
 
 Bootstrap rule: any ``member_*`` directory with a checkpoint that the registry
 has never seen (neither active nor archived) is auto-added to ``active`` — so
@@ -119,9 +119,10 @@ def active_member_dirs(base_dir: str) -> list[str]:
 
 
 def active_labels(base_dir: str) -> list[str]:
-    """Model labels the ensemble will load, aligned with member order:
-    one ``NN·psnr`` per active member. This is the membership fingerprint
-    caches are validated against. Evaluation uses only each member's
+    """Model labels of every registry-active member (both star regimes),
+    aligned with member order: one ``NN·psnr`` per active member. Caches
+    validate against the per-regime :func:`regime_labels`, not this list.
+    Evaluation uses only each member's
     PSNR-best checkpoint — the ``loss_best/`` sub-track is still saved during
     training (and can seed forks) but is NOT part of the ensemble."""
     return [os.path.basename(d).removeprefix("member_") + "·psnr"

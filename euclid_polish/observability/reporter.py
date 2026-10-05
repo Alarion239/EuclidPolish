@@ -57,16 +57,18 @@ class Reporter:
 
     Calls also echo a one-liner to ``stderr`` so the raw ``.err`` log
     surfaces the same information for users who toggle the "show raw
-    log" fallback. ``step`` events are deliberately silent on stderr —
-    high-frequency progress would flood the log; scripts that want a
-    raw progress bar should keep their existing ``tqdm`` alongside.
+    log" fallback. ``step`` events echo at most once per
+    :attr:`STEP_ECHO_INTERVAL_S` within a stage, and ``worker`` /
+    ``resource`` / ``metric`` events never do — high-frequency progress
+    would flood the log; scripts that want a raw progress bar should keep
+    their existing ``tqdm`` alongside.
     """
 
     #: Minimum wall-clock gap (seconds) between two ``set_step`` stderr
     #: echoes. Every call still writes to the JSONL events file; the
     #: rate-limit is only on the human-readable echo so a 200k-step
-    #: training loop doesn't flood ``.err``. 30 s gives roughly one
-    #: line per minute on a typical job and is short enough to spot a
+    #: training loop doesn't flood ``.err``. 30 s gives at most two
+    #: lines per minute on a typical job and is short enough to spot a
     #: stalled loop within a coffee.
     STEP_ECHO_INTERVAL_S: float = 30.0
 

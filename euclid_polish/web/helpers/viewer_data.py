@@ -21,9 +21,9 @@ collection provides:
 ==================  ================================  ============================
 collection          tiers                             source
 ==================  ================================  ============================
-``sky``             dirty (LR), hr, bhr, sr           synthetic TFRecords
+``sky``             dirty (LR), hr, bhr, clean, sr    synthetic TFRecords
 ``cutouts``         real                              real star cutouts (FITS)
-``evaluation``      LR / SR / HR / BHR / std / pcaN    eval-store object FITS
+``evaluation``      LR, SR, mean, HR, BHR, std, pcaN  eval-store object FITS
 ``ensemble``        lr, sr (production gate), mean,   evaluation cube cache +
                     std, hr, bhr, combiners, members  records
 ``archive-fields``  lr                                multipoint archive FITS
@@ -375,8 +375,8 @@ def _file_wcs(path: str | os.PathLike[str], hdu: int = 0) -> dict[str, Any] | No
 # Tiers offered for sky records: LR (the dirty record), raw HR (the starfull
 # scene), BHR (that scene with the target PSF), the clean record (the
 # deliberately STARLESS scene — its own tier, never substituted for HR) and SR
-# (model output, generated on demand in Models › Images — disabled until at
-# least one SR cube exists). Records are read by position through the
+# (model output, generated on demand in Models › Images — offered only once
+# at least one SR cube exists). Records are read by position through the
 # header-scanned offset index (sky_records.read_record): O(1) per cube.
 _SKY_RECORD_TIERS = [
     {"key": "dirty", "label": "LR", "unit": "e-",
@@ -391,7 +391,8 @@ _SKY_SR_HINT = "the production model's SR of the record (generated in Models ›
 
 
 def _sky_subset(params: dict[str, str]) -> str:
-    # Default to the held-out test split — the eval set the /sky sync pulls.
+    # Default to the held-out test split — the eval set the Synthetic › Records
+    # sync pulls.
     subset = (params.get("subset") or "test").strip()
     if subset not in sky_records.SUBSETS:
         raise ViewerError(400, f"subset must be {'|'.join(sky_records.SUBSETS)}")
@@ -778,8 +779,9 @@ def _eval_tier_wcs(obj_dir: str, *, is_lr: bool, synthetic: bool) -> dict[str, A
 # sky records by record index. Contract C6: the public ``sr`` tier is the
 # PRODUCTION combiner (``ACTIVE_COMBINER_KINDS[0]``, the spatial gate); the
 # cached mean is its own ``mean`` tier (also the centre of the disagreement
-# movie, ``morph_base_tier``); other loadable combiners (RBF kinds) stay as
-# extra tiers. The regime defaults to STARFULL.
+# movie, ``morph_base_tier``); the other active combiners (RBF kinds) are no
+# longer advertised as tiers but still load by their cube prefix. The regime
+# defaults to STARFULL.
 
 #: The combiner behind the ``sr`` tier.
 PRODUCTION_COMBINER_KIND = ACTIVE_COMBINER_KINDS[0]
@@ -1111,7 +1113,7 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     # Records are written index==position from 0, so reading up to the largest
     # cached index covers every LR/goal field we need.
     n_read = (max(int(i) for i in idxs) + 1) if idxs else 1
-    # sr / std, the PCA eigen-images (pca0…) and individual member SRs
+    # std, the PCA eigen-images (pca0…) and individual member SRs
     # (member0…) are cached .npy cubes; LR and the regime goal come from the
     # records. pcaN are served on demand for the animation (not advertised as
     # static tiers). The stable ``hr`` tier key means "goal" here: clean for
@@ -2131,7 +2133,7 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
             # The registered NEXUS Euclid cube is already in the same raw
-            # electron units as the normal Inference Tile viewer.  Do not
+            # electron units as the real-tile LR in Sky › Targets.  Do not
             # apply the archive-only robust scale here: it made faint
             # background/noise much brighter before the shared asinh clip.
             "bands": bands,
@@ -2384,7 +2386,7 @@ def _real_cube(index: int, tier: str, params: dict[str, str]):
 
 
 # ---------------------------------------------------------------------------
-# fits — any image HDU of any inspectable FITS file (the Inspect workspace)
+# fits — any image HDU of any inspectable FITS file (the Files workspace)
 # ---------------------------------------------------------------------------
 # params: ``path`` (project-relative, jailed to the inspectable roots), ``hdu``
 # (an image HDU index, or ``b:<prefix>`` for a 4-band HDU group; default the
@@ -2458,7 +2460,7 @@ def _fits_selected(params: dict[str, str], summary: Mapping[str, Any]) -> dict[s
                 raise ViewerError(415, f"HDU {wanted} ({hdu.get('name')}) is not a viewable image: "
                                        f"{hdu.get('reason') or hdu.get('type')}")
         raise ViewerError(404, f"no HDU {wanted} in this file")
-    # A file of band HDUs opens as its colour composite (as the Inspect page).
+    # A file of band HDUs opens as its colour composite (as the Files page).
     if groups:
         return {"group": groups[0], "key": groups[0]["id"]}
     if images:
@@ -2631,7 +2633,7 @@ def _fits_plane_info(served: fits_inspect.Plane) -> tuple[dict[str, Any] | None,
             scale = 0.0
     if not (math.isfinite(scale) and scale > 0):
         # No WCS and no PIXSCALE: assume the Euclid VIS grid (the wire format
-        # needs a positive scale); the Inspect page says the scale is assumed.
+        # needs a positive scale); the Files page says the scale is assumed.
         scale = float(Config.VIS_PIXEL_SCALE_ARCSEC)
     return keywords, scale * served.bin
 

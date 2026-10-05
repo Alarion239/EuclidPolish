@@ -150,8 +150,9 @@ class TestInspectRoutes:
         assert "/api/inspect" in urls
         assert "/inspect/download" in urls
         assert "/inspect/preview.png" in urls
-        # The page itself is the SPA's Inspect workspace (C1), not a rule;
-        # the per-record FITS exporters went with the classic pages.
+        # The page itself is the SPA's Files workspace (the former Inspect
+        # workspace, C1), not a rule; the per-record FITS exporters went
+        # with the classic pages.
         assert "/inspect" not in urls
         assert "/sky/fits" not in urls
         assert "/sky/inspect" not in urls

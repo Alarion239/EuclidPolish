@@ -1,4 +1,4 @@
-/* Synthetic › Galaxies: the tab's words and gates (pure; models.test.ts) —
+/* Synthetic › Galaxies: the tab's words and gates (pure; synthetic.test.tsx) —
    magnitude ranges at one shared precision, whether the cached Q1 brackets
    are complete enough to refit without an archive query, and the one caption
    under each marginal panel (what it is normalised to, which samples it

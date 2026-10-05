@@ -86,7 +86,8 @@
 .mdl-pick__top { display: flex; justify-content: space-between; gap: 4px; font-family: var(--font-mono); font-size: var(--fs-xs); }
 .mdl-pick__meta { font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* disagreement: ONE compact member panel under the viewer (viewer first) */
+/* disagreement: ONE compact member panel (Images: beside the viewer on a wide
+   page, under it on a narrow one) */
 .mdl-viewer-page { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 .mdl-members {
   display: flex; flex-direction: column; gap: var(--s2); min-width: 0;

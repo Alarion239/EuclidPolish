@@ -73,10 +73,11 @@ def _sandbox_short() -> str:
 def register(app):
 
     # =========================================================================
-    # Tracking tab — the experiment "lab notebook". Titled campaigns collect
-    # model/FITS/image backups (each with a comment + git-commit stamp), a
-    # markdown log, and every FASRC job's parameters. The local store is
-    # gitignored and mirrored to persistent holylabs storage on each backup.
+    # Tracking (the Notebook workspace) — the experiment "lab notebook".
+    # Titled campaigns collect model/FITS/image backups (each with a comment +
+    # git-commit stamp), a markdown log, and every FASRC job's parameters. The
+    # local store is gitignored and mirrored to persistent holylabs storage on
+    # each backup.
     # See euclid_polish.tracking.
     # =========================================================================
 
@@ -98,8 +99,9 @@ def register(app):
     def _tracking_state() -> dict[str, Any]:
         store = tracking_default_store()
         listing = store.list_campaigns()
-        # Enrich each archived campaign with its model backups so the UI can
-        # offer a per-model ⏱ time-travel button without an extra round-trip.
+        # Enrich each archived campaign with its model backups (the archive
+        # table's model count; per-model ⏱ time travel reads the campaign
+        # detail, GET /api/tracking/campaign/<name>).
         for c in listing["archived"]:
             try:
                 c["models"] = store.backups_in(c.get("_dir")).get("models", [])

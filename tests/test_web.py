@@ -349,8 +349,9 @@ def test_bhr_fwhm_uses_full_target_selection_range():
 
 
 def test_viewer_meta_sky_accepts_test_subset(client):
-    """The held-out test split is selectable in the /sky viewer (it's the
-    eval set the sync pulls); an unknown subset still 400s."""
+    """The held-out test split is selectable in the ``sky`` records viewer
+    (Synthetic › Records; it's the eval set the sync pulls); an unknown
+    subset still 400s."""
     assert client.get("/viewer/meta/sky?subset=test").status_code == 200
     assert client.get("/viewer/meta/sky").status_code == 200          # defaults to test
     assert client.get("/viewer/meta/sky?subset=bogus").status_code == 400
@@ -369,9 +370,9 @@ def test_inference_page_renders(client):
 
 
 # ---------------------------------------------------------------------------
-# Endpoint smoke tests: every POST endpoint accepts a valid payload and
-# returns a job_id. We don't wait for completion — that's covered by the
-# job-tracker tests above.
+# Endpoint smoke tests: removed routes stay gone and the remaining POST
+# endpoints accept a valid payload. The job tracker itself is covered by
+# the job-tracker tests below.
 # ---------------------------------------------------------------------------
 
 def test_removed_routes_are_gone(client):
@@ -396,8 +397,9 @@ def test_removed_routes_are_gone(client):
 
 
 def test_psfs_page_reads_cache_without_rsync(client, monkeypatch):
-    """Loading /psfs reads the local ePSF cache only — it must NOT rsync from
-    FASRC on page load (the slow behaviour we replaced with a button)."""
+    """Loading the ePSF view (``/synthetic/psf?view=epsf``) reads the local
+    ePSF cache only — it must NOT rsync from FASRC on page load (the slow
+    behaviour we replaced with a button)."""
     calls = []
 
     def spy(*a, **k):

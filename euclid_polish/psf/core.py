@@ -223,8 +223,8 @@ class PSF(StampCarrier):
         No-op when the source and target scales already match (within
         1e-6 arcsec).
 
-        Cubic spline (``order=3``) was chosen over Lanczos-3 in
-        ``psf_library`` because Lanczos has negative side lobes that
+        Cubic spline (``order=3``) was chosen over Lanczos-3 because
+        Lanczos has negative side lobes that
         ring on the PSF wings — those create small negative pixels
         that shrink under the sum=1 renormalisation. Cubic spline is
         monotone-preserving in practice for Gaussian-like PSFs.
@@ -505,8 +505,8 @@ class PSF(StampCarrier):
         rendered through this PSF, not another PSF. The kernel is
         defensively normalised to sum=1 here (so a convolution can't
         silently rescale flux), matching the contract every
-        downstream consumer (pair-gen, trainer augmentations,
-        differential-kernel script) already relies on.
+        downstream consumer (pair-gen, trainer augmentations) already
+        relies on.
         """
         k = self.with_unit_sum().data
         return fftconvolve(

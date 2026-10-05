@@ -1,7 +1,7 @@
 /* Real-field diagnostics (GET /api/inference/diagnostics.json) matched to the
  * synthetic evaluation (GET /ensemble/evals.json): model–model
  * angular cross-correlation r_ij(d) and member σ vs brightness. Pure shaping
- * (unit-tested in realField.test.ts) — the plots live in RealField.tsx. Both
+ * (unit-tested in realField.test.ts) — the plots live in FieldSection.tsx. Both
  * sides are put on SHARED axes and a common (coarser) binning so the real and
  * synthetic panels compare cell by cell. The RBF combiners' pixel occupancy
  * is gone with the RBF (its data is no longer computed). */

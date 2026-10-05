@@ -66,7 +66,8 @@ export function bandState(b: StarBand | undefined): BandState {
 }
 
 /** A star's overall state: its best band (valid in any band wins, then corrupted, …).
- *  The backend's summary counts use the same rule, so the KPIs match the "Overall" filter. */
+ *  The backend's summary counts use the same rule (web/helpers/star_catalog.py star_state);
+ *  the band filter's "Best band" option filters by it. */
 export function starState(s: Star): BandState {
   const states = new Set(Object.values(s.bands).map(bandState));
   return (["valid", "corrupted", "failed"] as const).find((st) => states.has(st)) ?? "pending";
@@ -177,7 +178,7 @@ export function histogram(values: readonly (number | null | undefined)[], lo: nu
   return { centers: counts.map((_c, i) => lo + (i + 0.5) * width), counts, edges };
 }
 
-/** A nice bin range for magnitudes: whole 0.1-mag bins covering [min, max]. */
+/** A nice bin range for magnitudes: whole `step`-mag bins (0.05 mag by default) covering [min, max]. */
 export function magBins(min: number, max: number, step = 0.05): { lo: number; hi: number; bins: number } {
   const lo = Math.floor(min / step) * step;
   const hi = Math.max(lo + step, Math.ceil(max / step) * step);
@@ -479,7 +480,7 @@ export function resumeSafeStep<S extends { last_params?: Record<string, unknown>
 
 /* ── toolbar compaction ─────────────────────────────────────────────────── */
 
-/** The toolbar's compact level (common.tsx DataBar): the first level whose
+/** The toolbar's compact level (dataCommon.tsx DataBar): the first level whose
  *  one-row width fits the bar (`widths[level]`, the children's natural widths
  *  plus the gaps with that level applied), else the most compact one. Level
  *  0 is the labelled bar. */

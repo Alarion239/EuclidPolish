@@ -9,8 +9,9 @@ import { devRoute } from "./src/app/devProxy";
 // web/static). `base` applies to the build only; the dev server serves at "/".
 //
 // Dev (`npm run dev`, http://localhost:5173): page paths from the route
-// manifest (../spa_routes.json, contract C1) and Vite's own module URLs are
-// served by Vite; EVERY other path (/api, /viewer, /ensemble/*.json,
+// manifest (../spa_routes.json, contract C1), legacy page URLs (the SPA
+// redirects them client-side) and Vite's own module URLs are served by Vite
+// (src/app/devProxy.ts); EVERY other path (/api, /viewer, /ensemble/*.json,
 // /static/dist/…, /auth, …) is proxied to Flask at
 // FLASK_ORIGIN || http://localhost:9777. The Host header is kept
 // (changeOrigin: false) so Flask's same-origin mutation guard sees

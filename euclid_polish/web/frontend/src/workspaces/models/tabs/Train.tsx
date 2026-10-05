@@ -188,8 +188,9 @@ function TrainPage() {
     setResSeed(resKind(form.mode));
   }, [jobs.data, jobs.error, res, resSeed, form.mode]);
   const ownRes = (r: Resources) => { setRes(r); setResSeed(null); };
-  // "Continue" from Members or the Leaderboard (?members=): up to each
-  // member's recorded target, not a fixed +20k (once, when the rows arrive).
+  // "Continue" from Members or the Leaderboard (?members=): up to the
+  // members' recorded target (the largest among them), not a fixed +20k
+  // (once, when the rows arrive).
   const targetSet = useRef(false);
   useEffect(() => {
     if (targetSet.current || form.mode !== "continue" || !urlMembers || !members.data) return;

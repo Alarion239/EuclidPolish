@@ -1,4 +1,4 @@
-/* Pure series builders of the Stars and Pixels tabs. */
+/* Pure series builders of the Stars and Fields (was Pixels) tabs. */
 import { describe, expect, it } from "vitest";
 import { bandColor } from "../../colors";
 import {

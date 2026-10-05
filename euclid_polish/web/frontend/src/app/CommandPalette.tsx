@@ -2,9 +2,9 @@
  *   - suggestions from the typed text (RA/Dec, member N, NEXUS tile N, FITS
  *     path — `paletteSuggestions`), first;
  *   - the current page's actions (`usePageActions`);
- *   - every page: each workspace × tab (× ensemble regime);
- *   - global commands: theme, Display panel, jobs, run a FASRC step, shortcuts,
- *     rail, inspector, refresh data, copy link;
+ *   - every page: each workspace × tab;
+ *   - global commands: theme, Display panel, jobs, connections, run a FASRC
+ *     step, open a file, shortcuts, rail, inspector, refresh data, copy link;
  *   - the global "Run a job" launchers (RunActions);
  *   - "Find <text> on the sky" (the name resolver), always last.
  * The ranking is ours (`rankPalette`, cmdk's filter is off): the page or

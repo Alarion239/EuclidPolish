@@ -1,4 +1,5 @@
-"""Header-first FITS inspection for the Inspect workspace (spec §8.6).
+"""Header-first FITS inspection for the Files workspace (the former Inspect
+workspace, spec §8.6).
 
 Nothing here reads pixels unless asked:
 

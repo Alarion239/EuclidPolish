@@ -79,7 +79,8 @@ class TestNoOp:
         assert "TQDM_DISABLE" not in os.environ
 
     def test_from_env_respects_explicit_tqdm_disable(self, monkeypatch, tmp_path):
-        """An explicit TQDM_DISABLE in the environment wins over the default."""
+        """An explicit TQDM_DISABLE in the environment is left untouched by
+        from_env() (which no longer sets a default)."""
         monkeypatch.setenv(ENV_EVENTS_PATH, str(tmp_path / "j.events"))
         monkeypatch.setenv("TQDM_DISABLE", "0")
         Reporter.from_env()

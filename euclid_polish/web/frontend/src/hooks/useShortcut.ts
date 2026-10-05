@@ -16,8 +16,8 @@
  *   - focus is inside a modal dialog (`role=dialog|alertdialog`, unless
  *     `allowInInputs`), so "g s" cannot navigate behind an open dialog;
  *   - another handler already called `preventDefault()` on the event (the
- *     image viewer consumes its own keys on `document`, which runs before
- *     the window listeners here);
+ *     image viewer consumes its own keys in a window capture listener, which
+ *     runs before the bubbling window listeners here);
  *   - it is a key-repeat or IME composition.
  * A handler that fires calls `preventDefault()` unless it returns `false`.
  *

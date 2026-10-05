@@ -290,8 +290,9 @@ class Config:
     VIS_AB_ZP_E_PER_S            = 25.92
 
     # Simulator zeropoint: m_AB of a source contributing 1 e⁻ over the full
-    # stacked integration. Used by sky/sky_simulator.py to convert
-    # magnitude → expected electrons over the stack for each source class.
+    # stacked integration. Per-band magnitude → electrons conversion
+    # (euclid_polish/photometry.py) uses ``BandConfig.sim_zeropoint_e``,
+    # which equals this value for VIS; this scalar anchors PSNR_PEAK_E below.
     SIM_VIS_ZEROPOINT_E          = VIS_AB_ZP_E_PER_S + 2.5 * math.log10(T_TOTAL_S)
 
     # Sky surface brightness in e⁻/s/arcsec², derived from VIS_AB_ZP_E_PER_S.
@@ -304,8 +305,8 @@ class Config:
     # VIS values match the scalar VIS constants above (single source of
     # truth for the VIS forward model). NISP Y_E/J_E/H_E values are taken
     # from Schirmer+ 2022 (NISP photometric system, arXiv:2203.01650) and
-    # Euclid III. NISP Instrument (Schirmer+ 2025); read/dark are
-    # HAWAII-2RG typical values.
+    # Euclid III. NISP Instrument (Jahnke+ 2024); read/dark are the
+    # in-flight values detailed below.
 
     # VIS fields reference the scalar VIS constants above so each physical
     # value (zeropoint, exposure budget, sky, noise) is defined exactly ONCE.
@@ -674,8 +675,7 @@ class Config:
     # output). Surface brightness is physically >= 0, but the WDSR head is
     # unconstrained, so SR can go slightly negative. A soft penalty
     # ``λ · mean(relu(-SR))`` (asinh space) added to every step's loss
-    # pushes the model to output >= 0 naturally across all three lanes
-    # (they all branch from the same SR). 0 disables; tune by watching the
+    # pushes the model to output >= 0 naturally. 0 disables; tune by watching the
     # validation negative-pixel fraction. A penalty makes negatives
     # rare/small, not impossible — clamp the delivered product for a hard
     # guarantee.
@@ -685,8 +685,9 @@ class Config:
     # which steered the model into a smooth, non-negative (blurry) basin.
     # With λ=1 the training log showed loss == loss_syn to 8 decimals (the
     # penalty was already ~0), so removing it only frees the solution space
-    # — it does not change the loss number on its own. Pass a positive
-    # ``--nonneg-sr-weight`` (or the WebUI field) to re-enable per run.
+    # — it does not change the loss number on its own. Set this (or the
+    # ``Trainer(nonneg_sr_weight=…)`` argument) positive to re-enable; the
+    # per-run ``--nonneg-sr-weight`` flag and WebUI field are gone (6b4778c).
     NONNEG_SR_WEIGHT             = 0.0
 
 
@@ -988,8 +989,8 @@ class Config:
         """Position/size tolerances. Catalog dedup and archive-cutout reuse
         use deliberately different position tolerances (0.05″ vs 0.5″) — they
         were two separate ``POSITION_TOLERANCE_ARCSEC`` constants before."""
-        CATALOG_POSITION_TOL_ARCSEC: float  = 0.05  # euclid/catalog.py dedup
-        DOWNLOAD_POSITION_TOL_ARCSEC: float = 0.5   # euclid/downloader.py reuse
+        CATALOG_POSITION_TOL_ARCSEC: float  = 0.05  # catalog/catalog_object.py dedup
+        DOWNLOAD_POSITION_TOL_ARCSEC: float = 0.5   # catalog/downloader.py reuse
         DOWNLOAD_SIZE_TOL_PIXELS: int       = 10
 
     @dataclass(frozen=True)

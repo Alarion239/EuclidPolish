@@ -1,11 +1,12 @@
 """The artifact contract: a small Protocol plus a dataclass mixin.
 
-Existing typed classes (``Image``, ``PSF``, ``PSFSet``,
-``CatalogObject``) join the provenance system by carrying
+Existing typed classes (``Image``, ``PSF``, ``PSFSet``) join the provenance
+system by carrying
 a :class:`~euclid_polish.provenance.records.Stamp` and declaring their on-disk
 :class:`~euclid_polish.provenance.records.Format`. The :class:`StampCarrier`
 mixin supplies the shared implementation; :class:`Persistable` is the public
-structural contract.
+structural contract. (A catalog CSV is stamped differently:
+``CatalogObject.write`` keeps its id in a ``<path>.prov.json`` sidecar.)
 """
 
 from __future__ import annotations

@@ -30,13 +30,13 @@ export type Facet = { key: string; label: string; color: string };
 export type FieldColours = { of: (group: string) => Facet; facet: (label: string) => Facet; items: Facet[] };
 export type Palette = (field: string) => FieldColours;
 
-/** The ONE group → colour map every chart of a study view reads. Build it
- *  once per selection (StudyView) and on a theme flip (the tokens change). */
 /** The backend export's PALETTE (studies/render.py) as theme tokens, in its
  *  order: blue, orange, green, purple, magenta, brown, teal; the export's
  *  grey / amber / indigo have no distinct token, so red closes the cycle. */
 const SLOT_ORDER = [0, 2, 1, 3, 4, 7, 5, 6];
 
+/** The ONE group → colour map every chart of a study view reads. Build it
+ *  once per selection (StudyView) and on a theme flip (the tokens change). */
 export function makePalette(members: readonly StudyMember[]): Palette {
   const cache = new Map<string, FieldColours>();
   return (field: string) => {

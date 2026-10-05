@@ -18,7 +18,7 @@ _DEFAULT_LIMIT = 200
 
 
 def _inspect_path(entry: dict[str, Any]) -> str | None:
-    """Project-relative path the Inspect workspace can open (FITS only)."""
+    """Project-relative path the Files workspace can open (FITS only)."""
     path = entry.get("path")
     if not isinstance(path, str) or not path.lower().endswith((".fits", ".fits.gz", ".fit")):
         return None

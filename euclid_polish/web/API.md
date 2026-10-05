@@ -7,7 +7,7 @@ delete here**. `tests/test_api_docs.py` fails when the endpoint tables below
 drift from `app.url_map` (a route missing or stale, different methods, or a
 different FASRC gate mark).
 
-Contracts C1–C5 referenced below are defined in
+Contracts C1–C9 referenced below are defined in
 `docs/superpowers/plans/2026-09-25-webui-rework.md` §1.
 
 ## Conventions
@@ -184,7 +184,7 @@ Job dict:
 ### Pages and redirects (contract C1)
 
 `euclid_polish/web/spa_routes.json` (version 2, the "Loop console" rail:
-`/`, `/synthetic/<tab>`, `/models/:mode/<tab>`, `/sky/<tab>`, `/figures/<tab>`,
+`/`, `/synthetic/<tab>`, `/models/<tab>`, `/sky/<tab>`, `/figures/<tab>`,
 `/files`, `/runs/<tab>`, `/notebook/<tab>`, `/system/<tab>`) is the single
 source of truth for page URLs (`euclid_polish/web/spa_routes.py`:
 `load_manifest`, `is_page_path`, `redirect_target`; the SPA's
@@ -484,10 +484,11 @@ a local job): **nothing is FASRC-gated**.
   model run: a store output with current metrics as is; a store output
   without metrics, or a current legacy SR, is scored (a legacy SR is then
   copied into the store with its metrics, `from_legacy` = its path). The
-  member runner restores only the registry prefix holding the members of the
-  specs that will actually run — a spec already current on every tile adds
-  none — (`EnsembleModel(n_members=…)`; there is no arbitrary-subset option,
-  and a request past the prefix reloads uncapped once).
+  member runner restores only the members of the specs that will actually
+  run — a spec already current on every tile adds none —
+  (`model_catalog.EnsembleMemberRunner`, `EnsembleModel(labels=…)`; a request
+  for an active member outside that set rebuilds the ensemble once over the
+  union).
 - **Viewer collection `real`**: `GET /viewer/meta/real?source=<source>&models=<spec,…>`
   (default models: every spec with an output in that source). Tiers `lr`
   (e⁻, LR WCS), `jwst` ("JWST (native)", MJy/sr, its own WCS; `?jwst_band=`
@@ -930,7 +931,7 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 
 ### Ensemble (`routes/ensemble.py`)
 
-The Models workspace (`/models/:mode/<tab>`, was `/ensemble/:mode/<tab>`; its data endpoints keep the `/ensemble/` prefix). Every route
+The Models workspace (`/models/<tab>`, starfull only since 064fa13; was `/models/:mode/<tab>`, before that `/ensemble/:mode/<tab>`; its data endpoints keep the `/ensemble/` prefix). Every route
 takes `mode` = `starfull` (default) | `starless` (query or form). Errors under
 `/ensemble/` are JSON `{error}` (`errors.json_errors_for`); the new endpoints
 answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
@@ -1024,7 +1025,7 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
 | POST | `/ensemble/pull` | fasrc | Download changed members from FASRC (local job): `members` (comma list) limits it to those; `dry_run=1` only probes — job result `{dry_run, changed, tombstoned_skipped}`; else `{local, n_members, changed, up_to_date, requested, psnr}`. |
 | POST | `/ensemble/restore-member` |  | Restore an archived member (`member`) from its tracking zip (searched in the active and every archived campaign; zip-slip refused): unzip into the ensemble dir, tombstone → active. Job result `{member, zip, regime}`. |
 | GET | `/ensemble/status.json` |  | Members table + summary payload; `?mode=` picks the regime's eval summary + staleness (default `starfull`). Home reads it; the workspace uses `members.json`. |
-| POST | `/ensemble/train/preview` |  | What an `ensemble_train` submit with this form would run, without FASRC: `{ok, mode, member_names (allocated from the local registry, tombstones never reused), count, array{tasks, max_parallel}\|null, command[argv], command_text, base_seed (null = drawn at submit), star_prior, params}`; 400 `{ok:false, error}` for a form the submit would refuse. The star regime is the workspace's: the Train tab sends the run-wide `starless=1` for add/fork from the starless workspace and never a per-member `starless` (a fork keeps its source's regime, continue each member's recorded one). |
+| POST | `/ensemble/train/preview` |  | What an `ensemble_train` submit with this form would run, without FASRC: `{ok, mode, member_names (allocated from the local registry, tombstones never reused), count, array{tasks, max_parallel}\|null, command[argv], command_text, base_seed (null = drawn at submit), star_prior, params}`; 400 `{ok:false, error}` for a form the submit would refuse. The Train tab never sends `starless` (Models is starfull only; cloning a legacy starless job trains starfull); a posted run-wide `starless=1` still reaches the command as `--starless 1` (a fork keeps its source's regime, continue each member's recorded one). |
 | GET | `/ensemble/training-curves.json` |  | `{members:[{name, label, starless, psnr, band_psnr{VIS,Y_E,J_E,H_E}, loss_series, loss (= loss_series, deprecated), train_loss, gnorm, gnorm_max, step_time (s / 1000 steps), loss_norm, blocks, asinh_knee, asinh_knees, output_knee, knee_loss, target_steps, test_psnr}]}` — `[[step, value]…]` series, registry-active members only (rollback-deduped). |
 | GET | `/ensemble/training-jobs.json` |  | `{jobs:[{jobid, state, submitted_at, started_at, ended_at, elapsed_seconds, req_time_limit, req_memory, req_cpus, req_gpus, partition, gpu_util_mean, mode, member_names, steps, continue_basis, target_steps, extra_steps, params}]}` — every ensemble_train submission in the local job log, newest first (the Train tab's presets / clone). |
 

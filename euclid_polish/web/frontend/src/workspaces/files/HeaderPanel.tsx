@@ -1,5 +1,5 @@
 /* One HDU's header as a searchable table (key / value / comment), with the
-   raw 80-column text a click away. */
+   header as FITS-like text (`KEY = value / comment`) a click away: copy or .txt. */
 import { useMemo } from "react";
 import { Button, CopyButton, DataTable, safeFileName, downloadText, type DataColumn } from "../../ui";
 import type { HduSummary } from "./api";

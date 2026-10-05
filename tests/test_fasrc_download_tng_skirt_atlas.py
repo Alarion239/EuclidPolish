@@ -224,7 +224,7 @@ def test_download_one_empty_archive_is_failure(tmp_path, monkeypatch):
     res = mod._download_one(
         name="999.tar.gz", url=None, key="k",
         out_dir=out_dir, keep_archive=False)
-    # The fallback extracts the junk file, so n_fits == 0 → failure, no marker.
+    # No member matches the Euclid filter, so n_fits == 0 → failure, no marker.
     assert res["status"] == "failed"
     assert not os.path.isfile(
         os.path.join(out_dir, "999", Config.Tng.DONE_MARKER))

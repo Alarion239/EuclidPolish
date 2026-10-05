@@ -51,8 +51,8 @@ def session_status() -> dict:
 def register(app):
 
     # The catalog query + photometry verify are now two separate FASRC
-    # pipeline steps (``euclid_query`` on the catalog page, then download,
-    # then ``euclid_verify_photometry`` on the cutouts page) submitted through
+    # pipeline steps (``euclid_query``, then download, then
+    # ``euclid_verify_photometry``; both on Synthetic › PSF) submitted through
     # the standard ``/api/fasrc/steps/<step_id>/submit`` route — editable
     # resources, run history and Cancel-job all come for free. The bespoke
     # ``/catalog/query-brightest`` + ``/cutouts/verify-photometry`` routes
@@ -91,7 +91,8 @@ def register(app):
     # ---------------- Euclid archive credentials (for FASRC download) -----
     # The cutout-download job runs on FASRC and logs into the Euclid
     # archive there. We write the credentials to the remote
-    # ``~/.euclid_credentials`` (the file ``auth.login`` falls back to) via
+    # ``~/.euclid_credentials`` (``scripts/download_all_bands.py`` bridges it
+    # into ``EUCLID_USER``/``EUCLID_PASSWORD`` for ``EuclidCatalog``) via
     # the SSH channel — the password is sent as heredoc stdin (never in a
     # process argv), is stored mode-600 on the remote, and never touches
     # the laptop disk or the job DB.

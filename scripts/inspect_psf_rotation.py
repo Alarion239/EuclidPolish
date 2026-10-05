@@ -14,7 +14,7 @@ rotates by +n then -n (back to the original orientation) and writes the
 zeros; whole multiples of 90° take the exact ``np.rot90`` path so their residual
 is exactly 0, while other angles reveal the spline-interpolation smearing
 (worst on the sharp spikes). HDU0 is the original PSF; HDU1..N are the residuals
-(signed, raw — NOT renormalised), each header carrying MAXADIFF / MAXAREL / RMS.
+(signed, raw — NOT renormalised), each header carrying MAXADIFF / MAXAREL / RMSDIFF.
 
 ``--hdu 0`` = the PrimaryHDU (the mean, for a PSFSet file); ``--hdu N`` (N≥1)
 picks the Nth cluster PSF. Read-only on the input — only writes the output FITS.

@@ -1,10 +1,11 @@
 """
 COSMOS2025 master-catalog wrapper.
 
-The simulator draws galaxies from the COSMOS-Web ``v1.1`` master catalog
+This module wraps the COSMOS-Web ``v1.1`` master catalog
 (Shuntov+ 2025, arXiv:2506.03243). Each galaxy is described by:
 
-* a single-band photometric anchor (``mag_auto_hst-f814w`` — our VIS proxy)
+* a VIS-proxy (HST F814W) total magnitude — bulge + disk model flux — used
+  for the faint-end ``max_mag`` cut
 * a bulge+disk decomposition from HDU 6 (shared centroid + PA, independent
   radii + axis ratios per component) with per-band bulge and disk fluxes
 * a LePHARE photo-z and galaxy/star/QSO type from HDU 2
@@ -14,8 +15,13 @@ i.e. HST F814W ↦ VIS_E (the VIS proxy already used by the simulator) and
 UltraVISTA Y/J/H ↦ Euclid NISP Y_E/J_E/H_E (close-bandpass proxies).
 
 :class:`Cosmos2025Catalog` reads the real FITS file, filters to galaxies
-with viable B+D fits and finite per-band magnitudes, and indexes the catalog
-for the manual HST-derived TFRecord workflow.
+with viable B+D fits and finite per-band magnitudes, and can cache the
+filtered arrays as a compact ``.npz``. Scene generation no longer samples it
+(the generator draws from the population priors in :mod:`cosmos_tng_prior`
+and :mod:`phz_galaxy_prior`); its last production consumer, the HST-derived
+TFRecord workflow, was deleted with the HST lane on 2026-09-20.
+:func:`circularized_effective_radius_arcsec` is still used by
+``scripts/fasrc_extract_cosmos_population.py``.
 """
 
 from __future__ import annotations
@@ -33,11 +39,10 @@ from scipy.special import gammainc, gammaincinv
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons, electrons_to_ab_mag
 
-#: Filtered per-galaxy arrays a :class:`Cosmos2025Catalog` needs to sample —
+#: Filtered per-galaxy arrays a :class:`Cosmos2025Catalog` needs to sample.
 #: Persisting these post-quality-cut arrays gives a few-MB ``.npz`` that loads
-#: much faster than
-#: re-parsing the 10 GB master FITS, which matters when every parallel worker
-#: rebuilds the catalog.
+#: much faster than re-parsing the 10 GB master FITS, which matters when every
+#: parallel worker rebuilds the catalog.
 _FILTERED_ARRAYS = (
     "catalog_id", "ra_deg", "dec_deg", "z_phot", "angle_rad",
     "disk_re_arcsec", "bulge_re_arcsec", "disk_q", "bulge_q",
@@ -106,7 +111,8 @@ class GalaxyParams:
 # ---------------------------------------------------------------------------
 
 class CosmosCatalog(ABC):
-    """Sampling interface used by the multi-band scene generator.
+    """Sampling interface over a COSMOS B+D catalog (no longer used by the
+    multi-band scene generator, which samples the population priors).
 
     Concrete subclasses must expose ``bulge_flux_e`` and ``disk_flux_e``
     as ``(N, NUM_LR_CHANNELS)`` float arrays so the shared
@@ -141,13 +147,13 @@ class CosmosCatalog(ABC):
         express the "typical galaxy" Euclid-stack electron count in
         that band as a fraction of its VIS electron count.
 
-        Used by the HST-derived TFRecord generator
-        (:mod:`scripts.fasrc_generate_hst_tfrecords`) to paint NISP HR
-        channels from the single-band HST F814W cutout: each pixel's
-        NISP brightness is ``VIS_pixel × typical_ratio[band]``. That's
-        a per-pixel global colour — every source in the cutout treated
-        as a typical-colour galaxy — wrong per-source but the right
-        order of magnitude for the noise statistics the network sees.
+        Was used by the HST-derived TFRecord generator
+        (``scripts/fasrc_generate_hst_tfrecords.py``, deleted with the HST
+        lane on 2026-09-20) to paint NISP HR channels from the single-band
+        HST F814W cutout: each pixel's NISP brightness was
+        ``VIS_pixel × typical_ratio[band]`` — a per-pixel global colour,
+        every source in the cutout treated as a typical-colour galaxy. It
+        has no production caller now.
         """
         total_e = np.asarray(self.bulge_flux_e + self.disk_flux_e,
                              dtype=np.float64)             # (N, 4)

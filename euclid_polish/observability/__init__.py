@@ -7,6 +7,8 @@ Public surface:
     that emits ``resource`` events through a :class:`Reporter`.
   * :data:`ENV_EVENTS_PATH` — name of the env var the sbatch template
     sets to point at the per-job events file.
+  * :class:`JobLog` / :class:`JobRecord` — the local CSV ledger of every
+    FASRC submission (request-time plus post-mortem columns).
 """
 
 from euclid_polish.observability.job_log import JobLog, JobRecord

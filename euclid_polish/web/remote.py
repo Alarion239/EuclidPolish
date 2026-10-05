@@ -1,11 +1,11 @@
-"""SSH ControlMaster plumbing for the FASRC tab.
+"""SSH ControlMaster plumbing for the console's FASRC link (System › Connections).
 
 Single responsibility: open an SSH ControlMaster socket to the FASRC
 login node using public-key authentication, then reuse the multiplexed
 socket for every subsequent command (``run`` / ``stream`` / ``rsync``).
 ControlMaster carries many channels over the one socket concurrently, so
 commands run in parallel (bounded by ``SSHConfig.max_concurrency``) — a
-long transfer or the periodic training-status poll no longer blocks small
+long transfer or a periodic job-status poll no longer blocks small
 interactive tasks. No second connection is needed for parallelism.
 
 There is no interactive auth, no password, no OTP, no Bitwarden. If

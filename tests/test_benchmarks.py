@@ -83,8 +83,9 @@ def test_bench_sersic_disk_small():
 def test_bench_sersic_bulge_small():
     """n=4 (bulge) Sersic, r_e=0.10", 128² — typical bulge.
 
-    Baseline ~130 ms. csub=31 (r_e_pix=2, n=4, compact-high-n branch) and
-    a stamp of side ≈ 18·r_e_pix ≈ 72 → 72×31 = 2232 sub-pixel grid.
+    Baseline ~130 ms. csub=21 (r_e_pix=2, n=4: base 15 + the compact-bulge
+    +6 bump) over the ~13-pixel core (radius 3·r_e_pix = 6), csub=1 over the
+    rest of the ~72-pixel stamp (half-side 18·r_e_pix = 36).
     This is the most expensive single-source case in normal use.
     """
     from euclid_polish.sky.generation.profiles import draw_sersic
@@ -117,7 +118,8 @@ def test_bench_bulge_disk_typical_galaxy():
 def test_bench_bilinear_upsample_3x():
     """NISP native (84²) → VIS LR (252²) via bilinear interpolation.
 
-    One call is made per NISP band in the forward model.
+    The forward model skips this step today (every band's LR grid is the
+    0.10″ archive grid); it runs only for a band whose LR scale is coarser.
     """
     from euclid_polish.sky.observation.resample import bilinear_upsample
     rng = np.random.default_rng(0)

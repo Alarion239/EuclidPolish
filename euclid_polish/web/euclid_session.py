@@ -1,8 +1,10 @@
 """Laptop-side Euclid archive session for the web UI.
 
 Holds the :class:`~euclid_polish.catalog.client.EuclidCatalog` the login form
-created, so the catalog page can show "logged in as <user>". The archive
-download itself runs on FASRC; this is only the local UI's session state.
+(System › Connections, ``/auth/login``) created, so ``/auth/status`` can show
+"logged in as <user>" and the local archive queries (galaxy / star
+distributions, the catalog-eval galaxy query) can reuse it. The star-cutout
+download runs on FASRC with its own credentials file (``/euclid-auth/*``).
 """
 
 from __future__ import annotations

@@ -58,7 +58,8 @@ import "../workspaces/sky/results/register";
 import "../workspaces/synthetic/register";
 import "../workspaces/system/register";
 
-/* Built-in inspector kinds (workspaces register theirs when they load). */
+/* Built-in inspector kinds (the workspaces' kinds come from the register
+   modules imported above). */
 registerInspector("job", JobInspector, { title: jobTitle });
 
 export const NARROW_QUERY = "(max-width: 899px)";

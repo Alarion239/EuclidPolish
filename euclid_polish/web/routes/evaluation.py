@@ -301,10 +301,11 @@ def register(app):
     def api_evaluation_run_grouped():
         """Prepare the unified grouped dataset LOCALLY (A/B/C + synthetic).
 
-        One in-process background job: N lens cutouts per grade + N synthetic
-        validation triptychs → one run dir with a single grouped manifest. Every
-        object is held at the canonical eval geometry (53² LR, 106² SR/HR), so
-        there are no size knobs.
+        One in-process background job: N lens cutouts per grade + 3N syn-lens
+        and 3N syn-gal stamps (plus up to 3N cached real galaxies) → one run
+        dir with a single grouped manifest. Every object is held at the
+        canonical eval geometry (53² LR, 106² SR/HR), so there are no size
+        knobs.
 
         The real-galaxy group is **cache-only**: it consumes whatever the
         standalone Query-galaxies step (``/api/evaluation/query-galaxies``) has
@@ -419,9 +420,9 @@ def register(app):
     def api_evaluation_sync():
         """Pull ``<data_dir>/eval_results`` down from FASRC into the gallery.
 
-        The checkpoint auto-mirror (``fasrc_mirror``) only syncs the ckpt
+        The checkpoint mirror (``fasrc_mirror``) only syncs the ensemble
         dir — eval-catalog runs land in ``<data_dir>/eval_results`` on the
-        cluster and otherwise never reach the local ``/evaluation`` page.
+        cluster and otherwise never reach the console (Sky › Targets).
         This is the one-shot rsync_pull, reusing the same ControlMaster
         transport the checkpoint mirror uses, so the user never has to drop
         to a terminal. ``--delete-after`` keeps local in lockstep with the

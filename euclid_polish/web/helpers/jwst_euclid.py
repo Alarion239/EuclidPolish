@@ -2,9 +2,9 @@
 
 The overlap discovery table is deliberately the input to this module.  A pair
 is published only after both archive products have been downloaded, the JWST
-image has been sampled on the Euclid image grid, and the display PNGs have
-been written.  This keeps the WebUI cache useful after the archive session has
-gone away and avoids presenting a half-complete field.
+image has been cut out on its own native grid at the same sky position, and
+the display PNGs have been written.  This keeps the WebUI cache useful after
+the archive session has gone away and avoids presenting a half-complete field.
 """
 
 from __future__ import annotations

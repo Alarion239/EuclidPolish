@@ -6,7 +6,8 @@ we crop M×M HR-pixel postage stamps centered on one known source per field — 
 (``syn-lens``) or a field galaxy (``syn-gal``) — using the sidecar source
 catalog written at generation time. Every stamp is then a centered single object,
 comparable to the real A/B/C lens cutouts. No network; needs the cached
-``*_validate.tfrecord`` records + ``sources_validate.csv``.
+``*_<subset>.tfrecord`` records + ``sources_<subset>.csv`` of the held-out
+``test`` split (``validate`` for datasets generated before it).
 """
 
 from __future__ import annotations

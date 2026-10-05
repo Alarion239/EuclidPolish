@@ -1,9 +1,15 @@
-"""Web helpers for the ensemble page: status, the disagreement render, and the
-test-set evaluation job.
+"""Web helpers for the Models workspace (the ensemble): member status, the
+members table, member inspector and training curves, cached per-member
+PSNR, the test-set evaluation job and the diagnostics
+rebuilt from its cached cubes (power spectrum, pixel diagnostics with
+back-tracing, PSNR vs knee, the Y/J/H payloads), the combiner fit / variant /
+compare / promote jobs, member archive / restore / pull, and the
+train-command preview.
 
-The disagreement render is the hallucination cross-check made visual: LR, the
-ensemble-mean SR, the per-pixel spread across members (where members disagree =
-where the SR is invented), and the HR truth when available.
+The evaluation caches, per field, the ensemble-mean SR and the per-pixel
+spread across members (where members disagree = where the SR is invented) —
+the hallucination cross-check the ``ensemble`` viewer shows. (The standalone
+disagreement render was removed with the legacy pages, 0ad56d9.)
 """
 
 from __future__ import annotations
@@ -350,7 +356,7 @@ def _eval_identity(base: str, rdir: str | None, sub: str, regime_dir: str,
         "target_psf_fwhm_arcsec": target_fwhm,
         "member_fps": member_fps,
         # Kept for older summary readers; ``combiner_fps`` is the complete
-        # identity now that the two ordinary combiners are independent.
+        # identity now that the ordinary combiners are independent.
         "combiner_fp": _combiner_fingerprint(regime_dir, _RBF_KIND),
         "combiner_fps": {kind: _combiner_fingerprint(regime_dir, kind)
                          for kind in _ORDINARY_COMBINER_KINDS},
@@ -514,14 +520,16 @@ def job_member_psnr(cap) -> dict:
 
 
 def ensemble_status(starless: bool | None = None) -> dict:
-    """Everything the ensemble page renders: registry-active members
-    (+ seeds, sizes, cached test PSNR + rank), archived tombstones,
-    test-data presence, and the latest eval summary (+ staleness).
+    """The ``/ensemble/status.json`` payload (Home reads it as a fallback):
+    registry-active members (+ seeds, sizes, cached test PSNR + rank),
+    archived tombstones, test-data presence, and the latest eval summary
+    (+ staleness).
 
     ``starless`` picks WHICH regime's eval summary + staleness to report — the
     badge/stats must reflect the regime the user is viewing (``?mode=``), not
-    just the first one present. ``None`` (the classic page) keeps the old
-    first-present behaviour (starless priority)."""
+    just the first one present. ``None`` (the removed classic page; now only
+    the tests omit it) keeps the old first-present behaviour (starless
+    priority)."""
     base = ensemble_dir()
     reg = ensemble_registry.load_registry(base)
 
@@ -558,16 +566,15 @@ def ensemble_status(starless: bool | None = None) -> dict:
                             # Per-member asinh knee (electrons); None → default
                             # 100. Shown in the members table + "by knee" color.
                             "asinh_knee": (origin or {}).get("asinh_knee"),
-                            # Star regime for the table's Regime column + the
-                            # mode-toggle filter (origin.json; pre-knob members
-                            # → starfull). Must match member_is_starless().
+                            # Star regime (origin.json; pre-knob members →
+                            # starfull); Home counts members per regime by it.
+                            # Must match member_is_starless().
                             "starless": bool((origin or {}).get("starless", False)),
                             "psnr": (entry or {}).get("psnr")})
     # Rank by cached PSNR (1 = best) WITHIN each star regime. starfull and
-    # starless are scored against different targets (hr vs clean) and render in
-    # separate tables, so a shared 1..N enumeration across both would be
-    # meaningless — each regime restarts at 1. Unscored members rank last,
-    # unranked.
+    # starless are scored against different targets (hr vs clean), so a
+    # shared 1..N enumeration across both would be meaningless — each regime
+    # restarts at 1. Unscored members rank last, unranked.
     ranks: dict[str, int] = {}
     for regime in (False, True):
         group = sorted((m for m in members
@@ -591,9 +598,9 @@ def ensemble_status(starless: bool | None = None) -> dict:
                         d, "ensemble_power_spectrum.png"))), None)
     power_spectrum_png = (os.path.relpath(ps_path, Config.VIS_DIR)
                           if ps_path else None)
-    # The Evaluations card can render as long as EITHER a figure already
-    # exists or a per-field cube cache does (figures then render lazily) — in
-    # either regime.
+    # Evaluations are available (for the removed classic Evaluations card) as
+    # long as EITHER a figure already exists or a per-field cube cache does
+    # (figures then render lazily) — in either regime.
     evaluations_available = bool(power_spectrum_png) or any(
         os.path.isfile(os.path.join(d, "cubes", "viz_index.json"))
         for d in regime_dirs)
@@ -603,7 +610,7 @@ def ensemble_status(starless: bool | None = None) -> dict:
     summary_starless = False
     summary_path = None
     # Report the REQUESTED regime's summary (mode-specific badge); fall back to
-    # the first present when no regime is requested (classic page).
+    # the first present when no regime is requested (``starless=None``).
     order = (("starless", "starfull") if starless is None
              else ("starless",) if starless else ("starfull",))
     for r in order:
@@ -641,8 +648,9 @@ def ensemble_status(starless: bool | None = None) -> dict:
         "eval_summary": summary,
         "eval_summary_stale": summary_stale,
         # The viewed regime's evaluation exists AND matches the current members
-        # — the signal the combiner-fit button gates on (fit against a known
-        # baseline, not a stale/absent one).
+        # — the signal the removed SPA Ensemble page's Fit-combiner button
+        # gated on (fit against a known baseline, not a stale/absent one); no
+        # current reader.
         "evaluations_ready": bool(summary is not None and not summary_stale),
     }
 
@@ -685,14 +693,15 @@ def _lr_on_hr_grid(lr_cube, n: int, band: int = 0) -> np.ndarray | None:
 #: viewer (LR/SR/stdSR/HR). The metrics still use every field; only the viewer
 #: cache is capped so data/vis stays bounded.
 #: Safety ceiling on how many evaluated fields to cache as viewer/animation
-#: cubes (5 npy per field). ALL evaluated fields up to this are cached — raised
-#: from a flat 24 so the browser + morph aren't limited to a slice of the test
-#: set. ``data/vis`` is transient (cleared each eval).
+#: cubes (``sr_``, ``std_``, ``pcaN_``, one ``memberi_`` per member, ``lr_``
+#: and each baked combiner's npy per field). ALL evaluated fields up to this
+#: are cached — raised from a flat 24 so the browser + morph aren't limited to
+#: a slice of the test set. ``data/vis`` is transient (cleared each eval).
 ENSEMBLE_VIZ_FIELDS_MAX = 200
 
 #: How many PCA components of the member-residual subspace to cache per field
-#: for the morphing animation (M=5 members → residuals span M-1=4 dims; the top
-#: 3 carry the disagreement).
+#: for the morphing animation (M members → residuals span at most M-1 dims;
+#: only the top 3 are cached).
 ENSEMBLE_PCA_COMPONENTS = 3
 
 
@@ -1862,9 +1871,9 @@ def _spatial_gate_payload(comb: SpatialGateCombiner, *, starless: bool) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Cross-regime combined combiner: shared all-member predictions, independent
-# target models.  This is intentionally parallel to (never a replacement for)
-# the ordinary per-regime combiner above.
+# Evaluation: payload files, pixel back-tracing, the per-band and PSNR-vs-knee
+# diagnostics, archive reconciliation and the test-set evaluation job; then
+# member archive and the FASRC pull.
 # ---------------------------------------------------------------------------
 
 
@@ -1940,11 +1949,13 @@ def pixel_trace(starless: bool, diag: str, i: int, j: int,
     """Back-trace one heatmap cell to real image stamps.
 
     Given a diagnostic (``"std_err"`` | ``"bright_std"`` |
-    ``"combiner_feature_error"``) and its histogram cell
-    ``(i, j)``, read the sidecar's example pixel locations for that cell and cut
-    a ``(2·half+1)²`` window around each — the real pixels that landed in the
-    clicked cell. Each stamp carries the **full N-band** LR, HR and SR cubes
-    (SR = the regime's combiner where available, else the ensemble mean) as
+    ``"combiner_feature_error"``, the last only in an older sidecar) and its
+    histogram cell ``(i, j)``, read the sidecar's example pixel locations for
+    that cell and cut a ``(2·half+1)²`` window around each — the real pixels
+    that landed in the clicked cell. Each stamp carries the **full N-band**
+    LR, HR and SR cubes (SR = the baked cube of the combiner ``model_kind``
+    names, else the ensemble mean; a field without that combiner's cube is
+    skipped, never substituted) as
     base64 float32 so the frontend can render them with the field viewer's exact
     colour / knee / brightness, plus the single-band cross-member σ, and the
     per-pixel numbers of ``band`` (the diagnostics' band, VIS by default)
@@ -2981,8 +2992,8 @@ def job_ensemble_evaluate(cap, *, num_images: int,
                           lr=lr_v)
             # Back-tracing samples only for fields whose cubes are cached (within
             # viz_cap) — beyond that the sr_/std_ stamps don't exist to show.
-            # Error is scored against the combiner when present (the shipped
-            # point estimate), else the ensemble mean.
+            # The headline error is the ensemble mean's; every loaded combiner
+            # is also scored in its own per-model histogram.
             diag_acc.add(hr_v, mean_v, mem_v, combiners=model_v,
                          field_index=(int(rec_index) if len(saved) < viz_cap
                                       else None))
@@ -3361,7 +3372,7 @@ def changed_members_from_itemize(out: str) -> set[str]:
 def job_ensemble_pull(cap, *, members: list[str] | None = None,
                       dry_run: bool = False) -> dict:
     """Download the trained ensemble (``member_NN/``) from FASRC to the local
-    checkpoint tree, so the render / evaluate actions can run it locally.
+    checkpoint tree, so the evaluate / combiner / SR actions can run it locally.
 
     Member-aware: one ``--dry-run --itemize-changes`` probe decides which
     members actually changed on FASRC; only those are downloaded (and orphan-
@@ -3473,10 +3484,10 @@ def job_ensemble_pull(cap, *, members: list[str] | None = None,
 
 
 # ===========================================================================
-# Ensemble workspace (spec §8.2): the joined members table, one member's
-# inspector payload, training curves, the combiner variant registry and its
-# compare / fit / promote jobs, the overview's headline + staleness, archived
-# members (restore from zip) and the train-command preview.
+# Models workspace (spec §8.2, named Ensemble there): the joined members
+# table, one member's inspector payload, training curves, the combiner variant
+# registry and its compare / fit / promote jobs, the overview's headline +
+# staleness, archived members (restore from zip) and the train-command preview.
 # ===========================================================================
 
 #: Per-band validation PSNR columns of ``training_log.csv``.
@@ -3993,7 +4004,7 @@ def job_restore_member(cap, *, name: str) -> dict:
     """Bring an archived member back: unzip its tracking archive into the
     ensemble dir and move its tombstone back to active. The regime's
     evaluation, knee curves and combiner then read stale (membership changed)
-    until re-evaluated / refitted — shown by the Ensemble banners."""
+    until re-evaluated / refitted — shown by the Models › Leaderboard checks."""
     name = ensemble_registry.member_name(name)
     base = ensemble_dir()
     tomb = next((t for t in ensemble_registry.archived_members(base, Config.TRACKING_DIR)

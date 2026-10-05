@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fitTabs, sameIndices } from "./tabFit";
 
-// The ensemble strip at ~720 px: Overview … Train, More ≈ 70 px.
+// The old (pre-regroup) ensemble strip at ~720 px: Overview … Train, More ≈ 70 px.
 const W = [90, 82, 75, 96, 113, 98, 121, 67];
 const ALL = W.map((_, i) => i);
 const sum = (idx: number[]) => idx.reduce((s, i) => s + W[i], 0);
@@ -17,7 +17,7 @@ describe("fitTabs", () => {
   });
 
   it("keeps a fixed run of leading tabs and reserves one slot (the widest hidden tab) before More", () => {
-    // 90+82+75 = 247, + widest of the rest (Combiners 121) = 368 ≤ 460;
+    // 90+82+75 = 247, + widest of the rest (Disagreement 121) = 368 ≤ 460;
     // one more (Knee 96) would need 343 + 121 = 464 > 460.
     const shown = fitTabs(W, 530, 70, 0);
     expect(shown).toEqual([0, 1, 2]);

@@ -10,7 +10,8 @@ from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
 
 
 class _FakeSSH:
-    """Records commands; ``rc_map`` keys are substrings matched in order."""
+    """Records commands; ``stat`` returns ``stat_rc``, ``mkdir -p`` succeeds,
+    and any other command fails the test."""
 
     def __init__(self, stat_rc: int):
         self.stat_rc = stat_rc

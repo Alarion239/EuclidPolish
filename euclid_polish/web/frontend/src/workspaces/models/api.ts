@@ -53,7 +53,7 @@ export type MemberRow = KneeInfo & {
   status: MemberStatus; timeout: boolean; job: MemberJob | null;
   /** member-PSNR cache: joint 4-band asinh psnr_stretched over `psnr_fields` test fields */
   psnr?: number | null; psnr_rank?: number | null;
-  /** eval_summary headline metric (VIS asinh, the Overview "Best member" tile) */
+  /** eval_summary headline metric (VIS asinh, the "Test VIS" column) */
   vis_psnr?: number | null;
   knee_integrated?: Record<string, number | null> | null; knee_rank?: number | null;
   gate_usage?: Record<string, number | null> | null; gate_usage_source?: Record<string, number | null> | null;

@@ -38,7 +38,7 @@ def register(app):
     def api_vis_list():
         """The `data/vis/` PNG gallery as JSON (newest first) — each entry has
         `rel` (served at /vis/<rel>) + an optional `inspect_fits` sibling. The
-        React Visualization page's gallery reads this."""
+        Figures › Plates PNG gallery reads this."""
         return jsonify({"pngs": _list_vis_pngs()})
 
     # ---------------- synthetic training records (Synthetic › Records) ---

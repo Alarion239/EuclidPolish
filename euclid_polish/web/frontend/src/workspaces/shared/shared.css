@@ -1,6 +1,6 @@
 /* Pieces shared across workspaces (workspaces/shared). Tokens only. */
 
-/* Log to tracking: the markdown note editor */
+/* Log to tracking: the markdown note editor (unused since 0934002 removed that dialog) */
 .log-note { width: 100%; min-height: 220px; font-size: var(--fs-xs); line-height: 1.5; }
 
 /* A page's lead line: what the page is for, with the page's own actions at

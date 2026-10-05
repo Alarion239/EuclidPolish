@@ -15,7 +15,7 @@ _PSNR_MAX_VAL_STRETCHED = tf.constant(float(Config.PSNR_PEAK_STRETCHED), dtype=t
 _PSNR_MAX_VAL_RAW       = tf.constant(float(Config.PSNR_PEAK_E),         dtype=tf.float32)
 
 _STRETCH_SCALE = tf.constant(float(Config.STRETCH_SCALE_E), dtype=tf.float32)
-_SINH_CLIP     = tf.constant(float(Config.SINH_STRETCH_CLIP), dtype=tf.float32)  # sinh(clip)·k ≈ 2.4e8
+_SINH_CLIP     = tf.constant(float(Config.SINH_STRETCH_CLIP), dtype=tf.float32)  # sinh(clip)·k ≈ 2.4e10
 
 
 # ---------------------------------------------------------------------------
@@ -53,10 +53,10 @@ def evaluate(model, dataset, knees: Sequence[float] | None = None,
         ``psnr_stretched``: mean JOINT PSNR in asinh space — the MSE is
                            pooled over all H×W×C pixels (all bands for
                            the 4-band model), max_val ≈
-                           asinh(mag17_e / k) ≈ 9.34. Loss-aligned, used
+                           asinh(mag17_e / k) ≈ 12.0. Loss-aligned, used
                            for save-best decisions.
         ``psnr_raw``:       mean joint PSNR in raw electrons
-                           (max_val = mag-17 star ≈ 5.68×10⁶ e⁻).
+                           (max_val = mag-17 star ≈ 8.29×10⁶ e⁻).
         ``psnr_band_stretched``: ``(C,)`` tensor of per-band stretched
                            PSNRs (channel k of HR vs channel k of SR) —
                            MONITORING ONLY, never feeds save-best. Lets

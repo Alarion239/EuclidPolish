@@ -1,4 +1,4 @@
-"""Ops › Provenance: the lineage index (helpers/provenance_index.py) and its
+"""System › Lineage: the lineage index (helpers/provenance_index.py) and its
 routes (routes/provenance.py), on synthetic sidecars in tmp dirs."""
 
 from __future__ import annotations
