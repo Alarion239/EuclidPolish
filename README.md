@@ -189,9 +189,7 @@ python scripts/timetravel.py list
 ```
 
 `python main.py` (equivalently `python -m euclid_polish.cli.main`) opens an older interactive
-`questionary` menu: Euclid operations, sky generation, model training and visualization. Its
-training and reconstruction entries drive the retired single-model checkpoint in `./ckpt/wdsr`,
-not the production ensemble (§12).
+`questionary` menu: Euclid operations, sky generation, model training and visualization.
 
 ### 3.5 Tests and CI
 
@@ -280,8 +278,7 @@ flux_e(m)       = 10^(−0.4 · (m − sim_zeropoint_e))
 - Archive mosaics are delivered in ADU/s. They are converted to stack electrons with
   `10^((sim_zeropoint_e − MAGZERO) / 2.5)`, using each file's `MAGZERO` header keyword (≈7.6×10³
   for VIS at `MAGZERO` 24.6). Archive images without `MAGZERO` are refused
-  (`photometry.header_magzero`); one ad-hoc fetch path in `web/helpers/jobs_impl.py` still falls
-  back to a factor of 1.
+  (`photometry.header_magzero`).
 - Read noise and dark current remain in `BandConfig` for documentation and as the unit of the
   `--noise-aug` training knob. Production noise is the measured MER level (§7.3), not a detector
   noise budget.
@@ -379,8 +376,9 @@ density comes from System › Config.
 
 - `PhzGalaxyPopulationPrior` (`phz_galaxy_prior.py`): an empirical p(z, Kron mag, size) grid,
   used by `run_pipeline.py` only when no galaxy artifact is passed. Marked `validated: false`.
-- `CosmosTngPrior` (COSMOS2025 rows plus an F814W→VIS transfer): used only by the interactive CLI
-  and the poster script. COSMOS2025 no longer drives production generation.
+- `CosmosTngPrior` (COSMOS2025 rows plus an F814W→VIS transfer): used only by the interactive CLI's
+  sky-generation menu and `run_pipeline.py`'s legacy `--cosmos-prior` flags. COSMOS2025 no longer
+  drives production generation.
 
 ---
 
@@ -879,10 +877,9 @@ Older notes, specs and commit messages refer to things that are gone. The main o
 Still in the repository but **not** the production path (kept for old artifacts or pending
 removal):
 
-- Single-model entry points that default to the retired `./ckpt/wdsr`: the interactive CLI's
-  training and reconstruction menus, `run_pipeline.py`'s training step, `scripts/fasrc_train.sh`,
-  `scripts/fasrc_train_only.sh`, `scripts/infer_euclid_cutout.py`, and the field mode of
-  `scripts/fasrc_poster_cutout.py`. They ignore member knees; use `load_eval_ensemble()` instead.
+- Single-model training paths that default to the retired `./ckpt/wdsr`: `run_pipeline.py`'s
+  training step, `scripts/fasrc_train.sh` and `scripts/fasrc_train_only.sh`. Train members with
+  `scripts/train_ensemble.py` instead.
 - `training/forward_op.py` (`EuclidVISForwardOp`), used only by tests.
 - `apply_band_noise` (the old detector noise model), the COSMOS fallback flags of
   `run_pipeline.py`, and the analytic Sérsic renderer.
