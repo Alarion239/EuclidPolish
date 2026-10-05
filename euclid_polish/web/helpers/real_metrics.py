@@ -24,7 +24,9 @@ Per band:
   ``R`` is the minimum over the boxes (a core hole shows in the small ones).
   Reported: ``n_peaks``, ``pct_R_lt_0p8``, ``pct_R_lt_0p5``, ``median_R`` (the
   0.066″ target PSF is narrower than Euclid's, so truth has ``R ≥ 1`` for stars
-  and galaxies alike — synthetic truth min R = 1.04 over 266 peaks).
+  and galaxies alike — synthetic truth min R = 1.04 over 266 peaks). These
+  cover every accepted peak; the per-peak rows list only the brightest
+  ``MAX_REPORTED_PEAKS`` per band.
 * ``hole_pct_100sigma`` — the same over the bright-1 % pixels that are also
   ``> 100 σ`` above the background (on faint tiles the brightest 1 % is
   noise, where "holes" are noise; ``None`` when no pixel qualifies).
@@ -53,6 +55,8 @@ BOX_ARCSEC = (0.3, 1.7)
 #: Central-pixel-fraction ceilings that keep a peak as a real source.
 CPF_MAX = {"VIS": 0.25, "NISP": 0.14}
 R_THRESHOLDS = (0.8, 0.5)
+#: Per-peak rows kept per band in ``peaks`` (brightest first); the R
+#: statistics use every peak (``peak_R``).
 MAX_REPORTED_PEAKS = 200
 
 
@@ -203,46 +207,64 @@ def tile_metrics(lr: np.ndarray, sr: np.ndarray,
                  band_names: Sequence[str] = Config.LR_INPUT_BAND_NAMES, *,
                  lr_pixel_arcsec: float = Config.VIS_PIXEL_SCALE_ARCSEC) -> dict[str, Any]:
     """Every band's metrics for one (tile, model): ``{version, factor, bands,
-    per_band{band: {...}}, peaks{band: [[x, y, peak_e, cpf, R], …]}, summary}``."""
+    per_band{band: {...}}, peaks{band: [[x, y, peak_e, cpf, R], …]},
+    peak_R{band: [R, …]}, summary}``. ``peaks`` reports the brightest
+    ``MAX_REPORTED_PEAKS`` rows per band; ``peak_R`` is the R of every
+    accepted peak, which ``summary`` and :func:`aggregate` pool."""
     lr = np.asarray(lr, np.float32)
     sr = np.asarray(sr, np.float32)
     factor = _factor(lr, sr)
     bands = list(band_names)[:lr.shape[-1]]
     per_band: dict[str, Any] = {}
     peaks: dict[str, list[list[float]]] = {}
+    peak_r: dict[str, list[float]] = {}
     for index, band in enumerate(bands):
         metrics, rows = band_metrics(lr[..., index], sr[..., index], band,
                                      factor=factor, lr_pixel_arcsec=lr_pixel_arcsec)
         per_band[band] = metrics
         peaks[band] = rows[:MAX_REPORTED_PEAKS]
+        peak_r[band] = [row[4] for row in rows]
     return {
         "version": METRICS_VERSION,
         "factor": factor,
         "bands": bands,
         "per_band": per_band,
         "peaks": peaks,
-        "summary": _summary(per_band, peaks),
+        "peak_R": peak_r,
+        "summary": _summary(per_band, peak_r),
     }
 
 
 def _summary(per_band: Mapping[str, Mapping[str, Any]],
-             peaks: Mapping[str, Sequence[Sequence[float]]]) -> dict[str, Any]:
-    r_all = np.asarray([row[4] for rows in peaks.values() for row in rows], np.float64)
+             peak_r: Mapping[str, Sequence[float]]) -> dict[str, Any]:
+    """Bands pooled: worst/mean hole %, and the R statistics over every peak
+    in ``peak_r`` (``n_peaks`` counts those peaks)."""
+    r_all = np.asarray([r for values in peak_r.values() for r in values], np.float64)
     holes = [m["hole_pct"] for m in per_band.values() if m.get("hole_pct") is not None]
-    n = int(sum(int(m.get("n_peaks") or 0) for m in per_band.values()))
+    n = int(r_all.size)
     return {
         "n_peaks": n,
         "hole_pct_max": max(holes) if holes else None,
         "hole_pct_mean": float(np.mean(holes)) if holes else None,
-        "pct_R_lt_0p8": 100.0 * float(np.mean(r_all < 0.8)) if r_all.size else None,
-        "pct_R_lt_0p5": 100.0 * float(np.mean(r_all < 0.5)) if r_all.size else None,
-        "median_R": float(np.median(r_all)) if r_all.size else None,
+        "pct_R_lt_0p8": 100.0 * float(np.mean(r_all < 0.8)) if n else None,
+        "pct_R_lt_0p5": 100.0 * float(np.mean(r_all < 0.5)) if n else None,
+        "median_R": float(np.median(r_all)) if n else None,
     }
+
+
+def _tile_peak_r(item: Mapping[str, Any], band: str) -> list[float]:
+    """R of every accepted peak of one band of a :func:`tile_metrics` result;
+    metrics stored without ``peak_R`` give their reported ``peaks`` rows."""
+    values = (item.get("peak_R") or {}).get(band)
+    if values is None:
+        values = [row[4] for row in (item.get("peaks") or {}).get(band, [])]
+    return [float(value) for value in values]
 
 
 def aggregate(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """Pool per-tile metrics of one model: holes weighted by bright pixels,
-    R statistics over the union of peaks, flux ratio from summed fluxes."""
+    R statistics over every accepted peak of every tile (``n_peaks`` counts
+    those peaks), flux ratio from summed fluxes."""
     items = [item for item in results if item]
     bands: list[str] = []
     for item in items:
@@ -250,10 +272,10 @@ def aggregate(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             if band not in bands:
                 bands.append(band)
     per_band: dict[str, Any] = {}
-    pooled_peaks: dict[str, list[list[float]]] = {}
+    pooled_r: dict[str, list[float]] = {}
     for band in bands:
         metrics = [item["per_band"][band] for item in items if band in item.get("per_band", {})]
-        rows = [row for item in items for row in item.get("peaks", {}).get(band, [])]
+        r_band = [r for item in items for r in _tile_peak_r(item, band)]
         weight = sum(int(m.get("n_bright_px") or 0) for m in metrics)
         holes = sum(float(m["hole_pct"]) * int(m.get("n_bright_px") or 0)
                     for m in metrics if m.get("hole_pct") is not None)
@@ -262,7 +284,7 @@ def aggregate(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
                           for m in metrics if m.get("hole_pct_100sigma") is not None)
         lr_flux = sum(float(m.get("lr_flux_e") or 0.0) for m in metrics)
         sr_flux = sum(float(m.get("sr_flux_e") or 0.0) for m in metrics)
-        r_values = np.asarray([row[4] for row in rows], np.float64)
+        r_values = np.asarray(r_band, np.float64)
         n = int(r_values.size)
         per_band[band] = {
             "hole_pct": holes / weight if weight else None,
@@ -277,13 +299,13 @@ def aggregate(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             "median_R": float(np.median(r_values)) if n else None,
             "min_R": float(np.min(r_values)) if n else None,
         }
-        pooled_peaks[band] = rows
+        pooled_r[band] = r_band
     return {
         "version": METRICS_VERSION,
         "n_tiles": len(items),
         "bands": bands,
         "per_band": per_band,
-        "summary": _summary(per_band, pooled_peaks),
+        "summary": _summary(per_band, pooled_r),
     }
 
 

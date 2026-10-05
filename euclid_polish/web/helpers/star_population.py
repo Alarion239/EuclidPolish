@@ -51,7 +51,7 @@ _GAIA_COUNT_LIMIT_MAG = 20.5
 _GAIA_G_AB_MINUS_VEGA_MAG = 25.8010446445 - 25.6873668671
 _GAIA_TAP_PROVIDER = "ARI Gaia TAP"
 _STAR_POPULATION_VERSION = 6
-_STAR_DISTRIBUTION_VERSION = 14
+_STAR_DISTRIBUTION_VERSION = 15
 _GAIA_COUNT_FIT_BIN_WIDTH_MAG = 0.5
 
 
@@ -1277,12 +1277,6 @@ def _fit_star_population_latent() -> dict[str, Any]:
     euclid_rows = _read_rows(euclid_catalog_path())
     meta = json.loads(gaia_catalog_meta_path().read_text())
     _require_current_gaia_field_sampling(meta, euclid_rows)
-    try:
-        euclid_area = float(json.loads(
-            euclid_catalog_meta_path().read_text()
-        )["area_arcmin2"])
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-        euclid_area = float(meta["area_arcmin2"])
     q1_counts = read_q1_phz_star_counts(bright=bright, faint=faint)
     magnitude_law, magnitude_fit_diagnostics = (
         _fit_straight_star_magnitude_law(gaia_rows, meta, q1_counts)
@@ -1903,17 +1897,10 @@ def _fit_star_population_latent() -> dict[str, Any]:
     ).hexdigest()
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     payload["fingerprint"] = hashlib.sha256(canonical.encode()).hexdigest()
+    # Only the candidate is written here: the plot caches are written by
+    # star_distribution_payload(persist=True), the fit job's next step, which
+    # adds the generated stars and split keys every cached view carries.
     write_star_candidate(payload)
-    _write_star_distribution(_star_distribution_from_rows(
-        euclid_rows,
-        gaia_rows,
-        calibration_fingerprint=payload["fingerprint"],
-        color_model=payload["color_model"],
-        stellar_model=payload,
-        area_arcmin2=euclid_area,
-        gaia_area_arcmin2=float(meta["area_arcmin2"]),
-        gaia_sampling=meta,
-    ))
     return payload
 
 

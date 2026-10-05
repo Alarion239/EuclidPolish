@@ -95,7 +95,7 @@ def register(app):
         if catalog is None:
             return jsonify({
                 "ok": False,
-                "error": "Log in to the Euclid archive on the Catalog page first.",
+                "error": "Log in to the Euclid archive (System › Connections) first.",
             }), 400
 
         def run(cap):

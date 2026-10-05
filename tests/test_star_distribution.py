@@ -355,7 +355,10 @@ def test_star_query_requires_euclid_login(monkeypatch):
     response = create_app().test_client().post("/api/star-distribution/query")
 
     assert response.status_code == 400
-    assert "Log in" in response.get_json()["error"]
+    error = response.get_json()["error"]
+    # The archive login lives on System › Connections (there is no Catalog page).
+    assert "Log in to the Euclid archive" in error
+    assert "System › Connections" in error and "Catalog page" not in error
 
 
 def test_star_query_runs_only_stellar_counts_and_colours(monkeypatch):

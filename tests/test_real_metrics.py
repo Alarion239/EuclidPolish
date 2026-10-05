@@ -138,3 +138,55 @@ def test_hole_variant_restricted_to_pixels_above_100_sigma():
     assert 0 < b["n_bright_100sigma_px"] <= b["n_bright_px"]
     pooled = rm.aggregate([rm.tile_metrics(bright, _flux_conserving_sr(bright), BANDS)])
     assert pooled["per_band"]["VIS"]["hole_pct_100sigma"] == 0.0
+
+
+def _three_peaks_faintest_hollow():
+    """Three bright peaks per band (brightest first: 4e4, 3e4, 2e4 e⁻) under
+    a flux-conserving SR whose faintest peak's core is zeroed (R < 0.5)."""
+    lr = _scene(stars=())
+    for (x, y), amplitude in zip(((30, 30), (90, 40), (60, 100)), (4.0e4, 3.0e4, 2.0e4),
+                                 strict=True):
+        lr += _gaussian(lr.shape[:2], x, y, amplitude, 2.0)[..., None].astype(np.float32)
+    sr = _flux_conserving_sr(lr)
+    sr[2 * 90:2 * 111, 2 * 50:2 * 71, :] = 0.0
+    return lr, sr
+
+
+def test_reported_peak_cap_does_not_truncate_the_r_statistics(monkeypatch):
+    """``peaks`` lists only the brightest MAX_REPORTED_PEAKS rows per band;
+    the tile summary and the pooled aggregate still cover every accepted
+    peak, and their n_peaks counts the peaks their R statistics use."""
+    monkeypatch.setattr(rm, "MAX_REPORTED_PEAKS", 2)
+    lr, sr = _three_peaks_faintest_hollow()
+    tile = rm.tile_metrics(lr, sr, BANDS)
+    json.dumps(tile, allow_nan=False)
+    vis = tile["per_band"]["VIS"]
+    assert vis["n_peaks"] == 3 and vis["pct_R_lt_0p5"] == pytest.approx(100.0 / 3)
+    assert len(tile["peaks"]["VIS"]) == 2                     # the reported rows
+    assert all(row[4] > 0.9 for row in tile["peaks"]["VIS"])  # the faintest is cut
+    assert tile["summary"]["n_peaks"] == 12
+    assert tile["summary"]["pct_R_lt_0p5"] == pytest.approx(100.0 / 3)
+
+    pooled = rm.aggregate([tile, tile])
+    for band in BANDS:
+        band_pooled = pooled["per_band"][band]
+        assert band_pooled["n_peaks"] == 6
+        assert band_pooled["pct_R_lt_0p5"] == pytest.approx(100.0 / 3)
+        assert band_pooled["min_R"] == pytest.approx(tile["per_band"][band]["min_R"])
+        assert band_pooled["min_R"] < 0.5
+        assert band_pooled["median_R"] == pytest.approx(tile["per_band"][band]["median_R"])
+    assert pooled["summary"]["n_peaks"] == 24
+    assert pooled["summary"]["pct_R_lt_0p5"] == pytest.approx(100.0 / 3)
+    json.dumps(pooled, allow_nan=False)
+
+
+def test_aggregate_pools_the_reported_rows_of_metrics_stored_without_peak_r():
+    """Tile metrics stored without ``peak_R`` pool their reported ``peaks``
+    rows, and n_peaks counts exactly those rows."""
+    lr, sr = _three_peaks_faintest_hollow()
+    tile = rm.tile_metrics(lr, sr, BANDS)
+    stored = {key: value for key, value in tile.items() if key != "peak_R"}
+    stored["peaks"] = {band: rows[:2] for band, rows in tile["peaks"].items()}
+    vis = rm.aggregate([stored])["per_band"]["VIS"]
+    assert vis["n_peaks"] == 2 and vis["pct_R_lt_0p5"] == 0.0
+    assert rm.aggregate([tile])["per_band"]["VIS"]["n_peaks"] == 3
