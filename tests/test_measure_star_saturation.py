@@ -11,10 +11,12 @@ from astropy.io import fits
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.sky.observation.saturation import StarSaturationModel
 from scripts.measure_star_saturation import (
     _summarize_band,
     load_cutout_electrons,
     measure_core_saturation,
+    model_clip_e,
     scan_stars,
 )
 
@@ -113,3 +115,12 @@ def test_scan_is_cutout_driven_despite_catalog_id_mismatch(tmp_path):
     assert len(vis) == 2                                  # cutouts read despite mismatch
     assert max(r["peak_e"] for r in vis) == pytest.approx(8.0e5)   # ceiling found
     assert all(np.isnan(r["mag"]) for r in vis)          # no catalog mag matched
+
+
+def test_model_clip_is_the_forward_model_well():
+    """The printed "model clip" is the well the forward model masks at."""
+    sat = StarSaturationModel()
+    for name in Config.LR_INPUT_BAND_NAMES:
+        band = Config.get_band(name)
+        assert model_clip_e(band) == pytest.approx(sat.well_depth_e(band))
+        assert model_clip_e(band) == pytest.approx(Config.STAR_SATURATION_WELL_E[name])

@@ -62,7 +62,10 @@ def _restore(args) -> int:
         if args.model:
             mm = store.model_backup_meta(args.campaign, args.model) or {}
             commit_info = mm.get("commit")
-            seed_dir = store.model_backup_dir(args.campaign, args.model)
+            # A retired-model zip restores the code at its commit but is
+            # no live checkpoint to seed the sandbox with.
+            seed_dir = (None if args.model.endswith(".zip")
+                        else store.model_backup_dir(args.campaign, args.model))
         else:
             cm = store.campaign_meta(args.campaign) or {}
             commit_info = cm.get("saved_commit") or cm.get("created_commit")
@@ -103,7 +106,7 @@ def _restore(args) -> int:
         except SSHError as e:
             remote = {"ok": False, "error": f"cannot reach FASRC: {e}"}
         else:
-            push = ["git", "-C", tt.PROJECT_ROOT, "push", "origin",
+            push = ["git", "-C", _PROJECT_ROOT, "push", "origin",
                     f"{commit}:refs/heads/timetravel/{short}"]
             remote = tt.prepare_remote_sandbox(
                 ssh, repo_path=cfg.repo_path, data_dir=cfg.data_dir,
@@ -134,7 +137,8 @@ def main() -> int:
     sp.add_argument("--campaign", default="current",
                     help="'current' or an archived campaign folder name")
     sp.add_argument("--model", default="",
-                    help="model backup name (seeds its checkpoint + commit)")
+                    help="model backup name (seeds its checkpoint + commit; a "
+                         "retired-model <name>.zip restores the commit only)")
     sp.add_argument("--remote", action="store_true",
                     help="also prepare the FASRC worktree + netscratch sandbox")
     sp.add_argument("--no-open", action="store_true",

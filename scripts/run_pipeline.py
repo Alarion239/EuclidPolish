@@ -586,7 +586,7 @@ def _generate_and_convolve_provenance_config(
 
 def step_generate(args: argparse.Namespace) -> None:
     _banner(f"STEP 1: Generate clean 4-band HR fields  "
-            f"({args.ntrain} train + {args.nvalid} valid, "
+            f"({args.ntrain} train + {args.nvalid} valid + {_ntest(args)} test, "
             f"{args.image_size}² @ {Config.DEFAULT_PIXEL_SCALE}\"/pix)")
 
     cat = (
@@ -615,6 +615,7 @@ def step_generate(args: argparse.Namespace) -> None:
     _stamp_psf_kinds(gen_ctx, args.psf_dir)
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
+    onthefly_train = bool(getattr(args, "onthefly_train", False))
     subsets = (("train", args.ntrain), ("validate", args.nvalid),
                ("test", _ntest(args)))
     targets = _regenerate_splits(args)
@@ -668,9 +669,11 @@ def step_generate(args: argparse.Namespace) -> None:
              SourceCatalogWriter(
                  tfrecord_path(args.records_dir, f"sources_{subset}")
                  .replace(".tfrecord", ".csv")) as sources:
-            # Train draws no fixed stars (on-the-fly injects them per visit);
-            # validate/test draw + record fixed stars for a reproducible LR.
-            n_stars = 0 if subset == "train" else None
+            # A clean-only on-the-fly train split draws no fixed stars
+            # (training injects a fresh realization per visit); every
+            # record-mode split draws + records fixed stars, which step 2
+            # re-injects for a reproducible LR.
+            n_stars = 0 if (onthefly_train and subset == "train") else None
             for i in tqdm(range(n), desc=f"  {subset}", unit="img"):
                 sky, meta = sim.simulate_field(rng, n_stars=n_stars)
                 sky.index = i
@@ -1210,10 +1213,10 @@ def _generate_convolve_range(sim, fwd, records_dir: str, subset: str,
           if write_forward else contextlib.nullcontext()) as dw, \
          SourceCatalogWriter(sources_part) as sources:
         for local, i in enumerate(range(start, start + count), start=1):
-            # Scene is starless. The training split (clean-only) draws no fixed
-            # stars — on-the-fly training injects a fresh realization per
-            # visit; validate/test draw + record fixed stars for a
-            # reproducible LR.
+            # Scene is starless. A clean-only on-the-fly train shard draws no
+            # fixed stars — on-the-fly training injects a fresh realization
+            # per visit; every record-mode shard draws + records fixed stars
+            # for a reproducible LR.
             sky, meta = sim.simulate_field(rng, n_stars=(None if write_forward
                                                          else 0))
             sky.index = i

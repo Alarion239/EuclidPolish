@@ -339,7 +339,7 @@ def main() -> int:
         "above then drops out of the per-example cost.")
     print("  · workers = CPU processes needed to hide the forward step behind "
         "the GPU step; the training nodes currently allocate 4 CPUs "
-        "(2 effective under contention — see train-input-starvation).")
+        "(~2 effective under contention).")
     print("  · a GPU-side variant (batched tf.nn.conv2d / FFT inside the "
         "input-consuming train step) pays ~0 CPU; this script bounds the "
         "CPU designs only.")

@@ -3,13 +3,16 @@
 Exercises ``run_bands`` — the dispatcher that either downloads bands one at a
 time (with a TAP re-login between them) or several at once through a thread
 pool — with the actual per-band download mocked out, so no network/SSH is
-touched.
+touched — and ``main``'s unauthenticated fallback.
 """
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import threading
+
+from euclid_polish.config import Config
 
 dab = importlib.import_module("scripts.download_all_bands")
 
@@ -183,3 +186,33 @@ def test_warns_on_corrupted_or_failed(monkeypatch):
     dab.run_bands(BANDS, eclient=_FakeEclient(), output_dir="x", vis_pixels=255,
                   workers=8, arcsec=25.5, reporter=rep, band_workers=1, logged_in=True)
     assert any("H_E" in w and "corrupted=2" in w for w in rep.warnings)
+
+
+def test_unauthenticated_warning_points_at_the_credentials_card(monkeypatch, tmp_path):
+    """Without archive credentials the run continues public-only and the
+    warning names where the credentials are set (System › Connections)."""
+    (tmp_path / Config.CATALOG_FILE).write_text("id,ra,dec,magnitude\n")
+    rep = _FakeReporter()
+
+    class _NoLogin:
+        def __init__(self):
+            raise dab.EuclidAuthError("no credentials")
+
+        @classmethod
+        def _unauthenticated(cls):
+            return object.__new__(cls)
+
+    monkeypatch.setattr(dab, "parse_args", lambda: argparse.Namespace(
+        output_dir=str(tmp_path), vis_pixels=255, workers=1, band_workers=1,
+        bands="VIS", retry_failed=False))
+    monkeypatch.setattr(dab.Reporter, "from_env", staticmethod(lambda: rep))
+    monkeypatch.setattr(dab, "_ensure_euclid_env", lambda: None)
+    monkeypatch.setattr(dab, "EuclidCatalog", _NoLogin)
+    monkeypatch.setattr(dab, "run_bands", lambda *a, **k: {})
+    monkeypatch.setattr(dab, "validate_all_cutouts", lambda *a, **k: {
+        "checked": 0, "unopenable": 0, "valid_all_bands": 0, "n_bands": 1})
+
+    assert dab.main() == 0
+    (warning,) = [w for w in rep.warnings if "not authenticated" in w]
+    assert "System › Connections" in warning
+    assert "Cutouts page" not in warning

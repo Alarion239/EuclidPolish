@@ -220,7 +220,8 @@ def main() -> int:
         logged_in = False
         reporter.warn(
             "not authenticated with the Euclid archive — proprietary "
-            "cutouts will fail. Set credentials in the WebUI (Cutouts page)."
+            "cutouts will fail. Set credentials in the WebUI (System › "
+            "Connections › Euclid credentials · FASRC)."
         )
         print("⚠️  proceeding unauthenticated (public data only)")
 

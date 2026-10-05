@@ -197,7 +197,7 @@ def _figures(result, args) -> None:
                    np.arcsinh(members[best_vis, ..., 0] / scales[0])),
                   ("ensemble mean", np.arcsinh(members.mean(0)[..., 0] / scales[0]))]
         if rbf_out is not None:
-            panels.append(("current combiner (RBF)", rbf_out))
+            panels.append(("RBF combiner", rbf_out))
         panels.append(("spatial gate", gate_out))
         path = os.path.join(args.figures, f"{group}_{f.index:05d}.png")
         _crop_figure(path, f"{group} test field {f.index}", truth, panels,

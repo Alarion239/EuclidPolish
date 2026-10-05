@@ -15,8 +15,9 @@ It aggregates by VIS magnitude so you can read off the **empirical saturation
 ceiling** per band (the value to clip synthetic saturation to) and whether MER
 **masks** saturated cores (NaN). Reports only — changes nothing.
 
-Imports ONLY ``euclid_polish.config`` + ``euclid_polish.photometry`` (both
-astroquery-free), so it runs on an offline compute node. Run on FASRC where the cutouts live:
+Imports ONLY ``euclid_polish.config``, ``euclid_polish.photometry`` and the
+forward model's saturation module (all astroquery-free), so it runs on an
+offline compute node. Run on FASRC where the cutouts live:
 
     python scripts/measure_star_saturation.py --n 600 --size 255
     python scripts/measure_star_saturation.py --output-dir $DATA_DIR/euclid_stars
@@ -26,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import os
 import re
 import sys
@@ -40,9 +40,11 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config  # config-only: no astroquery
 from euclid_polish.photometry import (  # config+numpy only: no astroquery
-    ab_mag_to_electrons,
     adu_per_s_to_electrons_factor,
     header_magzero,
+)
+from euclid_polish.sky.observation.saturation import (  # numpy+scipy: no astroquery
+    StarSaturationModel,
 )
 
 _FNAME_RE = re.compile(r"star_(\d+)_(\d+)\.fits$")
@@ -207,14 +209,10 @@ def scan_stars(stars_csv: str, output_dir: str, *, size: int, n: int,
 
 
 def model_clip_e(band) -> float:
-    """The model's current well-depth clip for ``band`` (inlined to avoid the
-    sky.saturation import, which pulls astroquery)."""
-    sigma = Config.STAR_SATURATION_FWHM_ARCSEC / 2.3548200450309493
-    pix = getattr(band, "native_detector_scale_arcsec", None) or band.pixel_scale_lr_arcsec
-    f_peak = math.erf(pix / (2.0 * math.sqrt(2.0) * sigma)) ** 2
-    calib = Config.STAR_SATURATION_CALIB_MAG[band.name]
-    offset = Config.STAR_BAND_OFFSETS_MAG.get(band.name, 0.0)
-    return ab_mag_to_electrons(calib + offset, band) * f_peak
+    """The forward model's saturation well for ``band`` (e⁻ over the stack):
+    the level at/above which :class:`StarSaturationModel` masks a pixel
+    (``Config.STAR_SATURATION_WELL_E``)."""
+    return StarSaturationModel().well_depth_e(band)
 
 
 _MAG_BINS = [(-99, 13), (13, 15), (15, 16), (16, 17), (17, 18), (18, 20), (20, 99)]
@@ -287,10 +285,11 @@ def main() -> int:
         print(f"\n=== {bn}  (model clip = {model_clip_e(band):.4g} e⁻) ===",
               flush=True)
         _summarize_band(data[bn])
-    print("\nInterpret: 'empirical ceiling' is the real saturation level to clip "
-          "synthetic\nsaturation to (per band, same e⁻-over-stack units). A high "
-          "'nan_core%' for\nbright stars means MER masks saturated cores → the "
-          "synthetic model should set\nNaN there instead of a flat value.", flush=True)
+    print("\nInterpret: 'empirical ceiling' is the real saturation level, to compare "
+          "with the\nmodel clip above (per band, same e⁻-over-stack units). A high "
+          "'nan_core%' for\nbright stars means MER masks saturated cores instead of "
+          "recording a flat\nplateau; the forward model's mask fills them with ≈0.",
+          flush=True)
     return 0
 
 
