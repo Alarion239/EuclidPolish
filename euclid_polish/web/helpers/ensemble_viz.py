@@ -127,6 +127,7 @@ from euclid_polish.training.trainer import TRAINING_LOG_FILENAME, prune_orphaned
 from euclid_polish.web import fasrc_config, fasrc_jobs, job_config
 from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
+from euclid_polish.web.helpers.purge_requests import request_stale_purge
 from euclid_polish.web.remote import STATE
 
 
@@ -3436,10 +3437,12 @@ def job_archive_member(cap, *, name: str) -> dict:
     re-activates it); the local member dir is deleted; the FASRC-side copy is
     deleted too (best-effort, needs the SSH session).
 
-    The archive path deliberately does not touch cached cubes.  Instead it
-    records the affected regime as stale; its next evaluation batches any
-    pending archives, rebuilds from the cached member cubes, and re-derives the
-    summary without model inference when that cache is complete.
+    The archive path itself does not touch cached cubes. It records the
+    affected regime as stale (its next evaluation batches pending archives and
+    re-derives the summary from the remaining members' cached cubes, without
+    model inference) and requests a stale-cube purge, which deletes the
+    archived member's cubes once the console is idle
+    (:mod:`euclid_polish.web.helpers.stale_purge`).
     """
     if not re.fullmatch(r"member_\d{2,}", name or ""):
         raise RuntimeError(f"invalid member name {name!r}")
@@ -3480,6 +3483,7 @@ def job_archive_member(cap, *, name: str) -> dict:
     print(f"  ✓ {name} → tracking {meta['name']}; {regime} evaluation marked "
           f"stale (cached-cube rebuild queued for next evaluation); "
           f"FASRC copy: {remote_status}")
+    request_stale_purge(f"archived {name}")
     return {"zip": meta["name"], "member": name,
             "remote": remote_status, "stale_regime": regime}
 
@@ -3618,6 +3622,9 @@ def job_ensemble_pull(cap, *, members: list[str] | None = None,
                 pruned += prune_orphaned_checkpoints(track)
     if pruned:
         print(f"  • pruned {pruned} stale checkpoint file(s)")
+    if changed:
+        # Their cached cubes were made by the old checkpoints.
+        request_stale_purge(f"pulled {', '.join(sorted(changed))}")
     # Refresh the per-member test PSNRs — fingerprint-cached, so only members
     # the pull actually changed get re-scored (nothing new → costs nothing).
     psnr: dict = {}

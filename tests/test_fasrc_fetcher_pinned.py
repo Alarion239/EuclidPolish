@@ -21,7 +21,7 @@ from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as ff
 from euclid_polish.web import remote as remote_module
-from euclid_polish.web.helpers import paths, sky_records, status
+from euclid_polish.web.helpers import paths, purge_requests, sky_records, status
 from euclid_polish.web.routes import views
 
 DATA = "/n/netscratch/lab/EuclidPolish/data"
@@ -193,6 +193,7 @@ def test_a_records_sync_keeps_every_shard_and_later_pulls_cannot_evict_them(ssh,
     result = views._job_sky_sync(_Cap(), targets, ["test", "validate"])
 
     assert all(entry["ok"] for entry in result["files"].values())
+    assert purge_requests.read_pending()["reasons"][0].startswith("synced records ")
     shards = [ff._local_path_for(remote) for remote in targets.values()]
     assert all(os.path.isfile(p) for p in shards)
     assert os.path.isfile(old_cutout)        # 3200 B of shards cost the cap nothing

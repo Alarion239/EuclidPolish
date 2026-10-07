@@ -28,7 +28,8 @@ from flask import Flask, jsonify, redirect, request, send_file
 
 from euclid_polish.web import errors, fasrc_jobs, fasrc_queue
 from euclid_polish.web.fasrc_gate import register_fasrc_gate
-from euclid_polish.web.helpers import provenance_index, sky_atlas
+from euclid_polish.web.helpers import provenance_index, sky_atlas, stale_purge
+from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.json_provider import StandardJSONProvider
 from euclid_polish.web.remote import STATE, SSHError, connect_from_config
 from euclid_polish.web.routes import MODULES as ROUTE_MODULES
@@ -167,13 +168,15 @@ def create_app() -> Flask:
 def start_background_services(app: Flask) -> None:
     """The real server's daemon threads (never started by ``create_app``, so
     the test client stays thread-free): the FASRC queue ticker — queue
-    promotion is server-side, never a GET side effect — and one warm-up pass
+    promotion is server-side, never a GET side effect — one warm-up pass
     of the slow caches (sky layers, provenance index) so the first atlas or
-    provenance request does not pay for the cold scan."""
+    provenance request does not pay for the cold scan, and the job hook that
+    starts a requested stale-cube purge once no job runs."""
     step = app.extensions.get(fasrc_routes.QUEUE_STEP_KEY)
     if step is not None:
         fasrc_queue.TICKER.start(step)
     threading.Thread(target=_warm_caches, daemon=True, name="warm-caches").start()
+    JOB_REGISTRY.add_finish_hook(stale_purge.on_job_finished)
 
 
 def _warm_caches() -> None:

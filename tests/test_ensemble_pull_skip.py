@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+from euclid_polish.web.helpers import purge_requests
+
 
 def _member(base, name, ckpt="ckpt-5"):
     d = os.path.join(base, name)
@@ -106,6 +108,7 @@ def test_unchanged_ensemble_downloads_nothing(tmp_path, monkeypatch):
     out = ev.job_ensemble_pull(_Cap())
     assert out["changed"] == []
     assert out["n_members"] == 1
+    assert purge_requests.read_pending() is None        # nothing went stale
     # Exactly one rsync — the dry-run probe. No member downloads.
     assert len(ssh.calls) == 1 and "--dry-run" in ssh.calls[0][1]
 
@@ -119,6 +122,7 @@ def test_only_changed_members_are_downloaded(tmp_path, monkeypatch):
 
     out = ev.job_ensemble_pull(_Cap())
     assert out["changed"] == ["member_01"]
+    assert purge_requests.read_pending()["reasons"] == ["pulled member_01"]
     pulls = [c for c in ssh.calls if "--dry-run" not in c[1]]
     assert [r for r, _ in pulls] == ["/remote/ensemble/member_01/"]
 

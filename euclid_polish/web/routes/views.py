@@ -26,6 +26,7 @@ from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.helpers import sky_records
 from euclid_polish.web.helpers.paths import _sky_records_local_dir, _sky_records_remote_dir
+from euclid_polish.web.helpers.purge_requests import request_stale_purge
 from euclid_polish.web.helpers.status import (
     _list_vis_pngs,
 )
@@ -277,6 +278,10 @@ def _job_sky_sync(cap, targets: dict[str, str], subsets: list[str]) -> dict[str,
             cap.write(f"{key}: not pulled — {r.error}\n")
         results[key] = entry
     _pull_generation_sidecars(cap, targets, results)
+    pulled = [key for key, entry in results.items() if entry.get("ok")]
+    if pulled:
+        # Cubes made from the records these replaced are garbage now.
+        request_stale_purge(f"synced records {', '.join(pulled)}")
     cap.tick(total, total, "done")
     if not any_ok:
         raise RuntimeError("nothing pulled — generate the records on FASRC first? "

@@ -422,9 +422,9 @@ def register(app):
     @app.route("/ensemble/archive-member", methods=["POST"])
     def ensemble_archive_member():
         """Retire one member: zip → tracking campaign, registry tombstone,
-        member dir deleted, regime marked stale (cached cubes kept). Reduces
-        the ensemble. The name is validated (and must be active) before the
-        job starts: 400 JSON."""
+        member dir deleted, regime marked stale (its cached cubes go in the
+        follow-up stale-cube purge). Reduces the ensemble. The name is
+        validated (and must be active) before the job starts: 400 JSON."""
         try:
             name = member_name(request.form.get("member") or "")
         except ValueError as exc:

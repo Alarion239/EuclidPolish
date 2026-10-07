@@ -7,6 +7,8 @@ import zipfile
 
 import pytest
 
+from euclid_polish.web.helpers import purge_requests
+
 
 class _Cap:
     def tick(self, *a):
@@ -76,6 +78,8 @@ def test_archive_member_full_flow(env, monkeypatch):
     assert "NOT deleted on FASRC" in out["remote"]
     assert "FASRC copy:" in log
     assert "marked stale" in log
+    # The cubes themselves go in the follow-up purge job.
+    assert purge_requests.read_pending()["reasons"] == ["archived member_01"]
 
 
 def test_archive_member_deletes_fasrc_copy_when_connected(env, monkeypatch):

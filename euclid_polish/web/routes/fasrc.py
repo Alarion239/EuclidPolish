@@ -28,6 +28,7 @@ from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.fasrc_mirror import MIRROR, remote_ensemble_dir
 from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
 from euclid_polish.web.fasrc_pipeline import StepResources, TaskParamError
+from euclid_polish.web.helpers.purge_requests import request_stale_purge
 from euclid_polish.web.job_status import JobStatus, JobStatusFetcher
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE, SSHError, SSHSession, connect_from_config
@@ -1782,6 +1783,7 @@ def register(app):
             cap.write((status.last_stdout or "") + "\n")
             if status.last_rc != 0:
                 raise RuntimeError(status.last_error or f"rsync exit {status.last_rc}")
+            request_stale_purge("mirrored the FASRC ensemble")
             return {"last_rc": status.last_rc, "remote_dir": status.remote_dir,
                     "local_dir": status.local_dir, "last_run_at": status.last_run_at}
 

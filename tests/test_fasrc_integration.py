@@ -36,6 +36,7 @@ from euclid_polish.config import Config
 from euclid_polish.web import app as app_module
 from euclid_polish.web import fasrc_config, fasrc_jobs, fasrc_queue, job_config
 from euclid_polish.web.fasrc_gate import FASRC_OFFLINE_PAYLOAD
+from euclid_polish.web.helpers import purge_requests
 from euclid_polish.web.remote import STATE
 from euclid_polish.web.routes import fasrc as fasrc_routes
 from tests._local_ssh import LocalSSHSession
@@ -429,6 +430,7 @@ def test_mirror_trigger_rsyncs_remote_ckpts(fake_remote, client, tmp_path):
     mirror = Path(fake_remote["cfg"].local_ckpt_mirror)
     assert (mirror / "member_00" / "ckpt-12345.h5").read_bytes() == b"hello world"
     assert (mirror / "member_00" / "training_log.jsonl").exists()
+    assert purge_requests.read_pending()["reasons"] == ["mirrored the FASRC ensemble"]
 
 
 def test_mirror_status_reflects_last_sync(fake_remote, client):

@@ -179,7 +179,17 @@ Job dict:
   tile, optionally + models), `real-experiment`, `jwst-discover`, `jwst-pair`
   (contract C9), `system-disk-usage` (`routes/system.py`), `nexus-inference`
   (`routes/jwst_euclid.py`), `figure-nexus-plates` (`routes/figures.py`), `ensemble-band-evals` (`routes/ensemble.py`), `sky-sync`,
-  `sky-generate-sr`, `psf-sync`, `tng-properties`, `tng-result` (the Synthetic and Models record routes).
+  `sky-generate-sr`, `psf-sync`, `tng-properties`, `tng-result` (the Synthetic and Models record routes),
+  `storage-purge-stale` ("Storage: delete stale cubes", `helpers/stale_purge.py`).
+- **Stale-cube purge.** Archiving or pulling members, the FASRC ensemble mirror
+  and a records sync request a purge (`<vis>/ensemble/stale_purge_pending.json`);
+  when no job runs, a registry finish hook starts one `storage-purge-stale` job.
+  It deletes the cached cubes each cache's next writer would discard (member
+  cubes of departed or continued members and the aggregates their stack made,
+  buckets made from other records, blackout fields outside their manifest,
+  stale real-field member cubes, member-SR cache entries of old checkpoints)
+  and returns `{buckets, real_fields, member_sr_cache, bytes_freed,
+  files_deleted}`. No HTTP route starts it.
 
 ### Pages and redirects (contract C1)
 
