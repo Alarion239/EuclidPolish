@@ -153,3 +153,19 @@ def test_lazy_member_runner_loads_only_the_members_it_runs(tmp_path, monkeypatch
         str(env["base"]), starless=False, labels=env["labels"]).fingerprints["02·psnr"]
     with pytest.raises(ValueError, match="99"):
         runner(lr, ["99·psnr"])
+
+
+def test_a_leftover_field_outside_the_manifest_is_not_reused(tmp_path, stamped):
+    runner = _Runner({"a": "fp-a"})
+    out = tmp_path / "blackout"
+    _build(out, ["a"], runner, max_fields=2)
+    np.save(out / "lr_00002.npy", np.full((4, 4, 4), -99.0, np.float32))
+    np.save(member_cube_path(str(out), "a", 2), np.full((8, 8, 4), -99.0, np.float32))
+    runner.calls.clear()
+
+    fields = _build(out, ["a"], runner, max_fields=3)
+
+    assert runner.ran() == ["a"]                      # field 2 inferred afresh
+    assert float(np.load(out / "lr_00002.npy").min()) >= 0.0
+    assert float(np.load(member_cube_path(str(out), "a", 2)).min()) >= 0.0
+    assert float(fields[-1].lr_e.min()) >= 0.0

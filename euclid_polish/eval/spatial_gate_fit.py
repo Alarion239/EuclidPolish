@@ -47,6 +47,7 @@ from euclid_polish.eval.ensemble_cube_cache import (
     member_cube_path,
     migrate_positional_bucket,
     missing_member_cubes,
+    prune_bucket_fields,
     sync_bucket_members,
     write_bucket_manifest,
 )
@@ -249,6 +250,9 @@ def build_blackout_fields(fields: Sequence[GateField], member_labels: Sequence[s
                                    {label: fingerprints.get(label) for label in labels},
                                    name=BLACKOUT_INDEX).manifest
     done = {int(i) for i in manifest.get("indices", [])}
+    # A field outside the manifest is a leftover nothing ties to this
+    # stamping (an earlier records set or run): never reuse its files.
+    prune_bucket_fields(out_dir, done)
     by_index = {f.index: f for f in fields}
     out: list[GateField] = []
     for position, source in enumerate(fields, 1):
