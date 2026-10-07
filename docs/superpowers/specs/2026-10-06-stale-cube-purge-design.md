@@ -39,8 +39,8 @@ Four jobs make cubes stale. Each, on success, records that a purge is due:
 | FASRC ensemble mirror (`/api/fasrc/mirror/trigger`) | any member may have changed |
 | records sync (`_job_sky_sync`) | buckets made from the old records |
 
-The request is a small JSON file (`<data>/_stale_purge_pending.json`, reasons +
-timestamp), so it survives a console restart.
+The request is a small JSON file (`<vis>/ensemble/stale_purge_pending.json`,
+reasons + timestamp), so it survives a console restart.
 
 The job registry calls a finish hook after every job. When a purge is pending
 and no job is running, the hook starts one job, kind `storage-purge-stale`,
@@ -81,9 +81,16 @@ current records fingerprint of the bucket's records:
    is deleted, `has_combiner*` flags are cleared and `pca_amps`/`pca_var`
    emptied. The writers recompute them (Evaluate rewrites every field's
    aggregates; the validate fill recomputes a field without `sr_`).
-6. **Orphan fields**: every per-field file of a field not in the manifest's
-   `indices` is deleted, including blackout `lr_` files left from an earlier
-   stamping.
+6. **Unlisted members**: a label-keyed member file whose key belongs to no
+   label the manifest keeps is deleted (the writer's sync treats such a member
+   as new and deletes its files).
+7. **Blackout orphan fields** (blackout buckets only): every per-field file of a
+   field not in the manifest's `indices` is deleted. Nothing proves such a
+   file belongs to the bucket's current stamping: on 2026-10-06 the
+   validate-blackout bucket's identity matched the current records, yet 17 of
+   its `lr_` files predated them. In the test and validate buckets the same
+   files are left by an interrupted fill, are still valid and are reused by
+   the next one, so they stay.
 
 The manifest is rewritten atomically in the same pass, so every label it lists
 has current cubes. Readers and the next writer therefore see a consistent
@@ -130,10 +137,11 @@ cache (own LRU).
 
 ## Related fix
 
-`build_blackout_fields` keeps an existing `lr_` file even when the field is new
-to the bucket, then serves that old file next to freshly inferred member cubes
-on the next run. It will overwrite `lr_` whenever the field was not in the
-manifest's `indices`.
+`build_blackout_fields` reuses an existing `lr_` file and member cubes for a
+field that is not in the manifest's `indices`, so a leftover from an earlier
+stamping is served next to freshly inferred cubes. After its membership sync it
+will delete every per-field file of a field not in `indices`
+(`prune_bucket_fields(out_dir, done)`), the same rule the purge applies.
 
 ## Concurrency
 
@@ -153,10 +161,13 @@ manifest's `indices`.
 - `euclid_polish/web/helpers/real_field.py`: `purge_stale_real_fields(current)`
   plus the fingerprint changes above.
 - `euclid_polish/web/helpers/experiments.py`: `purge_stale_member_sr_cache(current_fn)`.
-- `euclid_polish/web/helpers/stale_purge.py` (new): `request_stale_purge(reason)`,
-  `purge_stale_caches(progress)` (computes labels, fingerprints, records
-  fingerprints; calls the three purges; returns a report), `job_stale_purge`,
-  `maybe_start_stale_purge(registry)`.
+- `euclid_polish/web/helpers/purge_requests.py` (new, Config-only imports so
+  `ensemble_viz` and the routes can use it without an import cycle):
+  `request_stale_purge(reason)`, `read_pending()`, `clear_pending(token)`.
+- `euclid_polish/web/helpers/stale_purge.py` (new): `purge_stale_caches(progress)`
+  (computes labels, fingerprints, records fingerprints; calls the three purges;
+  returns a report), `job_stale_purge`, `maybe_start_stale_purge(registry)`,
+  `on_job_finished(job)`.
 - `euclid_polish/web/jobs.py`: `JobRegistry.add_finish_hook(fn)`; `_runner`
   calls hooks after the job's status is final.
 - Triggers wired in `ensemble_viz.job_archive_member`, `job_ensemble_pull`,
@@ -168,8 +179,9 @@ manifest's `indices`.
 - `purge_stale_bucket`: departed member, continued member, positional bucket
   (unproven → all members dropped; proven test fingerprints → kept), records
   change wipes, records unknown keeps, no-manifest wipe, aggregates dropped only
-  on a membership change, orphan fields (incl. blackout `lr_`), missing files
-  tolerated, bytes reported.
+  on a membership change, unlisted member files deleted, blackout orphan fields
+  deleted while test/validate orphan fields are kept, missing files tolerated,
+  bytes reported.
 - Integration with the existing fake ensemble (`tests/_ensemble_cube_cache_fixtures.py`):
   Evaluate → continue one member → purge → Evaluate runs only that member and
   the mean equals the member mean; Evaluate → archive → purge → Evaluate runs
@@ -180,4 +192,5 @@ manifest's `indices`.
 - Trigger: request writes the pending file; the hook starts the job only when
   idle; the purge job's own finish does not retrigger; a request during the
   purge survives it.
-- Blackout: a stale `lr_` for a field new to the bucket is overwritten.
+- Blackout: a leftover `lr_` and member cube of a field not in `indices` are
+  deleted by the builder, not reused.
