@@ -104,6 +104,10 @@ def field_env(tmp_path, monkeypatch):
     monkeypatch.setattr(real_field.ensemble_registry, "regime_labels",
                         lambda *_args, **_kwargs: list(LABELS))
     monkeypatch.setattr(real_field, "EnsembleModel", _Ensemble)
+    # No checkpoints here: every member's fingerprint is None (never the
+    # live ckpt/ensemble's).
+    monkeypatch.setattr(real_field, "member_fingerprints",
+                        lambda _base, labels: dict.fromkeys(labels))
     _Ensemble.built.clear()
     gate = _pruned_gate()
     save_spatial_gate(gate, str(tmp_path / "vis" / "ensemble" / "starfull"
@@ -247,3 +251,59 @@ def test_refresh_route_passes_the_all_members_option(monkeypatch):
 class _Cap:
     def tick(self, *_args, **_kwargs):
         pass
+
+
+def test_the_cache_records_member_fingerprints_and_skips_a_continued_member(field_env, monkeypatch):
+    fps = dict.fromkeys(LABELS, "ckpt-1")
+    monkeypatch.setattr(real_field, "member_fingerprints",
+                        lambda _base, labels: {lb: fps[lb] for lb in labels})
+    manifest = real_field.cache_real_field(1.0, 2.0, progress=_tick)
+    assert manifest["member_fps"] == fps
+    _Ensemble.built.clear()
+    fps["172·psnr"] = "ckpt-2"
+
+    real_field.cache_real_field(1.0, 2.0, progress=_tick)
+
+    assert _Ensemble.built == [{"starless": False, "labels": ["172·psnr"]}]
+
+
+def test_refresh_calls_a_continued_member_stale(field_env, monkeypatch):
+    fps = dict.fromkeys(LABELS, "ckpt-1")
+    monkeypatch.setattr(real_field, "member_fingerprints",
+                        lambda _base, labels: {lb: fps[lb] for lb in labels})
+    real_field.cache_real_field(1.0, 2.0, progress=_tick)
+    fps["170·psnr"] = "ckpt-2"
+
+    with pytest.raises(RuntimeError, match="member cache is stale"):
+        real_field.refresh_real_field_combiners(real_field.field_id(1.0, 2.0), progress=_tick)
+
+
+def test_purge_drops_stale_members_and_renumbers_the_rest(field_env):
+    real_field.cache_real_field(1.0, 2.0, progress=_tick, all_members=True)
+    identifier = real_field.field_id(1.0, 2.0)
+    kept = np.load(_cubes() / "member2_001.npy")
+
+    out = real_field.purge_stale_real_fields({"170·psnr": None, "172·psnr": None})
+
+    assert [r["dropped"] for r in out] == [["171·psnr"]] and out[0]["bytes_freed"] > 0
+    manifest = real_field._read_manifest(identifier)
+    assert manifest["member_labels"] == ["170·psnr", "172·psnr"]
+    assert manifest["run_members"] == [0, 1] and manifest["combiner_kinds"] == []
+    np.testing.assert_array_equal(np.load(_cubes() / "member1_001.npy"), kept)
+    names = {p.name for p in _cubes().glob("*.npy")}
+    assert not any(n.startswith(("sr_", "std_", "pca", "member2_")) for n in names)
+    assert {f"lr_{t:03d}.npy" for t in range(4)} <= names
+    assert real_field.purge_stale_real_fields({"170·psnr": None, "172·psnr": None}) == []
+
+
+def test_purge_drops_every_member_of_a_cache_without_fingerprints(field_env):
+    real_field.cache_real_field(1.0, 2.0, progress=_tick)
+    path = real_field.manifest_path(real_field.field_id(1.0, 2.0))
+    manifest = json.loads(path.read_text())
+    del manifest["member_fps"]
+    path.write_text(json.dumps(manifest))
+
+    out = real_field.purge_stale_real_fields(dict.fromkeys(LABELS))
+
+    assert out[0]["dropped"] == LABELS
+    assert sorted(p.name[:3] for p in _cubes().glob("*.npy")) == ["lr_"] * 4

@@ -19,7 +19,7 @@ import contextlib
 import json
 import os
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,8 +28,14 @@ from astropy.io import fits
 
 from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
-from euclid_polish.ensemble import EnsembleModel, default_ensemble_dir, pca_field
+from euclid_polish.ensemble import (
+    EnsembleModel,
+    default_ensemble_dir,
+    member_fingerprints,
+    pca_field,
+)
 from euclid_polish.eval.combiner import COMBINER_MODELS, load_combiner
+from euclid_polish.eval.ensemble_cube_cache import tree_usage
 from euclid_polish.eval.ensemble_infer import (
     PRODUCTION_COMBINER_KIND,
     combiner_read_labels,
@@ -286,8 +292,10 @@ def _preserve_matching_member_cubes(
     new_labels: list[str],
     *,
     count: int,
+    reusable: Callable[[str], bool] | None = None,
 ) -> tuple[Path, int]:
-    """Hard-link reusable member tiles into a temporary remapping directory."""
+    """Hard-link reusable member tiles into a temporary remapping directory.
+    ``reusable`` (default: every matching label) narrows which labels count."""
     staging = cubes / ".member_reuse"
     staging.mkdir(exist_ok=True)
     for stale in staging.iterdir():
@@ -297,7 +305,7 @@ def _preserve_matching_member_cubes(
     preserved = 0
     for new_index, label in enumerate(new_labels):
         old_index = old_indices.get(str(label))
-        if old_index is None:
+        if old_index is None or (reusable is not None and not reusable(str(label))):
             continue
         for tile in range(max(0, int(count))):
             source = cubes / f"member{old_index}_{tile:03d}.npy"
@@ -415,15 +423,25 @@ def cache_real_field(ra: float, dec: float, *,
         raise RuntimeError("no active STARFULL ensemble members")
     n_members = len(labels)
     old_labels = old.get("member_labels") or []
-    if old_labels != labels:
-        # Preserve member cubes whose checkpoint labels still match, remapping
-        # their positional indices through hard links.  All aggregate/PCA/
-        # combiner products are membership-dependent and are rebuilt below.
+    fingerprints = member_fingerprints(default_ensemble_dir(), labels)
+    old_fps = old.get("member_fps")
+
+    def reusable(label: str) -> bool:
+        # A cache without fingerprints cannot prove which checkpoint made it.
+        return (isinstance(old_fps, dict) and label in old_fps
+                and old_fps[label] == fingerprints.get(label))
+
+    if old_labels != labels or not all(reusable(str(label)) for label in old_labels):
+        # Preserve member cubes whose label AND checkpoint still match,
+        # remapping their positional indices through hard links. All
+        # aggregate/PCA/combiner products are membership-dependent and are
+        # rebuilt below.
         staging, preserved = _preserve_matching_member_cubes(
             cubes,
             [str(label) for label in old_labels],
             labels,
             count=int(old.get("count", GRID_SIDE * GRID_SIDE)),
+            reusable=reusable,
         )
         for path in cubes.glob("*.npy"):
             path.unlink()
@@ -481,6 +499,7 @@ def cache_real_field(ra: float, dec: float, *,
         "field_id": identifier, "ra": float(ra), "dec": float(dec),
         "field_size": FIELD_SIZE, "tile_size": TILE_SIZE, "grid_side": GRID_SIDE,
         "count": count, "member_labels": labels,
+        "member_fps": {label: fingerprints.get(label) for label in labels},
         "combiner_kinds": sorted(applied), "combiner_state": combiner_state,
         **_scope_fields(labels, run, scope),
         "pca_amps": pca_amps, "pca_var": pca_var,
@@ -519,6 +538,13 @@ def refresh_real_field_combiners(
     if labels != active_labels:
         raise RuntimeError(
             "real-field member cache is stale; run the full field cache once")
+    recorded_fps = manifest.get("member_fps")
+    current_fps = member_fingerprints(default_ensemble_dir(), labels)
+    if not isinstance(recorded_fps, dict) or any(
+            recorded_fps.get(label) != current_fps.get(label) for label in labels):
+        raise RuntimeError(
+            "real-field member cache is stale (a member's checkpoint changed); "
+            "run the full field cache once")
 
     combiners = _load_regime_combiners(labels)
     if not combiners:
@@ -562,3 +588,63 @@ def refresh_real_field_combiners(
     _write_json(root / "diagnostics.json", _diagnostic_payload(
         diagnostics, run_labels, applied, scope=scope, n_ensemble=len(labels)))
     return manifest
+
+
+def purge_stale_real_field(identifier: str,
+                           current: Mapping[str, str | None]) -> dict[str, Any] | None:
+    """Drop the cubes of the members a field's cache can no longer reuse.
+
+    ``current`` maps the ACTIVE STARFULL labels to their checkpoint
+    fingerprints now. A member that is not active, has no recorded
+    fingerprint or was continued loses its cubes; the kept members are
+    renumbered (the hard-link remap :func:`cache_real_field` uses) and every
+    membership-dependent product (``sr_``, ``std_``, ``pcaN_``, combiner
+    outputs) goes. ``lr_`` tiles, ``raw/`` and the stack stay, so the viewer
+    shows the LR until the next refresh re-infers the dropped members.
+    ``None`` when nothing was stale."""
+    manifest = _read_manifest(identifier)
+    if manifest is None:
+        return None
+    labels = [str(label) for label in manifest.get("member_labels", []) or []]
+    recorded = manifest.get("member_fps")
+    recorded = recorded if isinstance(recorded, dict) else {}
+    keep = [label for label in labels
+            if label in current and label in recorded and recorded[label] == current[label]]
+    dropped = [label for label in labels if label not in keep]
+    if not dropped:
+        return None
+    cubes = field_dir(identifier) / "cubes"
+    before = tree_usage(str(cubes))
+    staging, _preserved = _preserve_matching_member_cubes(
+        cubes, labels, keep, count=int(manifest.get("count", GRID_SIDE * GRID_SIDE)))
+    for path in cubes.glob("*.npy"):
+        if not path.name.startswith("lr_"):
+            path.unlink(missing_ok=True)
+    _restore_matching_member_cubes(cubes, staging)
+    old_run = [int(i) for i in manifest.get("run_members", range(len(labels)))]
+    run = [keep.index(labels[i]) for i in old_run if i < len(labels) and labels[i] in keep]
+    manifest.update({
+        "member_labels": keep, "member_fps": {label: recorded[label] for label in keep},
+        "run_members": run, "run_member_labels": [keep[i] for i in run],
+        "combiner_kinds": [], "combiner_state": {}, "pca_amps": {}, "pca_var": {},
+        "pca_n": 0,
+    })
+    _write_json(manifest_path(identifier), manifest)
+    after = tree_usage(str(cubes))
+    return {"field_id": identifier, "dropped": dropped,
+            "bytes_freed": max(0, before[0] - after[0]),
+            "files_deleted": max(0, before[1] - after[1])}
+
+
+def purge_stale_real_fields(current: Mapping[str, str | None]) -> list[dict[str, Any]]:
+    """:func:`purge_stale_real_field` over every cached field (what changed)."""
+    root = fields_root()
+    if not root.is_dir():
+        return []
+    out = []
+    for path in sorted(root.iterdir()):
+        if path.is_dir():
+            purged = purge_stale_real_field(path.name, current)
+            if purged is not None:
+                out.append(purged)
+    return out
