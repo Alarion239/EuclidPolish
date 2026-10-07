@@ -1,4 +1,5 @@
-"""job_archive_member: zip → tracking, tombstone, delete, mark stale."""
+"""job_archive_member: zip → tracking, tombstone, delete, mark stale; a
+restore before the next evaluation takes the member off that queue."""
 from __future__ import annotations
 
 import json
@@ -186,3 +187,57 @@ def test_archive_member_requires_campaign(env, monkeypatch):
     _mk_members(base, 3)
     with pytest.raises(RuntimeError, match="tracking campaign"):
         ev.job_archive_member(_Cap(), name="member_03")
+
+
+def test_restore_takes_the_member_off_the_pending_archive_queue(env, monkeypatch):
+    """A member restored before the next Evaluate is no longer queued as
+    archived; members still archived stay queued."""
+    from euclid_polish.web.helpers import ensemble_viz as ev
+    from euclid_polish.web.remote import STATE
+
+    monkeypatch.setattr(STATE, "ssh", None)
+    base = ev.ensemble_dir()
+    _mk_members(base, 0, 1, 2)
+    ev.job_archive_member(_Cap(), name="member_01")
+    ev.job_archive_member(_Cap(), name="member_02")
+    assert ev._pending_archived_members(False) == ["member_01", "member_02"]
+
+    ev.job_restore_member(_Cap(), name="member_02")
+
+    assert ev._pending_archived_members(False) == ["member_01"]
+
+
+@pytest.fixture
+def cube_env(tmp_path, monkeypatch):
+    from euclid_polish.tracking import default_store
+    from euclid_polish.web.remote import STATE
+    from tests._ensemble_cube_cache_fixtures import make_env
+
+    env = make_env(tmp_path, monkeypatch)
+    default_store().create_campaign("archive test")
+    monkeypatch.setattr(STATE, "ssh", None)
+    return env
+
+
+def test_evaluate_after_archive_then_restore_keeps_the_member_cached(cube_env):
+    """Archive → restore → Evaluate: the restored member's cached cubes stay in
+    both buckets (the queued archive must not drop them)."""
+    from euclid_polish.config import Config
+    from euclid_polish.eval.ensemble_cube_cache import member_cube_path
+    from euclid_polish.web.helpers import ensemble_viz as ev
+    from tests._ensemble_cube_cache_fixtures import N_FIELDS, Cap
+
+    ev.job_ensemble_evaluate(Cap(), num_images=N_FIELDS, starless=False)
+    ev._prepare_validate_cubes(Cap(), starless=False, num_images=N_FIELDS,
+                               target_fwhm=Config.TARGET_PSF_FWHM_ARCSEC)
+
+    ev.job_archive_member(Cap(), name="member_03")
+    ev.job_restore_member(Cap(), name="member_03")
+    out = ev.job_ensemble_evaluate(Cap(), num_images=N_FIELDS, starless=False)
+
+    assert "recomputed_from_archives" not in out
+    assert out["member_labels"] == cube_env["labels"]
+    with open(cube_env["validate"] / "viz_index.json") as f:
+        assert json.load(f)["member_labels"] == cube_env["labels"]
+    assert all(os.path.isfile(member_cube_path(str(cube_env["validate"]), "03·psnr", rec))
+               for rec in range(N_FIELDS))

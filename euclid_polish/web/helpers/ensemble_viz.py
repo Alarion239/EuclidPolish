@@ -445,6 +445,19 @@ def _mark_archive_stale(starless: bool, name: str) -> None:
     _atomic_json(_archive_stale_path(starless), {"members": names})
 
 
+def _unmark_archive_stale(starless: bool, name: str) -> None:
+    """Forget a queued archive: the member was restored before the next
+    evaluation, so its cached cubes and the combiners reading it stay."""
+    names = _pending_archived_members(starless)
+    if name not in names:
+        return
+    names.remove(name)
+    if names:
+        _atomic_json(_archive_stale_path(starless), {"members": names})
+    else:
+        _clear_archive_stale(starless)
+
+
 def _clear_archive_stale(starless: bool) -> None:
     with contextlib.suppress(FileNotFoundError):
         os.remove(_archive_stale_path(starless))
@@ -4159,7 +4172,9 @@ def job_restore_member(cap, *, name: str) -> dict:
     """Bring an archived member back: unzip its tracking archive into the
     ensemble dir and move its tombstone back to active. The regime's
     evaluation, knee curves and combiner then read stale (membership changed)
-    until re-evaluated / refitted — shown by the Models › Leaderboard checks."""
+    until re-evaluated / refitted — shown by the Models › Leaderboard checks.
+    An archive the next evaluation has not applied yet is dequeued, so that
+    evaluation keeps the member's cached cubes and the combiners reading it."""
     name = ensemble_registry.member_name(name)
     base = ensemble_dir()
     tomb = next((t for t in ensemble_registry.archived_members(base, Config.TRACKING_DIR)
@@ -4187,7 +4202,9 @@ def job_restore_member(cap, *, name: str) -> dict:
         shutil.rmtree(tmp, ignore_errors=True)
     cap.tick(2, 3, "updating the registry")
     ensemble_registry.restore_member_entry(base, name)
-    regime = _regime_slug(ensemble_registry.member_is_starless(dest))
+    starless = ensemble_registry.member_is_starless(dest)
+    _unmark_archive_stale(starless, name)
+    regime = _regime_slug(starless)
     with contextlib.suppress(Exception):
         tracking_default_store().append_log(
             f"Restored ensemble member `{name}` from `{tomb.get('zip')}` "
