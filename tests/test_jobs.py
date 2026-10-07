@@ -410,3 +410,27 @@ def test_start_exclusive_payloads():
     assert other["error"].startswith("busy: a mosaic job is running (crop a")
     release.set()
     _wait_for_done(registry, first["job_id"])
+
+
+def test_finish_hooks_run_once_the_status_is_final_and_never_fail_the_job():
+    registry = JobRegistry()
+    seen: list[tuple[str, str]] = []
+
+    def hook(job):
+        seen.append((job.label, job.status))
+
+    def broken(_job):
+        raise RuntimeError("hook bug")
+
+    registry.add_finish_hook(hook)
+    registry.add_finish_hook(hook)                 # added once
+    registry.add_finish_hook(broken)
+    ok = registry.spawn("ok", lambda _cap: None)
+    bad = registry.spawn("bad", lambda _cap: 1 / 0)
+    _wait_for_done(registry, ok, bad)
+    deadline = time.monotonic() + 2
+    while len(seen) < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    assert sorted(seen) == [("bad", "failed"), ("ok", "done")]
+    assert registry.get(ok).status == "done"

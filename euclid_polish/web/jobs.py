@@ -256,6 +256,24 @@ class JobRegistry:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self.max_finished = int(max_finished)
+        self._finish_hooks: builtins.list[Callable[[Job], None]] = []
+
+    def add_finish_hook(self, hook: Callable[[Job], None]) -> None:
+        """Call ``hook(job)`` after every job of this registry ends (done,
+        failed or cancelled), in the job's thread once its status is final.
+        A hook's exception is printed, never raised."""
+        with self._lock:
+            if hook not in self._finish_hooks:
+                self._finish_hooks.append(hook)
+
+    def _run_finish_hooks(self, job: Job) -> None:
+        with self._lock:
+            hooks = builtins.list(self._finish_hooks)
+        for hook in hooks:
+            try:
+                hook(job)
+            except Exception:  # noqa: BLE001 - a hook must never fail the job
+                traceback.print_exc()
 
     def list(self, *, summary: bool = False) -> builtins.list[dict[str, Any]]:
         """Newest first; ``summary=True`` omits every job's log text."""
@@ -365,6 +383,7 @@ class JobRegistry:
                 job.fail(error)
             finally:
                 self._evict_finished()
+                self._run_finish_hooks(job)
 
         threading.Thread(target=_runner, daemon=True, name=f"job-{job.job_id}").start()
 
