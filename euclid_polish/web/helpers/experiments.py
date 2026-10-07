@@ -45,6 +45,7 @@ from typing import Any
 
 import numpy as np
 
+from euclid_polish.ensemble import member_fingerprint
 from euclid_polish.web.helpers import atomic_files, model_catalog, real_metrics, real_tiles
 from euclid_polish.web.jobs import JobCancelled
 
@@ -150,6 +151,44 @@ def member_cache_dir(source: str, identifier: str) -> Path:
 
 def _label_slug(label: str) -> str:
     return model_catalog.member_name(label)
+
+
+#: Labels of ensemble members (``170·psnr``) — the only entries a purge judges.
+_MEMBER_LABEL = re.compile(r"\d+·psnr")
+
+
+def purge_stale_member_sr_cache(base_dir: str | None = None) -> dict[str, Any]:
+    """Delete member-SR cache entries their member can no longer reuse: made
+    by another checkpoint than the member's current one (an archived member
+    has none). Entries of other models are kept. ``base_dir``: the ensemble
+    (default the canonical one)."""
+    base = base_dir or model_catalog.ensemble_dir()
+    root = model_catalog.member_cache_root()
+    freed = deleted = 0
+    members: set[str] = set()
+    current: dict[str, str | None] = {}
+    for meta_path in sorted(root.rglob("*.json")) if root.is_dir() else []:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        label = str(meta.get("label", "")) if isinstance(meta, dict) else ""
+        if not _MEMBER_LABEL.fullmatch(label):
+            continue
+        if label not in current:
+            current[label] = member_fingerprint(
+                os.path.join(base, model_catalog.member_name(label)))
+        recorded = meta.get("member_fingerprint")
+        if recorded is not None and recorded == current[label]:
+            continue
+        for item in (meta_path.with_suffix(".npy"), meta_path):
+            with contextlib.suppress(OSError):
+                size = item.stat().st_size
+                item.unlink()
+                freed += size
+                deleted += 1
+        members.add(label)
+    return {"bytes_freed": freed, "files_deleted": deleted, "members": sorted(members)}
 
 
 class MemberCacheBudget:

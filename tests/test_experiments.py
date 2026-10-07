@@ -5,6 +5,7 @@ output store, real-data metrics per (tile, spec), persisted records."""
 from __future__ import annotations
 
 import json
+import os
 
 import numpy as np
 import pytest
@@ -247,3 +248,26 @@ def test_member_runner_widens_to_the_union_when_asked_for_another_member(monkeyp
     with pytest.raises(KeyError):
         runner.predict(lr, "9·psnr")
     assert len(built) == 2                                           # unknown: no rebuild
+
+
+def test_purge_removes_member_sr_entries_made_by_another_checkpoint(tmp_path, monkeypatch):
+    root = tmp_path / "cache"
+    monkeypatch.setattr(model_catalog, "member_cache_root", lambda: root)
+    current = {"member_170": "fp-170", "member_171": None}       # 171 archived
+    monkeypatch.setattr(experiments, "member_fingerprint",
+                        lambda path: current.get(os.path.basename(path)))
+    tile = root / "tile" / "t1"
+    tile.mkdir(parents=True)
+    for slug, label, fp in (("member_170", "170·psnr", "fp-170"),
+                            ("member_171", "171·psnr", "fp-171"),
+                            ("member_172", "172·psnr", "fp-old"),
+                            ("single", "wdsr", "x")):
+        np.save(tile / f"{slug}.npy", np.zeros(4, np.float32))
+        (tile / f"{slug}.json").write_text(json.dumps(
+            {"label": label, "member_fingerprint": fp}))
+
+    out = experiments.purge_stale_member_sr_cache(str(tmp_path / "ensemble"))
+
+    assert out["members"] == ["171·psnr", "172·psnr"] and out["files_deleted"] == 4
+    assert sorted(p.name for p in tile.iterdir()) == [
+        "member_170.json", "member_170.npy", "single.json", "single.npy"]
