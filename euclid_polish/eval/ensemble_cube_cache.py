@@ -39,9 +39,11 @@ inference.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import shutil
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -62,6 +64,9 @@ MEMBER_FPS_KEY = "member_fps"
 
 _POSITIONAL_FILE = re.compile(r"member(\d+)_(\d+)\.npy")
 _FIELD_FILE = re.compile(r".+_(\d{5})\.npy")
+_LABEL_KEYED_FILE = re.compile(r"member_([A-Za-z0-9-]+)_\d{5}\.npy")
+#: Per-field files a membership change leaves valid: member cubes and the LR input.
+_MEMBERSHIP_FREE_FILE = re.compile(r"(member_[A-Za-z0-9-]+|lr)_\d{5}\.npy")
 
 
 def _default_cubes_dir(starless: bool = False) -> str:
@@ -179,6 +184,12 @@ def _member_files(cubes_dir: str, labels: Iterable[str]) -> list[str]:
             if pattern.fullmatch(name)]
 
 
+def _remove_quietly(path: str) -> None:
+    """Delete ``path``; a file another writer or a purge already removed is fine."""
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(path)
+
+
 def prune_bucket_fields(cubes_dir: str, keep: Iterable[int]) -> None:
     """Delete every per-field file (``<name>_<field:05d>.npy``) of a field not
     in ``keep``."""
@@ -188,7 +199,7 @@ def prune_bucket_fields(cubes_dir: str, keep: Iterable[int]) -> None:
     for name in os.listdir(cubes_dir):
         match = _FIELD_FILE.fullmatch(name)
         if match and int(match.group(1)) not in wanted:
-            os.remove(os.path.join(cubes_dir, name))
+            _remove_quietly(os.path.join(cubes_dir, name))
 
 
 # --------------------------------------------------------------------------- #
@@ -219,9 +230,10 @@ def migrate_positional_bucket(cubes_dir: str, name: str = VIZ_INDEX, *,
         position, field_index = int(match.group(1)), int(match.group(2))
         source = os.path.join(cubes_dir, file_name)
         if position < len(labels) and field_index in listed:
-            os.replace(source, member_cube_path(cubes_dir, labels[position], field_index))
+            with contextlib.suppress(FileNotFoundError):
+                os.replace(source, member_cube_path(cubes_dir, labels[position], field_index))
         else:
-            os.remove(source)
+            _remove_quietly(source)
     out = {**manifest, "member_labels": labels,
            MEMBER_FPS_KEY: {label: (adopt or {}).get(label) for label in labels}}
     identity = out.get("identity")
@@ -269,11 +281,11 @@ def sync_bucket_members(cubes_dir: str, manifest: Mapping | None, labels: Sequen
                       if label in recorded and recorded[label] != fingerprints.get(label)]
     sync.added = [label for label in labels if label not in recorded]
     for path in _member_files(cubes_dir, sync.dropped + sync.refreshed + sync.added):
-        os.remove(path)
+        _remove_quietly(path)
     if os.path.isdir(cubes_dir):
         for file_name in os.listdir(cubes_dir):
             if _POSITIONAL_FILE.fullmatch(file_name):
-                os.remove(os.path.join(cubes_dir, file_name))
+                _remove_quietly(os.path.join(cubes_dir, file_name))
     manifest["member_labels"] = labels
     manifest[MEMBER_FPS_KEY] = {label: fingerprints.get(label) for label in labels}
     if sync.changed:
@@ -283,6 +295,112 @@ def sync_bucket_members(cubes_dir: str, manifest: Mapping | None, labels: Sequen
     write_bucket_manifest(cubes_dir, manifest, name)
     sync.manifest = manifest
     return sync
+
+
+# --------------------------------------------------------------------------- #
+# Purge (no inference)
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class PurgeResult:
+    """What :func:`purge_stale_bucket` deleted from one bucket."""
+
+    cubes_dir: str
+    bytes_freed: int = 0
+    files_deleted: int = 0
+    wiped: str | None = None                            # why the whole bucket went
+    dropped: list[str] = field(default_factory=list)    # members whose cubes went
+
+
+def tree_usage(path: str) -> tuple[int, int]:
+    """``(bytes, files)`` under ``path``; ``(0, 0)`` when it is missing."""
+    total = files = 0
+    for root, _dirs, names in os.walk(path):
+        for name in names:
+            with contextlib.suppress(OSError):
+                total += os.lstat(os.path.join(root, name)).st_size
+                files += 1
+    return total, files
+
+
+def recorded_records_fp(manifest: Mapping) -> str | None:
+    """The records fingerprint a bucket was made from: ``records_fp`` (test and
+    validate buckets) or the blackout stamping's ``identity.source``."""
+    if "records_fp" in manifest:
+        return manifest.get("records_fp")
+    return (manifest.get("identity") or {}).get("source")
+
+
+def purge_stale_bucket(cubes_dir: str, *, name: str = VIZ_INDEX,
+                       current: Mapping[str, str | None],
+                       records_fp: str | None = None,
+                       adopt: Mapping[str, str | None] | None = None) -> PurgeResult:
+    """Delete what the bucket's next writer would discard, without inference.
+
+    ``current`` maps the regime's ACTIVE member labels to their checkpoint
+    fingerprints now; ``records_fp`` is the fingerprint of the records the
+    bucket's writer would use now (``None``: unknown, never wipes).
+
+    - ``.npy`` files without a manifest, or a bucket made from other records:
+      the directory goes (every writer would empty it);
+    - a positional bucket is migrated first (:func:`migrate_positional_bucket`,
+      adopting ``adopt``);
+    - a member that is not active or whose recorded fingerprint differs from
+      ``current`` loses its cubes and its manifest entry, and so do member
+      files of labels the manifest does not keep;
+    - when a member went, the per-field aggregates (all but member cubes and
+      ``lr_``) go too, with the ``has_combiner*`` flags and PCA amplitudes;
+    - a blackout bucket also loses every per-field file of a field outside
+      its ``indices`` (nothing proves it belongs to the current stamping). A
+      test or validate bucket keeps them: an interrupted fill's cubes, which
+      the next fill reuses.
+
+    Afterwards every label the manifest lists has current cubes."""
+    result = PurgeResult(cubes_dir)
+    if not os.path.isdir(cubes_dir):
+        return result
+    before = tree_usage(cubes_dir)
+    manifest = read_bucket_manifest(cubes_dir, name)
+    if manifest is None and not any(n.endswith(".npy") for n in os.listdir(cubes_dir)):
+        return result
+    if manifest is None or (records_fp is not None
+                            and recorded_records_fp(manifest) != records_fp):
+        result.wiped = "no manifest" if manifest is None else "made from other records"
+        shutil.rmtree(cubes_dir, ignore_errors=True)
+        result.bytes_freed, result.files_deleted = before
+        return result
+    if not is_label_keyed(manifest):
+        manifest = migrate_positional_bucket(cubes_dir, name, adopt=adopt) or {}
+    recorded = recorded_fingerprints(manifest)
+    labels = manifest_member_labels(manifest)
+    keep = [label for label in labels
+            if label in current and recorded[label] == current[label]]
+    result.dropped = [label for label in labels if label not in keep]
+    keys = {member_cube_key(label) for label in keep}
+    listed = {int(i) for i in manifest.get("indices", []) or []}
+    for file_name in os.listdir(cubes_dir):
+        field_match = _FIELD_FILE.fullmatch(file_name)
+        if field_match is None:
+            continue
+        member = _LABEL_KEYED_FILE.fullmatch(file_name)
+        if ((member is not None and member.group(1) not in keys)
+                or _POSITIONAL_FILE.fullmatch(file_name)
+                or (name == BLACKOUT_INDEX and int(field_match.group(1)) not in listed)
+                or (result.dropped and not _MEMBERSHIP_FREE_FILE.fullmatch(file_name))):
+            _remove_quietly(os.path.join(cubes_dir, file_name))
+    if result.dropped:
+        manifest = {**manifest, "member_labels": keep,
+                    MEMBER_FPS_KEY: {label: recorded[label] for label in keep}}
+        for key in [k for k in manifest if k.startswith("has_combiner")]:
+            manifest[key] = False
+        for key in ("pca_amps", "pca_var"):
+            if key in manifest:
+                manifest[key] = {}
+        write_bucket_manifest(cubes_dir, manifest, name)
+    after = tree_usage(cubes_dir)
+    result.bytes_freed = max(0, before[0] - after[0])
+    result.files_deleted = max(0, before[1] - after[1])
+    return result
 
 
 # --------------------------------------------------------------------------- #
