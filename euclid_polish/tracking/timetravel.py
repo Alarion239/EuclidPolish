@@ -63,6 +63,14 @@ INPUT_RELPATHS = [
 
 _FIRST_PORT = 8766
 
+#: Seconds a stopped server gets to exit on SIGTERM before its group is killed.
+_STOP_GRACE_S = 5.0
+
+#: Servers this process spawned, by pid. Holding the Popen lets a stop reap the
+#: child (a zombie still answers ``os.kill(pid, 0)``), and lets
+#: ``stop_spawned_servers`` stop them without a sandbox.json to read.
+_SPAWNED: dict[int, subprocess.Popen] = {}
+
 
 class TimeTravelError(RuntimeError):
     """Raised for invalid time-travel operations (bad commit, etc.)."""
@@ -108,6 +116,9 @@ def read_sandbox(short: str) -> dict[str, Any] | None:
 def _pid_alive(pid: int | None) -> bool:
     if not pid:
         return False
+    proc = _SPAWNED.get(pid)
+    if proc is not None:
+        return proc.poll() is None      # reaps our own child once it exits
     try:
         os.kill(pid, 0)
         return True
@@ -348,33 +359,95 @@ def spawn_server(short: str, *, port: int | None = None,
     # Make the worktree win the import race even under an editable install.
     env["PYTHONPATH"] = meta["worktree"] + os.pathsep + env.get("PYTHONPATH", "")
 
-    log = open(meta["server_log"], "ab")
-    proc = subprocess.Popen(
-        [sys.executable, "-c", _SHIM.format(port=port)],
-        cwd=meta["worktree"], env=env,
-        stdout=log, stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    # The child holds its own copy of the log fd; the parent's closes here.
+    with open(meta["server_log"], "ab") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _SHIM.format(port=port)],
+            cwd=meta["worktree"], env=env,
+            stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    _SPAWNED[proc.pid] = proc
     url = f"http://127.0.0.1:{port}/"
-    # Wait until the port answers or the process dies.
-    deadline = time.monotonic() + wait_s
-    up = False
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            break
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(("127.0.0.1", port)) == 0:
-                up = True
+    try:
+        # Wait until the port answers or the process dies.
+        deadline = time.monotonic() + wait_s
+        up = False
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
                 break
-        time.sleep(0.2)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex(("127.0.0.1", port)) == 0:
+                    up = True
+                    break
+            time.sleep(0.2)
 
-    meta.update({"port": port, "pid": proc.pid, "url": url})
-    _write_json(os.path.join(meta["root"], "sandbox.json"), meta)
+        meta.update({"port": port, "pid": proc.pid, "url": url})
+        _write_json(os.path.join(meta["root"], "sandbox.json"), meta)
+    except BaseException:
+        # Ctrl-C during the boot wait, or the pid record failed to write:
+        # its own session shields the server from the terminal's SIGINT and
+        # nothing would know its pid, so it would run forever. Stop it here.
+        _terminate(proc.pid)
+        raise
     if proc.poll() is not None:
+        _SPAWNED.pop(proc.pid, None)
         return {"ok": False, "error": "server exited on startup — see "
                 f"{meta['server_log']}", "pid": proc.pid}
     return {"ok": True, "url": url, "port": port, "pid": proc.pid,
             "responding": up}
+
+
+def _terminate(pid: int) -> None:
+    """SIGTERM a server's process group; SIGKILL it after ``_STOP_GRACE_S``.
+
+    The server leads its own group (``start_new_session``), so the signal
+    reaches whatever it started too. A server this process spawned is reaped
+    before returning; never signals the caller's own group.
+    """
+    proc = _SPAWNED.pop(pid, None)
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        if proc is None:
+            return                      # not ours and already gone
+        pgid = pid                      # our leader exited; its group may live on
+
+    def send(sig: int) -> None:
+        with contextlib.suppress(OSError):
+            if pgid == os.getpgrp():
+                os.kill(pid, sig)
+            else:
+                os.killpg(pgid, sig)
+
+    send(signal.SIGTERM)
+    if proc is not None:
+        try:
+            proc.wait(timeout=_STOP_GRACE_S)
+        except subprocess.TimeoutExpired:
+            send(signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=_STOP_GRACE_S)
+        return
+    deadline = time.monotonic() + _STOP_GRACE_S
+    while _pid_alive(pid):
+        if time.monotonic() > deadline:
+            send(signal.SIGKILL)
+            return
+        time.sleep(0.05)
+
+
+def stop_spawned_servers() -> list[int]:
+    """Stop every server this process spawned; return the pids still running.
+
+    Needs no sandbox.json, so it works after a sandbox dir is gone — the test
+    suite calls it after every test so a real ``spawn_server`` can't leak a
+    WebUI past the run.
+    """
+    running = [pid for pid, proc in list(_SPAWNED.items()) if proc.poll() is None]
+    for pid in list(_SPAWNED):
+        _terminate(pid)
+    return running
 
 
 def stop_server(short: str) -> dict[str, Any]:
@@ -383,12 +456,8 @@ def stop_server(short: str) -> dict[str, Any]:
     if not meta:
         raise TimeTravelError(f"no sandbox {short!r}")
     pid = meta.get("pid")
-    if isinstance(pid, int) and _pid_alive(pid):
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            with contextlib.suppress(OSError):
-                os.kill(pid, signal.SIGTERM)
+    if isinstance(pid, int) and (pid in _SPAWNED or _pid_alive(pid)):
+        _terminate(pid)
     meta["pid"] = None
     meta["url"] = None
     meta["port"] = None

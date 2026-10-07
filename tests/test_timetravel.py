@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import signal
+import socket
 import subprocess
+import time
 
 import pytest
 
@@ -56,6 +60,74 @@ def live_data(tmp_path):
 @pytest.fixture(autouse=True)
 def _tt_root(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "TIMETRAVEL_DIR", str(tmp_path / "tt"))
+
+
+# The sandbox's "old code": a stand-in WebUI with the real server's shape (it
+# listens on the port and keeps a child in its process group) that boots in
+# milliseconds instead of importing TensorFlow. Pids land in the worktree, the
+# server's cwd.
+_FAKE_WEB_APP = '''
+import os, socket, subprocess, sys, time
+
+class _App:
+    def run(self, host, port, **_kw):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+        with open("grandchild.pid", "w") as fh:
+            fh.write(str(child.pid))
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        sock.listen()
+        while True:
+            time.sleep(1)
+
+def create_app():
+    with open("server.pid", "w") as fh:
+        fh.write(str(os.getpid()))
+    return _App()
+'''
+
+
+@pytest.fixture
+def fake_server_sandbox(repo, live_data):
+    """A real sandbox whose worktree serves ``_FAKE_WEB_APP``."""
+    root, commit = repo
+    data_dir, _ = live_data
+    meta = tt.prepare_local_sandbox(commit, repo_root=root, live_data_dir=data_dir)
+    web = os.path.join(meta["worktree"], "euclid_polish", "web")
+    os.makedirs(web)
+    for package in (os.path.dirname(web), web):
+        open(os.path.join(package, "__init__.py"), "w").close()
+    with open(os.path.join(web, "app.py"), "w") as fh:
+        fh.write(_FAKE_WEB_APP)
+    yield meta
+    # Whatever the code under test did, nothing it started outlives the test.
+    for name in ("server.pid", "grandchild.pid"):
+        with contextlib.suppress(OSError, ValueError):
+            os.kill(int(open(os.path.join(meta["worktree"], name)).read()), signal.SIGKILL)
+
+
+def _unused_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _pid_in(meta, name) -> int:
+    return int(open(os.path.join(meta["worktree"], name)).read())
+
+
+def _gone(pid: int, timeout: float = 5.0) -> bool:
+    """True once ``pid`` no longer exists (an orphan waits on init's reaping)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
 
 
 # --------------------------------------------------------------------------
@@ -244,3 +316,51 @@ def test_the_sandbox_launcher_serves_old_code_without_background_services(monkey
     monkeypatch.delattr(web_app, "start_background_services")
     exec(tt._SHIM.format(port=8799), {})
     assert events == ["run"]
+
+
+# --------------------------------------------------------------------------
+# spawn / stop the second WebUI: nothing it starts may outlive its stop
+# --------------------------------------------------------------------------
+
+def test_stop_server_takes_down_the_sandbox_server_and_its_children(fake_server_sandbox):
+    short = fake_server_sandbox["short"]
+    res = tt.spawn_server(short, port=_unused_port(), wait_s=20)
+    assert res["ok"] and res["responding"], res
+    server, child = res["pid"], _pid_in(fake_server_sandbox, "grandchild.pid")
+    assert tt.list_sandboxes()[0]["running"] is True
+
+    assert tt.stop_server(short) == {"ok": True}
+    # Reaped, not a zombie that _pid_alive still counts as running.
+    assert not tt._pid_alive(server)
+    assert _gone(server, timeout=0)
+    assert _gone(child)
+    assert tt.read_sandbox(short)["pid"] is None
+    assert tt.stop_spawned_servers() == []
+
+
+def test_stop_spawned_servers_stops_a_server_nothing_else_tracks(fake_server_sandbox):
+    """The suite's leak guard (tests/conftest.py) relies on this: it needs no
+    sandbox.json, so it works after a test's tmp dir is gone."""
+    short = fake_server_sandbox["short"]
+    res = tt.spawn_server(short, port=_unused_port(), wait_s=20)
+    assert res["ok"] and res["responding"], res
+    child = _pid_in(fake_server_sandbox, "grandchild.pid")
+
+    assert tt.stop_spawned_servers() == [res["pid"]]
+    assert _gone(res["pid"], timeout=0)
+    assert _gone(child)
+    assert tt.stop_spawned_servers() == []
+
+
+def test_a_spawn_that_fails_after_launch_stops_the_server(fake_server_sandbox, monkeypatch):
+    """No pid would be recorded, so a server left running here would never be
+    stopped by anything (Ctrl-C during the boot wait takes this path too)."""
+    def disk_full(_path, _data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tt, "_write_json", disk_full)
+    with pytest.raises(OSError, match="disk full"):
+        tt.spawn_server(fake_server_sandbox["short"], port=_unused_port(), wait_s=20)
+    assert _gone(_pid_in(fake_server_sandbox, "server.pid"), timeout=0)
+    assert _gone(_pid_in(fake_server_sandbox, "grandchild.pid"))
+    assert tt.stop_spawned_servers() == []

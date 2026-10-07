@@ -56,6 +56,7 @@ os.environ.setdefault("EUCLID_POLISH_DISABLE_AUTO_SSH", "1")
 import pytest as _pytest
 
 from euclid_polish.config import Config
+from euclid_polish.tracking import timetravel as _timetravel
 from euclid_polish.web import fasrc_jobs as _fasrc_jobs
 from euclid_polish.web import fasrc_queue as _fasrc_queue
 from euclid_polish.web import remote
@@ -317,3 +318,23 @@ def _safe_default_ssh_state(monkeypatch):
     monkeypatch.setattr(remote.STATE, "ssh", _SessionNullSSH())
     monkeypatch.setattr(remote.STATE, "connected_at", 0.0)
     yield
+
+
+@_pytest.fixture(autouse=True, scope="function")
+def _no_leaked_timetravel_servers():
+    """Stop, then fail, a test that leaves a time-travel WebUI running.
+
+    ``timetravel.spawn_server`` starts the sandbox server in its own session,
+    so it outlives the test, the pytest run and Ctrl-C: one spawned by an
+    unstubbed restore-route test on 2026-09-27 served port 8766 from a deleted
+    pytest tmp dir for nine days. Tests stub ``spawn_server``; one that
+    reaches the real thing has its server's process group killed here.
+    """
+    yield
+    leaked = _timetravel.stop_spawned_servers()
+    if leaked:
+        _pytest.fail(
+            f"test left time-travel server(s) running (pids {leaked}); stub "
+            "timetravel.spawn_server or stop the server in the test",
+            pytrace=False,
+        )
