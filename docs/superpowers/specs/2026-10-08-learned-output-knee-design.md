@@ -87,8 +87,11 @@ every evaluator already work in electrons.
   `output_knee`, which becomes the initial knee).
 - `train_ensemble.py --learn-output-knee` and member-spec key
   `learn_output_knee`; refused without a multi-knee single-image recipe.
-- `EnsembleTrainStep` TaskParam `learn_output_knee`, emitted by
-  `build_command`, so Models › Train can submit it.
+- No change to the `ensemble_train` step: it passes `member_spec` through to
+  `train_ensemble.py` verbatim, so a spec carrying `learn_output_knee`
+  reaches the trainer. A Models › Train form control (and the Leaderboard
+  label, which reads a member without `output_knee` as "multi-knee, heads")
+  is left for later.
 
 ## The run
 
