@@ -24,6 +24,11 @@ from euclid_polish.training.augmentation import (
     inverse_asinh_stretch_multi_knee,
 )
 from euclid_polish.training.models.common import resolve_single
+from euclid_polish.training.models.output_knee import (
+    DEFAULT_INIT_KNEE_E,
+    KNEE_WEIGHT_NAME,
+    knees_from_logits,
+)
 from euclid_polish.training.models.wdsr import wdsr
 
 # plot_reconstruction now lives in the visualization layer; re-exported here so
@@ -119,7 +124,8 @@ def infer_checkpoint_num_res_blocks(checkpoint_dir: str,
     """Trunk depth (``num_res_blocks``) a saved checkpoint's model has, or None.
 
     WDSR's weighted layers are: 1 entry conv + 3 convs per res block + 1
-    main-branch output conv + the skip conv(s) — and the skip convs are the
+    main-branch output conv + the skip conv(s) (and, when present, the
+    learned output knee, which is not counted) — and the skip convs are the
     only ``skip_kernel_size``-sided kernels in the model. Counting the
     distinct ``layer_with_weights-N`` indices under the checkpoint's
     ``model/`` prefix (which excludes optimizer slot duplicates) therefore
@@ -140,6 +146,7 @@ def infer_checkpoint_num_res_blocks(checkpoint_dir: str,
         return None
     layers: set[int] = set()
     skip_layers: set[int] = set()
+    head_layers: set[int] = set()
     for key, shp in shapes.items():
         m = _MODEL_LAYER_KEY.match(key)
         if m is None:
@@ -149,12 +156,34 @@ def infer_checkpoint_num_res_blocks(checkpoint_dir: str,
         if (len(shp) == 4 and shp[0] == skip_kernel_size
                 and shp[1] == skip_kernel_size):
             skip_layers.add(idx)
+        if f"/{KNEE_WEIGHT_NAME}/" in key:
+            head_layers.add(idx)        # the learned output knee: not a conv
     if not layers or not skip_layers:
         return None
-    trunk = len(layers) - 2 - len(skip_layers)
+    trunk = len(layers - head_layers) - 2 - len(skip_layers)
     if trunk <= 0 or trunk % 3:
         return None
     return trunk // 3
+
+
+def infer_checkpoint_learned_output_knee(checkpoint_dir: str) -> tuple[float, ...] | None:
+    """The per-band learned output knees (e⁻) a checkpoint's model carries,
+    or ``None`` for a model without the learned head. Like depth, this is
+    read from the checkpoint itself: the head changes the layer graph and the
+    meaning of the output (electrons instead of asinh)."""
+    latest = tf.train.latest_checkpoint(checkpoint_dir)
+    if latest is None:
+        return None
+    suffix = f"/{KNEE_WEIGHT_NAME}/.ATTRIBUTES/VARIABLE_VALUE"
+    try:
+        reader = tf.train.load_checkpoint(latest)
+        keys = [key for key in reader.get_variable_to_shape_map()
+                if key.startswith("model/") and key.endswith(suffix)]
+        if not keys:
+            return None
+        return tuple(float(q) for q in knees_from_logits(reader.get_tensor(keys[0])))
+    except Exception:    # pragma: no cover — unreadable ckpt → no head
+        return None
 
 
 def infer_checkpoint_asinh_knee(checkpoint_dir: str) -> float | None:
@@ -332,17 +361,23 @@ def load_model_from_checkpoint(
     # (nchan_in = K · nchan_out); rebuild its per-band skip over all K.
     input_knees = (nchan_in // nchan_out
                    if 1 < nchan_out < nchan_in and nchan_in % nchan_out == 0 else 1)
+    # A learned output head is part of the layer graph: build it when the
+    # checkpoint carries one (the restore below sets its learned knees).
+    learned = infer_checkpoint_learned_output_knee(checkpoint_dir)
     model = wdsr(
         scale=scale, num_res_blocks=num_res_blocks,
         nchan_in=nchan_in, nchan_out=nchan_out, input_knees=input_knees,
+        learned_output_knee=(DEFAULT_INIT_KNEE_E if learned is not None else None),
     )
     checkpoint = tf.train.Checkpoint(model=model)
     latest = tf.train.latest_checkpoint(checkpoint_dir)
     if latest is None:
         raise FileNotFoundError(f"No checkpoint found in {checkpoint_dir}")
     checkpoint.restore(latest).expect_partial()
+    head = ("" if learned is None else
+            ", learned output knees " + "/".join(f"{q:.3g}" for q in learned) + " e⁻")
     print(f"Model restored from checkpoint at {latest} "
-          f"(nchan_in={nchan_in}, nchan_out={nchan_out}).")
+          f"(nchan_in={nchan_in}, nchan_out={nchan_out}{head}).")
     return model
 
 

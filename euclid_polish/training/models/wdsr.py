@@ -13,6 +13,11 @@ Why no in-graph stretch / inverse:
   in the same well-behaved space (~ ±10 for our typical data range).
 - WDSR is BN-free by design; loader-side normalization is the appropriate
   preconditioning.
+
+Exception: a member with a learned output knee (``learned_output_knee``)
+ends in :class:`~euclid_polish.training.models.output_knee.LearnedOutputKnee`,
+which turns the stretched output into electrons with one trainable knee per
+band, so that model outputs electrons.
 """
 
 import tensorflow_probability as tfp
@@ -20,6 +25,7 @@ from tf_keras.layers import Add, Concatenate, Conv2D, Input, Lambda
 from tf_keras.models import Model
 
 from euclid_polish.training.models.common import ICNR, pixel_shuffle
+from euclid_polish.training.models.output_knee import LearnedOutputKnee
 
 
 def conv2d_weightnorm(filters, kernel_size, padding="same", activation=None, **kwargs):
@@ -49,7 +55,8 @@ def res_block(x_in, num_filters, expansion, kernel_size, scaling):
 def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
          res_block_scaling=None, nchan_in=1, nchan_out=None,
          entry_kernel_size=3, skip_kernel_size=5,
-         per_band_skip=None, icnr=False, input_knees=1):
+         per_band_skip=None, icnr=False, input_knees=1,
+         learned_output_knee=None):
     """WDSR-A model with potentially asymmetric input/output channels.
 
     Parameters
@@ -88,6 +95,10 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
                    channel ``j·nchan_out + k`` is band ``k`` at knee ``j``).
                    Output band ``k``'s per-band skip then reads band ``k`` at
                    every knee, so bands still only mix through the trunk.
+    learned_output_knee : starting knee (e⁻) of a learned output head: the
+                   model then ends in ``LearnedOutputKnee`` and outputs
+                   electrons, one trainable knee per output band. ``None``
+                   (default) keeps the stretched output.
 
     Input  : asinh-stretched LR tensor, shape ``(B, H, W, nchan_in)``.
     Output : asinh-stretched SR tensor, shape ``(B, scale*H, scale*W, nchan_out)``.
@@ -160,4 +171,8 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
         s = Lambda(pixel_shuffle(scale))(s)
 
     x = Add()([m, s])
+    if learned_output_knee is not None:
+        # A learned output knee: one trainable asinh knee per band turns the
+        # stretched output into electrons, so the model outputs electrons.
+        x = LearnedOutputKnee(init_knee_e=learned_output_knee)(x)
     return Model(x_in, x, name="wdsr")
