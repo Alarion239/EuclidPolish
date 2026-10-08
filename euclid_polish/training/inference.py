@@ -456,6 +456,7 @@ def reconstruct(
     knees: Sequence[float] | None = None,
     head_knee: float | None = None,
     output_knee: float | None = None,
+    output_electrons: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Apply super-resolution to a single LR image.
@@ -489,6 +490,10 @@ def reconstruct(
     output_knee : float, optional
         A single-image multi-knee member: the input is stretched at every
         knee and its one output is un-stretched at this knee.
+    output_electrons : bool, optional
+        A multi-knee member with a learned output knee: the input is
+        stretched at every knee and the model's output, already electrons,
+        is returned unchanged.
 
     Returns
     -------
@@ -500,6 +505,13 @@ def reconstruct(
         the 4-band VIS+NISP model — channel 0 is VIS, so legacy callers
         can take ``sr[..., 0]`` (or pass the cube on for color panels).
     """
+    if knees and output_electrons:
+        lr_data, lr_for_model = _model_input(model, lr_input, len(knees))
+        stretched = asinh_stretch_multi_knee(tf.constant(lr_for_model), knees)
+        # The model's last layer (the learned output knee) returns electrons.
+        sr_data = resolve_single(model, stretched).numpy().astype(np.float32)
+        lr_display = lr_data[..., 0] if lr_data.ndim == 3 else lr_data
+        return lr_display, sr_data
     if knees and output_knee is not None:
         lr_data, lr_for_model = _model_input(model, lr_input, len(knees))
         stretched = asinh_stretch_multi_knee(tf.constant(lr_for_model), knees)

@@ -2,12 +2,15 @@
 learns one asinh output knee per band and outputs electrons."""
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 import tensorflow as tf
-from tf_keras.layers import Input, Lambda
+from tf_keras.layers import Input, Lambda, UpSampling2D
 from tf_keras.models import Model as KerasModel
 
+from euclid_polish.model import Model
 from euclid_polish.training.augmentation import asinh_stretch_multi_knee, stretch_pair
 from euclid_polish.training.inference import (
     infer_checkpoint_learned_output_knee,
@@ -15,6 +18,7 @@ from euclid_polish.training.inference import (
     infer_checkpoint_nchan_out,
     infer_checkpoint_num_res_blocks,
     load_model_from_checkpoint,
+    reconstruct,
 )
 from euclid_polish.training.losses import (
     build_loss,
@@ -160,3 +164,75 @@ def test_trainer_steps_a_learned_knee_member_and_logs_its_knees(tmp_path, capsys
     assert not np.allclose(learned_output_knees(model), before)     # the knee trains
     assert np.isfinite(trainer._validate(tf.data.Dataset.from_tensors((lr, hr)), 1)["psnr_str"])
     assert "learned output knee" in capsys.readouterr().out
+
+
+def test_reconstruct_returns_a_learned_knee_members_electrons_unchanged():
+    inp = Input(shape=(None, None, 24))
+    electrons = Lambda(lambda t: 1.0e4 * tf.sinh(t[..., 20:24]))(inp)   # the 10⁴ e⁻ block
+    model = KerasModel(inp, UpSampling2D(size=2, interpolation="nearest")(electrons))
+    x = np.random.default_rng(6).uniform(1.0, 500.0, (6, 6, 4)).astype(np.float32)
+    _lr, sr = reconstruct(model, x, knees=KNEES, output_electrons=True)
+    np.testing.assert_allclose(sr, np.kron(x, np.ones((2, 2, 1), np.float32)), rtol=1e-4)
+
+
+def test_fresh_learned_knee_member_builds_the_head_and_infers_in_electrons(tmp_path):
+    m = Model(str(tmp_path / "m"), scale=2, num_res_blocks=1, asinh_knees=KNEES,
+              output_knee=10.0, learn_output_knee=True)
+    assert m._tf_model.inputs[0].shape[-1] == 24 and m._tf_model.outputs[0].shape[-1] == 4
+    np.testing.assert_allclose(learned_output_knees(m._tf_model), [10.0] * 4, rtol=1e-5)
+    assert m._learn_output_knee and m._output_knee is None
+    assert m._knee_kw() == {"knees": KNEES, "output_electrons": True}
+    sr = m.upsample_array(np.random.default_rng(8).uniform(0, 50, (6, 6, 4)).astype(np.float32))
+    assert sr.shape == (12, 12, 4) and np.all(np.isfinite(sr))
+    with pytest.raises(ValueError):
+        m.upsample_heads(np.zeros((4, 4, 4), np.float32))
+    with pytest.raises(ValueError):          # no starting knee
+        Model(str(tmp_path / "x"), num_res_blocks=1, asinh_knees=KNEES, learn_output_knee=True)
+
+
+def test_learned_knee_member_resumes_with_its_head(tmp_path):
+    d = tmp_path / "member"
+    m = Model(str(d), scale=2, num_res_blocks=1, asinh_knees=KNEES, output_knee=10.0,
+              learn_output_knee=True)
+    m._tf_model.layers[-1].output_knee_logit.assign(
+        [knee_logit_for(q) for q in (2.0, 5.0, 8.0, 9.0)])
+    tf.train.Checkpoint(model=m._tf_model).save(str(d / "ckpt"))
+    (d / "origin.json").write_text(json.dumps({
+        "asinh_knees": list(KNEES), "knee_loss": "balanced",
+        "learned_output_knee": {"init_e": 10.0, "min_e": 0.1, "max_e": 10000.0}}))
+    r = Model(str(d), scale=2, num_res_blocks=32)
+    assert r._learn_output_knee and r._output_knee is None and r._num_res_blocks == 1
+    assert r._knee_kw() == {"knees": KNEES, "output_electrons": True}
+    np.testing.assert_allclose(learned_output_knees(r._tf_model), (2.0, 5.0, 8.0, 9.0), rtol=1e-5)
+    x = np.random.default_rng(9).uniform(0, 50, (6, 6, 4)).astype(np.float32)
+    np.testing.assert_allclose(r.upsample_array(x), m.upsample_array(x), rtol=1e-5, atol=1e-4)
+
+
+def test_a_fork_of_a_learned_knee_member_keeps_the_head(tmp_path):
+    src = tmp_path / "src"
+    m = Model(str(src), scale=2, num_res_blocks=1, asinh_knees=KNEES, output_knee=10.0,
+              learn_output_knee=True)
+    m._tf_model.layers[-1].output_knee_logit.assign(
+        [knee_logit_for(q) for q in (4.0, 4.0, 6.0, 6.0)])
+    tf.train.Checkpoint(model=m._tf_model).save(str(src / "ckpt"))
+    (src / "origin.json").write_text(json.dumps({
+        "asinh_knees": list(KNEES), "knee_loss": "balanced",
+        "learned_output_knee": {"init_e": 10.0, "min_e": 0.1, "max_e": 10000.0}}))
+    fork = Model(str(tmp_path / "fork"), scale=2, num_res_blocks=32, init_weights_from=str(src))
+    assert fork._learn_output_knee and fork._output_knee is None
+    np.testing.assert_allclose(learned_output_knees(fork._tf_model), (4.0, 4.0, 6.0, 6.0), rtol=1e-5)
+
+
+def test_learned_knee_member_trains_under_the_stretched_loss(tmp_path):
+    m = Model(str(tmp_path / "m"), scale=2, num_res_blocks=1, asinh_knees=KNEES,
+              output_knee=10.0, learn_output_knee=True)
+    hr_e = tf.constant(np.random.default_rng(10).uniform(0, 3000, (1, 8, 8, 4)).astype(np.float32))
+    target = asinh_stretch_multi_knee(hr_e, KNEES)
+    expected = knee_stretched_loss(channel_balanced_loss("l2"), KNEES)(hr_e * 1.1, target)
+    got = m._member_loss("l2", "balanced")(hr_e * 1.1, target)
+    np.testing.assert_allclose(float(got), float(expected), rtol=1e-6)
+    fixed = Model(str(tmp_path / "f"), scale=2, num_res_blocks=1, asinh_knees=KNEES,
+                  output_knee=10.0)
+    y = tf.asinh(hr_e * 1.1 / 10.0)
+    np.testing.assert_allclose(float(fixed._member_loss("l2", "balanced")(y, target)),
+                               float(expected), rtol=1e-4)

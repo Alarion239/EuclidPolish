@@ -44,6 +44,9 @@ from euclid_polish.training.inference import (
     infer_checkpoint_asinh_knees as _infer_asinh_knees,
 )
 from euclid_polish.training.inference import (
+    infer_checkpoint_learned_output_knee as _infer_learned_output_knee,
+)
+from euclid_polish.training.inference import (
     infer_checkpoint_num_res_blocks as _infer_num_res_blocks,
 )
 from euclid_polish.training.inference import (
@@ -62,6 +65,7 @@ from euclid_polish.training.losses import (
     build_loss,
     channel_balanced_loss,
     knee_expanded_loss,
+    knee_stretched_loss,
 )
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
@@ -158,6 +162,7 @@ class Model:
         asinh_knee: float | None = None,
         asinh_knees: Sequence[float] | None = None,
         output_knee: float | None = None,
+        learn_output_knee: bool = False,
         _load_fn: Callable | None = None,
         _reconstruct_fn: Callable | None = None,
     ) -> None:
@@ -185,6 +190,11 @@ class Model:
             raise ValueError("output_knee needs asinh_knees (a multi-knee member)")
         self._output_knee: float | None = (
             float(output_knee) if output_knee is not None else None)
+        # Learned output knee: one trainable knee per band replaces the fixed
+        # ``output_knee``, which is only its starting value; the model then
+        # outputs electrons. Architecture-bound, so a resume/fork reads it
+        # from the checkpoint (below) and only a fresh build uses the flag.
+        self._learn_output_knee = bool(learn_output_knee)
         # ICNR init only shapes a FROM-SCRATCH build (below); fork/resume load
         # weights from a checkpoint, so it has no effect there.
         self._icnr = bool(icnr)
@@ -221,6 +231,10 @@ class Model:
             self._asinh_knee = _infer_asinh_knee(checkpoint_dir)
             self._asinh_knees = _infer_asinh_knees(checkpoint_dir)
             self._output_knee = _infer_output_knee(checkpoint_dir)
+            self._learn_output_knee = (
+                _infer_learned_output_knee(checkpoint_dir) is not None)
+            if self._learn_output_knee:
+                self._output_knee = None
             self.id: ProvId | None = model_id_of_checkpoint(checkpoint_dir)
         elif init_weights_from is not None:
             # Fork: build the new member AS the source model — loading the
@@ -252,6 +266,10 @@ class Model:
                                  f"cannot fork it as {self._asinh_knees}")
             self._asinh_knees = src_knees
             self._output_knee = _infer_output_knee(init_weights_from)
+            self._learn_output_knee = (
+                _infer_learned_output_knee(init_weights_from) is not None)
+            if self._learn_output_knee:
+                self._output_knee = None
             self.id = None
             print(f"  ✓ fork: architecture + weights from {init_weights_from}")
         else:
@@ -262,6 +280,10 @@ class Model:
             # and dies on 4-band data ("expected shape (…, 1), found (…, 4)").
             # Resumed checkpoints introspect their own nchan in load_model_from_
             # checkpoint, so they are unaffected.
+            if self._learn_output_knee and (not self._asinh_knees
+                                            or self._output_knee is None):
+                raise ValueError("learn_output_knee needs asinh_knees and "
+                                 "output_knee (its starting value)")
             n_knees = len(self._asinh_knees) if self._asinh_knees else 1
             single = self._output_knee is not None
             self._tf_model = _wdsr_build(
@@ -269,7 +291,11 @@ class Model:
                 nchan_in=Config.NUM_LR_CHANNELS * n_knees,
                 nchan_out=Config.NUM_HR_CHANNELS * (1 if single else n_knees),
                 input_knees=n_knees if single else 1,
-                icnr=self._icnr)
+                icnr=self._icnr,
+                learned_output_knee=(self._output_knee
+                                     if self._learn_output_knee else None))
+            if self._learn_output_knee:
+                self._output_knee = None     # the knee is learned now
             self.id = None
 
         self._reconstruct_fn: Callable = (
@@ -435,6 +461,23 @@ class Model:
                   .batch(batch_size)
                   .prefetch(AUTOTUNE))
 
+    def _member_loss(self, loss_norm: str, knee_loss: str = "plain"):
+        """The reconstruction loss this member trains under. A multi-knee
+        member's ``knee_loss``: ``plain`` = the loss over all channels at
+        once; ``balanced`` = every channel (band x knee) weighted equally. A
+        single-image member's one output is re-stretched at every knee: from
+        its fixed output knee, or (learned knee) from electrons."""
+        if knee_loss not in KNEE_LOSS_MODES:
+            raise ValueError(f"knee_loss must be one of {KNEE_LOSS_MODES}, got {knee_loss!r}")
+        loss = (channel_balanced_loss(loss_norm)
+                if self._asinh_knees and knee_loss == "balanced"
+                else build_loss(loss_norm))
+        if self._learn_output_knee:
+            return knee_stretched_loss(loss, self._asinh_knees)
+        if self._output_knee is not None:
+            return knee_expanded_loss(loss, self._output_knee, self._asinh_knees)
+        return loss
+
     def train(
         self,
         lr_path: str,
@@ -599,20 +642,12 @@ class Model:
             # Live training draws noise from the code's noise model; record it
             # the same way generated records do.
             provenance_fields["noise_model"] = Config.NOISE_MODEL
-        # A multi-knee member's loss: ``plain`` = the loss over all channels
-        # at once; ``balanced`` = every channel (band x knee) weighted equally.
-        if knee_loss not in KNEE_LOSS_MODES:
-            raise ValueError(f"knee_loss must be one of {KNEE_LOSS_MODES}, got {knee_loss!r}")
-        loss = (channel_balanced_loss(loss_norm)
-                if self._asinh_knees and knee_loss == "balanced"
-                else build_loss(loss_norm))
-        if self._output_knee is not None:
-            # One output image, re-stretched at every knee against the target.
-            loss = knee_expanded_loss(loss, self._output_knee, self._asinh_knees)
+        loss = self._member_loss(loss_norm, knee_loss)
         trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
                           checkpoint_dir=self._checkpoint_dir,
                           loss=loss, knees=self._asinh_knees,
                           output_knee=self._output_knee,
+                          output_electrons=self._learn_output_knee,
                           seed=self._seed, deterministic=self._deterministic,
                           plateau_lr_enabled=plateau_lr_enabled,
                           plateau_lr_factor=plateau_lr_factor,
@@ -643,6 +678,8 @@ class Model:
         the old call and test-injected reconstruct doubles (which take no
         ``knee``) keep working."""
         knees = getattr(self, "_asinh_knees", None)
+        if knees and getattr(self, "_learn_output_knee", False):
+            return {"knees": knees, "output_electrons": True}
         output_knee = getattr(self, "_output_knee", None)
         if knees and output_knee is not None:
             return {"knees": knees, "output_knee": output_knee}
@@ -655,7 +692,9 @@ class Model:
         """Every knee's SR image of a multi-knee member: ``(K, H·scale,
         W·scale, C)`` electrons in knee order (``upsample_array`` returns one
         of them)."""
-        if not getattr(self, "_asinh_knees", None) or getattr(self, "_output_knee", None) is not None:
+        if (not getattr(self, "_asinh_knees", None)
+                or getattr(self, "_output_knee", None) is not None
+                or getattr(self, "_learn_output_knee", False)):
             raise ValueError("upsample_heads needs a multi-knee member with one image per knee")
         return reconstruct_heads(self._tf_model, arr, knees=self._asinh_knees)
 
