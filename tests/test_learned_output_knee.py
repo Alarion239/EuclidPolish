@@ -8,6 +8,7 @@ import tensorflow as tf
 from tf_keras.layers import Input, Lambda
 from tf_keras.models import Model as KerasModel
 
+from euclid_polish.training.augmentation import asinh_stretch_multi_knee, stretch_pair
 from euclid_polish.training.inference import (
     infer_checkpoint_learned_output_knee,
     infer_checkpoint_nchan_in,
@@ -15,6 +16,13 @@ from euclid_polish.training.inference import (
     infer_checkpoint_num_res_blocks,
     load_model_from_checkpoint,
 )
+from euclid_polish.training.losses import (
+    build_loss,
+    channel_balanced_loss,
+    knee_expanded_loss,
+    knee_stretched_loss,
+)
+from euclid_polish.training.models.common import evaluate
 from euclid_polish.training.models.output_knee import (
     KNEE_MAX_E,
     KNEE_MIN_E,
@@ -24,6 +32,7 @@ from euclid_polish.training.models.output_knee import (
     learned_output_knees,
 )
 from euclid_polish.training.models.wdsr import wdsr
+from euclid_polish.training.trainer import Trainer
 
 KNEES = (0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0)
 
@@ -117,3 +126,37 @@ def test_checkpoint_without_the_head_reports_no_learned_knee(tmp_path):
     assert infer_checkpoint_learned_output_knee(d) is None
     assert infer_checkpoint_num_res_blocks(d) == 1
     assert learned_output_knees(load_model_from_checkpoint(d, scale=2, num_res_blocks=1)) is None
+
+
+def test_learned_knee_loss_and_validation_equal_option_2_at_the_initial_knee():
+    rng = np.random.default_rng(3)
+    hr_e = tf.constant(rng.uniform(0.0, 3000.0, (1, 8, 8, 4)).astype(np.float32))
+    target = asinh_stretch_multi_knee(hr_e, KNEES)
+    y = tf.asinh(hr_e / 10.0) + 0.01          # an option-2 output, slightly off
+    x = 10.0 * tf.sinh(y)                     # the same image in electrons
+    for base in (build_loss("l2"), channel_balanced_loss("l2")):
+        np.testing.assert_allclose(float(knee_stretched_loss(base, KNEES)(x, target)),
+                                   float(knee_expanded_loss(base, 10.0, KNEES)(y, target)),
+                                   rtol=1e-4)
+    lr = tf.zeros((1, 4, 4, 24))
+    learned = evaluate(lambda _lr: x, [(lr, target)], knees=KNEES, output_electrons=True)
+    fixed = evaluate(lambda _lr: y, [(lr, target)], knees=KNEES, output_knee=10.0)
+    for key in ("psnr_stretched", "psnr_raw", "mae_stretched"):
+        np.testing.assert_allclose(float(learned[key]), float(fixed[key]), rtol=1e-4)
+
+
+def test_trainer_steps_a_learned_knee_member_and_logs_its_knees(tmp_path, capsys):
+    rng = np.random.default_rng(7)
+    lr_e = tf.constant(rng.uniform(0, 200, (2, 8, 8, 4)).astype(np.float32))
+    hr_e = tf.constant(rng.uniform(0, 200, (2, 16, 16, 4)).astype(np.float32))
+    lr, hr = stretch_pair(lr_e, hr_e, knees=KNEES)
+    model = _learned_wdsr()
+    loss = knee_stretched_loss(channel_balanced_loss("l2"), KNEES)
+    trainer = Trainer(model, loss=loss, learning_rate=1e-2, checkpoint_dir=str(tmp_path),
+                      knees=KNEES, output_electrons=True)
+    before = learned_output_knees(model).copy()
+    value, gnorm = trainer.train_step(lr, hr)
+    assert np.isfinite(float(value)) and np.isfinite(float(gnorm))
+    assert not np.allclose(learned_output_knees(model), before)     # the knee trains
+    assert np.isfinite(trainer._validate(tf.data.Dataset.from_tensors((lr, hr)), 1)["psnr_str"])
+    assert "learned output knee" in capsys.readouterr().out

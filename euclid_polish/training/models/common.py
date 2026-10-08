@@ -5,7 +5,7 @@ import tensorflow as tf
 from tf_keras.initializers import GlorotUniform, Initializer
 
 from euclid_polish.config import Config
-from euclid_polish.training.augmentation import expand_to_knees
+from euclid_polish.training.augmentation import asinh_stretch_multi_knee, expand_to_knees
 
 # PSNR peak references — derived from a mag-17 star's expected electron
 # count over the stacked integration (a "very bright" but plausible source).
@@ -36,13 +36,16 @@ def _to_electrons(stretched: tf.Tensor, knee: float | None = None) -> tf.Tensor:
 
 
 def evaluate(model, dataset, knees: Sequence[float] | None = None,
-             output_knee: float | None = None, knee: float | None = None):
+             output_knee: float | None = None, knee: float | None = None,
+             output_electrons: bool = False):
     """Validation metrics — PSNR in both stretched and raw space.
 
     ``knees`` marks a multi-knee member (channels = knee-major blocks of
     bands, see ``asinh_stretch_multi_knee``); its metrics come from
     :func:`_evaluate_multi_knee`. ``output_knee`` marks one that outputs a
-    single image at that knee, scored at every knee. ``knee`` is a
+    single image at that knee, scored at every knee; ``output_electrons``
+    marks one whose output is already electrons (a learned output knee),
+    stretched at every knee first. ``knee`` is a
     single-knee member's asinh knee (e⁻) — the scale its data were stretched
     with — which ``psnr_raw`` un-stretches with (``None`` → the config
     default, 100 e⁻).
@@ -74,7 +77,8 @@ def evaluate(model, dataset, knees: Sequence[float] | None = None,
                            of the NISP-dominated joint number.
     """
     if knees:
-        return _evaluate_multi_knee(model, dataset, knees, output_knee)
+        return _evaluate_multi_knee(model, dataset, knees, output_knee,
+                                    output_electrons=output_electrons)
     psnr_str_list  = []
     psnr_raw_list  = []
     mae_str_list   = []
@@ -113,7 +117,8 @@ def evaluate(model, dataset, knees: Sequence[float] | None = None,
 
 
 def _evaluate_multi_knee(model, dataset, knees: Sequence[float],
-                         output_knee: float | None = None) -> dict:
+                         output_knee: float | None = None,
+                         output_electrons: bool = False) -> dict:
     """Validation metrics for a multi-knee member.
 
     Every channel (band x knee) is scored on its own, against its knee's
@@ -127,7 +132,9 @@ def _evaluate_multi_knee(model, dataset, knees: Sequence[float],
     ``psnr_raw`` scores, in electrons, the head whose knee is nearest the
     per-band default; ``mae_stretched`` is the plain mean absolute error over
     every channel (the loss track's metric). A single-image member
-    (``output_knee``) has its one image re-stretched at every knee first.
+    (``output_knee``) has its one image re-stretched at every knee first; a
+    member whose output is electrons (``output_electrons``) is stretched at
+    every knee first.
     """
     n_k = len(knees)
     peaks = tf.constant([math.asinh(float(Config.PSNR_PEAK_E) / float(q)) for q in knees],
@@ -139,7 +146,9 @@ def _evaluate_multi_knee(model, dataset, knees: Sequence[float],
     channel_list, mae_list, raw_list = [], [], []
     for lr, hr in dataset:
         sr = model(lr)
-        if output_knee is not None:
+        if output_electrons:
+            sr = asinh_stretch_multi_knee(sr, knees)
+        elif output_knee is not None:
             sr = expand_to_knees(sr, output_knee, knees)
         c = int(hr.shape[-1]) // n_k
         shape = tf.shape(hr)

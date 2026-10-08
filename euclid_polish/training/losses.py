@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import tensorflow as tf
 
-from euclid_polish.training.augmentation import expand_to_knees
+from euclid_polish.training.augmentation import asinh_stretch_multi_knee, expand_to_knees
 from euclid_polish.training.loss_names import (  # noqa: F401  (re-exported)
     BERHU_DEFAULT_C,
     KNEE_LOSS_MODES,
@@ -125,4 +125,15 @@ def knee_expanded_loss(loss, output_knee: float, knees):
     channel-balanced); signature ``loss(sr, hr)``."""
     def _loss(sr, hr):
         return loss(expand_to_knees(sr, output_knee, knees), hr)
+    return _loss
+
+
+def knee_stretched_loss(loss, knees):
+    """Loss of a member that outputs ELECTRONS (a learned output knee): its
+    output is stretched at every knee and compared, channel for channel, with
+    the knee-major multi-knee target by ``loss`` (plain or channel-balanced);
+    signature ``loss(sr, hr)``. With the head's knee at ``k`` this is
+    :func:`knee_expanded_loss` at output knee ``k``."""
+    def _loss(sr, hr):
+        return loss(asinh_stretch_multi_knee(sr, knees), hr)
     return _loss

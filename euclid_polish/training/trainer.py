@@ -27,6 +27,7 @@ from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ConfigSnapshot, Process, Stamp
 from euclid_polish.training.inference import infer_checkpoint_asinh_knee
 from euclid_polish.training.models.common import evaluate
+from euclid_polish.training.models.output_knee import learned_output_knees
 from euclid_polish.training.plateau import PlateauLRReducer
 
 
@@ -240,6 +241,7 @@ class Trainer:
         provenance_fields: dict[str, object] | None = None,
         knees: Sequence[float] | None = None,
         output_knee: float | None = None,
+        output_electrons: bool = False,
         asinh_knee: float | None = None,
     ):
         """
@@ -292,6 +294,9 @@ class Trainer:
         # A single-image multi-knee member: its one output, stretched at this
         # knee, is re-stretched at every knee for validation.
         self._output_knee = float(output_knee) if output_knee is not None else None
+        # A member whose output is electrons (a learned output knee): its
+        # output is stretched at every knee for validation.
+        self._output_electrons = bool(output_electrons)
         # A single-knee member's stretch knee, for un-stretching psnr_raw.
         if asinh_knee is None:
             asinh_knee = infer_checkpoint_asinh_knee(checkpoint_dir)
@@ -517,6 +522,11 @@ class Trainer:
             tqdm.write("  per-knee PSNR (dB): " + " | ".join(
                 f"{q:g} e⁻ {float(v):.2f}"
                 for q, v in zip(self._knees, knee_vals.numpy(), strict=True)))
+        learned = learned_output_knees(self.checkpoint.model)
+        if learned is not None:
+            tqdm.write("  learned output knee (e⁻): " + " | ".join(
+                f"{band} {float(q):.3g}" for band, q in
+                zip(Config.HR_TARGET_BAND_NAMES, learned, strict=False)))
 
         return {
             "psnr_str":      psnr_str,
@@ -1069,7 +1079,8 @@ class Trainer:
         """
         if self._knees:
             return evaluate(self.checkpoint.model, dataset, knees=self._knees,
-                            output_knee=self._output_knee)
+                            output_knee=self._output_knee,
+                            output_electrons=self._output_electrons)
         return evaluate(self.checkpoint.model, dataset, knee=self._asinh_knee)
 
     def restore(self, track: str = "latest"):
