@@ -10,6 +10,8 @@ import tensorflow as tf
 from tf_keras.layers import Input, Lambda, UpSampling2D
 from tf_keras.models import Model as KerasModel
 
+from euclid_polish import ensemble as ens_mod
+from euclid_polish.ensemble import EnsembleModel, MemberTrainSpec
 from euclid_polish.model import Model
 from euclid_polish.training.augmentation import asinh_stretch_multi_knee, stretch_pair
 from euclid_polish.training.inference import (
@@ -17,6 +19,7 @@ from euclid_polish.training.inference import (
     infer_checkpoint_nchan_in,
     infer_checkpoint_nchan_out,
     infer_checkpoint_num_res_blocks,
+    infer_checkpoint_output_knee,
     load_model_from_checkpoint,
     reconstruct,
 )
@@ -37,6 +40,7 @@ from euclid_polish.training.models.output_knee import (
 )
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import Trainer
+from scripts.train_ensemble import build_specs, parse_args
 
 KNEES = (0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0)
 
@@ -236,3 +240,58 @@ def test_learned_knee_member_trains_under_the_stretched_loss(tmp_path):
     y = tf.asinh(hr_e * 1.1 / 10.0)
     np.testing.assert_allclose(float(fixed._member_loss("l2", "balanced")(y, target)),
                                float(expected), rtol=1e-4)
+
+
+class _LearnedKneeModel:
+    """Model stand-in for train_members that resolves the knobs like Model."""
+
+    def __init__(self, checkpoint_dir, *, scale=2, num_res_blocks=32, seed=None,
+                 init_weights_from=None, icnr=False, asinh_knee=None, asinh_knees=None,
+                 output_knee=None, learn_output_knee=False):
+        self._num_res_blocks = num_res_blocks
+        self._asinh_knee = asinh_knee
+        self._asinh_knees = tuple(asinh_knees) if asinh_knees else None
+        self._learn_output_knee = bool(learn_output_knee)
+        self._output_knee = None if learn_output_knee else output_knee
+        self.trained: dict = {}
+
+    def train(self, lr, hr, **kwargs):
+        self.trained = kwargs
+
+
+def test_train_members_records_a_learned_knee_without_an_output_knee(tmp_path, monkeypatch):
+    monkeypatch.setattr(ens_mod, "Model", _LearnedKneeModel)
+    base = tmp_path / "ensemble"
+    spec = MemberTrainSpec(name="member_206", seed=1, target_steps=10, run_steps=10,
+                           loss_norm="l2", asinh_knees=KNEES, knee_loss="balanced",
+                           output_knee=10.0, learn_output_knee=True)
+    EnsembleModel(str(base), _models=[]).train_members("lr", "hr", [spec])
+    origin = json.loads((base / "member_206" / "origin.json").read_text())
+    assert origin["learned_output_knee"] == {"init_e": 10.0, "min_e": 0.1, "max_e": 10000.0}
+    assert "output_knee" not in origin
+    assert infer_checkpoint_output_knee(str(base / "member_206")) is None
+
+
+def test_member_spec_makes_a_learned_knee_member(tmp_path):
+    member = {"asinh_knees": list(KNEES), "output_knee": 10, "knee_loss": "balanced",
+              "learn_output_knee": True}
+    args = parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([member])])
+    spec = build_specs(args, str(tmp_path / "ens"))[0]
+    assert spec.learn_output_knee and spec.output_knee == 10.0
+    run_wide = parse_args(["--count", "1", "--steps", "10", "--asinh-knees", "0.1,1,10",
+                           "--output-knee", "10", "--learn-output-knee"])
+    assert build_specs(run_wide, str(tmp_path / "ens2"))[0].learn_output_knee
+    plain = parse_args(["--count", "1", "--steps", "10"])
+    assert not build_specs(plain, str(tmp_path / "ens3"))[0].learn_output_knee
+
+
+@pytest.mark.parametrize("member", [
+    {"asinh_knees": list(KNEES), "learn_output_knee": True},                      # no starting knee
+    {"output_knee": 10, "learn_output_knee": True},                               # not multi-knee
+    {"asinh_knees": list(KNEES), "output_knee": 1e5, "learn_output_knee": True},  # outside the bounds
+    {"asinh_knees": list(KNEES), "output_knee": 10, "learn_output_knee": 1},      # not a bool
+])
+def test_member_spec_rejects_bad_learned_knee_settings(member, tmp_path):
+    args = parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([member])])
+    with pytest.raises(SystemExit):
+        build_specs(args, str(tmp_path / "ens"))

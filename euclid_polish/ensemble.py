@@ -49,6 +49,7 @@ from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
 )
+from euclid_polish.training.models.output_knee import KNEE_MAX_E, KNEE_MIN_E
 from euclid_polish.training.target_blur import (
     blur_target_array,
     validate_target_fwhm_arcsec,
@@ -168,6 +169,10 @@ class MemberTrainSpec:
     #: A multi-knee member that outputs ONE image, stretched at this knee and
     #: scored at every knee (``None`` → one image per knee).
     output_knee: float | None = None
+    #: Learn the single-image member's output knee, one value per band
+    #: (``output_knee`` is its starting value; the model outputs electrons).
+    #: A NEW-member (add) knob; continue/fork read it from the checkpoint.
+    learn_output_knee: bool = False
     #: How a multi-knee member combines its channels' errors ("plain" |
     #: "balanced", see ``training.losses.channel_balanced_loss``).
     knee_loss: str = "plain"
@@ -394,6 +399,8 @@ class EnsembleModel:
                 model_kwargs["asinh_knees"] = spec.asinh_knees
             if spec.output_knee is not None:
                 model_kwargs["output_knee"] = spec.output_knee
+            if spec.learn_output_knee:
+                model_kwargs["learn_output_knee"] = True
             m = Model(d, **model_kwargs)
             if created and spec.op in ("add", "fork"):
                 commit = (capture_git() or {}).get("short")
@@ -445,6 +452,14 @@ class EnsembleModel:
                     output_knee = getattr(m, "_output_knee", spec.output_knee)
                     if output_knee is not None:
                         origin["output_knee"] = float(output_knee)
+                    if getattr(m, "_learn_output_knee", False):
+                        # No ``output_knee`` key: code unaware of the learned
+                        # head would apply k·sinh to electrons; without the
+                        # key it fails loudly instead.
+                        origin["learned_output_knee"] = {
+                            "init_e": (float(spec.output_knee)
+                                       if spec.output_knee is not None else None),
+                            "min_e": KNEE_MIN_E, "max_e": KNEE_MAX_E}
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval

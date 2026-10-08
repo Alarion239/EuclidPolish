@@ -55,6 +55,7 @@ from euclid_polish.training.forward_onthefly import (  # noqa: E402
 )
 from euclid_polish.training.inference import checkpoint_step  # noqa: E402
 from euclid_polish.training.loss_names import KNEE_LOSS_MODES, LOSS_NAMES  # noqa: E402
+from euclid_polish.training.models.output_knee import KNEE_MAX_E, KNEE_MIN_E  # noqa: E402
 from euclid_polish.training.staging import stage_records  # noqa: E402
 from euclid_polish.training.target_blur import (  # noqa: E402
     validate_target_fwhm_arcsec,
@@ -212,6 +213,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="With --asinh-knees: output ONE image, stretched at "
                         "this knee (e⁻), scored at every knee against the "
                         "multi-knee target, instead of one image per knee.")
+    p.add_argument("--learn-output-knee", action="store_true",
+                   help="With --asinh-knees and --output-knee: learn the "
+                        "output knee during training, one value per band, "
+                        "starting at --output-knee (inside 0.1–10⁴ e⁻); the "
+                        "member then outputs electrons. ADD members only; "
+                        "continue/fork read it from the checkpoint. Member-"
+                        "spec key: learn_output_knee (true/false).")
     p.add_argument("--knee-loss", choices=KNEE_LOSS_MODES, default="plain",
                    help="How a multi-knee member combines its channels' "
                         "errors: 'plain' = the --loss over all channels at "
@@ -396,7 +404,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "saturation_mask_prob",
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
-               "output_knee"}
+               "output_knee", "learn_output_knee"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -453,6 +461,19 @@ def _diversity_kwargs(args, over: dict) -> dict:
         if output_knee <= 0:
             print(f"✗ output_knee must be positive, got {output_knee!r}")
             raise SystemExit(2)
+    learn = over.get("learn_output_knee", args.learn_output_knee)
+    if not isinstance(learn, bool):
+        print(f"✗ learn_output_knee must be true or false, got {learn!r}")
+        raise SystemExit(2)
+    if learn:
+        if output_knee is None:
+            print("✗ learn_output_knee needs asinh_knees and output_knee "
+                  "(its starting value)")
+            raise SystemExit(2)
+        if not KNEE_MIN_E < output_knee < KNEE_MAX_E:
+            print(f"✗ a learned output knee must start inside "
+                  f"({KNEE_MIN_E:g}, {KNEE_MAX_E:g}) e⁻, got {output_knee:g}")
+            raise SystemExit(2)
     saturation_mask_prob = float(over.get(
         "saturation_mask_prob", args.saturation_mask_prob,
     ))
@@ -467,6 +488,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "asinh_knee": (float(knee) if knee not in (None, "", 0) else None),
             "asinh_knees": knees,
             "output_knee": output_knee,
+            "learn_output_knee": learn,
             "knee_loss": str(over.get("knee_loss", args.knee_loss)),
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
@@ -791,6 +813,8 @@ def main() -> int:
                       + f"e knee_loss={s.knee_loss}")
             if s.output_knee is not None:
                 knobs += f" output_knee={s.output_knee:g}e"
+                if s.learn_output_knee:
+                    knobs += " (learned)"
         if s.noise_aug:
             knobs += f" noise_aug={s.noise_aug:g}"
         if s.bootstrap:
