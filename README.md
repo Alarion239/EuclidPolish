@@ -542,6 +542,10 @@ float32 electrons and can be negative. Each `tf.train.Example` carries `image`, 
     100 e⁻.
   - *Option 2* (`--output-knee 10`) predicts one 4-band image that is re-stretched at every knee
     for the loss. Option-2 members are currently the best single members.
+  - *Learned output knee* (`--learn-output-knee`, with option 2): the output knee becomes one
+    trainable value per band, starting at `--output-knee` and bounded to 0.1–10⁴ e⁻, and the
+    member outputs electrons. The knees are printed at every validation and live in the
+    checkpoint; `origin.json` records `learned_output_knee` instead of `output_knee`.
   - `--knee-loss balanced` takes the geometric mean of the per-channel losses.
 
 ### 8.3 Losses, schedule and guards
