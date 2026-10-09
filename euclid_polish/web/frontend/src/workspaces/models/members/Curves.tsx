@@ -4,9 +4,11 @@
    its own plot) and the gradient norm, with the target-steps guide (70k).
    Coloured by training knee by default (loss / depth / multi-knee /
    uniform); the legend toggles a group everywhere; the members picked on the
-   roster are highlighted (?sel=). Wall time per step lives in Runs ›
-   History. Everything is in the URL. */
-import { useMemo } from "react";
+   roster are highlighted (?sel=). Members not pulled yet come live from
+   their jobs on FASRC (dashed; the page refreshes every 30 s while one
+   trains). Wall time per step lives in Runs › History. Everything is in the
+   URL. */
+import { useMemo, useState } from "react";
 import Plot, { Legend, useLegend, type Guide, type Series } from "../../../charts/Plot";
 import { C } from "../../../colors";
 import { usePageActions } from "../../../app/palette";
@@ -14,7 +16,7 @@ import { useUrlState } from "../../../hooks/useUrlState";
 import {
   Button, Chip, EmptyState, Segmented, Select, Switch, Toolbar, ToolbarGroup, ToolbarSpacer,
 } from "../../../ui";
-import { BAND_SHORT, BANDS, useCurves, type Curve } from "../api";
+import { BAND_SHORT, BANDS, isTraining, useCurves, type Curve } from "../api";
 import { ColorBySelect, LoadState, openMember, useFacetColors } from "../common";
 import { facetOf, kneeText, lossFacets, memberNumber, smooth, xy, type ColorBy } from "../model";
 
@@ -46,8 +48,15 @@ function commonTarget(curves: readonly Curve[]): number | null {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
 
+/** Refresh period while a member trains on FASRC (the server caches 20 s). */
+const LIVE_POLL_MS = 30_000;
+
+/** "live" for a member still training on FASRC, "on FASRC" for one finished but not pulled. */
+const remoteTag = (c: Curve) => (c.remote ? (c.finished ? "on FASRC" : "live") : null);
+
 export function Curves() {
-  const res = useCurves();
+  const [poll, setPoll] = useState<number | undefined>();
+  const res = useCurves(poll);
   // ?layout= as the old Curves tab wrote it (its "grid" and "time" read as All).
   const [show, setShow] = useUrlState<Show>("layout", "all", { parse: parseShow });
   const [colorBy, setColorBy] = useUrlState<ColorBy>("color", "knee");
@@ -58,6 +67,9 @@ export function Curves() {
   const lg = useLegend();
 
   const all = useMemo(() => (res.data?.members ?? []).filter((c) => !c.starless), [res.data]);
+  const remote = useMemo(() => all.filter((c) => c.remote), [all]);
+  const wantPoll = remote.some(isTraining) ? LIVE_POLL_MS : undefined;
+  if (wantPoll !== poll) setPoll(wantPoll);
   const sel = useMemo(() => new Set(selRaw.split(",").map((s) => memberNumber(s)).filter(Boolean) as string[]), [selRaw]);
   const shown = useMemo(() => (onlySel && sel.size ? all.filter((c) => sel.has(memberNumber(c.name) ?? "")) : all), [all, onlySel, sel]);
   const colors = useFacetColors(shown, colorBy);
@@ -89,10 +101,13 @@ export function Curves() {
       if (!x.length) continue;
       xMax = Math.max(xMax, x[x.length - 1]);
       const picked = sel.has(memberNumber(c.name) ?? "");
+      const tag = remoteTag(c);
       series.push({
         x, y: smooth(y, w), color: colors.of(c),
         width: picked ? 2.4 : 1.2, alpha: sel.size && !picked ? 0.35 : 0.9,
-        name: `#${memberNumber(c.name)} · ${c.loss_norm.toUpperCase()} · ${kneeText(c).text}`,
+        dash: tag ? [5, 3] : undefined,
+        name: `#${memberNumber(c.name)} · ${c.loss_norm.toUpperCase()} · ${kneeText(c).text}`
+          + `${c.blocks && c.blocks !== 32 ? ` · depth ${c.blocks}` : ""}${tag ? ` · ${tag}` : ""}`,
         key: facetOf(c, colorBy),
       });
     }
@@ -107,6 +122,7 @@ export function Curves() {
   ]);
 
   const members = [...sel];
+  const toggleSel = (n: string) => setSelRaw((sel.has(n) ? members.filter((m) => m !== n) : [...members, n]).join(","));
   return (
     <div className="mdl-stack">
       <Toolbar label="Curve controls">
@@ -134,6 +150,20 @@ export function Curves() {
           <EmptyState icon="activity" title="No training logs">Pull members from FASRC to see their curves.</EmptyState>
         )}>
         <div className="mdl-stack">
+          {remote.length > 0 && (
+            <div className="mdl-row" aria-label="Members on FASRC">
+              <span className="mdl-faint">Not pulled yet (dashed, from FASRC{wantPoll ? ", refreshing every 30 s" : ""}):</span>
+              {remote.map((c) => {
+                const n = memberNumber(c.name) ?? "";
+                return (
+                  <Chip key={c.name} on={sel.has(n)} dot={colors.of(c)} onClick={() => toggleSel(n)}
+                    title={`SLURM job ${c.jobid ?? "?"} — click to highlight`}>
+                    #{n} · {remoteTag(c)} · step {kfmt(c.last_step ?? 0)}{c.target_steps ? ` / ${kfmt(c.target_steps)}` : ""}
+                  </Chip>
+                );
+              })}
+            </div>
+          )}
           <Legend items={colors.legend} {...lg.legendProps} />
           <div className={plots.length > 1 ? "mdl-charts" : undefined}>
             {plots.map((p) => (

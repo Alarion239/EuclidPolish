@@ -14,7 +14,11 @@ export type Band = (typeof BANDS)[number];
 export const BAND_SHORT: Record<string, string> = { VIS: "VIS", Y_E: "Y", J_E: "J", H_E: "H" };
 
 export type Series2 = [number, number][];
-export type KneeInfo = { asinh_knee?: number | null; asinh_knees?: number[] | null; output_knee?: number | null; knee_loss?: string | null };
+export type KneeInfo = {
+  asinh_knee?: number | null; asinh_knees?: number[] | null; output_knee?: number | null; knee_loss?: string | null;
+  /** One output image whose knee is learned per band (no fixed `output_knee`). */
+  learned_output_knee?: boolean | null;
+};
 
 /* ── overview.json ─────────────────────────────────────────────────────── */
 export type Check = { id: string; ok: boolean; tone: "good" | "warn" | "bad" | "info"; title: string; detail: string; action?: string | null };
@@ -101,7 +105,14 @@ export type Curve = MemberCurves & KneeInfo & {
   /** training-curves.json lists every active member, a legacy starless one too (Curves drops it). */
   name: string; label: string; starless: boolean; loss_norm: string; blocks?: number | null;
   target_steps?: number | null; test_psnr?: number | null;
+  /** Not pulled yet: the curve comes live from its job's event stream on FASRC. */
+  remote?: boolean; jobid?: string; last_step?: number | null;
+  /** A remote member that reached its target steps (pull it to keep its curve). */
+  finished?: boolean;
 };
+
+/** A member still training on FASRC (its curve grows while the page polls). */
+export const isTraining = (c: Curve) => !!c.remote && !c.finished;
 
 /* ── knee-psnr.json ────────────────────────────────────────────────────── */
 export type KneePayload = {
@@ -270,7 +281,9 @@ export const url = {
 const MIN = 60_000;
 export const useOverview = () => useResource<Overview>(url.overview(), [], { ttl: 30_000 });
 export const useMembers = () => useResource<MembersPayload>(url.members(), [], { ttl: 30_000 });
-export const useCurves = () => useResource<{ members: Curve[] }>(url.curves(), [], { ttl: 2 * MIN });
+/** `poll` (ms) refetches while a member trains on FASRC. */
+export const useCurves = (poll?: number) =>
+  useResource<{ members: Curve[] }>(url.curves(), [], { ttl: poll ? 20_000 : 2 * MIN, poll });
 export const useKnee = () => useResource<KneePayload>(url.knee(), [], { ttl: MIN });
 export const useCombiners = () => useResource<CombinersPayload>(url.combiners(), [], { ttl: 30_000 });
 export const useTrainingJobs = () => useResource<{ jobs: TrainingJob[] }>(url.trainingJobs(), [], { ttl: MIN });

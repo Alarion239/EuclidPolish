@@ -3,7 +3,8 @@
  *   <SlurmMonitor jobid compact?> — polls /api/fasrc/jobs/<jobid>/status and
  *     folds the Reporter event stream into stage, progress ("step 10,650 /
  *     70,000 (15%)", once), GPU / CPU %, warnings/errors and one card per
- *     array task; the full form adds cancel (confirmed), the ledger's
+ *     array task (in the full form, each task's live training curves under
+ *     the cards); the full form adds cancel (confirmed), the ledger's
  *     resource use once the job has finished, and links to its logs and its
  *     row in Runs › History;
  *   <JobStatusBody status> — that status body alone;
@@ -83,7 +84,8 @@ export function JobStatusBody({ status }: { status?: SlurmStatus | null }) {
   );
 }
 
-function ArrayTasks({ tasks, count, maxParallel }: { tasks: ArrayTask[]; count: number; maxParallel?: number }) {
+function ArrayTasks({ tasks, count, maxParallel, curves = false }:
+  { tasks: ArrayTask[]; count: number; maxParallel?: number; curves?: boolean }) {
   return (
     <div className="ops-mon__tasks">
       <div className="ops-mon__caption">{count} array tasks{maxParallel ? ` · ≤ ${maxParallel} at once` : ""}</div>
@@ -97,6 +99,9 @@ function ArrayTasks({ tasks, count, maxParallel }: { tasks: ArrayTask[]; count: 
           {t.reason && t.state === "PENDING" && <div className="ops-dim">{t.reason}</div>}
           <JobStatusBody status={t.status} />
         </div>
+      ))}
+      {curves && tasks.filter((t) => curveRecords(t.status?.metrics).length > 0).map((t) => (
+        <TrainingCurve key={t.index} title={`Training curves · ${t.member}`} eventRecords={t.status?.metrics} startedAt={1} />
       ))}
     </div>
   );
@@ -161,7 +166,7 @@ export function SlurmMonitor({ jobid, compact = false }: { jobid: string; compac
         <div className="ops-dim ops-small">No Reporter events yet.</div>
       )}
       <JobStatusBody status={d.status} />
-      {d.array && <ArrayTasks tasks={tasks} count={d.array.count} maxParallel={d.array.max_parallel} />}
+      {d.array && <ArrayTasks tasks={tasks} count={d.array.count} maxParallel={d.array.max_parallel} curves={!compact} />}
       {!compact && (
         <>
           {/* the ledger's numbers are final only once the job has ended */}
@@ -186,10 +191,11 @@ type CurveMetric = "psnr" | "loss";
 const BANDS: [keyof CurveRec, string][] = [["psnr_vis", "VIS"], ["psnr_y_e", "Y_E"], ["psnr_j_e", "J_E"], ["psnr_h_e", "H_E"]];
 
 /** Per-step validation PSNR / loss of a run: the Reporter metric events when
- *  present (live), else the run's wall-time window of the training log. */
+ *  present (live), else the run's wall-time window of the training log.
+ *  `title` names it (an array task's curve names its member). */
 export function TrainingCurve(
-  { startedAt, endedAt, stepId, eventRecords }:
-  { startedAt?: number; endedAt?: number; stepId?: string | null; eventRecords?: CurveRec[] },
+  { startedAt, endedAt, stepId, eventRecords, title = "Training curves" }:
+  { startedAt?: number; endedAt?: number; stepId?: string | null; eventRecords?: CurveRec[]; title?: string },
 ) {
   const [metric, setMetric] = useState<CurveMetric>("psnr");
   const theme = useResolvedTheme();
@@ -222,9 +228,9 @@ export function TrainingCurve(
   }, [recs, metric, theme]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!startedAt) return null;
   return (
-    <section className="ops-curve" aria-label="Training curves">
+    <section className="ops-curve" aria-label={title}>
       <div className="ops-curve__head">
-        <strong>Training curves</strong>
+        <strong>{title}</strong>
         <span className="ops-dim ops-small">{live.length ? "live events" : file.data?.member || ""}</span>
         <span className="ops-spacer" />
         <Segmented<CurveMetric> size="sm" value={metric} onChange={setMetric} aria-label="Curve metric"

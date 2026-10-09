@@ -85,6 +85,8 @@
 .ops-mon__events--warn { color: var(--warn); }
 .ops-mon__events--err { color: var(--bad); }
 .ops-mon__tasks { display: grid; gap: var(--s2); grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+/* each task's training curves run the full width under the task cards */
+.ops-mon__tasks > .ops-curve { grid-column: 1 / -1; }
 .ops-mon__caption { grid-column: 1 / -1; font-size: var(--fs-xs); color: var(--text-dim); }
 .ops-mon__task {
   display: flex; flex-direction: column; gap: 4px; padding: var(--s2);

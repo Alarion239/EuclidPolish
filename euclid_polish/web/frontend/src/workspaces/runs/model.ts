@@ -318,10 +318,12 @@ export function jobLabel(row: ParamsCarrier & { label?: string | null; step_id?:
 /* ── progress ─────────────────────────────────────────────────────────────── */
 
 /** "step 10,650 / 70,000 (15%)": the unit word once (a Reporter label like
- *  "step 10650" keeps only its word), the counts grouped, the share rounded. */
+ *  "step 10650" keeps only its word; a training member's "member_207 (1/1) ·
+ *  step 22650" keeps its name), the counts grouped, the share rounded. */
 export function progressText(step: { current: number; total: number; label?: string | null } | null | undefined): string {
   if (!step || !(step.total > 0)) return "";
-  const word = String(step.label ?? "").trim().split(/\s+/)[0]?.replace(/[^\p{L}_-]+/gu, "") || "step";
+  const first = String(step.label ?? "").trim().split(/\s+/)[0]?.replace(/[^\p{L}\p{N}_-]+/gu, "") ?? "";
+  const word = /\p{L}/u.test(first) ? first : "step";
   const pct = Math.round((100 * Math.max(0, Math.min(step.current, step.total))) / step.total);
   return `${word} ${formatCount(step.current)} / ${formatCount(step.total)} (${pct}%)`;
 }

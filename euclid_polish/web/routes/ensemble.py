@@ -53,6 +53,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     training_jobs,
     variant_dir,
 )
+from euclid_polish.web.helpers.remote_curves import remote_training_curves
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.security import (
     fresh_requested,
@@ -312,10 +313,15 @@ def register(app):
     @app.route("/ensemble/training-curves.json")
     def ensemble_training_curves_json():
         """Per-member training series (rollback-deduped) for the in-browser
-        charts — registry-active members only: joint + per-band PSNR, the
-        loss series, gradient norm and step time, with the facets the lines
-        colour by. Empty ``members`` → the client shows an empty state."""
-        return jsonify({"members": training_curves_payload()})
+        charts — registry-active members: joint + per-band PSNR, the loss
+        series, gradient norm and step time, with the facets the lines colour
+        by — then the members of recent training jobs that are not pulled yet
+        (``remote``: training or finished on FASRC), read live from their
+        event streams. Empty ``members`` → the client shows an empty state."""
+        registry = ensemble_registry.load_registry(ensemble_dir())
+        remote = remote_training_curves(
+            registry["active"], [str(t.get("name")) for t in registry["archived"]])
+        return jsonify({"members": training_curves_payload() + remote})
 
     @app.route("/ensemble/evals.json")
     def ensemble_evals_json():

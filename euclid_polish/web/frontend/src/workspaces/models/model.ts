@@ -64,7 +64,8 @@ export type KneeKind = "multi" | "single" | "default";
 
 /** How a member was trained with respect to the asinh knee:
  *  multi-knee members read "multi ×6 → 10" (one output image scored at every
- *  knee, stretched at 10 e⁻) or "multi ×6 heads" (one image per knee) — never
+ *  knee, stretched at 10 e⁻), "multi ×6 → learned" (one image whose knee is
+ *  learned per band) or "multi ×6 heads" (one image per knee) — never
  *  the "100e" the old table showed; single-knee members their knee; members
  *  without a knee the per-band default. */
 export function kneeText(m: KneeInfo): { text: string; kind: KneeKind; title: string; sort: number } {
@@ -75,6 +76,10 @@ export function kneeText(m: KneeInfo): { text: string; kind: KneeKind; title: st
     if (m.output_knee != null) {
       return { text: `multi ×${knees.length} → ${knum(m.output_knee)}`, kind: "multi", sort: 1e6 + m.output_knee,
         title: `Trained at ${knees.length} knees (${span}) at once${loss}; one output image stretched at ${knum(m.output_knee)} e⁻` };
+    }
+    if (m.learned_output_knee) {
+      return { text: `multi ×${knees.length} → learned`, kind: "multi", sort: 1.5e6,
+        title: `Trained at ${knees.length} knees (${span}) at once${loss}; one output image, its knee learned per band` };
     }
     return { text: `multi ×${knees.length} heads`, kind: "multi", sort: 2e6,
       title: `Trained at ${knees.length} knees (${span})${loss}; one output image per knee` };
@@ -104,7 +109,8 @@ export function facetOf(m: FacetSource, by: ColorBy): string {
     case "knee": return kneeText(m).text;
     case "multi": {
       const k = kneeText(m);
-      return k.kind === "multi" ? (m.output_knee != null ? "multi-knee, 1 image" : "multi-knee, heads") : "single knee";
+      const oneImage = m.output_knee != null || !!m.learned_output_knee;
+      return k.kind === "multi" ? (oneImage ? "multi-knee, 1 image" : "multi-knee, heads") : "single knee";
     }
     default: return "members";
   }

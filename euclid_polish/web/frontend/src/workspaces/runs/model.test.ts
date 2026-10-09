@@ -171,6 +171,9 @@ describe("progress", () => {
   it("says the step once with its share", () => {
     expect(progressText({ current: 10650, total: 70000, label: "step 10650" })).toBe("step 10,650 / 70,000 (15%)");
     expect(progressText({ current: 3, total: 12, label: "tile" })).toBe("tile 3 / 12 (25%)");
+    expect(progressText({ current: 22650, total: 200000, label: "member_207 (1/1) · step 22650" }))
+      .toBe("member_207 22,650 / 200,000 (11%)");
+    expect(progressText({ current: 7, total: 10, label: "10650" })).toBe("step 7 / 10 (70%)");
     expect(progressText({ current: 5, total: 10 })).toBe("step 5 / 10 (50%)");
     expect(progressText({ current: 5, total: 0 })).toBe("");
     expect(progressText(null)).toBe("");

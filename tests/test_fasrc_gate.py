@@ -281,6 +281,8 @@ GRACEFUL = {
                          "fasrc_offline"),
     "api_study_delete": ("local delete; a study with holylabs fields answers 409 unless "
                          "local_only=1 while offline"),
+    "ensemble_training_curves_json": ("the pulled members' curves are local; members "
+                                      "still on FASRC are simply left out offline"),
 }
 
 _SSH_METHODS = {"run", "stream", "rsync_pull", "rsync_push", "write_text"}

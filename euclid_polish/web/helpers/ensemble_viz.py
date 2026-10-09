@@ -128,6 +128,7 @@ from euclid_polish.web import fasrc_config, fasrc_jobs, job_config
 from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.purge_requests import request_stale_purge
+from euclid_polish.web.helpers.remote_curves import series_from_records
 from euclid_polish.web.remote import STATE
 
 
@@ -2575,7 +2576,8 @@ def compute_knee_psnr_payload(starless: bool, *, force: bool = False,
             entry.update(kind="member", label=labels[m], loss=meta.get("loss"),
                          asinh_knee=meta.get("asinh_knee"), blocks=meta.get("blocks"),
                          asinh_knees=meta.get("asinh_knees"),
-                         output_knee=meta.get("output_knee"))
+                         output_knee=meta.get("output_knee"),
+                         learned_output_knee=bool(meta.get("learned_output_knee")))
         elif model_id == "ensemble_mean":
             entry.update(kind="mean", label="ensemble mean")
         else:
@@ -3393,10 +3395,11 @@ def _iter_cached_field_bands(starless: bool, bands: tuple[int, ...]):
 
 def _member_meta_from_labels(labels) -> list[dict]:
     """Per-member ``{"loss", "blocks", "asinh_knee", "asinh_knees",
-    "output_knee", "step", "psnr"}`` for line coloring (loss / depth / knee /
-    test-PSNR gradient), positional with ``labels`` ("NN·psnr" → member_NN).
-    ``asinh_knees`` marks a multi-knee member (``output_knee`` set: one image
-    out; unset: one image per knee)."""
+    "output_knee", "learned_output_knee", "step", "psnr"}`` for line coloring
+    (loss / depth / knee / test-PSNR gradient), positional with ``labels``
+    ("NN·psnr" → member_NN). ``asinh_knees`` marks a multi-knee member
+    (``output_knee`` set or ``learned_output_knee``: one image out; neither:
+    one image per knee)."""
     base = ensemble_dir()
     rdir = _sky_records_local_dir()
     sub = eval_subset(rdir) if rdir else "test"
@@ -3413,6 +3416,7 @@ def _member_meta_from_labels(labels) -> list[dict]:
                      "asinh_knee": (origin or {}).get("asinh_knee"),
                      "asinh_knees": (origin or {}).get("asinh_knees"),
                      "output_knee": (origin or {}).get("output_knee"),
+                     "learned_output_knee": bool((origin or {}).get("learned_output_knee")),
                      "step": _member_last_step(d),
                      "psnr": (entry or {}).get("psnr")})
     return meta
@@ -3658,9 +3662,6 @@ def job_ensemble_pull(cap, *, members: list[str] | None = None,
 # staleness, archived members (restore from zip) and the train-command preview.
 # ===========================================================================
 
-#: Per-band validation PSNR columns of ``training_log.csv``.
-_BAND_LOG_COLUMNS = {"VIS": "psnr_vis", "Y_E": "psnr_y_e",
-                     "J_E": "psnr_j_e", "H_E": "psnr_h_e"}
 #: SLURM states of a job that is still going (the member may still grow).
 _LIVE_SLURM_STATES = {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING",
                       "REQUEUED", "RESIZING", "SUSPENDED"}
@@ -3712,9 +3713,9 @@ def _as_int(value) -> int | None:
 # ---- training curves ------------------------------------------------------ #
 
 def _member_training_series(member_dir: str) -> dict | None:
-    """One member's rollback-deduped validation history: joint + per-band
-    PSNR (asinh), the combined training loss, the raw loss, the gradient norm
-    (mean / max) and the wall time per 1000 steps. ``None`` without a log."""
+    """One member's rollback-deduped validation history from its training
+    log (:func:`~euclid_polish.web.helpers.remote_curves.series_from_records`).
+    ``None`` without a log."""
     path = os.path.join(member_dir, TRAINING_LOG_FILENAME)
     if not os.path.isfile(path):
         return None
@@ -3722,41 +3723,7 @@ def _member_training_series(member_dir: str) -> dict | None:
         recs = log_plot.read_training_log(path)
     except (FileNotFoundError, ValueError):
         return None
-    recs = [r for r in recs if str(r.get("is_baseline", "")).strip()
-            not in ("1", "1.0", "true", "True")]
-    recs = log_plot.dedupe_latest_per_step(recs)
-
-    def col(key: str) -> list[list[float]]:
-        # 5 significant digits: plenty for a chart, ~40 % less JSON.
-        out = []
-        for r in recs:
-            v = _finite(r.get(key))
-            if v is not None and r.get("step") is not None:
-                out.append([int(r["step"]), float(f"{v:.5g}")])
-        return out
-
-    step_time = []
-    previous = None
-    for r in recs:
-        step, dur = r.get("step"), _finite(r.get("duration_s"))
-        if step is not None and dur is not None and dur > 0:
-            span = int(step) - (previous if previous is not None else 0)
-            if span > 0:
-                step_time.append([int(step), float(f"{dur * 1000.0 / span:.4g}")])
-        if step is not None:
-            previous = int(step)
-    series = {
-        "psnr": col("psnr_stretched"),
-        "band_psnr": {band: col(key) for band, key in _BAND_LOG_COLUMNS.items()},
-        "loss_series": col("combined_loss"),
-        "train_loss": col("loss"),
-        "gnorm": col("gnorm_avg"),
-        "gnorm_max": col("gnorm_max"),
-        "step_time": step_time,
-    }
-    if not (series["psnr"] or series["loss_series"]):
-        return None
-    return series
+    return series_from_records(recs)
 
 
 def training_curves_payload() -> list[dict]:
@@ -3797,6 +3764,7 @@ def training_curves_payload() -> list[dict]:
             "asinh_knee": origin.get("asinh_knee"),
             "asinh_knees": origin.get("asinh_knees"),
             "output_knee": origin.get("output_knee"),
+            "learned_output_knee": bool(origin.get("learned_output_knee")),
             "knee_loss": origin.get("knee_loss"),
             "target_steps": _as_int(origin.get("target_steps")),
             "test_psnr": (entry or {}).get("psnr"),
@@ -4045,6 +4013,7 @@ def _member_row(name: str, ctx: _MemberContext) -> dict:
         "asinh_knee": o.get("asinh_knee"),
         "asinh_knees": o.get("asinh_knees"),
         "output_knee": o.get("output_knee"),
+        "learned_output_knee": bool(o.get("learned_output_knee")),
         "knee_loss": o.get("knee_loss"),
         "noise_aug": o.get("noise_aug"), "bootstrap": o.get("bootstrap"),
         "icnr": o.get("icnr"), "seed": seed if seed is not None else _member_seed(d),

@@ -362,6 +362,27 @@ describe("members", () => {
     expect(useInspector.getState().current).toEqual({ kind: "member", id: "member_196" });
   });
 
+  it("draws members still on FASRC from their jobs, dashed and named, and polls while one trains", async () => {
+    const { Curves } = await import("./members/Curves");
+    const series = (psnr: number) => ({ psnr: [[1000, psnr - 4], [2000, psnr]], band_psnr: {}, loss_series: [[1000, 0.1]],
+      train_loss: [], gnorm: [[1000, 0.5]], gnorm_max: [], step_time: [] });
+    const facets = { label: "", starless: false, loss_norm: "l2", asinh_knee: null, asinh_knees: [0.1, 1, 10, 100, 1000, 10000],
+      output_knee: null, knee_loss: "balanced", test_psnr: null };
+    routes["GET /ensemble/training-curves.json"] = () => ({ body: { members: [
+      { name: "member_196", ...facets, ...series(60), output_knee: 10, blocks: 32, target_steps: 70000 },
+      { name: "member_207", ...facets, ...series(55), blocks: 64, target_steps: 200000, remote: true, jobid: "51626411",
+        last_step: 19000, finished: false, learned_output_knee: true },
+      { name: "member_206", ...facets, ...series(61), blocks: 32, target_steps: 100000, remote: true, jobid: "51435884",
+        last_step: 100000, finished: true, learned_output_knee: true },
+    ] } });
+    show(<Curves />, "/models/members?view=curves");
+    const live = await screen.findByRole("button", { name: "#207 · live · step 19k / 200k" });
+    expect(screen.getByRole("button", { name: "#206 · on FASRC · step 100k / 100k" })).toBeTruthy();
+    expect(screen.getByText(/refreshing every 30 s/)).toBeTruthy();
+    fireEvent.click(live);
+    await waitFor(() => expect(lastLocation).toContain("sel=207"));
+  });
+
   it("keeps the selection toolbar visible, archives only after confirm(), typed beyond 3", async () => {
     const confirmSpy = vi.spyOn(window, "confirm");
     const Members = await load();

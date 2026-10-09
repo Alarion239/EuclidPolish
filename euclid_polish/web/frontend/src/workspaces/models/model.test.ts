@@ -34,6 +34,9 @@ describe("knee description", () => {
     expect(kneeText({ asinh_knee: null, asinh_knees: [0.1, 1, 10, 100, 1000, 10000], output_knee: 10 }).text)
       .toBe("multi ×6 → 10");
     expect(kneeText({ asinh_knees: [0.1, 1, 10, 100, 1000, 10000], output_knee: null }).text).toBe("multi ×6 heads");
+    const learned = { asinh_knees: [0.1, 1, 10, 100, 1000, 10000], output_knee: null, learned_output_knee: true };
+    expect(kneeText(learned).text).toBe("multi ×6 → learned");
+    expect(facetOf(learned, "multi")).toBe("multi-knee, 1 image");
     expect(kneeText({ asinh_knee: 3000 }).text).toBe("3k e⁻");
     expect(kneeText({ asinh_knee: 10 }).kind).toBe("single");
     const d = kneeText({});

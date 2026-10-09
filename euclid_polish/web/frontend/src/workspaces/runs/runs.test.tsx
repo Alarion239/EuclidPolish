@@ -269,6 +269,25 @@ describe("SlurmMonitor", () => {
     expect(screen.getByRole("link", { name: "Logs" }).getAttribute("href")).toBe("/runs/history?run=77&logs=1");
   });
 
+  it("draws each array task's live training curves (the full monitor only)", async () => {
+    const metric = (step: number, psnr: number) => ({ step, psnr_stretched: psnr, psnr_vis: psnr - 4, loss: 0.1 });
+    routes["GET /api/fasrc/jobs/79/status"] = () => ({ body: { ok: true, jobid: "79", state: "RUNNING", status: null,
+      array: { count: 2, tasks: [
+        { index: 0, member: "member_207", jobid: "79_0", status: { has_events: true, metrics: [metric(1000, 42), metric(2000, 46)] } },
+        { index: 1, member: "member_208", jobid: "79_1", status: { has_events: true, metrics: [metric(1000, 41)] } },
+      ] } } });
+    routes["GET /api/fasrc/history"] = () => ({ body: { ok: true, total: 0, offset: 0, limit: 20, unresolved: 0,
+      facets: { steps: {}, states: {} }, rows: [] } });
+    const { unmount } = show(<SlurmMonitor jobid="79" />);
+    expect(await screen.findByText("member_207")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Training curves · member_207" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Training curves · member_208" })).toBeTruthy();
+    unmount();
+    show(<SlurmMonitor jobid="79" compact />);
+    expect(await screen.findByText("member_208")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /Training curves/ })).toBeNull();
+  });
+
   it("shows the ledger's resource use once the job has ended", async () => {
     routes["GET /api/fasrc/jobs/78/status"] = () => ({ body: { ok: true, jobid: "78", state: "COMPLETED", status: { has_events: true } } });
     routes["GET /api/fasrc/history"] = () => ({ body: { ok: true, total: 1, offset: 0, limit: 20, unresolved: 0,
