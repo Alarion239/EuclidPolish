@@ -131,7 +131,9 @@ def _make_step(net, loss_fn, learning_rate: float, *, jit: bool = False):
     """The trainer's step: tape → loss → global-norm clip → Adam → step
     counter and window statistics; ``jit`` compiles it with XLA."""
     optimizer = Adam(learning_rate)
-    counter = tf.Variable(tf.constant(0))
+    # int64, unlike the trainer's int32 counter: TensorFlow keeps an int32
+    # variable in host memory, out of reach of a step XLA compiles for the GPU.
+    counter = tf.Variable(tf.constant(0, tf.int64))
     window = {k: tf.Variable(0.0) for k in ("loss", "gnorm_sum", "gnorm_max", "steps", "spike")}
 
     def step(lr, hr):
@@ -258,7 +260,17 @@ def _speed(args: argparse.Namespace, meta: dict) -> int:
                     datasets = {k: model._build_onthefly_pipeline(clean, batch, forwards[k])
                                 for k in ks}
                     lr, hr = next(iter(datasets[ks[0]]))
-                    compile_s = _first_call_s(step, lr, hr)
+                    try:
+                        compile_s = _first_call_s(step, lr, hr)
+                    except (tf.errors.OpError, ValueError, TypeError) as exc:
+                        # A variant that cannot run is a result too; measure the rest.
+                        row = {"kind": "step", "depth": depth, "batch": batch, "variant": variant,
+                               "error": f"{type(exc).__name__}: {str(exc).splitlines()[0][:300]}"}
+                        rows.append(row)
+                        print(json.dumps(row), flush=True)
+                        del model, net, step, datasets
+                        tf_keras.backend.clear_session()
+                        continue
                     gpu_ms = _time_gpu(step, lr, hr, warmup=20, steps=args.gpu_steps)
                     live_ms = {k: _time_live(step, datasets[k], warmup=40, steps=args.live_steps)
                                for k in ks}
@@ -282,8 +294,11 @@ def _speed(args: argparse.Namespace, meta: dict) -> int:
     for depth in depths:
         for batch in batches:
             group = [r for r in rows if r.get("depth") == depth and r.get("batch") == batch]
-            base = next((r for r in group if r["variant"] == "control"), None)
+            base = next((r for r in group if r["variant"] == "control" and "error" not in r), None)
             for r in group:
+                if "error" in r:
+                    print(f" {depth:5d}  {batch:5d}  {r['variant']:<20s}  failed: {r['error'][:120]}")
+                    continue
                 gain = base["gpu_ms"] / r["gpu_ms"] if base else float("nan")
                 live = "".join(
                     f"   {r['live_ms'][str(k)]:12.1f} "
@@ -433,6 +448,7 @@ def _compare(args: argparse.Namespace) -> int:
     # How much one batch's gradient differs from the mean over the batches:
     # the noise every SGD step carries anyway.
     spread = float(np.mean(np.linalg.norm(g_ref - g_ref.mean(0), axis=1) / g_norm))
+    ref_psnr = float(integrated_psnr(ref["curves"].mean(0)).mean())
     order = {a: i for i, a in enumerate(ARITHMETICS)}
     rows = []
     for (arith, xla), r in sorted(runs.items(), key=lambda kv: (order.get(kv[0][0], 9), kv[0][1])):
@@ -444,7 +460,7 @@ def _compare(args: argparse.Namespace) -> int:
         cos = np.sum(g * g_ref, axis=1) / (np.linalg.norm(g, axis=1) * g_norm)
         rows.append({"arith": arith, "xla": xla, "psnr_bands": [round(float(x), 4) for x in psnr],
                      "psnr": round(float(psnr.mean()), 4),
-                     "psnr_minus_ref": round(float(psnr.mean() - integrated_psnr(ref["curves"].mean(0)).mean()), 4),
+                     "psnr_minus_ref": round(float(psnr.mean()) - ref_psnr, 4),
                      "agreement_db": round(float(np.mean(agree)), 2),
                      "agreement_db_worst_field": round(float(np.min(agree.mean(1))), 2),
                      "grad_rel_err": float(np.mean(err)), "grad_cos": float(np.mean(cos)),

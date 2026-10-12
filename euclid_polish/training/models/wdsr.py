@@ -28,7 +28,6 @@ from tf_keras.models import Model
 from euclid_polish.training.models.common import ICNR, pixel_shuffle
 from euclid_polish.training.models.output_knee import LearnedOutputKnee
 
-
 #: Keras dtype policy of the residual blocks' convolutions under mixed
 #: precision: bfloat16 arithmetic, float32 variables.
 MIXED_POLICY = "mixed_bfloat16"
