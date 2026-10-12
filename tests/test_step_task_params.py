@@ -419,6 +419,57 @@ def test_an_unbuildable_submit_is_refused_on_a_free_lane_too(
     assert fasrc_queue.QUEUE.items == []
 
 
+TRAIN_RESOURCES = {"n_cpus": "24", "n_gpus": "1", "memory": "32G", "time_limit": "3:00:00"}
+
+
+def test_a_training_test_run_books_gpu_test_slices_for_its_cpus(
+        client, captured, hermetic_build, monkeypatch):
+    """gpu_test allows fewer than 8 CPUs per GPU: 24 CPUs take 4 MIG slices,
+    and the job keeps only the first visible (the trainer uses one GPU)."""
+    monkeypatch.setattr(fasrc_pipeline.population_calibration, "active_star",
+                        lambda: None)
+    response = client.post("/api/fasrc/steps/ensemble_train/submit", data={
+        "confirm": "yes", **TRAIN_RESOURCES, "partition": "gpu_test",
+        "mode": "add", "count": "1", "xla": "1", "bf16": "1"})
+    assert response.status_code == 200, response.get_json()
+    params = captured["params"]
+    assert (params["partition"], params["n_cpus"], params["n_gpus"]) == ("gpu_test", 24, 4)
+    body = captured["built"]["body"]
+    assert "#SBATCH --gres=gpu:4" in body
+    assert 'export CUDA_VISIBLE_DEVICES="$(echo "${CUDA_VISIBLE_DEVICES:-}" | cut -d, -f1-1)"' in body
+    assert "'--xla'" in body or " --xla" in body
+    assert "'--bf16'" in body or " --bf16" in body
+
+
+def test_a_gpu_test_run_over_twelve_hours_is_refused(
+        client, captured, hermetic_build, monkeypatch):
+    monkeypatch.setattr(fasrc_pipeline.population_calibration, "active_star",
+                        lambda: None)
+    response = client.post("/api/fasrc/steps/ensemble_train/submit", data={
+        "confirm": "yes", **TRAIN_RESOURCES, "time_limit": "13:00:00",
+        "partition": "gpu_test", "mode": "add", "count": "1"})
+    assert response.status_code == 400
+    assert "gpu_test allows at most 12:00:00" in response.get_json()["error"]
+    assert captured == {}
+
+
+def test_training_takes_no_partition_but_its_own_or_its_test_one(
+        client, captured, hermetic_build, monkeypatch):
+    monkeypatch.setattr(fasrc_pipeline.population_calibration, "active_star",
+                        lambda: None)
+    response = client.post("/api/fasrc/steps/ensemble_train/submit", data={
+        "confirm": "yes", **TRAIN_RESOURCES, "partition": "bigmem",
+        "mode": "add", "count": "1"})
+    assert response.status_code == 200, response.get_json()
+    assert (captured["params"]["partition"], captured["params"]["n_gpus"]) == ("gpu", 1)
+    assert "CUDA_VISIBLE_DEVICES" not in captured["built"]["body"]
+    assert "--xla" not in captured["built"]["body"]
+    steps = {s["step_id"]: s for s in client.get("/api/fasrc/steps/status").get_json()["steps"]}
+    assert steps["ensemble_train"]["test_partition"] == "gpu_test"
+    assert steps["ensemble_train"]["defaults"]["n_cpus"] == 24
+    assert steps["euclid_query"]["test_partition"] is None
+
+
 class _Squeue(_Up):
     def __init__(self, text: str) -> None:
         self.text = text

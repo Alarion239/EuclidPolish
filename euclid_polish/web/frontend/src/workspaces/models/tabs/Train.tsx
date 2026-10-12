@@ -44,7 +44,8 @@ import "../models.css";
 
 type Preview = { ok: boolean; mode: string; member_names: string[]; count: number; array: { tasks: number; max_parallel: number } | null;
   command: string[]; command_text: string; base_seed: string | number | null; star_prior: boolean };
-type StepInfo = { step_id: string; defaults: { partition: string; n_cpus: number; n_gpus: number; memory: string; time_limit: string }; fixed_gpus?: number | null };
+type StepInfo = { step_id: string; defaults: { partition: string; n_cpus: number; n_gpus: number; memory: string; time_limit: string };
+  fixed_gpus?: number | null; test_partition?: string | null };
 type ConfigPayload = { config?: Record<string, unknown>; defaults?: Record<string, unknown>; used_by?: Record<string, string[]> };
 
 const CONFIG_PATH = "/system/config";
@@ -164,6 +165,7 @@ function TrainPage() {
     return f;
   });
   const [override, setOverride] = useState(false);
+  const [testRun, setTestRun] = useState(false);
   const [res, setRes] = useState<Resources | null>(null);
   /** Where the resources came from: a job id, null = the recipe. */
   const [resFrom, setResFrom] = useState<string | null>(null);
@@ -240,6 +242,9 @@ function TrainPage() {
   }, [body, errors.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const offline = fasrc ? !fasrc.ssh_connected : true;
+  // A test run goes to the step's test partition (gpu_test: free, a MIG slice
+  // of an A100, ≤ 12 h; the server books enough slices for the CPUs).
+  const partition = (testRun && step?.test_partition) || step?.defaults.partition || "gpu";
   const count = form.mode === "continue" ? form.members.length : form.rows.length;
   const label = submitLabel(form.mode, count);
   async function submit() {
@@ -247,13 +252,13 @@ function TrainPage() {
     const what = form.mode === "continue"
       ? `Continue ${form.members.length} member(s)`
       : `${form.rows.length} ${form.mode === "fork" ? "fork" : "new"} member(s): ${preview?.member_names.join(", ") ?? "…"}`;
-    const ok = await confirm({ title: `${label}?`, message: `${what} · per model ${res.n_cpus} CPUs, ${res.memory}, ${res.time_limit} on ${step?.defaults.partition ?? "gpu"}. It queues locally when another job is active.`, confirmLabel: "Submit" });
+    const ok = await confirm({ title: `${label}?`, message: `${what} · per model ${res.n_cpus} CPUs, ${res.memory}, ${res.time_limit} on ${partition}. It queues locally when another job is active.`, confirmLabel: "Submit" });
     if (!ok) return;
     setSubmitting(true);
     try {
       const r = await apiPost<{ ok?: boolean; jobid?: string; slurm_id?: string; queued?: boolean; error?: string }>(
         "/api/fasrc/steps/ensemble_train/submit",
-        { ...params, partition: step?.defaults.partition ?? "gpu", n_cpus: res.n_cpus, n_gpus: String(step?.fixed_gpus ?? 1),
+        { ...params, partition, n_cpus: res.n_cpus, n_gpus: String(step?.fixed_gpus ?? 1),
           memory: res.memory, time_limit: res.time_limit, confirm: "yes" });
       if (r.error || r.ok === false) throw new Error(r.error ?? "refused");
       const jobid = r.jobid ?? r.slurm_id;
@@ -296,6 +301,7 @@ function TrainPage() {
     { label: "Examples per field", value: g.crops_per_field },
     { label: "PSF clusters per member", value: g.psf_subset },
     { label: "Target PSF FWHM", value: g.target_psf_fwhm_arcsec, unit: "″" },
+    { label: "Training step", value: [g.xla && "XLA", g.bf16 && "bf16 blocks"].filter(Boolean).join(" + ") || "float32" },
   ];
   return (
     <Page className="mdl-page">
@@ -382,6 +388,8 @@ function TrainPage() {
               {override ? (
                 <div className="mdl-form">
                   <Switch checked={g.forward_onthefly} onChange={(v) => setGeometry({ forward_onthefly: v })}>live forward model</Switch>
+                  <Switch checked={g.xla} onChange={(v) => setGeometry({ xla: v })}>XLA-compiled step</Switch>
+                  <Switch checked={g.bf16} onChange={(v) => setGeometry({ bf16: v })}>bf16 residual blocks</Switch>
                   <NumberField label="HR example side" value={g.hr_crop_size} onChange={(v) => setGeometry({ hr_crop_size: v })} min={2} max={508} step={2} unit="px" />
                   <NumberField label="Examples per field" value={g.crops_per_field} onChange={(v) => setGeometry({ crops_per_field: v })} min={1} max={25} />
                   <NumberField label="PSF clusters per member" value={g.psf_subset} onChange={(v) => setGeometry({ psf_subset: v })} min={1} />
@@ -393,16 +401,21 @@ function TrainPage() {
           </CardBody>
         </Card>
         <Card>
-          <CardHead title="Resources" sub={step ? `${step.defaults.partition} partition · ${step.fixed_gpus ?? 1} GPU per model` : undefined} />
+          <CardHead title="Resources" sub={step ? `${partition} partition · ${step.fixed_gpus ?? 1} GPU per model` : undefined} />
           <CardBody>
             {res && (
               <div className="mdl-stack mdl-stack--tight">
                 <div className="mdl-form">
                   <NumberField label="CPUs / model" value={res.n_cpus} onChange={(v) => ownRes({ ...res, n_cpus: v })} min={1}
-                    hint={resFrom ? `As job ${resFrom} (the last finished ${form.mode === "continue" ? "continue job" : "new batch"})` : "The recipe: 16 keep the GPU fed"} />
+                    hint={resFrom ? `As job ${resFrom} (the last finished ${form.mode === "continue" ? "continue job" : "new batch"})` : "The recipe: 24 feed the live forward model (32 add nothing)"} />
                   <Field label="Memory / model"><Input value={res.memory} onChange={(v) => ownRes({ ...res, memory: v })} /></Field>
                   <Field label="Time limit / model" hint="The 70k-step recipe takes 2.5–3 h on the gpu partition."><Input value={res.time_limit} onChange={(v) => ownRes({ ...res, time_limit: v })} /></Field>
                 </div>
+                {step?.test_partition && (
+                  <Switch size="sm" checked={testRun} onChange={setTestRun}>
+                    Test run on {step.test_partition} (free; a MIG slice of an A100, at most 12 h)
+                  </Switch>
+                )}
                 <ResourceAdvice stepId="ensemble_train" params={params} fields={ADVICE_FIELDS} perTask="model"
                   resources={{ n_cpus: res.n_cpus, n_gpus: String(step?.fixed_gpus ?? 1), memory: res.memory, time_limit: res.time_limit }}
                   onApply={(r) => ownRes({ n_cpus: r.n_cpus, memory: r.memory, time_limit: r.time_limit })} />

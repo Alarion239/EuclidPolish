@@ -67,6 +67,18 @@ class PrecisionWeightNorm(tfp.layers.weight_norm.WeightNorm):
         return self.layer(inputs)
 
 
+def initialize_weight_norms(model) -> None:
+    """Give every weight norm of ``model`` its starting value now (``g`` =
+    the norm of ``v``), as its first call would; initialised ones are left
+    alone. A build with ``eager_weight_norm_init`` can then take ``model``'s
+    weights unchanged."""
+    for layer in model.layers:
+        if (isinstance(layer, tfp.layers.weight_norm.WeightNorm)
+                and not bool(layer.initialized.numpy())):
+            layer._init_norm()
+            layer.initialized.assign(True)
+
+
 def conv2d_weightnorm(filters, kernel_size, padding="same", activation=None, *,
                       mixed_precision=False, eager_init=False, **kwargs):
     """A weight-normalised conv. ``mixed_precision``: the conv runs in

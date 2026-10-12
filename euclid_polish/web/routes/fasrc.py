@@ -609,9 +609,9 @@ def register(app):
             step_ref = "synthetic_generate"
         step = STEP_REGISTRY.get(step_ref)
         form2 = dict(form)
-        # Partition is fixed per job type — force the step's value even on
-        # queued specs built from an older form.
-        form2["partition"] = step.defaults.partition
+        # Partition is fixed per job type (or its test partition, when the
+        # spec asked for it) — force it even on queued specs from an older form.
+        form2["partition"] = step.partition_for(form.get("partition"))
         if step.fixed_cpus is not None:
             form2["n_cpus"] = str(step.fixed_cpus)
         if step.fixed_gpus is not None:
@@ -622,6 +622,7 @@ def register(app):
             resources.n_cpus = int(step.fixed_cpus)
         if step.fixed_gpus is not None:
             resources.n_gpus = int(step.fixed_gpus)
+        resources = step.fit_resources(resources)
         label = _spec_label(step_ref, form2)
         built = step.build_sbatch_body(
             params=form2, resources=resources, cfg=cfg, label=label)
@@ -779,6 +780,7 @@ def register(app):
                 "needs_gpu":   step.needs_gpu,
                 "fixed_cpus":  step.fixed_cpus,
                 "fixed_gpus":  step.fixed_gpus,
+                "test_partition": step.test_partition,
                 "defaults":    step.defaults.to_dict(),
                 # Contract C5: the schema the SPA renders generically, and
                 # the task params of the newest successful run (prefill).
@@ -892,10 +894,11 @@ def register(app):
         form.pop("confirm_force_redownload", None)
 
         # The partition is determined by the job type (gpu for training,
-        # shared for everything else) — it is not a form question. Force
-        # the step's partition regardless of what the form sent, BEFORE
-        # the strict parse (which requires the field).
-        form["partition"] = step.defaults.partition
+        # shared for everything else) — it is not a form question, except
+        # that a step with a test partition (training → gpu_test) takes it
+        # when the form asks for exactly that. Force it BEFORE the strict
+        # parse (which requires the field).
+        form["partition"] = step.partition_for(form.get("partition"))
 
         # A step with a locked CPU count renders the field as read-only
         # text, so the form may not carry ``n_cpus`` at all. Inject the
@@ -918,6 +921,11 @@ def register(app):
             resources.n_cpus = int(step.fixed_cpus)
         if step.fixed_gpus is not None:
             resources.n_gpus = int(step.fixed_gpus)
+        # The partition's own rules (gpu_test: MIG slices for the CPUs, ≤ 12 h).
+        try:
+            resources = step.fit_resources(resources)
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
 
         # Task params (C5): absent ones take the step's schema defaults (so an
         # euclid_query submit with no knobs asks for 10,000 stars, never the

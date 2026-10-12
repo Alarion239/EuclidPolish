@@ -243,6 +243,7 @@ class Trainer:
         output_knee: float | None = None,
         output_electrons: bool = False,
         asinh_knee: float | None = None,
+        jit_compile: bool = False,
     ):
         """
         Initialize the trainer.
@@ -285,8 +286,18 @@ class Trainer:
             ``None`` → the knee recorded in ``checkpoint_dir``'s
             ``origin.json`` (written before a member trains), else the config
             default (100 e⁻).
+        jit_compile : bool
+            Compile the gradient step (forward, backward, clip, Adam) with
+            XLA. The step counter and window statistics stay outside it: the
+            int32 counter lives in host memory, out of reach of an XLA step
+            on the GPU. Needs weight norms without tfp's per-call
+            initialisation check (``wdsr(eager_weight_norm_init=True)``).
         """
         self.now = None
+        # The gradient step, XLA-compiled on request; without XLA it is traced
+        # straight into ``train_step`` (the graph training always had).
+        self._gradient_step = (tf.function(self._gradient_step_impl, jit_compile=True)
+                               if jit_compile else self._gradient_step_impl)
         self.loss = loss
         # A multi-knee member's knees: validation scores each knee's block of
         # channels against its own peak and saves on the mean over knees.
@@ -1021,17 +1032,7 @@ class Trainer:
             monitoring; ``GRAD_CLIP_NORM`` is the rescaled magnitude actually
             applied).
         """
-        with tf.GradientTape() as tape:
-            sr = self.checkpoint.model(lr, training=True)
-            loss_value = self.loss(sr, hr)
-            loss_value = self._add_nonneg_penalty(loss_value, sr)
-
-        gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
-        gradients, gnorm = tf.clip_by_global_norm(
-            gradients, clip_norm=GRAD_CLIP_NORM)
-        self.checkpoint.optimizer.apply_gradients(
-            zip(gradients, self.checkpoint.model.trainable_variables, strict=False)
-        )
+        loss_value, gnorm = self._gradient_step(lr, hr)
 
         # Step counter and window statistics stay on the device; the training
         # loop reads them once per validation window.
@@ -1046,6 +1047,22 @@ class Trainer:
         watched = tf.where(step > GRAD_SPIKE_SKIP_WARMUP_STEPS, watched, 0.0)
         self._win_spike_norm.assign(tf.maximum(self._win_spike_norm, watched))
 
+        return loss_value, gnorm
+
+    def _gradient_step_impl(self, lr, hr):
+        """Forward, loss, backward, global-norm clip and the Adam update →
+        ``(loss, pre-clip gradient norm)``."""
+        with tf.GradientTape() as tape:
+            sr = self.checkpoint.model(lr, training=True)
+            loss_value = self.loss(sr, hr)
+            loss_value = self._add_nonneg_penalty(loss_value, sr)
+
+        gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
+        gradients, gnorm = tf.clip_by_global_norm(
+            gradients, clip_norm=GRAD_CLIP_NORM)
+        self.checkpoint.optimizer.apply_gradients(
+            zip(gradients, self.checkpoint.model.trainable_variables, strict=False)
+        )
         return loss_value, gnorm
 
     def _add_nonneg_penalty(self, loss_value, sr):

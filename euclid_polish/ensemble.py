@@ -178,6 +178,11 @@ class MemberTrainSpec:
     knee_loss: str = "plain"
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
+    #: Faster training steps (see ``Model.train``): XLA-compile the gradient
+    #: step / run the residual blocks in bfloat16. Training-only — the
+    #: checkpoint and inference are the standard float32 network.
+    jit_compile: bool = False
+    mixed_precision: bool = False
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
@@ -437,6 +442,9 @@ class EnsembleModel:
                     # (target = the starfull `hr`). Drives the /ensemble
                     # eval mode + which target record scores each member.
                     "starless": bool(spec.starless),
+                    # Arithmetic of the training step (inference is float32).
+                    "jit_compile": bool(spec.jit_compile),
+                    "mixed_precision": bool(spec.mixed_precision),
                     "created_at": datetime.now(UTC).isoformat(
                         timespec="seconds"),
                     "commit": commit,
@@ -485,6 +493,8 @@ class EnsembleModel:
                     saturation_mask_prob=spec.saturation_mask_prob,
                     target_fwhm_arcsec=spec.target_fwhm_arcsec,
                     starless=spec.starless,
+                    jit_compile=spec.jit_compile,
+                    mixed_precision=spec.mixed_precision,
                     **member_train_kwargs)
             self._models.append(m)
             if on_member is not None:

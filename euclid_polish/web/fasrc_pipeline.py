@@ -96,6 +96,14 @@ def _normalize_memory(mem: str) -> str:
     return s + "G"
 
 
+#: FASRC's test GPU partition: A100 MIG 3g.20gb slices, free in fairshare
+#: (billing weight 0), at most 12 h, and fewer than 8 CPUs per GPU — so a
+#: job asks for enough slices to carry its CPUs and runs on the first.
+GPU_TEST_PARTITION = "gpu_test"
+GPU_TEST_MAX_CPUS_PER_GPU = 7
+GPU_TEST_MAX_TIME_S = 12 * 3600
+
+
 @dataclass
 class StepResources:
     """One SLURM allocation profile.
@@ -362,6 +370,30 @@ class FASRCPipelineStep(ABC):
     #: (``cfg.conda_env_path``). Set to an absolute env path or a named env
     #: when a step needs an isolated environment.
     conda_env: str | None = None
+    #: A second partition the form may pick instead of ``defaults.partition``
+    #: for test runs (``GPU_TEST_PARTITION``); ``None`` = fixed partition.
+    test_partition: str | None = None
+
+    def partition_for(self, requested: Any) -> str:
+        """The partition a submission runs on: the step's own, or its
+        ``test_partition`` when the form asks for exactly that one."""
+        if self.test_partition and str(requested or "").strip() == self.test_partition:
+            return self.test_partition
+        return self.defaults.partition
+
+    def fit_resources(self, resources: StepResources) -> StepResources:
+        """``resources`` within its partition's rules. On ``GPU_TEST_PARTITION``
+        enough MIG slices are requested to carry the CPUs (the job uses only
+        the first, see ``render_sbatch_body``); a time limit over the
+        partition's 12 h raises ``ValueError``."""
+        if resources.partition != GPU_TEST_PARTITION:
+            return resources
+        if fasrc_jobs.parse_slurm_time(resources.time_limit) > GPU_TEST_MAX_TIME_S:
+            raise ValueError(f"{GPU_TEST_PARTITION} allows at most 12:00:00, "
+                             f"not {resources.time_limit}")
+        resources.n_gpus = max(int(resources.n_gpus),
+                               math.ceil(int(resources.n_cpus) / GPU_TEST_MAX_CPUS_PER_GPU))
+        return resources
 
     @abstractmethod
     def build_command(self, params: dict[str, Any]) -> list[str]:
@@ -521,6 +553,7 @@ class FASRCPipelineStep(ABC):
             step_id=self.step_id,
             conda_env_path=self.conda_env,
             array_shape=self.array_shape(prepared),
+            gpus_used=self.fixed_gpus,
         )
         built["params"] = prepared
         built["payload_files"] = payload_files
@@ -543,6 +576,7 @@ def render_sbatch_body(
     step_id:          str | None = None,
     conda_env_path:   str | None = None,
     array_shape:      tuple[int, int] | None = None,
+    gpus_used:        int | None = None,
 ) -> dict[str, Any]:
     """Render an sbatch script body + the relative log paths.
 
@@ -560,6 +594,10 @@ def render_sbatch_body(
     step_id :
         If given, an ``STEP_ID=…`` echo is emitted at the tail of the
         script.
+    gpus_used :
+        GPUs the program uses. When fewer than ``resources.n_gpus`` (MIG
+        slices requested for their CPUs on ``GPU_TEST_PARTITION``), only
+        the first ones stay visible.
 
     Returns
     -------
@@ -631,9 +669,13 @@ def render_sbatch_body(
         conda_env_path or cfg.conda_env_path,
         load_cuda=n_gpus > 0,
     )
-    cuda_visibility = (
-        'export CUDA_VISIBLE_DEVICES=""' if n_gpus == 0 else ""
-    )
+    if n_gpus == 0:
+        cuda_visibility = 'export CUDA_VISIBLE_DEVICES=""'
+    elif gpus_used is not None and 0 < int(gpus_used) < n_gpus:
+        cuda_visibility = ('export CUDA_VISIBLE_DEVICES="$(echo "${CUDA_VISIBLE_DEVICES:-}"'
+                           f' | cut -d, -f1-{int(gpus_used)})"')
+    else:
+        cuda_visibility = ""
     body = textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={shlex.quote(job_name)}
@@ -1518,6 +1560,11 @@ class EnsembleTrainStep(FASRCPipelineStep):
                   min=0, max=float(Config.TARGET_PSF_FWHM_MAX_ARCSEC)),
         TaskParam("icnr", "bool", False,
                   "ICNR-initialise the pixel-shuffle convs (add only)."),
+        TaskParam("xla", "bool", False,
+                  "Compile the training step with XLA (training only)."),
+        TaskParam("bf16", "bool", False,
+                  "Residual blocks in bfloat16 while training (inference "
+                  "stays float32)."),
         TaskParam("starless", "bool", False,
                   "Starless regime (erase stars); default starfull."),
         TaskParam("forward_onthefly", "bool", False,
@@ -1543,12 +1590,15 @@ class EnsembleTrainStep(FASRCPipelineStep):
             step_id="ensemble_train",
             label="Train ensemble (N members, distinct seeds)",
             job_name="ensemble-train",
+            # 24 CPUs: the live forward model's field simulation saturates
+            # near 20 fields/s there (2026-10-11 benchmark; 32 adds nothing).
             defaults=StepResources(
-                partition="gpu", n_cpus=4, n_gpus=1,
+                partition="gpu", n_cpus=24, n_gpus=1,
                 memory="32G", time_limit="48:00:00",
             ),
             needs_gpu=True,
             fixed_gpus=1,
+            test_partition=GPU_TEST_PARTITION,
         )
 
     @staticmethod
@@ -1768,6 +1818,11 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if str(params.get("icnr", "")).strip().lower() in (
                 "1", "true", "yes", "on"):
             cmd += ["--icnr"]
+        # Faster training steps: XLA and bfloat16 residual blocks.
+        for key in ("xla", "bf16"):
+            if str(params.get(key, "")).strip().lower() in (
+                    "1", "true", "yes", "on"):
+                cmd += [f"--{key}"]
         # Star regime (default starfull: reconstruct stars). Starless — erase
         # them — is the opt-in, so only that case emits the flag.
         if str(params.get("starless", "0")).strip().lower() in (

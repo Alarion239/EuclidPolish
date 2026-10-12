@@ -507,6 +507,23 @@ describe("train", () => {
     await waitFor(() => expect(posts("/ensemble/train/preview").at(-1)?.form.members).toBe("member_179"));
   });
 
+  it("sends a test run to the step's test partition", async () => {
+    routes["GET /api/fasrc/steps/status"] = () => ({ body: { ssh_connected: true, steps: [{ step_id: "ensemble_train",
+      defaults: { partition: "gpu", n_cpus: 24, n_gpus: 1, memory: "32G", time_limit: "48:00:00" }, fixed_gpus: 1, test_partition: "gpu_test" }] } });
+    routes["GET /api/fasrc/status"] = () => ({ body: { ssh_connected: true } });
+    routes["POST /api/fasrc/steps/ensemble_train/submit"] = () => ({ body: { ok: true, jobid: "52300000" } });
+    const Train = await load();
+    show(<Train />, "/models/train");
+    fireEvent.click(await screen.findByRole("switch", { name: /Test run on gpu_test/ }));
+    expect(await screen.findByText(/gpu_test partition/)).toBeTruthy();
+    const submit = await screen.findByRole("button", { name: /^Submit 1 member/ });
+    await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(submit);
+    await answer(/^Submit 1 member/, "Submit");
+    await waitFor(() => expect(posts("/api/fasrc/steps/ensemble_train/submit").at(-1)?.form)
+      .toMatchObject({ partition: "gpu_test", n_gpus: "1", xla: "0", bf16: "0" }));
+  });
+
   it("starts from the last finished batch's resources and continues TIMEOUT members up to their target", async () => {
     const Train = await load();
     const view = show(<Train />, "/models/train");

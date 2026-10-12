@@ -241,6 +241,15 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "spends training budget learning to cancel. Init-only "
                         "(ADD members only; fork/continue load weights and "
                         "ignore it); old checkpoints restore identically.")
+    p.add_argument("--xla", action="store_true",
+                   help="Compile the training step with XLA (training only; "
+                        "checkpoints and inference are unchanged). Member-"
+                        "spec key: xla (true/false).")
+    p.add_argument("--bf16", action="store_true",
+                   help="Run the residual blocks' convolutions in bfloat16 "
+                        "while training (weights, residual stream, skip and "
+                        "output stay float32; inference stays float32). "
+                        "Member-spec key: bf16 (true/false).")
     p.add_argument("--member-spec", default="",
                    help='Per-member override JSON, applied positionally: '
                         '\'[{"loss":"l2","noise_aug":1.0,"bootstrap":0.7,'
@@ -404,7 +413,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "saturation_mask_prob",
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
-               "output_knee", "learn_output_knee"}
+               "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -474,6 +483,13 @@ def _diversity_kwargs(args, over: dict) -> dict:
             print(f"✗ a learned output knee must start inside "
                   f"({KNEE_MIN_E:g}, {KNEE_MAX_E:g}) e⁻, got {output_knee:g}")
             raise SystemExit(2)
+    speedups = {}
+    for key, field in (("xla", "jit_compile"), ("bf16", "mixed_precision")):
+        value = over.get(key, getattr(args, key))
+        if not isinstance(value, bool):
+            print(f"✗ {key} must be true or false, got {value!r}")
+            raise SystemExit(2)
+        speedups[field] = value
     saturation_mask_prob = float(over.get(
         "saturation_mask_prob", args.saturation_mask_prob,
     ))
@@ -509,7 +525,8 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "saturation_mask_prob": saturation_mask_prob,
             "target_fwhm_arcsec": target_fwhm_arcsec,
             "icnr": bool(over.get("icnr", args.icnr)),
-            "starless": bool(over.get("starless", args.starless))}
+            "starless": bool(over.get("starless", args.starless)),
+            **speedups}
 
 
 def _read_origin(member_dir: str) -> dict:
@@ -539,7 +556,7 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
     member's ``origin.json`` wins for all three. A per-member ``--member-spec``
     loss may still change the loss on purpose; the star regime never changes,
     exactly as in fork mode. Legacy members without a recorded regime are
-    starfull.
+    starfull. A member created with XLA or bfloat16 steps keeps them.
     """
     origin = _read_origin(member_dir)
     identity: dict = {"starless": bool(origin.get("starless", False))}
@@ -555,6 +572,11 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
             origin["target_psf_fwhm_arcsec"])
     if origin.get("asinh_knees") and "knee_loss" not in override:
         identity["knee_loss"] = str(origin.get("knee_loss") or "plain")
+    # A member created with faster steps keeps them (a member-spec xla/bf16
+    # false turns one off).
+    for key, field in (("xla", "jit_compile"), ("bf16", "mixed_precision")):
+        if key not in override and origin.get(field) is True:
+            identity[field] = True
     for key, kept in identity.items():
         if diversity.get(key) != kept:
             print(f"  ↺ {name}: keeping recorded {key}={kept!r} "
@@ -828,6 +850,10 @@ def main() -> int:
         if s.icnr:
             knobs += " icnr" + ("" if s.op == "add"
                                 else "(ignored: not an add)")
+        if s.jit_compile:
+            knobs += " xla"
+        if s.mixed_precision:
+            knobs += " bf16"
         print(f"  · {s.name}: seed={s.seed} target_steps={s.target_steps}"
               + knobs
               + (f" init_from={s.init_from}" if s.init_from else ""))

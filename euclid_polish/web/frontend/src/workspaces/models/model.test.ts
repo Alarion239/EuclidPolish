@@ -158,6 +158,15 @@ describe("train form", () => {
     expect(p).toMatchObject({ batch_size: "4", forward_onthefly: "1", hr_crop_size: "256", crops_per_field: "8", psf_subset: "64" });
   });
 
+  it("sends the training step's arithmetic and clones it from a past job", () => {
+    expect(buildParams(defaultForm())).toMatchObject({ xla: "0", bf16: "0" });
+    const fast = { ...defaultForm(), geometry: { ...defaultForm().geometry, xla: true, bf16: true } };
+    expect(buildParams(fast)).toMatchObject({ xla: "1", bf16: "1" });
+    expect(formFromJob({ ...JOB, params: { ...JOB.params, xla: "1", bf16: "true" } }).geometry)
+      .toMatchObject({ xla: true, bf16: true });
+    expect(formFromJob(JOB).geometry).toMatchObject({ xla: false, bf16: false });
+  });
+
   it("never emits a starless key: new members train starfull, and a legacy starless job clones as starfull", () => {
     expect(buildParams(defaultForm())).not.toHaveProperty("starless");
     expect(buildParams({ ...defaultForm(), mode: "fork", forkFrom: "member_7" })).not.toHaveProperty("starless");
@@ -337,7 +346,7 @@ describe("train resources and continue targets", () => {
     expect(defaultResources([{ ...JOB, state: "RUNNING", req_cpus: 2, req_time_limit: "1:00:00" }]))
       .toEqual({ ...RECIPE_RESOURCES, from: null });
     expect(defaultResources([])).toEqual({ ...RECIPE_RESOURCES, from: null });
-    expect(RECIPE_RESOURCES).toEqual({ n_cpus: "16", memory: "32G", time_limit: "3:00:00" });
+    expect(RECIPE_RESOURCES).toEqual({ n_cpus: "24", memory: "32G", time_limit: "3:00:00" });
   });
   it("seeds a new batch from the last finished NEW batch, never a newer short continue job", () => {
     const add = { ...JOB, jobid: "100", mode: "add", req_cpus: 16, req_memory: "32G", req_time_limit: "3:00:00" };

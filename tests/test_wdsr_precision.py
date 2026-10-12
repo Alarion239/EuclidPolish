@@ -8,7 +8,12 @@ import pytest
 import tensorflow as tf
 
 from euclid_polish.training.augmentation import asinh_stretch_multi_knee
-from euclid_polish.training.models.wdsr import MIXED_POLICY, PrecisionWeightNorm, wdsr
+from euclid_polish.training.models.wdsr import (
+    MIXED_POLICY,
+    PrecisionWeightNorm,
+    initialize_weight_norms,
+    wdsr,
+)
 from euclid_polish.training.trainer import seed_everything
 from scripts.benchmark_train_step import parse_variant
 
@@ -87,6 +92,21 @@ def test_a_float32_checkpoint_restores_into_either_build(tmp_path, options):
         tf.train.latest_checkpoint(str(tmp_path))).assert_existing_objects_matched()
     for got, want in zip(twin.get_weights(), stock.get_weights(), strict=True):
         np.testing.assert_array_equal(got, want)
+
+
+def test_initialize_weight_norms_does_what_the_first_call_does():
+    x = _stretched_input()
+    seed_everything(2)
+    called = wdsr(**ARCH)
+    expected = called(x).numpy()                     # g = |v| on the first call
+    seed_everything(2)
+    initialised = wdsr(**ARCH)
+    initialize_weight_norms(initialised)
+    eager = wdsr(**ARCH, eager_weight_norm_init=True)
+    eager.set_weights(initialised.get_weights())
+    np.testing.assert_array_equal(eager(x).numpy(), expected)
+    initialize_weight_norms(called)                  # already initialised: unchanged
+    np.testing.assert_array_equal(called(x).numpy(), expected)
 
 
 def test_stock_build_keeps_tfps_weight_norm():

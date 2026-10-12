@@ -68,6 +68,8 @@ from euclid_polish.training.losses import (
     knee_stretched_loss,
 )
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
+from euclid_polish.training.models.output_knee import DEFAULT_INIT_KNEE_E
+from euclid_polish.training.models.wdsr import initialize_weight_norms
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
 from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
 from euclid_polish.training.trainer import Trainer, seed_everything
@@ -513,6 +515,8 @@ class Model:
         star_prior_payload: dict | None = None,
         starless: bool = False,
         knee_loss: str = "plain",
+        jit_compile: bool = False,
+        mixed_precision: bool = False,
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
@@ -557,6 +561,12 @@ class Model:
         randomness, and the L1 metric-space pipeline — members with
         different knobs stay comparable. Its target follows the member's
         regime (see :func:`member_record_paths`).
+
+        Faster steps, both off by default: ``jit_compile`` compiles the
+        gradient step with XLA; ``mixed_precision`` runs the residual
+        blocks' convolutions in bfloat16. Either trains a rebuilt copy of the
+        network (:meth:`_training_network`) whose checkpoints load into the
+        standard float32 build, which inference keeps using.
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
@@ -643,7 +653,13 @@ class Model:
             # the same way generated records do.
             provenance_fields["noise_model"] = Config.NOISE_MODEL
         loss = self._member_loss(loss_norm, knee_loss)
-        trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
+        net = (self._training_network(mixed_precision=bool(mixed_precision))
+               if jit_compile or mixed_precision else self._tf_model)
+        if jit_compile or mixed_precision:
+            print("  training step: "
+                  + " + ".join(name for name, on in (("XLA", jit_compile),
+                                                     ("bf16 blocks", mixed_precision)) if on))
+        trainer = Trainer(net, learning_rate=lr_schedule,
                           checkpoint_dir=self._checkpoint_dir,
                           loss=loss, knees=self._asinh_knees,
                           output_knee=self._output_knee,
@@ -660,7 +676,8 @@ class Model:
                           plateau_rollback_min_gap=plateau_rollback_min_gap,
                           plateau_lr_recovery=plateau_lr_recovery,
                           resume_track=resume_track,
-                          provenance_fields=provenance_fields)
+                          provenance_fields=provenance_fields,
+                          jit_compile=bool(jit_compile))
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):
@@ -668,6 +685,27 @@ class Model:
                 self._checkpoint_dir, self._scale, self._num_res_blocks
             )
             self.id = model_id_of_checkpoint(self._checkpoint_dir)
+
+    def _training_network(self, *, mixed_precision: bool):
+        """This model's network rebuilt for faster training steps, holding
+        its current weights: weight norms initialised at build (no per-call
+        check, which XLA needs) and, with ``mixed_precision``, bfloat16
+        residual blocks. The variables are the same, so its checkpoints load
+        into the standard build."""
+        src = self._tf_model
+        initialize_weight_norms(src)     # a fresh model's first call would
+        nchan_in, nchan_out = int(src.input_shape[-1]), int(src.output_shape[-1])
+        # A single-image multi-knee member reads K knee blocks of its bands
+        # (the loader's rule, see load_model_from_checkpoint).
+        input_knees = (nchan_in // nchan_out
+                       if 1 < nchan_out < nchan_in and nchan_in % nchan_out == 0 else 1)
+        net = _wdsr_build(
+            scale=self._scale, num_res_blocks=self._num_res_blocks,
+            nchan_in=nchan_in, nchan_out=nchan_out, input_knees=input_knees,
+            learned_output_knee=(DEFAULT_INIT_KNEE_E if self._learn_output_knee else None),
+            mixed_precision=mixed_precision, eager_weight_norm_init=True)
+        net.set_weights(src.get_weights())
+        return net
 
     # -- inference interface --
 

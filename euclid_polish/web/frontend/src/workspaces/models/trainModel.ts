@@ -28,11 +28,12 @@ export type SpecRow = {
   seed: string;
 };
 
-/** The per-batch run knobs: `batch_size` (scheduling) and the trainer's own
- *  forward-model knobs (the ones Config does not own). */
+/** The per-batch run knobs: `batch_size` (scheduling), the trainer's own
+ *  forward-model knobs (the ones Config does not own) and the training
+ *  step's arithmetic (XLA, bfloat16 residual blocks; inference stays float32). */
 export type Geometry = {
   batch_size: string; hr_crop_size: string; crops_per_field: string; forward_onthefly: boolean;
-  psf_subset: string; target_psf_fwhm_arcsec: string;
+  psf_subset: string; target_psf_fwhm_arcsec: string; xla: boolean; bf16: boolean;
 };
 
 export type TrainForm = {
@@ -63,7 +64,7 @@ export const newRow = (from?: Partial<SpecRow>): SpecRow => ({
  *  are System › Config's). */
 export const RECIPE_GEOMETRY: Geometry = {
   batch_size: "4", hr_crop_size: "256", crops_per_field: "8", forward_onthefly: true,
-  psf_subset: "64", target_psf_fwhm_arcsec: "0.066",
+  psf_subset: "64", target_psf_fwhm_arcsec: "0.066", xla: false, bf16: false,
 };
 
 export const defaultForm = (): TrainForm => ({
@@ -76,10 +77,10 @@ export const defaultForm = (): TrainForm => ({
 const num = (s: string) => (s.trim() === "" ? NaN : Number(s));
 
 /** SLURM resources per model of the recipe (the 2026-09-24 batch 48107719:
- *  a 70k-step member takes 2.5–3 h; 16 CPUs keep the GPU fed — the step's
- *  own default of 4 CPUs / 48 h starves it and books far too long). */
+ *  a 70k-step member takes 2.5–3 h). 24 CPUs: the live forward model's field
+ *  simulation saturates there (2026-10-11 benchmark; 32 add nothing). */
 export type Resources = { n_cpus: string; memory: string; time_limit: string };
-export const RECIPE_RESOURCES: Resources = { n_cpus: "16", memory: "32G", time_limit: "3:00:00" };
+export const RECIPE_RESOURCES: Resources = { n_cpus: "24", memory: "32G", time_limit: "3:00:00" };
 
 /** Jobs of the same kind as a form mode: a continue job runs members a few
  *  thousand steps further; add and fork train whole new members. */
@@ -160,7 +161,7 @@ export function rowsFromSpec(spec: unknown): SpecRow[] {
   });
 }
 
-type StringGeometryKey = Exclude<keyof Geometry, "forward_onthefly">;
+type StringGeometryKey = Exclude<keyof Geometry, "forward_onthefly" | "xla" | "bf16">;
 const GEOMETRY_KEYS: StringGeometryKey[] = [
   "batch_size", "hr_crop_size", "crops_per_field", "psf_subset", "target_psf_fwhm_arcsec",
 ];
@@ -170,7 +171,10 @@ const TRUTHY = ["1", "true", "yes", "on"];
 /** The form → the POST body of `/ensemble/train/preview` and
  *  `/api/fasrc/steps/ensemble_train/submit` (task params only). */
 export function buildParams(f: TrainForm): Record<string, string> {
-  const g: Record<string, string> = { forward_onthefly: f.geometry.forward_onthefly ? "1" : "0" };
+  const g: Record<string, string> = {
+    forward_onthefly: f.geometry.forward_onthefly ? "1" : "0",
+    xla: f.geometry.xla ? "1" : "0", bf16: f.geometry.bf16 ? "1" : "0",
+  };
   for (const k of GEOMETRY_KEYS) {
     const v = String(f.geometry[k] ?? "").trim();
     if (v !== "") g[k] = v;
@@ -240,6 +244,7 @@ export function formFromJob(job: TrainingJob): TrainForm {
   const geometry = { ...base.geometry };
   for (const k of GEOMETRY_KEYS) if (p[k] != null && p[k] !== "") geometry[k] = String(p[k]);
   if (p.forward_onthefly != null) geometry.forward_onthefly = TRUTHY.includes(String(p.forward_onthefly).toLowerCase());
+  for (const k of ["xla", "bf16"] as const) if (p[k] != null) geometry[k] = TRUTHY.includes(String(p[k]).toLowerCase());
   return {
     ...base,
     mode,

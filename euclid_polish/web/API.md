@@ -724,8 +724,8 @@ progress comes from its `.events` stream, `/api/fasrc/jobs/<jobid>/status`).
 | GET | `/api/fasrc/runs/training-curve.json` | fasrc | Per-step training records for one run's wall-time window (JSON, ≤ ~600 points). |
 | GET | `/api/fasrc/status` |  | Connection state `{ssh_connected, connected_at, socket, last_error}` (C4). `last_error` = startup auto-connect error or last failed connect; null after a successful connect or manual disconnect. |
 | GET, POST | `/api/fasrc/steps/<step_id>/history` |  | Per-step run history (newest first, every state) + best-match prefill suggestion `match` (local job ledger). Rows are compacted like `/api/fasrc/history` (`params` without the embedded payload blobs, listed in `params_omitted`; no `params_json`). |
-| POST | `/api/fasrc/steps/<step_id>/submit` | fasrc | Submit (or queue behind the running job) one pipeline step: `confirm=yes`, resources (`n_cpus`, `n_gpus`, `memory`, `time_limit`; partition is fixed per step) and task params. Absent (and blank, unless blank means "unset") task params take the schema defaults; an invalid one, or a spec that cannot be rendered, is refused **400** `{ok:false,error}` before anything reaches FASRC or the queue (C5, see *FASRC step task parameters*). `{ok, jobid}` or `{ok, queued:true, queue}`. |
-| GET | `/api/fasrc/steps/status` |  | `{ssh_connected, steps[], artifacts, remote_paths}`; each step: `step_id, label, needs_gpu, fixed_cpus, fixed_gpus, defaults` (resources), `task_params` (schema) and `last_params` (typed task params of the newest COMPLETED run, or `null`) — C5 — and `outputs[{key, path, exists}]` (the remote artifacts the step is known to write; `exists` null offline). Offline it skips the artifact probes (never gated). |
+| POST | `/api/fasrc/steps/<step_id>/submit` | fasrc | Submit (or queue behind the running job) one pipeline step: `confirm=yes`, resources (`n_cpus`, `n_gpus`, `memory`, `time_limit`; partition is fixed per step, except that `partition=<test_partition>` picks a step's test partition — `ensemble_train` → `gpu_test`: MIG slices, free in fairshare; the server books ⌈n_cpus / 7⌉ slices (gpu_test allows fewer than 8 CPUs per GPU), keeps only the first visible to the job, and refuses a time limit over 12:00:00 with **400**) and task params. Absent (and blank, unless blank means "unset") task params take the schema defaults; an invalid one, or a spec that cannot be rendered, is refused **400** `{ok:false,error}` before anything reaches FASRC or the queue (C5, see *FASRC step task parameters*). `{ok, jobid}` or `{ok, queued:true, queue}`. |
+| GET | `/api/fasrc/steps/status` |  | `{ssh_connected, steps[], artifacts, remote_paths}`; each step: `step_id, label, needs_gpu, fixed_cpus, fixed_gpus, test_partition` (a second partition the submit accepts, or `null`), `defaults` (resources), `task_params` (schema) and `last_params` (typed task params of the newest COMPLETED run, or `null`) — C5 — and `outputs[{key, path, exists}]` (the remote artifacts the step is known to write; `exists` null offline). Offline it skips the artifact probes (never gated). |
 
 ### Resource advisor (`routes/resources.py`, `observability/resource_advisor.py`)
 
@@ -966,6 +966,8 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
   ("NN·psnr"), starless, regime, origin (origin.json), op, forked_from, loss,
   blocks, asinh_knee, asinh_knees, output_knee, knee_loss, noise_aug,
   bootstrap, icnr, seed, commit, created_at, noise_model, step, target_steps,
+  (origin.json also records the training step's `jit_compile` and
+  `mixed_precision` — the `ensemble_train` task params `xla` and `bf16`),
   fraction, status: complete|timeout|running|unknown, timeout (below target
   after its job ended), job{jobid, state, submitted_at, ended_at,
   elapsed_seconds, req_time_limit, gpu_util_mean, mode}|null (the newest
