@@ -20,6 +20,7 @@ which turns the stretched output into electrons with one trainable knee per
 band, so that model outputs electrons.
 """
 
+import tensorflow as tf
 import tensorflow_probability as tfp
 from tf_keras.layers import Add, Concatenate, Conv2D, Input, Lambda
 from tf_keras.models import Model
@@ -28,24 +29,78 @@ from euclid_polish.training.models.common import ICNR, pixel_shuffle
 from euclid_polish.training.models.output_knee import LearnedOutputKnee
 
 
-def conv2d_weightnorm(filters, kernel_size, padding="same", activation=None, **kwargs):
-    return tfp.layers.weight_norm.WeightNorm(
-        Conv2D(
-            filters,
-            kernel_size,
-            padding=padding,
-            activation=activation,
-            **kwargs,
-        ),
-        data_init=False,
-    )
+#: Keras dtype policy of the residual blocks' convolutions under mixed
+#: precision: bfloat16 arithmetic, float32 variables.
+MIXED_POLICY = "mixed_bfloat16"
 
 
-def res_block(x_in, num_filters, expansion, kernel_size, scaling):
+class PrecisionWeightNorm(tfp.layers.weight_norm.WeightNorm):
+    """tfp's :class:`WeightNorm` with two changes. Its variables, and so the
+    checkpoint layout, are unchanged.
+
+    * The kernel is normalised in float32 (this wrapper's dtype) and then cast
+      to the wrapped conv's compute dtype, so a bfloat16 conv gets a bfloat16
+      kernel without the norm itself being taken in bfloat16.
+    * ``eager_init``: ``g`` takes its starting value (the norm of ``v``) when
+      the layer is built rather than on its first call. That removes tfp's
+      per-call ``initialized`` check, a ``tf.cond`` in every layer of every
+      training step; the computed values are the same.
+    """
+
+    def __init__(self, layer, *, eager_init=False, **kwargs):
+        super().__init__(layer, data_init=False, **kwargs)
+        self.eager_init = bool(eager_init)
+
+    def build(self, input_shape=None):
+        super().build(input_shape)
+        if self.eager_init:
+            self._init_norm()
+            self.initialized.assign(True)
+
+    def _compute_weights(self):
+        super()._compute_weights()
+        self.layer.kernel = tf.cast(self.layer.kernel, self.layer.compute_dtype)
+
+    def call(self, inputs):
+        if not self.eager_init:
+            return super().call(inputs)
+        self._compute_weights()
+        return self.layer(inputs)
+
+
+def conv2d_weightnorm(filters, kernel_size, padding="same", activation=None, *,
+                      mixed_precision=False, eager_init=False, **kwargs):
+    """A weight-normalised conv. ``mixed_precision``: the conv runs in
+    bfloat16 (``MIXED_POLICY``); ``eager_init``: see :class:`PrecisionWeightNorm`.
+    Without either it is tfp's stock ``WeightNorm``, as every checkpoint was
+    trained."""
+    if not (mixed_precision or eager_init):
+        return tfp.layers.weight_norm.WeightNorm(
+            Conv2D(
+                filters,
+                kernel_size,
+                padding=padding,
+                activation=activation,
+                **kwargs,
+            ),
+            data_init=False,
+        )
+    if mixed_precision:
+        kwargs["dtype"] = MIXED_POLICY
+    conv = Conv2D(filters, kernel_size, padding=padding, activation=activation, **kwargs)
+    # A float32 wrapper that passes its input through uncast: the conv casts
+    # it to its own compute dtype.
+    return PrecisionWeightNorm(conv, eager_init=eager_init, dtype="float32", autocast=False)
+
+
+def res_block(x_in, num_filters, expansion, kernel_size, scaling, *,
+              mixed_precision=False, eager_init=False):
     linear = 0.8
-    x = conv2d_weightnorm(num_filters * expansion, 1, padding='same', activation='relu')(x_in)
-    x = conv2d_weightnorm(int(num_filters * linear), 1, padding='same')(x)
-    x = conv2d_weightnorm(num_filters, kernel_size, padding='same')(x)
+    opts = {"mixed_precision": mixed_precision, "eager_init": eager_init}
+    x = conv2d_weightnorm(num_filters * expansion, 1, padding='same', activation='relu',
+                          **opts)(x_in)
+    x = conv2d_weightnorm(int(num_filters * linear), 1, padding='same', **opts)(x)
+    x = conv2d_weightnorm(num_filters, kernel_size, padding='same', **opts)(x)
     if scaling:
         x = Lambda(lambda t: t * scaling)(x)
     x = Add()([x_in, x])
@@ -56,7 +111,8 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
          res_block_scaling=None, nchan_in=1, nchan_out=None,
          entry_kernel_size=3, skip_kernel_size=5,
          per_band_skip=None, icnr=False, input_knees=1,
-         learned_output_knee=None):
+         learned_output_knee=None, mixed_precision=False,
+         eager_weight_norm_init=False):
     """WDSR-A model with potentially asymmetric input/output channels.
 
     Parameters
@@ -99,6 +155,17 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
                    model then ends in ``LearnedOutputKnee`` and outputs
                    electrons, one trainable knee per output band. ``None``
                    (default) keeps the stretched output.
+    mixed_precision : run the residual blocks' convolutions in bfloat16
+                   (``MIXED_POLICY``), about 95% of the arithmetic. The
+                   residual stream between blocks, the entry and tail convs,
+                   the skip branch and the learned knee stay float32:
+                   bfloat16 keeps 8 significant bits, too coarse for the
+                   stretched image itself (a stretched value of 10 rounds to
+                   steps of 0.06). Variables stay float32 either way, so the
+                   weights load into either build.
+    eager_weight_norm_init : give every weight norm its starting value when
+                   the layer is built, dropping the per-call initialisation
+                   check (see :class:`PrecisionWeightNorm`). Same values.
 
     Input  : asinh-stretched LR tensor, shape ``(B, H, W, nchan_in)``.
     Output : asinh-stretched SR tensor, shape ``(B, scale*H, scale*W, nchan_out)``.
@@ -126,13 +193,15 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
     # Main branch — the SHARED trunk: the entry conv mixes all input
     # bands into one feature stack, so every res block learns the
     # cross-band correlations jointly.
-    m = conv2d_weightnorm(num_filters, entry_kernel_size, padding='same')(x_in)
+    eager = {"eager_init": eager_weight_norm_init}
+    m = conv2d_weightnorm(num_filters, entry_kernel_size, padding='same', **eager)(x_in)
     for _ in range(num_res_blocks):
         m = res_block(m, num_filters, res_block_expansion,
-                      kernel_size=3, scaling=res_block_scaling)
+                      kernel_size=3, scaling=res_block_scaling,
+                      mixed_precision=mixed_precision, **eager)
     m = conv2d_weightnorm(nchan_out * scale ** 2, 3, padding='same',
                           name=f'conv2d_main_scale_{scale}',
-                          kernel_initializer=_shuffle_init())(m)
+                          kernel_initializer=_shuffle_init(), **eager)(m)
     m = Lambda(pixel_shuffle(scale))(m)
 
     # Skip branch
@@ -157,7 +226,7 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
             s_k = conv2d_weightnorm(
                 scale ** 2, skip_kernel_size, padding='same',
                 name=f'conv2d_skip_band_{k}_scale_{scale}',
-                kernel_initializer=_shuffle_init(),
+                kernel_initializer=_shuffle_init(), **eager,
             )(band_in)
             s_bands.append(Lambda(pixel_shuffle(scale))(s_k))
         s = Concatenate(axis=-1)(s_bands)
@@ -167,7 +236,7 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
         s = conv2d_weightnorm(nchan_out * scale ** 2, skip_kernel_size,
                               padding='same',
                               name=f'conv2d_skip_scale_{scale}',
-                              kernel_initializer=_shuffle_init())(x_in)
+                              kernel_initializer=_shuffle_init(), **eager)(x_in)
         s = Lambda(pixel_shuffle(scale))(s)
 
     x = Add()([m, s])
