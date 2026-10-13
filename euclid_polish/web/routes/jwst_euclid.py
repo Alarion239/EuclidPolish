@@ -74,7 +74,7 @@ def _nexus_inference_request(identifier: str, form) -> tuple[list[str] | None, s
     specs = model_catalog.parse_specs(form.get("spec") or model_catalog.SPEC_PRODUCTION)
     if len(specs) != 1:
         raise ValueError("pass exactly one model spec (spec=production, mean, member:<N>, "
-                         "gate:<variant> or rbf)")
+                         "gate:<variant>, universal:<N> or rbf)")
     try:
         item = model_catalog.resolve_spec(specs[0])
     except KeyError as exc:

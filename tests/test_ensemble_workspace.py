@@ -522,12 +522,14 @@ def test_pull_dry_run_and_member_picker(env, monkeypatch):
     ssh = _FakeSSH(probe)
     monkeypatch.setattr(STATE, "ssh", ssh)
     dry = ev.job_ensemble_pull(_Cap(), dry_run=True)
-    assert dry == {"dry_run": True, "changed": ["member_01", "member_03"], "tombstoned_skipped": []}
+    assert dry == {"dry_run": True, "changed": ["member_01", "member_03"], "tombstoned_skipped": [],
+                   "universal_skipped": []}
     assert ssh.pulled == []
     out = ev.job_ensemble_pull(_Cap(), members=["03", "member_02"])
     assert ssh.pulled == ["/remote/ensemble/member_03/"]
     assert out["changed"] == ["member_03"] and out["up_to_date"] == ["member_02"]
     assert out["requested"] == ["member_02", "member_03"]
+    assert out["universal_skipped"] == []           # no universal model among the names
 
 
 # ---- overview / headline ----------------------------------------------------- #

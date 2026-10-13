@@ -142,6 +142,58 @@ def test_real_chart_from_a_frozen_experiment(study):
     assert body[:4] == MAGIC["png"]
 
 
+def _real_data(study, experiments_):
+    return render.StudyData(manifest=study.manifest, knee=study.knee, curves=study.curves,
+                            gate=study.gate, real={"experiments": experiments_}, selections=[])
+
+
+def _experiment(eid, **specs):
+    return {"id": eid, "created": eid[:8], "tiles": ["poster/x"], "specs": {
+        spec: {"label": None, "member_label": member, "summary": _summary(holes)}
+        for spec, (member, holes) in specs.items()}}
+
+
+UNIVERSAL_211 = {"universal:member_211": ("211·psnr", 5.0)}
+
+
+def test_real_chart_keeps_universal_models_apart_from_members(study):
+    """A universal model is never a study member: its rows survive any member
+    selection, under its own name (not "211·psnr", which reads as member 211)."""
+    data = _real_data(study, [_experiment("20260928-000000-bbbbbb", production=(None, 1.0),
+                                          **{"member:member_01": (LABELS[0], 3.0)},
+                                          **UNIVERSAL_211)])
+    _columns, rows = render.table("real", data, render.Selection())
+    assert {r["model"] for r in rows} == {"production", LABELS[0], "Universal 211"}
+    universal = [r for r in rows if r["spec"] == "universal:member_211"]
+    assert len(universal) == 4 and {r["hole_pct"] for r in universal} == {5.0}
+    _columns, picked = render.table("real", data, render.Selection(members=[LABELS[1]]))
+    assert {r["model"] for r in picked} == {"production", "Universal 211"}
+    body = render.render("real", data, render.Selection(), output_format="png", dpi=100)
+    assert body[:4] == MAGIC["png"]
+
+
+def test_the_default_real_experiment_has_rows_for_the_selection(study):
+    """With no experiment picked, the chart reads the newest experiment with
+    rows of the selected ensemble models — never a universal-only run (frozen
+    by an older study) and never one whose members are all deselected."""
+    universal_only = _experiment("20260929-000000-cccccc", **UNIVERSAL_211)
+    member_only = _experiment("20260928-000000-bbbbbb", **{"member:member_01": (LABELS[0], 3.0)})
+    production = _experiment("20260927-000000-aaaaaa", production=(None, 1.0))
+    data = _real_data(study, [universal_only, member_only, production])
+    _c, rows = render.table("real", data, render.Selection())
+    assert {r["experiment"] for r in rows} == {"20260928-000000-bbbbbb"}
+    _c, rows = render.table("real", data, render.Selection(members=[LABELS[1]]))
+    assert {r["experiment"] for r in rows} == {"20260927-000000-aaaaaa"}
+    _c, rows = render.table("real", data, render.Selection(experiment="20260929-000000-cccccc"))
+    assert {r["model"] for r in rows} == {"Universal 211"}
+    # only universal runs: the newest one is still a chart, not a 404
+    _c, rows = render.table("real", _real_data(study, [universal_only]), render.Selection())
+    assert {r["model"] for r in rows} == {"Universal 211"}
+    with pytest.raises(StudyError) as err:
+        render.table("real", _real_data(study, [member_only]), render.Selection(members=[LABELS[1]]))
+    assert err.value.code == 404
+
+
 def _summary(holes):
     return {"n_tiles": 1, "per_band": {b: {"hole_pct": holes, "pct_R_lt_0p8": 2 * holes,
                                            "median_R": 1.1, "flux_ratio": 0.99}
@@ -201,7 +253,6 @@ def test_study_data_is_memoized_per_manifest(tmp_path, monkeypatch):
 def test_figure_text_reads_like_a_paper():
     """Loss families and Euclid bands are written as in a paper (L1, BerHu, Y),
     while the group keys (used in selections and CSVs) stay as recorded."""
-    from euclid_polish.studies import render
     assert render.display_name("l1") == "L1"
     assert render.display_name("l2 · knee 3") == "L2 · knee 3"
     assert render.display_name("berhu") == "BerHu"

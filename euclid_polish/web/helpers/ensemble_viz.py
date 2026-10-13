@@ -3,7 +3,10 @@ members table, member inspector and training curves, cached per-member
 PSNR, the test-set evaluation job and the diagnostics
 rebuilt from its cached cubes (power spectrum, pixel diagnostics with
 back-tracing, PSNR vs knee, the Y/J/H payloads), the combiner fit / variant /
-compare / promote jobs, member archive / restore / pull, and the
+compare / promote jobs, member archive / restore / pull, the job ledger's
+member recipes (which members were created as universal models) with the
+read side of the universal models' score store (the rest of the universal
+models lives in :mod:`~euclid_polish.web.helpers.universal_models`), and the
 train-command preview.
 
 The evaluation caches, per field, the ensemble-mean SR and the per-pixel
@@ -3460,13 +3463,19 @@ def job_archive_member(cap, *, name: str) -> dict:
     model inference) and requests a stale-cube purge, which deletes the
     archived member's cubes once the console is idle
     (:mod:`euclid_polish.web.helpers.stale_purge`).
+
+    A registered UNIVERSAL model archives the same way (zip
+    ``universal-member-NNN.zip``, a tombstone of class ``universal``, so a restore
+    brings it back as a universal model), except that no evaluation goes
+    stale — no ensemble cube or gate involves it (``stale_regime`` null).
     """
     if not re.fullmatch(r"member_\d{2,}", name or ""):
         raise RuntimeError(f"invalid member name {name!r}")
     base = ensemble_dir()
     reg = ensemble_registry.load_registry(base)
-    if name not in reg["active"]:
-        raise RuntimeError(f"{name} is not an active ensemble member")
+    universal = name in reg["universal"]
+    if name not in reg["active"] and not universal:
+        raise RuntimeError(f"{name} is not an active ensemble member or a universal model")
     src = os.path.join(base, name)
     store = tracking_default_store()
     if not store.has_current():
@@ -3474,11 +3483,13 @@ def job_archive_member(cap, *, name: str) -> dict:
             "no active tracking campaign — start one in Notebook › Log (New campaign…) "
             "so the archived member has somewhere to go.")
     archived_starless = member_is_starless(src)
+    what = "universal model" if universal else "ensemble member"
     cap.tick(0, 3, f"zipping {name}")
     try:
         meta = store.archive_model_zip(
-            src, f"ensemble-{name}",
-            comment=f"archived from ensemble ({base})")
+            src, f"{'universal' if universal else 'ensemble'}-{name}",
+            comment=(f"archived universal model ({base})" if universal
+                     else f"archived from ensemble ({base})"))
     except TrackingError as e:
         raise RuntimeError(f"archive failed: {e}") from e
     commit = (capture_git() or {}).get("short")
@@ -3486,22 +3497,25 @@ def job_archive_member(cap, *, name: str) -> dict:
     ensemble_registry.archive_member_entry(
         base, name, zip_path=os.path.join("models", meta["name"]),
         commit=commit)
-    _mark_archive_stale(archived_starless, name)
-    cap.tick(2, 3, "marked ensemble stale — rebuild queued for next evaluation")
+    if universal:
+        cap.tick(2, 3, "a universal model — no ensemble evaluation goes stale")
+    else:
+        _mark_archive_stale(archived_starless, name)
+        cap.tick(2, 3, "marked ensemble stale — rebuild queued for next evaluation")
     shutil.rmtree(src, ignore_errors=True)
     cap.tick(3, 3, "deleting FASRC copy")
     remote_status = _delete_remote_member(name)
-    regime = _regime_slug(archived_starless)
+    regime = None if universal else _regime_slug(archived_starless)
+    effect = ("no evaluation affected" if universal else
+              f"{regime} evaluation marked stale; cached cubes will rebuild on the next "
+              "evaluation (no re-inference)")
     store.append_log(
-        f"Archived ensemble member `{name}` → `models/{meta['name']}` "
+        f"Archived {what} `{name}` → `models/{meta['name']}` "
         f"({meta['size_bytes'] / 1e6:.1f} MB). Local member dir deleted; "
-        f"{regime} evaluation marked stale; cached cubes will rebuild on the next "
-        f"evaluation (no re-inference). FASRC copy: {remote_status}")
-    print(f"  ✓ {name} → tracking {meta['name']}; {regime} evaluation marked "
-          f"stale (cached-cube rebuild queued for next evaluation); "
-          f"FASRC copy: {remote_status}")
+        f"{effect}. FASRC copy: {remote_status}")
+    print(f"  ✓ {name} → tracking {meta['name']}; {effect}; FASRC copy: {remote_status}")
     request_stale_purge(f"archived {name}")
-    return {"zip": meta["name"], "member": name,
+    return {"zip": meta["name"], "member": name, "class": "universal" if universal else "member",
             "remote": remote_status, "stale_regime": regime}
 
 
@@ -3539,7 +3553,7 @@ def changed_members_from_itemize(out: str) -> set[str]:
 
 
 def job_ensemble_pull(cap, *, members: list[str] | None = None,
-                      dry_run: bool = False) -> dict:
+                      dry_run: bool = False, allow_universal: bool = False) -> dict:
     """Download the trained ensemble (``member_NN/``) from FASRC to the local
     checkpoint tree, so the evaluate / combiner / SR actions can run it locally.
 
@@ -3553,9 +3567,20 @@ def job_ensemble_pull(cap, *, members: list[str] | None = None,
     unchanged is reported in ``up_to_date``. ``dry_run`` stops after the
     probe and returns what WOULD be pulled (``changed``) — nothing is
     downloaded or re-scored.
+
+    Universal models stay out of the ensemble: the members the job log
+    created as universal models that are neither active, registered
+    universal, archived nor read by a local gate or cube manifest
+    (:func:`unregistered_universal_names`) are excluded and reported in
+    ``universal_skipped`` (pull them with the universal pull, which registers
+    them first) — from every-member pulls and the dry run, and from an
+    explicit ``members`` list unless ``allow_universal`` (then they are
+    pulled, and the registry bootstrap makes them ensemble members). An
+    explicit list left empty by that is refused. Registered universal models
+    refresh in place and stay standalone (the registry never activates them).
     """
-    wanted = ({ensemble_registry.member_name(m) for m in members}
-              if members else None)
+    requested = ({ensemble_registry.member_name(m) for m in members}
+                 if members else None)
     if STATE.ssh is None or not STATE.ssh.is_connected():
         raise RuntimeError("not connected to FASRC — connect on the FASRC tab first.")
     remote = remote_ensemble_dir()
@@ -3568,13 +3593,33 @@ def job_ensemble_pull(cap, *, members: list[str] | None = None,
     # tombstoned member reappeared in the training curves).
     tombstoned = {t["name"]
                   for t in ensemble_registry.load_registry(local)["archived"]}
-    excludes = [f"--exclude=/{n}/" for n in sorted(tombstoned)]
+    # A FASRC-only universal model must never be bootstrapped ACTIVE by a
+    # pull (it would change the mean, the eval identity and the gates'
+    # notes): left out unless an explicit request opts in.
+    unregistered = set(unregistered_universal_names(local))
+    if requested is None or dry_run:
+        universal_skipped = unregistered
+    elif allow_universal:
+        universal_skipped = set()
+    else:
+        universal_skipped = requested & unregistered
+    wanted = requested - universal_skipped if requested is not None else None
+    if wanted is not None and not wanted and not dry_run:
+        raise RuntimeError(
+            f"{', '.join(sorted(universal_skipped))} "
+            f"{'is a universal model' if len(universal_skipped) == 1 else 'are universal models'}"
+            " — pull it on Models › Universal (or allow_universal=1 to make it an ensemble "
+            "member)")
+    excludes = [f"--exclude=/{n}/" for n in sorted(tombstoned | universal_skipped)]
 
     cap.tick(0, 0, "probing FASRC for changed members (rsync dry-run)")
     probe_rc, probe_out, _perr = STATE.ssh.rsync_pull(
         remote.rstrip("/") + "/", local,
         extra_args=["--dry-run", "--itemize-changes", *excludes], timeout=600)
-    changed = changed_members_from_itemize(probe_out) - tombstoned
+    changed = changed_members_from_itemize(probe_out) - tombstoned - universal_skipped
+    if universal_skipped:
+        print("  • universal models left out (pull them on Models › Universal): "
+              + ", ".join(sorted(universal_skipped)))
     if dry_run:
         if probe_rc != 0 and not probe_out.strip():
             raise RuntimeError("the FASRC change probe failed — try again, or pull "
@@ -3582,7 +3627,8 @@ def job_ensemble_pull(cap, *, members: list[str] | None = None,
         print(f"  • {len(changed)} member(s) changed on FASRC: "
               + (", ".join(sorted(changed)) or "none"))
         return {"dry_run": True, "changed": sorted(changed),
-                "tombstoned_skipped": sorted(tombstoned)}
+                "tombstoned_skipped": sorted(tombstoned),
+                "universal_skipped": sorted(universal_skipped)}
     up_to_date: list[str] = []
     if wanted is not None:
         up_to_date = sorted(wanted - changed - tombstoned)
@@ -3608,7 +3654,7 @@ def job_ensemble_pull(cap, *, members: list[str] | None = None,
                                              extra_args=excludes, timeout=3600)
         changed = {os.path.basename(d)
                    for d in glob.glob(os.path.join(local, _MEMBER_GLOB))
-                   } - tombstoned
+                   } - tombstoned - universal_skipped
         print("  • change probe failed — pulled the full tree")
     elif not changed:
         print("  ✓ all members up to date on FASRC — nothing to download")
@@ -3651,7 +3697,8 @@ def job_ensemble_pull(cap, *, members: list[str] | None = None,
         print(f"  ! member PSNR refresh skipped: {type(e).__name__}: {e}")
     return {"local": local, "n_members": n,
             "changed": sorted(changed), "up_to_date": up_to_date,
-            "requested": sorted(wanted) if wanted is not None else None,
+            "requested": sorted(requested) if requested is not None else None,
+            "universal_skipped": sorted(universal_skipped),
             "psnr": psnr}
 
 
@@ -3827,6 +3874,327 @@ def _jobs_by_member(jobs: list[dict]) -> dict[str, dict]:
         for name in job["member_names"]:
             out.setdefault(name, job)
     return out
+
+
+def _truthy(value) -> bool:
+    """A ledger flag (``True``, ``"1"``, ``"true"``…) as a bool."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _knee_list(value) -> list[float] | None:
+    """``asinh_knees`` as the run-wide comma string or a member-spec list →
+    floats; ``None`` when unset or unreadable."""
+    if value is None or value == "" or value == []:
+        return None
+    items = value.split(",") if isinstance(value, str) else value
+    try:
+        knees = [float(q) for q in items if str(q).strip() != ""]
+    except (TypeError, ValueError):
+        return None
+    return knees or None
+
+
+#: Recipe keys a fork takes from its SOURCE checkpoint, never from its own
+#: params or ``member_spec`` (model.py's fork path copies the knees, the
+#: output knee and the learned-knee head; the depth comes with the weights).
+_FORK_INHERITED = ("asinh_knees", "output_knee", "learn_output_knee", "num_res_blocks")
+
+
+def _fork_source(job: dict) -> str | None:
+    """The member a ``fork`` job forked (``params.fork_from``, normalised);
+    ``None`` for another mode or an unreadable source."""
+    if job.get("mode") != "fork":
+        return None
+    raw = str((job.get("params") or {}).get("fork_from") or "").strip().rstrip("/")
+    for candidate in dict.fromkeys((raw, os.path.basename(raw))):
+        try:
+            return ensemble_registry.member_name(candidate)
+        except ValueError:
+            continue
+    return None
+
+
+def _own_job_recipe(job: dict, index: int) -> dict:
+    """:func:`job_member_recipe` before a fork's source is resolved: the
+    job's run-wide params overridden by the member's ``member_spec`` entry."""
+    params = job.get("params") or {}
+    spec = params.get("member_spec")
+    if isinstance(spec, str):
+        try:
+            spec = json.loads(spec) if spec.strip() else None
+        except ValueError:
+            spec = None
+    over = (spec[index] if isinstance(spec, list) and 0 <= index < len(spec)
+            and isinstance(spec[index], dict) else {})
+
+    def pick(key):
+        value = over.get(key, params.get(key))
+        return None if value == "" else value
+
+    return {
+        "asinh_knees": _knee_list(pick("asinh_knees")),
+        "output_knee": _finite(pick("output_knee")),
+        "learn_output_knee": _truthy(pick("learn_output_knee")),
+        "num_res_blocks": _as_int(pick("num_res_blocks")),
+        "steps": _as_int(params.get("steps")),
+        "batch_size": _as_int(pick("batch_size")),
+        "crops_per_field": _as_int(pick("crops_per_field")),
+        "xla": _truthy(pick("xla")),
+        "bf16": _truthy(pick("bf16")),
+        "fork_from": _fork_source(job),
+    }
+
+
+def _own_ledger_recipes(jobs: list[dict]) -> dict[str, dict]:
+    """member name → :func:`_own_job_recipe` of the newest add/fork job that
+    created it (``jobs`` newest first)."""
+    out: dict[str, dict] = {}
+    for job in jobs:
+        if job.get("mode") not in ("add", "fork"):
+            continue
+        for i, raw in enumerate(job.get("member_names") or []):
+            try:
+                name = ensemble_registry.member_name(raw)
+            except ValueError:
+                continue
+            out.setdefault(name, _own_job_recipe(job, i))
+    return out
+
+
+def _origin_inherited(origin: dict) -> dict:
+    """The fork-inherited recipe keys of an ``origin.json`` (its
+    ``learned_output_knee`` dict is the ledger's ``learn_output_knee``)."""
+    return {"asinh_knees": _knee_list(origin.get("asinh_knees")),
+            "output_knee": _finite(origin.get("output_knee")),
+            "learn_output_knee": bool(origin.get("learned_output_knee")
+                                      or _truthy(origin.get("learn_output_knee"))),
+            "num_res_blocks": _as_int(origin.get("num_res_blocks"))}
+
+
+def _source_inherited(src: str, own: dict[str, dict], base: str,
+                      seen: frozenset[str]) -> dict | None:
+    """What a fork of ``src`` inherits: the local ``<base>/<src>/origin.json``
+    when present, else ``src``'s ledger recipe (itself resolved through a
+    chain of forks); ``None`` for an unknown source or a cycle."""
+    origin = _member_origin(os.path.join(base, src))
+    if isinstance(origin, dict):
+        return _origin_inherited(origin)
+    if src in seen or src not in own:
+        return None
+    recipe = _resolve_fork(own[src], own, base, seen | {src})
+    return {key: recipe.get(key) for key in _FORK_INHERITED}
+
+
+def _resolve_fork(recipe: dict, own: dict[str, dict], base: str,
+                  seen: frozenset[str]) -> dict:
+    """``recipe`` with a fork's inherited keys taken from its source (a
+    source of unknown depth leaves the job's own ``num_res_blocks``)."""
+    src = recipe.get("fork_from")
+    if not src:
+        return recipe
+    inherited = _source_inherited(src, own, base, seen)
+    if inherited is None:
+        return recipe
+    out = dict(recipe)
+    for key in _FORK_INHERITED:
+        if key == "num_res_blocks" and inherited.get(key) is None:
+            continue
+        out[key] = inherited.get(key)
+    return out
+
+
+def job_member_recipe(job: dict, index: int, *, jobs: list[dict] | None = None,
+                      base: str | None = None) -> dict:
+    """The recipe array task ``index`` of an ``ensemble_train`` job (a
+    :func:`training_jobs` row) trained: the run-wide task params overridden by
+    that member's ``member_spec`` entry, the way ``scripts/train_ensemble.py``
+    applies them. Ledger spellings: ``learn_output_knee`` (the learned head;
+    ``output_knee`` is then its starting value), ``xla``, ``bf16``. Keys:
+    ``asinh_knees, output_knee, learn_output_knee, num_res_blocks, steps,
+    batch_size, crops_per_field, xla, bf16, fork_from``.
+
+    A FORK inherits its source's knees and depth (:data:`_FORK_INHERITED`):
+    from the source's local ``origin.json`` (``base``, default the ensemble
+    dir) when present, else from the source's ledger recipe (``jobs``,
+    default the local job log), followed through chains of forks."""
+    recipe = _own_job_recipe(job, index)
+    if not recipe["fork_from"]:
+        return recipe
+    own = _own_ledger_recipes(training_jobs() if jobs is None else jobs)
+    return _resolve_fork(recipe, own, ensemble_dir() if base is None else base, frozenset())
+
+
+def ledger_member_recipes(jobs: list[dict] | None = None, *,
+                          base: str | None = None) -> dict[str, dict]:
+    """member name → the recipe (:func:`job_member_recipe`, forks resolved
+    from their source) of the newest ``ensemble_train`` add/fork job that
+    created it, from the local job log (continue jobs only resume a member;
+    they never change its recipe)."""
+    own = _own_ledger_recipes(training_jobs() if jobs is None else jobs)
+    base = ensemble_dir() if base is None else base
+    return {name: _resolve_fork(recipe, own, base, frozenset({name}))
+            for name, recipe in own.items()}
+
+
+def ledger_universal_names(jobs: list[dict] | None = None, *,
+                           base: str | None = None) -> set[str]:
+    """Members the local job log says were created as UNIVERSAL models
+    (:func:`~euclid_polish.ensemble_registry.is_universal_origin` of their
+    recipe — a fork of a universal model is one), whatever the registry says
+    about them now. The pulls and the mirror keep the ones that are neither
+    active nor registered universal out of the ensemble."""
+    return {name for name, recipe in ledger_member_recipes(jobs, base=base).items()
+            if ensemble_registry.is_universal_origin(recipe)}
+
+
+def gate_and_cube_member_names() -> set[str]:
+    """Every member name an ensemble artifact on disk refers to — the
+    ``member_labels`` of every local gate (``<regime>/spatial_gate_*/
+    combiner.json``, backups included) and of every cube manifest
+    (``<regime>/cubes*/viz_index.json``), both regimes. Such a name was an
+    ensemble member, so it is never taken for a FASRC-only universal model
+    (195/196 stay members even when their dirs vanish). Read-only."""
+    names: set[str] = set()
+    for starless in (False, True):
+        regime = _regime_dir_ro(starless)
+        paths = [os.path.join(d, "combiner.json")
+                 for d in glob.glob(os.path.join(regime, "spatial_gate_*"))]
+        paths += [os.path.join(d, "viz_index.json")
+                  for d in glob.glob(os.path.join(regime, "cubes*"))]
+        for path in paths:
+            labels = (_read_json_file(path) or {}).get("member_labels")
+            if not isinstance(labels, list):
+                continue
+            for label in labels:
+                try:
+                    names.add(ensemble_registry.member_name(str(label)))
+                except ValueError:
+                    continue
+    return names
+
+
+def known_member_names(reg: dict) -> set[str]:
+    """Names that are never a FASRC-only universal model: active, registered
+    universal, tombstoned, or read by a gate / held by a cube manifest
+    (:func:`gate_and_cube_member_names`)."""
+    return (set(reg["active"]) | set(reg["universal"])
+            | {str(t.get("name")) for t in reg["archived"]}
+            | gate_and_cube_member_names())
+
+
+def unregistered_universal_names(base: str, jobs: list[dict] | None = None) -> list[str]:
+    """:func:`ledger_universal_names` that are not active, not registered
+    universal, not tombstoned and never read by a local gate or cube
+    manifest — FASRC-only universal models an every-member pull or the
+    mirror would otherwise bootstrap into the ensemble (sorted)."""
+    reg = ensemble_registry.load_registry(base)
+    return sorted(ledger_universal_names(jobs, base=base) - known_member_names(reg))
+
+
+# ---- universal models' test scores (read side) ------------------------------ #
+# Written by helpers/universal_models.job_universal_score: per model
+# ``<name>.npz`` {fields, knees, curves (F, K, C)} + ``index.json``. A store of
+# its own — never a cube bucket, whose purge drops any label that is not an
+# active member.
+
+UNIVERSAL_SCORES_SCHEMA = 1
+UNIVERSAL_SCORES_DIRNAME = "universal"
+UNIVERSAL_SCORES_INDEX = "index.json"
+
+
+def universal_scores_dir() -> str:
+    """``<vis>/ensemble/starfull/universal`` (not created: universal models
+    are STARFULL only)."""
+    return os.path.join(_regime_dir_ro(False), UNIVERSAL_SCORES_DIRNAME)
+
+
+def read_universal_scores() -> dict:
+    """The scores index ``{schema, identity, models: {name: {fingerprint,
+    integrated[4], mean, n_fields, scored_at, seconds, learned_knees,
+    served_step}}}``; ``identity`` ``None`` and no models when absent or of
+    another schema. Read-only."""
+    data = _read_json_file(os.path.join(universal_scores_dir(), UNIVERSAL_SCORES_INDEX))
+    if (not data or data.get("schema") != UNIVERSAL_SCORES_SCHEMA
+            or not isinstance(data.get("models"), dict)):
+        return {"schema": UNIVERSAL_SCORES_SCHEMA, "identity": None, "models": {}}
+    return data
+
+
+def universal_score_identity() -> dict:
+    """What a universal model's test score depends on besides its checkpoint:
+    the Leaderboard's test fields (its knee-PSNR identity ``indices`` when that
+    payload exists for the test subset, else the first
+    :data:`MEMBER_PSNR_FIELDS`), the test records (``None`` while they are not
+    local), the target blur and the knee grid. Cheap: one JSON read + stats."""
+    knee = _read_json_file(os.path.join(_regime_dir_ro(False), "ensemble_knee_psnr.json")) or {}
+    raw_identity = knee.get("identity")
+    kid: dict = raw_identity if isinstance(raw_identity, dict) else {}
+    indices = (sorted({int(i) for i in kid.get("indices") or []})
+               if kid.get("subset") == "test" else [])
+    raw_fwhm = kid.get("target_psf_fwhm_arcsec")
+    try:
+        fwhm = validate_target_fwhm_arcsec(
+            Config.TARGET_PSF_FWHM_ARCSEC if raw_fwhm is None else raw_fwhm)
+    except (TypeError, ValueError):
+        fwhm = float(Config.TARGET_PSF_FWHM_ARCSEC)
+    rdir = _sky_records_local_dir()
+    return {"records_fp": _eval_records_fingerprint(rdir, "test") if rdir else None,
+            "subset": "test",
+            "indices": indices or list(range(MEMBER_PSNR_FIELDS)),
+            "target_psf_fwhm_arcsec": fwhm,
+            "knees": list(KNEE_GRID_E)}
+
+
+def universal_identity_matches(stored: dict | None, current: dict) -> bool:
+    """Whether scores made under ``stored`` still hold for ``current``: same
+    fields, target, knees and test records (records that are not local now
+    cannot be checked, so they do not invalidate)."""
+    if not isinstance(stored, dict):
+        return False
+    for key in ("subset", "indices", "target_psf_fwhm_arcsec", "knees"):
+        if stored.get(key) != current.get(key):
+            return False
+    return current.get("records_fp") is None or stored.get("records_fp") == current["records_fp"]
+
+
+def report_identity_matches(report_identity: dict | None, identity: dict | None) -> bool:
+    """Whether numbers scored under ``report_identity`` (a knee payload's or a
+    compare report's ``{records_fp, indices, target_psf_fwhm_arcsec, …}``)
+    are on the same test fields, records and target as the universal scores
+    (``identity``, the store's). Missing either side → ``False``."""
+    if not isinstance(report_identity, dict) or not isinstance(identity, dict):
+        return False
+    try:
+        indices = sorted(int(i) for i in report_identity.get("indices") or [])
+    except (TypeError, ValueError):
+        return False
+    return (bool(indices) and indices == identity.get("indices")
+            and report_identity.get("records_fp") == identity.get("records_fp")
+            and _finite(report_identity.get("target_psf_fwhm_arcsec"))
+            == _finite(identity.get("target_psf_fwhm_arcsec")))
+
+
+def universal_knee_comparable(knee: dict, identity: dict | None) -> bool:
+    """Whether the knee payload's numbers (production gate, plain mean,
+    members) were scored on the same fields, records and target as the
+    universal scores under ``identity``."""
+    return report_identity_matches(knee.get("identity"), identity)
+
+
+def universal_score_curve(name: str) -> np.ndarray | None:
+    """The field-mean PSNR-vs-knee curve ``(K, C)`` of a scored universal
+    model, or ``None``."""
+    path = os.path.join(universal_scores_dir(), f"{ensemble_registry.member_name(name)}.npz")
+    try:
+        with np.load(path) as data:
+            curves = np.asarray(data["curves"], np.float64)
+    except (OSError, KeyError, ValueError):
+        return None
+    if curves.ndim != 3 or not len(curves):
+        return None
+    return curves.mean(axis=0)
 
 
 def member_progress(step: int | None, origin: dict | None, job: dict | None) -> dict:
@@ -4064,6 +4432,9 @@ def members_payload(starless: bool) -> dict:
         "regime": _regime_slug(starless),
         "members": rows,
         "other_regime_members": other,
+        # Registered standalone universal models (Models › Universal lists
+        # them; they are not ensemble members, so they have no row here).
+        "universal": list(reg["universal"]),
         "archived": ensemble_registry.archived_members(ctx.base, Config.TRACKING_DIR),
         "knee": {"available": bool(ctx.knee.get("available")),
                  "stale": bool(ctx.knee.get("stale")),
@@ -4077,11 +4448,68 @@ def members_payload(starless: bool) -> dict:
     }
 
 
+def _universal_detail(out: dict, name: str, d: str) -> dict:
+    """:func:`member_detail` of a registered universal model: the member row
+    with ``class: "universal"`` and no gate fields (no gate reads it), its
+    training series and — when scored — its PSNR-vs-knee curve from the
+    universal scores store (the row's ``knee_integrated`` + ``score_stale``;
+    the curve has ``kind: "member"``, the inspector's own-curve rule) beside
+    the plain mean and the production gate of the knee payload ONLY when
+    that payload is on the scores' fields, records and target
+    (``comparable``)."""
+    if not (os.path.isdir(d) and _checkpoint_exists(d)):
+        return out                       # registered, not pulled (yet)
+    ctx = _member_context(False)
+    label = out["label"]
+    row = _member_row(name, ctx)
+    row.update({"class": "universal", "psnr_rank": None, "knee_rank": None,
+                "knee_integrated": None, "score_stale": None,
+                "gate_usage": None, "gate_usage_source": None,
+                "gate_usage_peak": None, "used_by_gate": None})
+    scores = read_universal_scores()
+    entry = scores["models"].get(name)
+    curve = universal_score_curve(name) if entry else None
+    stale = None
+    if entry:
+        stale = (entry.get("fingerprint") != member_fingerprint(d)
+                 or not universal_identity_matches(scores.get("identity"),
+                                                   universal_score_identity()))
+        vals = [_finite(v) for v in entry.get("integrated") or []]
+        finite_vals = [v for v in vals if v is not None]
+        row["knee_integrated"] = {**dict(zip(BAND_NAMES, vals, strict=False)),
+                                  "mean": float(np.mean(finite_vals)) if finite_vals else None}
+        row["score_stale"] = stale
+    out["row"] = row
+    out["curves"] = _member_training_series(d)
+    comparable = bool(entry) and universal_knee_comparable(ctx.knee, scores.get("identity"))
+    out["comparable"] = comparable
+    if curve is not None:
+        models = [{"id": "universal", "kind": "member", "label": label,
+                   "psnr": np.round(curve, 4).tolist(),
+                   "integrated": np.round(integrated_psnr(curve), 4).tolist()}]
+        reference = (comparable and bool(ctx.knee.get("available"))
+                     and ctx.knee.get("knees") == list(KNEE_GRID_E))
+        if reference:
+            models += [{k: m.get(k) for k in ("id", "kind", "label", "psnr", "integrated")}
+                       for m in ctx.knee.get("models", []) or []
+                       if m.get("kind") in ("mean", "combiner")]
+        out["knee"] = {"knees": list(KNEE_GRID_E), "bands": list(BAND_NAMES),
+                       "stale": bool(stale or (reference and ctx.knee.get("stale"))),
+                       "models": models}
+    return out
+
+
 def member_detail(name: str) -> dict | None:
-    """One member's inspector payload (active or archived): the joined row,
-    its origin, training series, PSNR-vs-knee curve (with the mean and the
-    production gate for reference) and production-gate usage by brightness.
-    ``None`` for a name the registry has never seen."""
+    """One member's inspector payload (active, archived or a registered
+    universal model): the joined row, its origin, training series,
+    PSNR-vs-knee curve (with the mean and the production gate for reference)
+    and production-gate usage by brightness. A registered universal model
+    (:func:`_universal_detail`) has ``class: "universal"`` and
+    ``universal: true``; an archived one ``class: "universal"`` (its
+    tombstone's) and ``universal: false``; every other name ``class:
+    "member"`` and ``universal: false``. ``comparable`` is set for a
+    registered universal model only (else ``None``). ``None`` for a name the
+    registry has never seen."""
     name = ensemble_registry.member_name(name)
     base = ensemble_dir()
     reg = ensemble_registry.load_registry(base)
@@ -4089,13 +4517,21 @@ def member_detail(name: str) -> dict | None:
                       if t.get("name") == name), None)
     d = os.path.join(base, name)
     active = name in reg["active"]
-    if not active and tombstone is None:
+    universal = name in reg["universal"]
+    if not active and not universal and tombstone is None:
         return None
     starless = ensemble_registry.member_is_starless(d)
+    archived_universal = (not active and not universal and tombstone is not None
+                          and ensemble_registry.tombstone_class(tombstone)
+                          == ensemble_registry.UNIVERSAL_CLASS)
     out: dict = {"name": name, "label": ensemble_registry.member_label(name),
                  "active": active, "archived": tombstone,
+                 "class": "universal" if universal or archived_universal else "member",
+                 "universal": universal,
                  "regime": _regime_slug(starless), "row": None,
-                 "curves": None, "knee": None, "gate": None}
+                 "curves": None, "knee": None, "gate": None, "comparable": None}
+    if universal:
+        return _universal_detail(out, name, d)
     if not active:
         return out
     ctx = _member_context(starless)
@@ -4143,7 +4579,9 @@ def job_restore_member(cap, *, name: str) -> dict:
     evaluation, knee curves and combiner then read stale (membership changed)
     until re-evaluated / refitted — shown by the Models › Leaderboard checks.
     An archive the next evaluation has not applied yet is dequeued, so that
-    evaluation keeps the member's cached cubes and the combiners reading it."""
+    evaluation keeps the member's cached cubes and the combiners reading it.
+    An archived universal model comes back as a universal model (the
+    tombstone's class), which leaves every evaluation as it was."""
     name = ensemble_registry.member_name(name)
     base = ensemble_dir()
     tomb = next((t for t in ensemble_registry.archived_members(base, Config.TRACKING_DIR)
@@ -4174,8 +4612,11 @@ def job_restore_member(cap, *, name: str) -> dict:
     starless = ensemble_registry.member_is_starless(dest)
     _unmark_archive_stale(starless, name)
     regime = _regime_slug(starless)
+    universal = ensemble_registry.tombstone_class(tomb) == ensemble_registry.UNIVERSAL_CLASS
     with contextlib.suppress(Exception):
         tracking_default_store().append_log(
+            f"Restored universal model `{name}` from `{tomb.get('zip')}` "
+            f"({tomb.get('campaign')})." if universal else
             f"Restored ensemble member `{name}` from `{tomb.get('zip')}` "
             f"({tomb.get('campaign')}); {regime} evaluation is stale until re-run.")
     cap.tick(3, 3, "done")

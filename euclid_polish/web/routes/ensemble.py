@@ -1,8 +1,9 @@
 """Ensemble routes: member status, the joined members table and one member's
 detail, training curves, the combiner variant registry (fit a named variant,
 compare, promote), evaluation, PSNR vs knee, archive / restore, the FASRC
-pull and the train-command preview. Every ``/ensemble/*`` route defaults
-``mode`` to STARFULL; errors under ``/ensemble/`` are JSON ``{error}``.
+pull, the universal models (comparison payload, score, pull) and the
+train-command preview. Every ``/ensemble/*`` route defaults ``mode`` to
+STARFULL; errors under ``/ensemble/`` are JSON ``{error}``.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     ensemble_dir,
     ensemble_overview,
     ensemble_status,
+    gate_and_cube_member_names,
     job_archive_member,
     job_combiner_compare,
     job_combiner_promote,
@@ -42,6 +44,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_member_psnr,
     job_restore_member,
     knee_psnr_status,
+    ledger_universal_names,
     member_detail,
     members_payload,
     pixel_trace,
@@ -51,9 +54,16 @@ from euclid_polish.web.helpers.ensemble_viz import (
     train_command_preview,
     training_curves_payload,
     training_jobs,
+    unregistered_universal_names,
     variant_dir,
 )
 from euclid_polish.web.helpers.remote_curves import remote_training_curves
+from euclid_polish.web.helpers.universal_models import (
+    job_universal_pull,
+    job_universal_score,
+    universal_payload,
+    universal_targets,
+)
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.security import (
     fresh_requested,
@@ -78,6 +88,11 @@ def _bad(message: str, status: int = 400):
 def _active_member_names() -> set[str]:
     """The active members of the ensemble registry (``member_NN``)."""
     return set(ensemble_registry.load_registry(ensemble_dir())["active"])
+
+
+def _universal_member_names() -> set[str]:
+    """The registered universal models (standalone, ``member_NN``)."""
+    return set(ensemble_registry.load_registry(ensemble_dir())["universal"])
 
 
 def _form_bool(name: str, default: bool = False) -> bool:
@@ -317,10 +332,16 @@ def register(app):
         series, gradient norm and step time, with the facets the lines colour
         by — then the members of recent training jobs that are not pulled yet
         (``remote``: training or finished on FASRC), read live from their
-        event streams. Empty ``members`` → the client shows an empty state."""
-        registry = ensemble_registry.load_registry(ensemble_dir())
+        event streams. Registered universal models count as local (never
+        fetched); a remote entry of a model the job log created as a
+        universal model carries ``universal: true``. Empty ``members`` → the
+        client shows an empty state."""
+        base = ensemble_dir()
+        registry = ensemble_registry.load_registry(base)
         remote = remote_training_curves(
-            registry["active"], [str(t.get("name")) for t in registry["archived"]])
+            [*registry["active"], *registry["universal"]],
+            [str(t.get("name")) for t in registry["archived"]],
+            universal_names=ledger_universal_names(base=base))
         return jsonify({"members": training_curves_payload() + remote})
 
     @app.route("/ensemble/evals.json")
@@ -429,14 +450,16 @@ def register(app):
     def ensemble_archive_member():
         """Retire one member: zip → tracking campaign, registry tombstone,
         member dir deleted, regime marked stale (its cached cubes go in the
-        follow-up stale-cube purge). Reduces the ensemble. The name is
-        validated (and must be active) before the job starts: 400 JSON."""
+        follow-up stale-cube purge). Reduces the ensemble. A registered
+        universal model archives the same way (no regime goes stale). The
+        name is validated (and must be active or a registered universal
+        model) before the job starts: 400 JSON."""
         try:
             name = member_name(request.form.get("member") or "")
         except ValueError as exc:
             return _bad(str(exc))
-        if name not in _active_member_names():
-            return _bad(f"{name} is not an active ensemble member")
+        if name not in _active_member_names() and name not in _universal_member_names():
+            return _bad(f"{name} is not an active ensemble member or a universal model")
         job_id = REGISTRY.spawn(
             f"ensemble: archive {name} → tracking",
             target=lambda cap: job_archive_member(cap, name=name),
@@ -460,21 +483,96 @@ def register(app):
     @requires_fasrc
     def ensemble_pull():
         """Download changed members from FASRC (local job). ``members`` limits
-        it to those members; ``dry_run=1`` only probes what changed."""
+        it to those members; ``dry_run=1`` only probes what changed. Named
+        universal models the registry does not know are left out (pull them
+        on Models › Universal) unless ``allow_universal=1``; a list of only
+        such names is a 400."""
         try:
-            members = [member_name(token) for token in _form_list("members")]
+            members = list(dict.fromkeys(member_name(token) for token in _form_list("members")))
         except ValueError as exc:
             return _bad(str(exc))
         dry_run = _form_bool("dry_run")
+        allow_universal = _form_bool("allow_universal")
+        if members and not dry_run and not allow_universal:
+            universal = set(unregistered_universal_names(ensemble_dir()))
+            if all(name in universal for name in members):
+                return _bad(f"{', '.join(members)} "
+                            f"{'is a universal model' if len(members) == 1 else 'are universal models'}"
+                            " — pull it on Models › Universal (or send allow_universal=1 to "
+                            "make it an ensemble member)")
         label = ("ensemble: check FASRC for changed members" if dry_run
                  else f"ensemble: download {', '.join(members)} from FASRC" if members
                  else "ensemble: download from FASRC")
         job_id = REGISTRY.spawn(
             label,
             target=lambda cap: job_ensemble_pull(
-                cap, members=members or None, dry_run=dry_run),
+                cap, members=members or None, dry_run=dry_run,
+                allow_universal=allow_universal),
         )
         return jsonify({"job_id": job_id})
+
+    # ---- universal models ------------------------------------------------ #
+
+    @app.route("/ensemble/universal.json")
+    def ensemble_universal_json():
+        """Models › Universal: every universal model (single-image multi-knee)
+        with its recipe, training time, hardware and test score, every gate
+        with its score and share-weighted training time, and the universal
+        models still only on FASRC (from the local job log). Local files only."""
+        return jsonify(universal_payload(_mode_starless()))
+
+    @app.route("/ensemble/universal/score", methods=["POST"])
+    def ensemble_universal_score():
+        """Measure missing gate-variant weights (validate cubes only — first,
+        even with nothing to score or no local test records), then score the
+        universal models (``members``: comma list, default every local one;
+        ``force=1`` rescores current entries) on the Leaderboard's test
+        fields (local job, one at a time)."""
+        try:
+            members = [member_name(token) for token in _form_list("members")]
+        except ValueError as exc:
+            return _bad(str(exc))
+        local = universal_targets(ensemble_dir())
+        unknown = [n for n in members if n not in local]
+        if unknown:
+            return _bad("not a local universal model with a checkpoint: " + ", ".join(unknown))
+        force = _form_bool("force")
+        what = ", ".join(members) if members else "every universal model"
+        job, started = REGISTRY.spawn_exclusive(
+            f"universal: score {what} on the test fields" + (" (forced)" if force else ""),
+            lambda cap: job_universal_score(cap, members=members or None, force=force),
+            kind="universal-score")
+        return jsonify({"ok": True, "job_id": job.job_id, "already_running": not started})
+
+    @app.route("/ensemble/universal/pull", methods=["POST"])
+    @requires_fasrc
+    def ensemble_universal_pull():
+        """Pull universal models from FASRC as standalone models (``members``:
+        comma list, required; registered before the rsync, never activated).
+        Active or archived names, and names a local gate or cube manifest
+        reads, are refused up front (local job)."""
+        try:
+            members = list(dict.fromkeys(member_name(token) for token in _form_list("members")))
+        except ValueError as exc:
+            return _bad(str(exc))
+        if not members:
+            return _bad("name the universal models to pull (members)")
+        registry = ensemble_registry.load_registry(ensemble_dir())
+        tombstoned = {str(t.get("name")) for t in registry["archived"]}
+        ensemble_names = gate_and_cube_member_names()
+        for name in members:
+            if name in registry["active"]:
+                return _bad(f"{name} is an active ensemble member")
+            if name in tombstoned:
+                return _bad(f"{name} is archived (tombstoned)")
+            if name in ensemble_names and name not in registry["universal"]:
+                return _bad(f"{name} is an ensemble member (a local gate or cube manifest "
+                            "reads it) — the ensemble pull restores it")
+        job, started = REGISTRY.spawn_exclusive(
+            f"universal: pull {', '.join(members)} from FASRC",
+            lambda cap: job_universal_pull(cap, members=members),
+            kind="universal-pull")
+        return jsonify({"ok": True, "job_id": job.job_id, "already_running": not started})
 
     @app.route("/ensemble/train/preview", methods=["POST"])
     def ensemble_train_preview():

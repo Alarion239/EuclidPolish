@@ -545,14 +545,17 @@ function RealBars({ rows }: { rows: CsvRow[] }) {
 
 export function RealChart(p: ChartProps) {
   const exps = p.detail.numbers?.real?.experiments ?? [];
-  const current = p.sel.experiment || exps[0]?.id;
+  // No pick = the server's default: the newest run with rows for the selected
+  // ensemble models (a universal-only run is used only when nothing else has rows).
+  const current = p.sel.experiment || "";
   return (
     <ChartFrame p={p} url={exps.length ? csvUrl(p.detail.study.id, "real", p.sel) : null}
       empty={`No real-tile data in this study${p.detail.numbers?.real?.note ? `: ${p.detail.numbers.real.note}` : "."}`}
       controls={exps.length > 1 ? (
         <ToolbarGroup label="Run">
-          <Select size="sm" aria-label="Sky › Compare run" value={current} onChange={(v) => p.set({ experiment: v === exps[0].id ? null : v })}
-            options={exps.map((e) => ({ value: e.id, label: `${e.label || e.id}${e.created ? ` · ${formatDate(e.created)}` : ""}` }))} />
+          <Select size="sm" aria-label="Sky › Compare run" value={current} onChange={(v) => p.set({ experiment: v || null })}
+            options={[{ value: "", label: "Newest run with these models" },
+              ...exps.map((e) => ({ value: e.id, label: `${e.label || e.id}${e.created ? ` · ${formatDate(e.created)}` : ""}` }))]} />
         </ToolbarGroup>
       ) : undefined}>{(rows) => {
       const columns: Column<CsvRow>[] = [

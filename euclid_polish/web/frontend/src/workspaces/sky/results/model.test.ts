@@ -3,8 +3,9 @@ import type { ExperimentRecord, ModelSpecRow, TileRow } from "./api";
 import { atlasHref, experimentsHref, splitRef, URLS } from "./api";
 import {
   bandSeries, cardDelta, cardFiles, evalHeadline, cardHeadline, cardViewerTiers, defaultExperimentId, defaultRunSpecs, experimentCost, experimentCostText,
-  experimentMarkdown, formatMetric, groupModels, headlineSpec, membersText, metricRows, productionMembersText, metricsPlan, num,
-  parseRefs, realTileViewerParams, recordSpecs, seriesDomain, sortSpecs, specShort,
+  experimentMarkdown, formatMetric, groupModels, headlineSpec, isUniversalSpec, membersText, metricRows, outputOrigin, productionMembersText,
+  metricsPlan, num, parseRefs, realTileViewerParams, recordSpecs, seriesDomain, sortSpecs, specRank, specShort, specWords, universalDetails,
+  universalDetailText,
 } from "./model";
 
 const tile = (ref: string, state?: string, models: TileRow["models"] = {}): TileRow => {
@@ -74,14 +75,27 @@ describe("refs and URLs", () => {
 });
 
 describe("model specs", () => {
-  it("orders production, mean, rbf, gates, members (natural)", () => {
+  it("orders production, universal models, mean, rbf, gates, members (natural)", () => {
     expect(sortSpecs(["member:member_10", "gate:b", "rbf", "member:member_2", "production", "mean", "gate:a"]))
       .toEqual(["production", "mean", "rbf", "gate:a", "gate:b", "member:member_2", "member:member_10"]);
+    // universal models right after production, so Compare's first viewer tiers reach them
+    expect(sortSpecs(["member:member_196", "universal:member_211", "mean", "gate:a", "production", "universal:member_206", "mystery"]))
+      .toEqual(["production", "universal:member_206", "universal:member_211", "mean", "gate:a", "member:member_196", "mystery"]);
+    expect([specRank("production"), specRank("universal:member_211"), specRank("mean"), specRank("rbf"),
+      specRank("gate:x"), specRank("member:member_1"), specRank("other")]).toEqual([0, 1, 2, 3, 4, 5, 6]);
   });
   it("shortens specs", () => {
     expect(specShort("member:member_196")).toBe("m196");
     expect(specShort("gate:26m")).toBe("gate 26m");
     expect(specShort("production")).toBe("production");
+    expect(specShort("universal:member_211")).toBe("u211");
+    expect(specShort("universal:211")).toBe("u211");
+  });
+  it("says specs in words", () => {
+    expect(specWords("universal:member_211")).toBe("universal 211");
+    expect(specWords("member:member_196")).toBe("member 196");
+    expect(specWords("gate:p20")).toBe("gate p20");
+    expect(specWords("mean")).toBe("member mean");
   });
   it("groups the catalogue and drops unavailable selections", () => {
     const models: ModelSpecRow[] = [
@@ -95,6 +109,53 @@ describe("model specs", () => {
       ["production", ["production"]], ["mean", ["mean"]], ["rbf", ["rbf"]],
       ["gate", ["gate:x"]], ["member", ["member:member_1"]],
     ]);
+  });
+  it("groups universal models right after production; a universal member stays in Members too", () => {
+    const models: ModelSpecRow[] = [
+      { spec: "production", kind: "production", label: "P", available: true },
+      { spec: "mean", kind: "mean", label: "M", available: true },
+      { spec: "member:member_1", kind: "member", label: "m1", available: true },
+      { spec: "member:member_196", kind: "member", label: "m196", available: true, details: { universal: true, class: "member" } },
+      { spec: "gate:x", kind: "gate", label: "gx", available: true },
+      { spec: "universal:member_211", kind: "universal", label: "Universal 211", available: true, details: { universal: true, class: "universal" } },
+      { spec: "universal:member_209", kind: "universal", label: "Universal 209", available: false, reason: "no checkpoint" },
+    ];
+    const groups = groupModels(models);
+    expect(groups.map((g) => [g.id, g.items.map((i) => i.spec)])).toEqual([
+      ["production", ["production"]],
+      ["universal", ["member:member_196", "universal:member_211", "universal:member_209"]],
+      ["mean", ["mean"]], ["gate", ["gate:x"]], ["member", ["member:member_1", "member:member_196"]],
+    ]);
+    expect(groups.find((g) => g.id === "universal")?.label).toBe("Universal models");
+    // a member without universal details is not a universal model
+    expect(groupModels([{ spec: "member:member_197", kind: "member", label: "m197", available: true, details: { universal: false } }])
+      .map((g) => g.id)).toEqual(["member"]);
+  });
+  it("describes a universal model in one line: depth, steps, knee, training time", () => {
+    const d = { universal: true, class: "universal", num_res_blocks: 16, steps: 1_000_000, target_steps: 1_000_000, knee: "learned", train_hours: 12.7 };
+    expect(universalDetailText({ details: d })).toBe("depth 16 · 1.0M steps · learned knee · 12.7 h");
+    // unfinished: the step it stopped at against its target; a fixed knee says its value
+    expect(universalDetailText({ details: { ...d, steps: 620_000, knee: "fixed", output_knee: 10, train_hours: 0.04 } }))
+      .toBe("depth 16 · 620k of 1.0M steps · fixed knee 10 e⁻ · 0.04 h");
+    // an active ensemble member that is universal says so
+    expect(universalDetailText({ details: { ...d, class: "member", steps: 300_000, target_steps: null, train_hours: null } }))
+      .toBe("depth 16 · 300k steps · learned knee · ensemble member");
+    expect(universalDetailText({ kind: "universal", details: { universal: true } })).toBe("");
+    expect(universalDetailText({ kind: "gate", details: { mix_space: "linear" } })).toBe("");
+    expect(universalDetailText({})).toBe("");
+  });
+  it("reads typed universal details only from a universal row", () => {
+    expect(universalDetails({ kind: "universal", details: { universal: true, class: "universal", num_res_blocks: 16, knee: "learned" } }))
+      .toEqual({ universal: true, class: "universal", num_res_blocks: 16, knee: "learned" });
+    // an unknown knee word is dropped, not passed on
+    expect(universalDetails({ kind: "universal", details: { knee: "sideways", steps: 5 } })).toEqual({ universal: true, class: "universal", steps: 5 });
+    // kind universal without details is still universal (an older or partial row)
+    expect(universalDetails({ kind: "universal" })).toMatchObject({ universal: true, class: "universal" });
+    expect(universalDetails({ kind: "member", details: { universal: true, class: "member" } })?.class).toBe("member");
+    expect(universalDetails({ kind: "member", details: {} })).toBeNull();
+    expect(universalDetails({ kind: "gate" })).toBeNull();
+    expect(isUniversalSpec("universal:member_211")).toBe(true);
+    expect(isUniversalSpec("member:member_196")).toBe(false);
   });
   it("counts the members a model reads (a pruned gate reads fewer than it was fitted on)", () => {
     const six = ["170·psnr", "171·psnr", "180·psnr", "181·psnr", "184·psnr", "187·psnr"];
@@ -159,6 +220,15 @@ describe("the real-tile card", () => {
     // no model output yet: LR and the JWST truth when there is one
     expect(cardViewerTiers([], true)).toEqual(["lr", "jwst"]);
     expect(cardViewerTiers([], false)).toEqual(["lr"]);
+    // a universal model ranks right after production
+    expect(cardViewerTiers(["mean", "universal:member_211"], false)).toEqual(["lr", "m:universal:member_211"]);
+  });
+  it("says where an output came from: a universal model is one standalone network, not \"1 member\"", () => {
+    expect(outputOrigin({ member_labels: ["211·psnr"], kind: "universal" })).toBe("universal model");
+    // the spec prefix stands in when the server sends no kind
+    expect(outputOrigin({ spec: "universal:member_211", member_labels: ["211·psnr"] })).toBe("universal model");
+    expect(outputOrigin({ spec: "member:member_196", kind: "member", member_labels: ["196·psnr"] })).toBe("1 member");
+    expect(outputOrigin({ member_labels: ["a", "b"], combiner_kind: "spatial_gate" })).toBe("2 members · spatial gate");
   });
   it("proposes the production / mean outputs a tile is missing", () => {
     expect(defaultRunSpecs({})).toEqual(["production", "mean"]);
@@ -200,6 +270,13 @@ describe("experiment metrics", () => {
     expect(series[1].x[0]).toBeGreaterThan(0);
     const one = bandSeries({ ...RECORD, models: ["production"], summary: { production: RECORD.summary!.production }, results: {} }, "pooled", "hole_pct");
     expect(one[0].x).toEqual([0, 1, 2, 3]);
+    // production against many universal models: the dots spread wider (still inside the band's slot)
+    const many = ["production", ...Array.from({ length: 13 }, (_, i) => `universal:member_${206 + i}`)];
+    const wide = bandSeries({ id: "w", models: many, summary: {} }, "pooled", "hole_pct");
+    const span = wide.at(-1)!.x[0] - wide[0].x[0];
+    expect(span).toBeGreaterThan(0.36);
+    expect(span).toBeLessThanOrEqual(0.6);
+    expect(wide.map((s) => s.spec).slice(0, 2)).toEqual(["production", "universal:member_206"]);
   });
   it("pads chart domains: % from zero, ratios around one", () => {
     expect(seriesDomain(bandSeries(RECORD, "pooled", "hole_pct"), "hole_pct")[0]).toBe(0);

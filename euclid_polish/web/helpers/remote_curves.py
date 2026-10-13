@@ -5,10 +5,11 @@ member that is training — or finished but not pulled yet — has no local log,
 so this module reads its curve from the job's Reporter event stream instead:
 the trainer writes one ``metric`` event per validation with the same columns
 as a training-log row. Every member of a recent ``ensemble_train`` submission
-(:data:`MAX_AGE_S`) that is not an active local member and was never archived
-gets an entry; one SSH call reads the ``metric`` lines of all their streams,
-and the result is reused for :data:`TTL_S` seconds because the page polls
-while a member trains.
+(:data:`MAX_AGE_S`) that is not local (an active member or a registered
+universal model) and was never archived gets an entry — tagged ``universal``
+when the job log created it as a universal model; one SSH call reads the
+``metric`` lines of all their streams, and the result is reused for
+:data:`TTL_S` seconds because the page polls while a member trains.
 """
 
 from __future__ import annotations
@@ -216,21 +217,31 @@ def remote_entries(tasks: Sequence[dict], streams: Sequence[list[dict]]) -> list
     return out
 
 
-def remote_training_curves(local_names: Iterable[str], archived_names: Iterable[str]
-                           ) -> list[dict]:
+def _tagged(members: Iterable[dict], universal: set[str]) -> list[dict]:
+    """Copies of ``members`` with ``universal`` = the job log created that
+    member as a universal model (never an ensemble member in waiting)."""
+    return [{**m, "universal": m.get("name") in universal} for m in members]
+
+
+def remote_training_curves(local_names: Iterable[str], archived_names: Iterable[str], *,
+                           universal_names: Iterable[str] = ()) -> list[dict]:
     """Curve entries of the members of recent ``ensemble_train`` jobs that are
-    neither active locally nor archived, read from their Reporter streams on
-    FASRC; ``[]`` without a connection. Cached for :data:`TTL_S` seconds."""
+    neither local (active members and registered universal models) nor
+    archived, read from their Reporter streams on FASRC; ``[]`` without a
+    connection. Each entry carries ``universal`` (its name is in
+    ``universal_names``: the job log created it as a universal model). The
+    fetch is cached for :data:`TTL_S` seconds."""
     ssh = STATE.ssh
     if ssh is None or not ssh.is_connected():
         return []
     skip = set(local_names) | set(archived_names)
+    universal = set(universal_names)
     now = time.time()
     tasks = remote_tasks(fasrc_jobs.DB.list_by_step("ensemble_train"), skip, now=now)
     key = tuple((t["name"], t["events_path"]) for t in tasks)
     with _lock:
         if _cache["key"] == key and now - _cache["at"] < TTL_S:
-            return list(_cache["members"])
+            return _tagged(_cache["members"], universal)
     if not tasks:
         members: list[dict] = []
     else:
@@ -244,4 +255,4 @@ def remote_training_curves(local_names: Iterable[str], archived_names: Iterable[
         members = remote_entries(tasks, parse_metric_streams(text, len(tasks)))
     with _lock:
         _cache.update(at=now, key=key, members=members)
-    return list(members)
+    return _tagged(members, universal)

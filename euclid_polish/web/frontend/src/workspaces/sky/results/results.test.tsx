@@ -112,6 +112,58 @@ describe("model picker", () => {
     expect(await screen.findByRole("checkbox", { name: /rbf/ })).toBeTruthy();
   });
 
+  it("lists universal models right after production, with their depth, steps, knee and training time", async () => {
+    const seen: string[][] = [];
+    show(<ModelPicker value={["mean"]} onChange={(v) => seen.push(v)} />);
+    const group = await screen.findByRole("group", { name: /^Universal models/ });
+    // production, then the universal models: the group order on the page
+    const legends = [...document.querySelectorAll("fieldset legend")].map((l) => l.textContent);
+    expect(legends.slice(0, 2)).toEqual(["Production", "Universal models (3)"]);
+    // the list layout with a detail line (members are a grid of names): the active universal member too
+    expect(within(group).getAllByRole("checkbox").map((c) => c.closest("label")?.querySelector(".res-models__name")?.textContent))
+      .toEqual(["member:member_2", "universal:member_211", "universal:member_209"]);
+    expect(within(group).getByText("depth 16 · 1.0M steps · learned knee · 12.7 h")).toBeTruthy();
+    expect(within(group).getByText("depth 8 · 300k steps · fixed knee 10 e⁻ · 3.1 h · ensemble member")).toBeTruthy();
+    // not pulled yet: disabled, with the reason
+    expect((within(group).getByRole("checkbox", { name: /universal:member_209/ }) as HTMLInputElement).disabled).toBe(true);
+    expect(within(group).getByText("no checkpoint: pull it from FASRC")).toBeTruthy();
+    // the universal member stays in Members as well
+    expect(within(screen.getByRole("group", { name: /^Members/ })).getByRole("checkbox", { name: /m2/ })).toBeTruthy();
+    // quick picks: production + every available universal model (catalogue order), then + all universal on top of a pick
+    fireEvent.click(screen.getByRole("button", { name: "Production + universal" }));
+    expect(seen.at(-1)).toEqual(["production", "member:member_2", "universal:member_211"]);
+    fireEvent.click(screen.getByRole("button", { name: "+ all universal" }));
+    expect(seen.at(-1)).toEqual(["mean", "member:member_2", "universal:member_211"]);
+  });
+
+  it("offers no universal quick picks without universal models", async () => {
+    routes["GET /api/models"] = () => ({ body: { regime: "starfull", models: [
+      { spec: "production", kind: "production", label: "Production", available: true, n_members: 2 },
+      { spec: "member:member_1", kind: "member", label: "Member 1", available: true, n_members: 1 },
+    ] } });
+    show(<ModelPicker value={[]} onChange={() => undefined} />);
+    await screen.findByRole("checkbox", { name: /production/ });
+    expect(screen.queryByRole("button", { name: "Production + universal" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "+ all universal" })).toBeNull();
+    expect(screen.queryByRole("group", { name: /Universal models/ })).toBeNull();
+  });
+
+  it("filters a long universal list by its detail line too", async () => {
+    const uni = Array.from({ length: 10 }, (_, i) => ({
+      spec: `universal:member_${206 + i}`, kind: "universal", label: `Universal ${206 + i}`, available: true,
+      details: { universal: true, class: "universal", num_res_blocks: i < 3 ? 32 : 16, steps: 500_000, knee: "learned" },
+    }));
+    routes["GET /api/models"] = () => ({ body: { regime: "starfull", models: [
+      { spec: "production", kind: "production", label: "Production", available: true, n_members: 2 }, ...uni,
+    ] } });
+    show(<ModelPicker value={[]} onChange={() => undefined} />);
+    const group = await screen.findByRole("group", { name: /^Universal models/ });
+    fireEvent.change(within(group).getByRole("textbox", { name: "Filter universal models" }), { target: { value: "depth 32" } });
+    await waitFor(() => expect(within(group).getAllByRole("checkbox")).toHaveLength(3));
+    fireEvent.change(within(group).getByRole("textbox", { name: "Filter universal models" }), { target: { value: "nothing like it" } });
+    expect(await within(group).findByText("No universal model matches.")).toBeTruthy();
+  });
+
   it("says how many members a pruned production runs", async () => {
     const reads = Array.from({ length: 20 }, (_, i) => `${170 + i}·psnr`);
     routes["GET /api/models"] = () => ({ body: { regime: "starfull", models: [
@@ -178,6 +230,21 @@ describe("the real-tile card", () => {
     expect(viewerMock.tiers.at(-1)).toEqual(["lr", "m:member:member_1"]);
     expect(container.querySelector(".res-card__delta")?.textContent).toBe("VIS, LR vs member 1: Δm +0.02 (flux ×0.98)");
     expect(screen.getByRole("heading", { name: "Measured on member 1" })).toBeTruthy();
+  });
+
+  it("shows a universal model's output first after production, in words, as one standalone model", async () => {
+    routes["GET /api/real/nexus/f200w-0001"] = () => ({ body: { ...CARD,
+      models: { ...CARD.models, "universal:member_211": { state: "current", kind: "universal", label: "Universal 211",
+        member_labels: ["211·psnr"], metrics: { per_band: { VIS: { hole_pct: 0.5, flux_ratio: 0.5 } }, summary: { hole_pct_max: 0.5 } } } },
+      image_urls: { ...CARD.image_urls, "m:universal:member_211": "/e" } } });
+    show(<RealTileInspector id="nexus/f200w-0001" />);
+    const viewer = await screen.findByTestId("viewer");
+    expect(viewer.textContent).toBe("real|f200w-0001|lr,m:universal:member_211|universal:member_211,rbf,member:member_1");
+    expect(screen.getByRole("heading", { name: "Measured on universal 211" })).toBeTruthy();
+    const table = screen.getByRole("grid", { name: "Model outputs" });
+    expect(within(table).getByText("universal 211")).toBeTruthy();
+    // where it came from: a universal model, never "1 member"
+    expect(within(table).getByTitle("Universal 211 · universal model")).toBeTruthy();
   });
 
   it("remembers the tile for the atlas's opening view", async () => {

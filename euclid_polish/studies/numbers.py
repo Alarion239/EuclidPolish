@@ -235,8 +235,8 @@ def real_numbers(starless: bool) -> dict[str, Any]:
             "tiles": record.get("tiles") or [], "definitions": record.get("definitions"),
             "specs": {spec: {
                 "label": (record.get("model_labels") or {}).get(spec),
-                "member_label": (model_catalog.member_label(spec.split(":", 1)[1])
-                                 if spec.startswith(model_catalog.MEMBER_PREFIX) else None),
+                # a member or a universal model: the label it runs
+                "member_label": model_catalog.spec_member_label(spec),
                 "fingerprint": (record.get("fingerprints") or {}).get(spec),
                 "summary": (record.get("summary") or {}).get(spec),
                 "per_tile": {tile: (results.get(tile) or {}).get(spec, {}).get("metrics")

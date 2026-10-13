@@ -230,6 +230,7 @@ def test_offline_non_api_pages_are_not_redirected_to_a_connection_page(client):
     ("POST", "/api/sky/sync"),
     ("POST", "/api/evaluation/sync"),
     ("POST", "/ensemble/pull"),
+    ("POST", "/ensemble/universal/pull"),
     ("POST", "/tng-auth/save"),
     ("POST", "/euclid-auth/save"),
     ("POST", "/api/euclid-psf/sync"),

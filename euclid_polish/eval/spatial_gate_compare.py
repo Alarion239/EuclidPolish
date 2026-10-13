@@ -45,6 +45,7 @@ from euclid_polish.eval.combiner import (
 from euclid_polish.eval.ensemble_cube_cache import (
     bucket_member_paths,
     manifest_member_labels,
+    recorded_fingerprints,
     stale_bucket_members,
 )
 from euclid_polish.eval.knee_psnr import (
@@ -386,6 +387,17 @@ def require_current_cubes(cubes_dir: str, manifest: Mapping,
                            f"stopped half-way) — {refresh}")
 
 
+def cube_identity(manifest: Mapping) -> dict:
+    """What a compare report's scores depend on besides the checkpoints: the
+    test cube manifest's ``{records_fp, subset, indices (sorted),
+    target_psf_fwhm_arcsec}`` — the keys the universal scores identity
+    shares, so a report can be checked against it."""
+    return {"records_fp": manifest.get("records_fp"),
+            "subset": manifest.get("subset"),
+            "indices": sorted(int(i) for i in manifest.get("indices", []) or []),
+            "target_psf_fwhm_arcsec": manifest.get("target_psf_fwhm_arcsec")}
+
+
 def run_compare(*, regime_dir: str, records_dir: str, gates: Sequence[str],
                 runner: MemberRunFn | None,
                 blackout_fields: int = 40, seed: int = 0, target_name: str = "hr",
@@ -396,7 +408,12 @@ def run_compare(*, regime_dir: str, records_dir: str, gates: Sequence[str],
     stamped LR (only the blackout cubes the cache lacks or holds for another
     checkpoint; the blackout copies are keyed on the test records too). The
     test cubes are refused unless the members' current checkpoints (the
-    runner's fingerprints, else those under the ensemble dir) made them."""
+    runner's fingerprints, else those under the ensemble dir) made them.
+
+    The report records the cubes' ``identity`` (:func:`cube_identity`) and
+    ``member_fps`` — ``{label: checkpoint fingerprint}`` the scored members'
+    cubes were made with — so a reader can tell when a member it read has
+    been retrained since."""
     cubes = os.path.join(regime_dir, "cubes")
     cube_manifest = _cube_manifest(cubes)
     fingerprints = getattr(runner, "fingerprints", None)
@@ -440,6 +457,9 @@ def run_compare(*, regime_dir: str, records_dir: str, gates: Sequence[str],
     seconds = getattr(runner, "seconds", None)
     report["member_inference_s_per_field"] = float(np.mean(seconds)) if seconds else None
     report["created"] = datetime.now(UTC).isoformat(timespec="seconds")
+    report["identity"] = cube_identity(cube_manifest)
+    recorded = recorded_fingerprints(cube_manifest)
+    report["member_fps"] = {label: recorded.get(label) for label in labels}
     report["regime_dir"] = os.path.basename(regime_dir.rstrip("/"))
     report["blackout_seed"] = int(seed) + 1
     return CompareResult(report, labels, methods, fields, blackouts, source_lr, candidates)

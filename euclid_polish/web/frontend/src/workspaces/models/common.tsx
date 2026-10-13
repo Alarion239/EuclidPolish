@@ -6,7 +6,7 @@ import type { ApiError } from "../../api/client";
 import { openInspector } from "../../app/inspector";
 import { C, LOSS_COLOR, categorical, viridis } from "../../colors";
 import { Button, EmptyState, Select, Skeleton } from "../../ui";
-import { COLOR_BY_OPTIONS, facetOf, facetValues, kneeText, type ColorBy } from "./model";
+import { COLOR_BY_OPTIONS, facetOf, facetValues, isUniversal, kneeText, type ColorBy } from "./model";
 import type { KneeInfo } from "./api";
 
 /** Loading → skeleton; error → the server's message with a retry; empty → `empty`. */
@@ -39,11 +39,12 @@ export function kneeOrderOf(rows: readonly KneeInfo[]): number[] {
 /** THE knee / multi-knee colour of a member, shared by every Models tab (the
  *  Leaderboard curves, Members › Curves, Diagnostics): single knees on an
  *  ordered viridis ramp (low knee dark, high knee light), multi-knee members
- *  in two fixed hues (one image vs heads). Under "multi" the single-knee
- *  members are muted. */
+ *  in two fixed hues (one image — a fixed or learned output knee, the
+ *  universal models — vs heads). Under "multi" the single-knee members are
+ *  muted. */
 export function kneeColor(m: KneeInfo, order: readonly number[], by: "knee" | "multi" = "knee"): string {
   const k = kneeText(m);
-  if (k.kind === "multi") return categorical(m.output_knee != null ? 1 : 3);
+  if (k.kind === "multi") return categorical(isUniversal(m) ? 1 : 3);
   if (by === "multi") return C.muted;
   const i = Math.max(0, order.indexOf(k.sort));
   return viridis(order.length > 1 ? 0.1 + (0.8 * i) / (order.length - 1) : 0.5);

@@ -37,11 +37,15 @@ def regime(tmp_path, monkeypatch):
     save_spatial_gate(_uniform_gate(LABELS[:2]), str(root / "spatial_gate_two"))
     save_spatial_gate(_uniform_gate(["1·psnr", "9·psnr"]), str(root / "spatial_gate_old"))
     fingerprints = {label: f"ckpt-{i}:10:100" for i, label in enumerate(LABELS)}
+    universal: list[str] = []
     monkeypatch.setattr(mc, "regime_dir", lambda: root)
+    monkeypatch.setattr(mc, "ensemble_dir", lambda: str(tmp_path / "ensemble"))
     monkeypatch.setattr(mc, "active_member_labels", lambda: list(LABELS))
+    monkeypatch.setattr(mc, "universal_labels", lambda: list(universal))
     monkeypatch.setattr(mc, "member_fingerprints",
                         lambda labels: {label: fingerprints.get(label) for label in labels})
-    return {"root": root, "fingerprints": fingerprints}
+    return {"root": root, "fingerprints": fingerprints, "universal": universal,
+            "ensemble": tmp_path / "ensemble"}
 
 
 def test_canonical_specs_accept_aliases():
@@ -326,6 +330,7 @@ def test_member_runner_restores_only_the_members_it_needs(monkeypatch):
     registry prefix: a gate reading members 2 and 4 loads 2 checkpoints."""
     active = ["1·psnr", "2·psnr", "3·psnr", "4·psnr"]
     monkeypatch.setattr(mc, "active_member_labels", lambda: list(active))
+    monkeypatch.setattr(mc, "universal_labels", lambda: [])
     monkeypatch.setattr(_LabelEnsemble, "active", active)
     monkeypatch.setattr(_LabelEnsemble, "built", [])
     runner = mc.EnsembleMemberRunner("/nowhere", factory=_LabelEnsemble,
@@ -340,3 +345,214 @@ def test_member_runner_restores_only_the_members_it_needs(monkeypatch):
     everything = mc.EnsembleMemberRunner("/nowhere", factory=_LabelEnsemble)
     everything.predict(np.ones((2, 2, 4), np.float32), "4·psnr")
     assert _LabelEnsemble.built[-1] == {"starless": False}
+
+
+# ---------------------------------------------------------------------------
+# universal models (design 2026-10-13 §4)
+# ---------------------------------------------------------------------------
+
+UNIVERSAL = "211·psnr"
+LOG_HEADER = "step,wall_time,loss,psnr_stretched,duration_s,combined_loss,is_baseline\n"
+
+
+def _write_member(directory, *, origin, log_rows=()):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "origin.json").write_text(json.dumps(origin), encoding="utf-8")
+    if log_rows:
+        (directory / "training_log.csv").write_text(
+            LOG_HEADER + "".join(f"{row}\n" for row in log_rows), encoding="utf-8")
+
+
+LEARNED = {"num_res_blocks": 16, "target_steps": 1_000_000, "batch_size": 4,
+           "crops_per_field": 8, "asinh_knees": [0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0],
+           "learned_output_knee": {"init_e": 10.0, "min_e": 0.1, "max_e": 1000.0},
+           "jit_compile": True, "mixed_precision": True, "starless": False}
+FIXED = {"num_res_blocks": 32, "target_steps": 70000, "batch_size": 4, "crops_per_field": 8,
+         "asinh_knees": [0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0], "output_knee": 10.0}
+# 1000/2000 trained (3600 s + 1800 s), a resume baseline at 2000 (no duration),
+# a rolled-back window re-trained 2000→3000 (1800 s): every non-baseline row counts.
+LOG = ["1000,1.0,0.5,40.0,3600.0,0.3,", "2000,2.0,0.4,41.0,1800.0,0.2,",
+       "2000,3.0,,41.0,,0.2,1", "3000,4.0,0.3,42.0,1800.0,0.1,"]
+
+
+@pytest.fixture
+def universe(regime):
+    """``regime`` + a pulled universal model 211 (learned knee), a registered
+    universal 212 still being pulled (no checkpoint), and active member 3 that
+    is itself a universal model (fixed knee)."""
+    ensemble = regime["ensemble"]
+    _write_member(ensemble / "member_211", origin=LEARNED, log_rows=LOG)
+    _write_member(ensemble / "member_3", origin=FIXED, log_rows=LOG[:2])
+    _write_member(ensemble / "member_1", origin={"num_res_blocks": 32, "asinh_knee": 10.0})
+    regime["fingerprints"][UNIVERSAL] = "ckpt-211:10:100"
+    regime["universal"][:] = [UNIVERSAL, "212·psnr"]
+    return regime
+
+
+def test_canonical_universal_specs():
+    for alias in ("universal:211", "universal:member_211", "universal:211·psnr",
+                  " Universal:member_211 "):
+        assert mc.canonical_spec(alias) == "universal:member_211"
+    assert mc.spec_slug("universal:211") == "universal-member_211"
+    assert mc.spec_slug("universal:211") != mc.spec_slug("member:211")
+    for bad in ("universal:", "universal:abc", "universal:../x", "universal:2111111"):
+        with pytest.raises(ValueError, match="universal"):
+            mc.canonical_spec(bad)
+    with pytest.raises(ValueError, match=r"unknown model spec 'foo'.*universal:<name>"):
+        mc.canonical_spec("foo")
+    assert mc.spec_kind("universal:member_211") == "universal"
+    assert mc.spec_kind("member:member_211") == "member"
+    assert mc.spec_kind("gate:two") == "gate" and mc.spec_kind("mean") == "mean"
+    assert mc.spec_member_label("universal:211") == UNIVERSAL
+    assert mc.spec_member_label("member:member_3") == "3·psnr"
+    assert mc.spec_member_label("production") is None
+
+
+def test_universal_models_list_last_and_stay_out_of_the_ensemble(universe):
+    specs = mc.list_specs()
+    kinds = [item.kind for item in specs]
+    assert [item.spec for item in specs[:3]] == ["production", "mean", "rbf"]
+    assert kinds[3:] == ["member"] * 3 + ["gate"] * 2 + ["universal"] * 2
+    by_spec = {item.spec: item for item in specs}
+    model = by_spec["universal:member_211"]
+    assert model.kind == "universal" and model.label == "Universal 211"
+    assert model.member_labels == model.reads == (UNIVERSAL,)
+    assert model.available and model.reason is None
+    assert model.member_fingerprints == ("ckpt-211:10:100",)
+    assert model.fingerprint == mc._hash("universal", UNIVERSAL, "ckpt-211:10:100")
+    assert model.fingerprint == mc.spec_fingerprint(
+        "universal", member_labels=(UNIVERSAL,), member_fingerprints=("ckpt-211:10:100",))
+    assert model.fingerprint != mc.spec_fingerprint(
+        "member", member_labels=(UNIVERSAL,), member_fingerprints=("ckpt-211:10:100",))
+    # a universal model is never part of the mean, the gates or the members list
+    assert list(by_spec["mean"].member_labels) == LABELS
+    assert "member:member_211" not in by_spec
+    payload = mc.catalog_payload()
+    assert payload["members"] == LABELS
+    json.dumps(payload)
+    row = next(item for item in payload["models"] if item["spec"] == "universal:member_211")
+    assert row["slug"] == "universal-member_211" and row["n_members"] == 1
+
+
+def test_a_universal_model_without_a_checkpoint_is_listed_unavailable(universe):
+    pulling = mc.resolve_spec("universal:212")
+    assert pulling.kind == "universal" and not pulling.available
+    assert "no checkpoint" in pulling.reason and pulling.fingerprint is None
+    assert mc.current_fingerprints()["universal:member_212"] is None
+
+
+def test_a_universal_model_without_its_recipe_is_unavailable(universe):
+    """A checkpoint without ``origin.json`` (a pull mid-way) would load as a
+    single-knee model: unavailable until the recipe arrives."""
+    (universe["ensemble"] / "member_211" / "origin.json").unlink()
+    model = mc.resolve_spec("universal:211")
+    assert not model.available and "origin.json" in model.reason
+    assert model.fingerprint is None
+
+
+def test_universal_details_are_cheap_recipe_and_log_reads(universe):
+    details = dict(mc.resolve_spec("universal:211").details)
+    assert details == {
+        "universal": True, "class": "universal", "num_res_blocks": 16, "steps": 3000,
+        "target_steps": 1_000_000, "batch_size": 4, "crops_per_field": 8,
+        "knee": "learned", "output_knee": None, "jit_compile": True,
+        "mixed_precision": True, "train_hours": pytest.approx(7200.0 / 3600.0)}
+    # an active member that is a universal model: the same details, class member
+    member = mc.resolve_spec("member:member_3")
+    assert member.kind == "member"
+    assert dict(member.details) == {
+        "universal": True, "class": "member", "num_res_blocks": 32, "steps": 2000,
+        "target_steps": 70000, "batch_size": 4, "crops_per_field": 8, "knee": "fixed",
+        "output_knee": 10.0, "jit_compile": False, "mixed_precision": False,
+        "train_hours": pytest.approx(1.5)}
+    assert dict(mc.resolve_spec("member:member_1").details) == {}     # single-knee member
+    assert dict(mc.resolve_spec("member:member_2").details) == {}     # no recipe on disk
+    # still being pulled: the full key set, nothing known yet
+    pulling = dict(mc.resolve_spec("universal:212").details)
+    assert pulling["universal"] is True and pulling["class"] == "universal"
+    assert pulling["steps"] is None and pulling["train_hours"] is None
+
+
+def test_universal_details_are_cached_until_their_files_change(universe):
+    mc.list_specs()
+    before = mc._training_log_cached.cache_info().hits
+    mc.list_specs()
+    assert mc._training_log_cached.cache_info().hits > before        # no re-parse
+    log = universe["ensemble"] / "member_211" / "training_log.csv"
+    log.write_text(LOG_HEADER + "".join(f"{row}\n" for row in LOG)
+                   + "4000,5.0,0.2,43.0,3600.0,0.1,\n", encoding="utf-8")
+    details = mc.resolve_spec("universal:211").details
+    assert details["steps"] == 4000 and details["train_hours"] == pytest.approx(3.0)
+
+
+def test_universal_fingerprint_follows_its_checkpoint(universe):
+    before = mc.resolve_spec("universal:211").fingerprint
+    universe["fingerprints"][UNIVERSAL] = "ckpt-212:11:200"
+    after = mc.resolve_spec("universal:211")
+    assert after.available and after.fingerprint != before
+
+
+def test_predict_a_universal_model(universe):
+    members = _Members()
+    out = mc.predict(mc.resolve_spec("universal:211"), np.ones((4, 4, 4), np.float32), members)
+    np.testing.assert_allclose(out, members.base * 211.0)
+    assert members.calls == [UNIVERSAL]
+    with pytest.raises(KeyError, match="unknown model spec"):
+        mc.resolve_spec("universal:999")
+    with pytest.raises(ValueError, match="unavailable"):
+        mc.predict(mc.resolve_spec("universal:212"), np.ones((4, 4, 4), np.float32), members)
+
+
+def test_member_runner_restores_universal_models_with_explicit_labels(universe, monkeypatch):
+    """A universal model runs as an ensemble of one through
+    ``EnsembleModel(include_universal=True, labels=…)``; an active-only job
+    keeps the plain ensemble call, and one being pulled is never restored."""
+    monkeypatch.setattr(_LabelEnsemble, "active", list(LABELS))
+    monkeypatch.setattr(_LabelEnsemble, "built", [])
+    lr = np.ones((2, 2, 4), np.float32)
+    runner = mc.EnsembleMemberRunner("/nowhere", factory=_LabelEnsemble,
+                                     labels=["2·psnr", UNIVERSAL, "212·psnr"])
+    np.testing.assert_allclose(runner.predict(lr, UNIVERSAL), 211.0)
+    assert _LabelEnsemble.built == [{"starless": False, "labels": ["2·psnr", UNIVERSAL],
+                                     "include_universal": True}]
+    with pytest.raises(KeyError, match="universal model"):
+        runner.predict(lr, "212·psnr")                                 # no checkpoint
+    assert len(_LabelEnsemble.built) == 1
+    # an active-only runner widens to a universal model on demand
+    widened = mc.EnsembleMemberRunner("/nowhere", factory=_LabelEnsemble, labels=["1·psnr"])
+    widened.predict(lr, "1·psnr")
+    assert _LabelEnsemble.built[-1] == {"starless": False, "labels": ["1·psnr"]}
+    np.testing.assert_allclose(widened.predict(lr, UNIVERSAL), 211.0)
+    assert _LabelEnsemble.built[-1] == {"starless": False, "labels": ["1·psnr", UNIVERSAL],
+                                        "include_universal": True}
+
+
+def test_member_runner_never_plans_a_label_twice(universe, monkeypatch):
+    """A planned universal model that is not runnable at the first build (its
+    checkpoint mid-pull) is left out; once it can run, the rebuild restores it
+    ONCE — never ``member_212 is listed twice`` for every later predict."""
+    monkeypatch.setattr(_LabelEnsemble, "active", list(LABELS))
+    monkeypatch.setattr(_LabelEnsemble, "built", [])
+    lr = np.ones((2, 2, 4), np.float32)
+    runner = mc.EnsembleMemberRunner("/nowhere", factory=_LabelEnsemble,
+                                     labels=["2·psnr", "212·psnr"])
+    np.testing.assert_allclose(runner.predict(lr, "2·psnr"), 2.0)
+    assert _LabelEnsemble.built == [{"starless": False, "labels": ["2·psnr"]}]
+    with pytest.raises(KeyError):
+        runner.predict(lr, "212·psnr")                                 # still being pulled
+    # the pull lands: a checkpoint and a STARFULL recipe
+    _write_member(universe["ensemble"] / "member_212", origin=LEARNED)
+    universe["fingerprints"]["212·psnr"] = "ckpt-212:10:100"
+    np.testing.assert_allclose(runner.predict(lr, "212·psnr"), 212.0)
+    np.testing.assert_allclose(runner.predict(lr, "2·psnr"), 2.0)
+    assert _LabelEnsemble.built[1:] == [{"starless": False, "labels": ["2·psnr", "212·psnr"],
+                                         "include_universal": True}]
+    assert runner._labels == ["2·psnr", "212·psnr"]
+
+
+def test_member_runner_restores_each_label_once(monkeypatch):
+    """Backstop: duplicates never reach ``EnsembleModel`` whatever the plan holds."""
+    monkeypatch.setattr(mc, "active_member_labels", lambda: list(LABELS))
+    monkeypatch.setattr(mc, "universal_labels", lambda: [])
+    assert mc.EnsembleMemberRunner._runnable(["1·psnr", "2·psnr", "1·psnr"]) == (
+        ["1·psnr", "2·psnr"], set())

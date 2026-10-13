@@ -434,3 +434,103 @@ def test_caching_one_tile_twice_reattaches_instead_of_racing(client, monkeypatch
     for response in (first, elsewhere):
         assert _wait(response.get_json()["job_id"])["status"] == "done"
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# universal models (design 2026-10-13 §4)
+# ---------------------------------------------------------------------------
+
+UNIVERSAL = "211·psnr"
+
+
+@pytest.fixture
+def universe(tmp_path, monkeypatch):
+    store = fx.point_store(tmp_path, monkeypatch)
+    regime = fx.stub_regime(tmp_path, monkeypatch, universal=(UNIVERSAL,))
+    fx.make_nexus_field(n_tiles=2)
+    runner = fx.StubRunner()
+    monkeypatch.setattr(model_catalog, "EnsembleMemberRunner", lambda *a, **k: runner)
+    return {**store, **regime, "runner": runner}
+
+
+@pytest.fixture
+def universal_client(universe):
+    app = web_app.create_app()
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        yield c
+
+
+def test_models_payload_lists_universal_models_last(universal_client):
+    payload = universal_client.get("/api/models").get_json()
+    assert payload["members"] == fx.LABELS                  # never an ensemble member
+    rows = payload["models"]
+    assert [row["spec"] for row in rows[:3]] == ["production", "mean", "rbf"]
+    assert [row["kind"] for row in rows][-1] == "universal"
+    row = rows[-1]
+    assert row["spec"] == "universal:member_211" and row["label"] == "Universal 211"
+    assert row["slug"] == "universal-member_211" and row["available"]
+    assert row["members"] == row["reads"] == [UNIVERSAL] and row["n_members"] == 1
+    assert row["details"]["class"] == "universal" and row["details"]["knee"] == "learned"
+    assert row["details"]["num_res_blocks"] == 16 and row["details"]["steps"] == 2000
+    assert row["details"]["train_hours"] == pytest.approx(2.0)
+    mean = next(item for item in rows if item["spec"] == "mean")
+    assert UNIVERSAL not in mean["members"]
+
+
+def test_a_universal_model_runs_on_real_tiles_and_is_served(universal_client, universe):
+    response = universal_client.post("/api/experiments", data={
+        "tiles": "nexus/f200w-0000", "models": "production,universal:211"})
+    assert response.status_code == 200, response.get_json()
+    payload = response.get_json()
+    assert payload["models"] == ["production", "universal:member_211"]
+    assert _wait(payload["job_id"])["status"] == "done"
+    card = universal_client.get("/api/real/nexus/f200w-0000").get_json()
+    row = card["models"]["universal:member_211"]
+    assert row["state"] == "current" and row["kind"] == "universal"
+    assert row["label"] == "Universal 211"
+    assert "universal:member_211" in card["runnable_models"]
+    vis = row["metrics"]["per_band"]["VIS"]
+    assert vis["flux_ratio"] == pytest.approx(211.0, rel=1e-5)
+    image = universal_client.get(
+        "/api/real/nexus/f200w-0000/image.fits?tier=m:universal:211&band=VIS")
+    assert image.status_code == 200
+    meta = universal_client.get("/viewer/meta/real?source=nexus").get_json()
+    tiers = {tier["key"]: tier for tier in meta["tiers"]}
+    assert list(tiers)[2:] == ["m:production", "m:universal:member_211"]
+    assert tiers["m:universal:member_211"]["label"] == "Universal 211"
+    assert tiers["m:universal:member_211"]["available"]
+    # archived: the output stays listed under its name, no longer runnable
+    universe["universal"].clear()
+    meta = universal_client.get("/viewer/meta/real?source=nexus").get_json()
+    tier = next(t for t in meta["tiers"] if t["key"] == "m:universal:member_211")
+    assert tier["label"] == "Universal 211" and not tier["available"]
+    assert meta["objects"][0]["model_states"]["universal:member_211"] == "unavailable"
+
+
+def test_pair_inference_with_a_universal_model(universal_client, universe):
+    pair = fx.make_pair()
+    real_tiles.invalidate()
+    jwst_euclid.run_starfull_pair_inference(pair, spec="universal:211",
+                                            runner=universe["runner"])
+    real_tiles.invalidate()
+    card = universal_client.get(f"/api/real/pair/{pair}").get_json()
+    row = card["models"]["universal:member_211"]
+    assert row["state"] == "current" and row["kind"] == "universal"
+
+
+def test_real_default_tier_order():
+    outputs = [{"universal:member_211": {}, "gate:two": {}, "member:member_3": {},
+                "mean": {}}, {"production": {}, "member:member_1": {}, "rbf": {},
+                              "universal:member_206": {}}]
+    assert vd._real_default_specs(outputs) == [
+        "production", "mean", "rbf", "member:member_1", "member:member_3", "gate:two",
+        "universal:member_206", "universal:member_211"]
+
+
+def test_real_tier_label_names_members_and_universal_models_without_the_catalogue():
+    assert vd._real_tier_label("universal:member_211", None, []) == "Universal 211"
+    assert vd._real_tier_label("member:member_9", None, []) == "Member 9·psnr"
+    assert vd._real_tier_label("universal:member_211", "Universal 211",
+                               [({"legacy": True, "member_count": 1}, "stale")]) \
+        == "Universal 211 (1 member, legacy)"

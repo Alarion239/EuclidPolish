@@ -3,7 +3,8 @@
  * model), the pivot table (models × VIS / Y / J / H for that metric, the best
  * value per band marked), the history's columns and the one sentence. A
  * model has ONE colour here: its dot in the strip and its swatch in the
- * table (the order of recordSpecs). */
+ * table (specColors: the categorical cycle in the order of recordSpecs, one
+ * ramp over the universal models). */
 import { useMemo } from "react";
 import Plot from "../../../charts/Plot";
 import { categorical } from "../../../colors";
@@ -14,13 +15,13 @@ import { StateBadge } from "../results/common";
 import {
   bandLabel, bandSeries, formatMetric, METRIC_BY_KEY, recordSpecs, seriesDomain, specShort, specWords, type MetricKey,
 } from "../results/model";
-import { compareSentence, deltaMags, headlineText, pivotBest, pivotRows, type PivotRow } from "./model";
+import { compareSentence, deltaMags, headlineText, pivotBest, pivotRows, specColors, type PivotRow } from "./model";
 
 type Band = (typeof BANDS)[number];
 
-/** Each spec's colour, in the record's model order. */
+/** Each spec's colour, in the record's model order (universal models on their own ramp). */
 export function useSpecColors(record: ExperimentRecord): Record<string, string> {
-  return useMemo(() => Object.fromEntries(recordSpecs(record).map((s, i) => [s, categorical(i)])), [record]);
+  return useMemo(() => specColors(recordSpecs(record)), [record]);
 }
 
 /** The page's one sentence (production's worst-band holes against the mean). */
@@ -121,7 +122,7 @@ export function historyColumns(): DataColumn<ExperimentSummary>[] {
       cell: (e) => (e.created ? <span title={e.created}>{formatRelative(e.created)}</span> : "—") },
     { id: "label", header: "Label", accessor: (e) => e.label || e.id, width: 200,
       cell: (e) => <span className="res-ellipsis" title={e.id}>{e.label || <code className="mono">{e.id}</code>}</span> },
-    { id: "headline", header: "Worst-band holes", headerText: "Worst-band holes (production · mean)", width: 240,
+    { id: "headline", header: "Worst-band holes", headerText: "Worst-band holes (production · mean · best universal)", width: 240,
       accessor: (e) => headlineText(e), cell: (e) => headlineText(e) || <span className="muted">not scored</span>, priority: 1 },
     { id: "tiles", header: "Tiles", numeric: true, accessor: (e) => e.tiles?.length ?? 0, width: 56,
       filterText: (e) => (e.tiles ?? []).join(" "), cell: (e) => formatCount(e.tiles?.length ?? 0) },

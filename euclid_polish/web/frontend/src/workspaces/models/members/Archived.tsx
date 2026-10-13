@@ -1,18 +1,21 @@
 /* Models › Members, archived view: the tombstones (names are never reused)
-   with their zip in the tracking campaign, and Restore (confirmed). A row
-   opens the member inspector. */
+   with their zip in the tracking campaign, and Restore (confirmed, worded by
+   the tombstone's class: a universal model comes back standalone, never
+   into the ensemble). A row opens the member inspector. */
 import { useMemo } from "react";
 import { useJob } from "../../../api/jobs";
 import { formatBytes, formatRelative } from "../../../format";
-import { Button, Caption, DataTable, JobProgress, Tooltip, confirm, type DataColumn } from "../../../ui";
+import { Badge, Button, Caption, DataTable, JobProgress, Tooltip, confirm, type DataColumn } from "../../../ui";
 import type { Tombstone } from "../api";
 import { JOB, useOnJobEnd } from "../jobs";
-import { memberNumber } from "../model";
+import { memberNumber, restoreText } from "../model";
 
 function columns(onRestore: (name: string) => void, busy: boolean): DataColumn<Tombstone>[] {
   return [
     { id: "name", header: "Member", sortFn: (a, b) => Number(memberNumber(a.name)) - Number(memberNumber(b.name)),
-      cell: (t) => <span className="mdl-mono">#{memberNumber(t.name)}</span>, width: 90 },
+      cell: (t) => (
+        <span className="mdl-mono">#{memberNumber(t.name)}{t.class === "universal" && <> <Badge tone="accent" size="sm">universal</Badge></>}</span>
+      ), width: 130 },
     { id: "archived_at", header: "Archived", cell: (t) => (t.archived_at
       ? <Tooltip content={t.archived_at}><span tabIndex={0}>{formatRelative(t.archived_at)}</span></Tooltip> : "—") },
     { id: "zip", header: "Zip", accessor: (t) => t.zip ?? null,
@@ -24,7 +27,7 @@ function columns(onRestore: (name: string) => void, busy: boolean): DataColumn<T
       cell: (t) => (
         <Button size="sm" variant="ghost" disabled={!t.zip_found || busy}
           onClick={async () => {
-            if (await confirm({ title: `Restore ${t.name}?`, message: "Unzips the archive back into the ensemble and makes the member active again. The evaluation and the production gate then read stale until re-run.", confirmLabel: "Restore" })) onRestore(t.name);
+            if (await confirm({ title: `Restore ${t.name}?`, message: restoreText(t), confirmLabel: "Restore" })) onRestore(t.name);
           }}>Restore</Button>
       ) },
   ];
@@ -41,7 +44,10 @@ export function Archived({ rows }: { rows: Tombstone[] }) {
       <DataTable rows={rows} columns={cols} rowKey={(t) => t.name} aria-label="Archived members"
         inspect={(t) => ({ kind: "member", id: t.name })} urlKey="a" height={480} dense
         exportName="ensemble-archived" empty="No archived members." />
-      <Caption>Archived member names are never reused; each zip lives in its tracking campaign (Notebook › Backups).</Caption>
+      <Caption>
+        Archived member names are never reused; each zip lives in its tracking campaign (Notebook › Backups). A universal model
+        restores as a universal model (Models › Universal), never into the ensemble.
+      </Caption>
     </div>
   );
 }

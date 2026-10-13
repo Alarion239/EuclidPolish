@@ -3,7 +3,12 @@
    (per-band PSNR, loss, gradient norm, step time), its PSNR-vs-knee curve
    against the plain mean and the production gate, and how much weight the
    production gate gives it (overall and by brightness). Active and archived
-   members (restore from the archive zip). GET /ensemble/member/<name>.json. */
+   members (restore from the archive zip, worded by the tombstone's class: an
+   archived universal model comes back standalone), and the registered
+   universal models (standalone, not ensemble members: their recipe and
+   curves, Models › Universal, Sky › Compare and Archive; "vs plain mean"
+   only when their score is current and on the knee payload's fields, a
+   stale ∫PSNR marked). GET /ensemble/member/<name>.json. */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Plot, { type Series } from "../../charts/Plot";
@@ -19,7 +24,8 @@ import {
 } from "../../ui";
 import { BAND_SHORT, BANDS, url, type MemberDetail } from "./api";
 import { JOB, useOnJobEnd } from "./jobs";
-import { db, dbDelta, kneeText, memberName, memberNumber, relativeTo, stepsText, xy } from "./model";
+import { db, dbDelta, inspectorVsMean, kneeText, memberName, memberNumber, relativeTo, restoreText, stepsText, xy } from "./model";
+import { compareHref } from "./universal";
 import "./models.css";
 
 type CurveMetric = "bands" | "loss" | "gnorm" | "time";
@@ -132,14 +138,25 @@ export default function MemberInspector({ id }: InspectorProps) {
   const num = memberNumber(d.name);
   const tab = (t: string, q = "") => navigate(`${pagePath("models", { tab: t })}${q}`);
   const k = r ? kneeText(r) : null;
-  const meanModel = d.knee?.models.find((x) => x.kind === "mean");
-  const meanVals = (meanModel?.integrated ?? []).filter((x) => Number.isFinite(x));
-  const meanKnee = meanVals.length ? meanVals.reduce((a, b) => a + b, 0) / meanVals.length : null;
+  const vsMean = inspectorVsMean(d);
+  // A registered universal model: standalone, never an ensemble member (Models › Universal).
+  const universal = !d.active && (d.universal === true || (r?.class === "universal" && !d.archived));
+  // An archived one comes back as a universal model (its tombstone's class).
+  const archivedUniversal = !d.active && !universal && (d.archived?.class === "universal" || d.class === "universal");
+  const stale = universal && r?.score_stale === true;
+  const doArchive = async () => {
+    if (await confirm({ title: `Archive ${d.name}?`, tone: "danger", confirmLabel: "Archive",
+      message: `Zipped to the tracking campaign, tombstoned and deleted (also on FASRC when connected). Restorable from the zip${universal ? ", as a universal model again" : ""}.` })) {
+      await archive.run("/ensemble/archive-member", { member: d.name });
+    }
+  };
   return (
     <div className="mdl-insp">
       <div className="mdl-insp__head">
         <span className="mdl-insp__title">#{num}</span>
-        {!d.active && <Badge tone="warn">archived</Badge>}
+        {universal ? <Badge tone="accent">universal</Badge>
+          : archivedUniversal ? <Badge tone="warn">universal · archived</Badge>
+            : !d.active && <Badge tone="warn">archived</Badge>}
         {r?.status === "timeout" && <Badge tone="warn">TIMEOUT</Badge>}
         {r?.status === "running" && <Badge tone="info" dot>training</Badge>}
         {r && <Badge>{r.loss.toUpperCase()}</Badge>}
@@ -151,11 +168,14 @@ export default function MemberInspector({ id }: InspectorProps) {
           <Button size="sm" onClick={() => tab("train", `?mode=fork&member=${d.name}`)}>Fork</Button>
           <Button size="sm" variant="ghost" onClick={() => tab("members", `?view=curves&sel=${num}`)}>Curves</Button>
           <Button size="sm" variant="ghost" onClick={() => tab("images", `?sel=${num}`)}>Viewer</Button>
-          <Button size="sm" variant="danger" loading={archive.busy} onClick={async () => {
-            if (await confirm({ title: `Archive ${d.name}?`, message: "Zipped to the tracking campaign, tombstoned and deleted (also on FASRC when connected). Restorable from the zip.", tone: "danger", confirmLabel: "Archive" })) {
-              await archive.run("/ensemble/archive-member", { member: d.name });
-            }
-          }}>Archive</Button>
+          <Button size="sm" variant="danger" loading={archive.busy} onClick={doArchive}>Archive</Button>
+        </div>
+      )}
+      {universal && (
+        <div className="mdl-row">
+          <Button size="sm" onClick={() => tab("universal")}>Universal</Button>
+          <Button size="sm" variant="ghost" onClick={() => navigate(compareHref([`universal:${d.name}`]))}>Compare on real fields</Button>
+          <Button size="sm" variant="danger" loading={archive.busy} onClick={doArchive}>Archive</Button>
         </div>
       )}
       {!d.active && d.archived && (
@@ -166,7 +186,7 @@ export default function MemberInspector({ id }: InspectorProps) {
             ["zip", d.archived.zip_found ? `${d.archived.zip} (${d.archived.campaign})` : `${d.archived.zip ?? "—"} — not found`],
           ]} />
           <Button size="sm" disabled={!d.archived.zip_found} loading={restore.busy} onClick={async () => {
-            if (await confirm({ title: `Restore ${d.name}?`, message: "Unzips the archive into the ensemble and makes it active again; evaluation and gate then read stale.", confirmLabel: "Restore" })) {
+            if (await confirm({ title: `Restore ${d.name}?`, message: restoreText(archivedUniversal ? { class: "universal" } : d.archived), confirmLabel: "Restore" })) {
               await restore.run("/ensemble/restore-member", { member: d.name });
             }
           }}>Restore from zip</Button>
@@ -177,7 +197,10 @@ export default function MemberInspector({ id }: InspectorProps) {
       {r && (
         <DefList dense items={[
           ["steps", `${stepsText(r.step, r.target_steps)}${r.status === "timeout" ? " · stopped short" : ""}`],
-          ["∫PSNR", r.knee_integrated ? `${db(r.knee_integrated.mean)} dB (rank ${r.knee_rank ?? "—"}) · ${BANDS.map((b) => `${BAND_SHORT[b]} ${db(r.knee_integrated?.[b])}`).join(" · ")}` : "—"],
+          ["∫PSNR", r.knee_integrated ? <span key="k" className={stale ? "mdl-faint" : undefined}>
+            {`${db(r.knee_integrated.mean)} dB (rank ${r.knee_rank ?? "—"}) · ${BANDS.map((b) => `${BAND_SHORT[b]} ${db(r.knee_integrated?.[b])}`).join(" · ")}`}
+            {stale && <> <Badge tone="warn" size="sm">stale score</Badge></>}
+          </span> : "—"],
           ["test VIS", r.vis_psnr != null ? `${db(r.vis_psnr, 3)} dB · VIS asinh, last evaluation` : "—"],
           ["test 4-band", r.psnr != null ? `${db(r.psnr, 3)} dB (rank ${r.psnr_rank ?? "—"}) · joint asinh, member-PSNR cache` : "—"],
           ["coherence", r.coherence ? `all ${db(r.coherence.overall, 3)} · SR ${db(r.coherence.sr, 3)}` : "—"],
@@ -194,14 +217,18 @@ export default function MemberInspector({ id }: InspectorProps) {
           ["noise model", r.noise_model ?? "—"],
         ]} />
       )}
+      {universal && <>
+        <Section title="Training curves"><CurvesPlot d={d} /></Section>
+        {r?.origin && <Section title="origin.json" collapsible defaultOpen={false}><JsonTree data={r.origin} expandDepth={1} /></Section>}
+      </>}
       {d.active && <>
         <Section title="Training curves"><CurvesPlot d={d} /></Section>
         <Section title="PSNR vs knee"><KneePlot d={d} /></Section>
         <Section title="Production-gate usage"><GatePlot d={d} /></Section>
         {r?.origin && <Section title="origin.json" collapsible defaultOpen={false}><JsonTree data={r.origin} expandDepth={1} /></Section>}
       </>}
-      {r && r.knee_integrated?.mean != null && meanKnee != null && (
-        <span className="mdl-faint">vs plain mean: {dbDelta((r.knee_integrated.mean as number) - meanKnee)} dB knee-integrated</span>
+      {vsMean != null && (
+        <span className="mdl-faint">vs plain mean: {dbDelta(vsMean)} dB knee-integrated</span>
       )}
     </div>
   );

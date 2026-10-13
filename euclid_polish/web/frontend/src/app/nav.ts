@@ -53,6 +53,8 @@ export const WORKSPACE_META: Record<string, WorkspaceMeta> = {
     description: "Which model is best on synthetic truth and real data, how the members trained, and which combiner is production",
     tabs: {
       leaderboard: { label: "Leaderboard", description: "Production gate, plain mean and members ranked, with the knee curves", keywords: ["overview", "knee", "psnr"] },
+      universal: { label: "Universal", description: "Universal multi-knee models by training time, length and depth, against the combiner",
+        keywords: ["multi-knee", "learned knee", "scaling", "training time", "gpu hours", "depth", "steps"] },
       members: { label: "Members", description: "The roster, training curves and archived members", keywords: ["curves", "roster"] },
       train: { label: "Train", description: "Train, continue or fork members on FASRC" },
       combiner: { label: "Combiner", description: "Spatial-gate variants: fit, compare, promote", keywords: ["combiners", "gate", "spatial gate"] },

@@ -1,18 +1,20 @@
 /* Sky › Compare, pure logic (unit-tested in model.test.ts): the pivot of one
- * metric (models × VIS/Y/J/H), the Δm of each model against the LR, the
- * history's headline result, the long-form CSV and the New-comparison
- * target sets. No React, no fetch. */
+ * metric (models × VIS/Y/J/H), each model's colour, the Δm of each model
+ * against the LR, the history's headline result, the long-form CSV and the
+ * New-comparison target sets. No React, no fetch. */
+import { categorical, viridis } from "../../../colors";
 import { formatCount, formatDate } from "../../../format";
 import { BANDS, type ExperimentRecord, type ExperimentSummary, type Metrics, type TileRow } from "../results/api";
 import {
-  bandLabel, deltaMagWarn, fluxDeltaMag, formatMetric, METRIC_BY_KEY, METRICS, metricRows, metricsFor, num, recordSpecs,
-  sortSpecs, specWords, worstHoles, type MetricKey,
+  bandLabel, deltaMagWarn, fluxDeltaMag, formatMetric, isUniversalSpec, METRIC_BY_KEY, METRICS, metricRows, metricsFor, num,
+  recordSpecs, sortSpecs, specWords, worstHoles, type MetricKey,
 } from "../results/model";
 
 export type PivotRow = { spec: string; label: string } & Record<(typeof BANDS)[number], number | null>;
 
 /** One metric as models × bands (models in catalogue order: production — the
- *  reference — first, then the mean, gate variants, members). */
+ *  reference — first, then the universal models, the mean, gate variants,
+ *  members). */
 export function pivotRows(record: ExperimentRecord, scope: string, metric: MetricKey): PivotRow[] {
   const out: PivotRow[] = [];
   for (const spec of recordSpecs(record)) {
@@ -59,31 +61,63 @@ export function deltaMags(record: ExperimentRecord, scope: string, band: string)
   return out;
 }
 
-export type Headline = { spec: string; label: string; holes: number; band: string; best?: boolean };
+/* ── one colour per model ──────────────────────────────────────────────── */
+
+/** Each spec's colour, in the record's model order (sortSpecs): the
+ *  categorical cycle for production, the mean, gates and members (counted
+ *  among themselves, so adding universal models changes none of theirs), and
+ *  ONE viridis ramp over the universal models — a dozen of them against
+ *  production stay apart, where the 8-colour cycle would repeat. */
+export function specColors(specs: readonly string[]): Record<string, string> {
+  const sorted = sortSpecs(specs);
+  const n = sorted.filter(isUniversalSpec).length;
+  const out: Record<string, string> = {};
+  let cat = 0, ramp = 0;
+  for (const spec of sorted) {
+    if (isUniversalSpec(spec)) out[spec] = viridis(n > 1 ? 0.1 + (0.8 * ramp++) / (n - 1) : 0.5);
+    else out[spec] = categorical(cat++);
+  }
+  return out;
+}
+
+/* ── the history's headline ────────────────────────────────────────────── */
+
+/** A model's worst-band holes; `best` = the fewest of every model that ran
+ *  (neither production nor the mean did), `of` = the best of that many
+ *  universal models. */
+export type Headline = { spec: string; label: string; holes: number; band: string; best?: boolean; of?: number };
 
 const worstOf = (spec: string, m: Metrics | null | undefined): Headline | null => {
   const w = worstHoles(m);
   return w ? { spec, label: specWords(spec), holes: w.holes, band: bandLabel(w.band || "VIS") } : null;
 };
 
+const fewest = (hs: readonly Headline[]): Headline | null =>
+  hs.reduce<Headline | null>((a, b) => (!a || b.holes < a.holes ? b : a), null);
+
 /** The history's headline result: the worst-band hole % of production and
- *  of the plain mean (those that ran); when neither ran, the model with the
- *  fewest holes (`best`). */
+ *  of the plain mean (those that ran), then the universal model with the
+ *  fewest holes (`of` = out of how many, when several ran); when neither
+ *  production nor the mean ran, the model with the fewest holes (`best`). */
 export function headline(record: Pick<ExperimentSummary, "summary">): Headline[] {
   const summary = record.summary ?? {};
   const out = ["production", "mean"].map((spec) => worstOf(spec, summary[spec])).filter((h): h is Headline => !!h);
-  if (out.length) return out;
-  let best: Headline | null = null;
-  for (const spec of sortSpecs(Object.keys(summary))) {
-    const h = worstOf(spec, summary[spec]);
-    if (h && (!best || h.holes < best.holes)) best = h;
+  if (out.length) {
+    const universal = sortSpecs(Object.keys(summary).filter(isUniversalSpec))
+      .map((spec) => worstOf(spec, summary[spec])).filter((h): h is Headline => !!h);
+    const top = fewest(universal);
+    if (top) out.push(universal.length > 1 ? { ...top, of: universal.length } : top);
+    return out;
   }
+  const best = fewest(sortSpecs(Object.keys(summary)).map((spec) => worstOf(spec, summary[spec])).filter((h): h is Headline => !!h));
   return best ? [{ ...best, best: true }] : [];
 }
 
-/** The headline as one cell: "production 20.2 % (J) · member mean 32.6 % (VIS)". */
+/** The headline as one cell: "production 20.2 % (J) · member mean 32.6 % (VIS)
+ *  · universal 211 6.3 % (Y), best of 3 universal". */
 export function headlineText(record: Pick<ExperimentSummary, "summary">): string {
-  return headline(record).map((h) => `${h.label} ${formatMetric("hole_pct", h.holes)} % (${h.band})${h.best ? ", the fewest" : ""}`).join(" · ");
+  const suffix = (h: Headline) => (h.best ? ", the fewest" : h.of ? `, best of ${h.of} universal` : "");
+  return headline(record).map((h) => `${h.label} ${formatMetric("hole_pct", h.holes)} % (${h.band})${suffix(h)}`).join(" · ");
 }
 
 export type SentencePiece = { text: string; num?: boolean; warn?: boolean };

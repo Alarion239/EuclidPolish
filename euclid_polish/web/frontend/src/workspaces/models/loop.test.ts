@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 import type { Check, ExperimentSummary, MemberRow, TrainingJob, Variant } from "./api";
 import {
   deltaMagText, gateShare, leaderboardBenchmark, lossFacets, runningBatches, stampSets, statusChecks, submitLabel,
-  variantScope, waitingOnFasrc, compareRunPath, benchmarkChoices, coherenceOrder, forwardModelFacts, lrScheduleText,
+  variantScope, waitingOnFasrc, compareRunPath, benchmarkChoices, coherenceOrder, forwardModelFacts, lrScheduleText, universalJobMembers,
+  forkSource, knownUniversal,
 } from "./model";
 
 const check = (id: string, ok: boolean, action: string | null = null, tone: Check["tone"] = "warn"): Check =>
@@ -105,6 +106,58 @@ describe("members waiting on FASRC", () => {
       job("7", "add", "COMPLETED", ["member_137"], { ended_at: "2026-07-10T10:00:00Z" }),
     ], [], ["member_129"], { now });
     expect(w.members).toEqual(["member_199"]);
+  });
+
+  it("leaves new universal models to the Universal tab, and counts the registered ones as local", () => {
+    const knees = [0.1, 1, 10, 100, 1000, 10000];
+    const spec = JSON.stringify([
+      { loss: "l2", asinh_knees: knees, learn_output_knee: true, output_knee: 10, num_res_blocks: 16 },
+      { loss: "l2", asinh_knee: 10 },
+      { loss: "l2", asinh_knees: knees, output_knee: 10 },
+      { loss: "l2", asinh_knees: knees },
+    ]);
+    const jobs = [job("9", "add", "COMPLETED", ["member_211", "member_219", "member_220", "member_221"], { params: { mode: "add", member_spec: spec } })];
+    const w = waitingOnFasrc(jobs, [], []);
+    expect(w.members).toEqual(["member_219", "member_221"]);   // a single knee and a multi-head member stay ensemble members
+    expect(w.universal).toEqual(["member_211", "member_220"]);
+    expect(waitingOnFasrc(jobs, [], [], { universal: ["member_211"] }).universal).toEqual(["member_220"]);
+  });
+
+  it("reads a member's universal recipe from the run-wide params too", () => {
+    const j = (params: Record<string, unknown>) => ({ member_names: ["member_1", "member_2"], params });
+    expect([...universalJobMembers(j({ asinh_knees: "0.1,1,10", output_knee: "10" }))]).toEqual(["member_1", "member_2"]);
+    expect([...universalJobMembers(j({ asinh_knees: "0.1,1,10", learn_output_knee: "1" }))]).toEqual(["member_1", "member_2"]);
+    expect([...universalJobMembers(j({ asinh_knees: "0.1,1,10", output_knee: "", learn_output_knee: "0" }))]).toEqual([]);
+    expect([...universalJobMembers(j({ asinh_knees: "", output_knee: "10" }))]).toEqual([]);
+    // a member_spec entry overrides the run-wide recipe
+    expect([...universalJobMembers(j({ asinh_knees: "0.1,1,10", output_knee: "10", member_spec: JSON.stringify([{ asinh_knees: null }]) }))])
+      .toEqual(["member_2"]);
+    expect([...universalJobMembers(j({ member_spec: "not json" }))]).toEqual([]);
+  });
+
+  it("treats a fork of a universal model as universal: it inherits its source's knees", () => {
+    const knees = [0.1, 1, 10, 100, 1000, 10000];
+    const add = job("10", "add", "COMPLETED", ["member_211"], { params: { mode: "add",
+      member_spec: JSON.stringify([{ loss: "l2", asinh_knees: knees, learn_output_knee: true, output_knee: 10 }]) } });
+    // the fork's own recipe names no knees (the Train tab sends none for a fork)
+    const fork = (id: string, names: string[], from: string) => job(id, "fork", "COMPLETED", names,
+      { params: { mode: "fork", fork_from: from, member_spec: JSON.stringify(names.map(() => ({ loss: "l1" }))) } });
+    expect([...universalJobMembers(fork("11", ["member_219"], "member_211"))]).toEqual([]);
+    expect([...universalJobMembers(fork("11", ["member_219"], "211"), new Set(["member_211"]))]).toEqual(["member_219"]);
+    expect(forkSource(fork("11", ["member_219"], "211·psnr"))).toBe("member_211");
+    expect(forkSource(add)).toBeNull();
+    // newest first, as the job log lists them: a fork of a fork of 211, and a fork of a single-knee member
+    const jobs = [fork("13", ["member_225"], "member_219"), fork("12", ["member_224"], "member_178"), fork("11", ["member_219"], "member_211"), add];
+    expect([...knownUniversal(jobs)].sort()).toEqual(["member_211", "member_219", "member_225"]);
+    const w = waitingOnFasrc(jobs, [row(178, { asinh_knee: 10 })], []);
+    expect(w.universal).toEqual(["member_211", "member_219", "member_225"]);
+    expect(w.members).toEqual(["member_224"]);
+    // a fork of an active member that is universal (196: fixed output knee), and of a registered universal model
+    const w2 = waitingOnFasrc([fork("14", ["member_226"], "member_196"), fork("15", ["member_227"], "member_216")],
+      [row(196, { asinh_knees: knees, output_knee: 10 })], [], { universal: ["member_216"] });
+    expect(w2).toMatchObject({ members: [], universal: ["member_226", "member_227"] });
+    // a cycle in the ledger never loops
+    expect([...knownUniversal([fork("16", ["member_300"], "member_301"), fork("17", ["member_301"], "member_300")])]).toEqual([]);
   });
 
   it("lists continued members whose finished job went past the local step", () => {

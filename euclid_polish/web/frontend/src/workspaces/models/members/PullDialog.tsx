@@ -1,12 +1,17 @@
 /* "Pull from FASRC…" (Models › Members; merges the old Overview Pull dialog
    and System › Storage's "Pull checkpoints"): check what changed on FASRC,
    pick members (or type them), pull just those or every changed one;
-   unchanged members are never downloaded. The whole-ensemble mirror
-   (rsync --delete-after, typed confirmation) sits apart as the last resort.
+   unchanged members are never downloaded. Universal models are not
+   ensemble members: the server leaves them out of every pull here (named,
+   `universal_skipped`), and a typed one is flagged before the pull; they
+   are pulled on Models › Universal. The whole-ensemble mirror (rsync
+   --delete-after, typed confirmation) sits apart as the last resort.
    Nothing runs until a button is pressed. */
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useJob, type Job } from "../../../api/jobs";
 import { invalidate, useResource } from "../../../api/query";
+import { pagePath } from "../../../app/nav";
 import { useFasrcStatus } from "../../../app/status";
 import { formatRelative } from "../../../format";
 import { Button, Caption, Checkbox, Dialog, EmptyState, Input, JobProgress, confirm, toast } from "../../../ui";
@@ -16,8 +21,14 @@ import { memberNumber, parseMemberList } from "../model";
 
 type MirrorStatus = { local_dir?: string | null; last_run_at?: string | null; last_rc?: number | null; last_error?: string | null };
 
-export function PullDialog({ open, onOpenChange, waiting }: {
+/** The universal models a pull or its check left out (`universal_skipped`). */
+const skippedOf = (j: Job | null | undefined): string[] =>
+  (j?.status === "done" ? (j.result as { universal_skipped?: string[] } | null)?.universal_skipped ?? [] : []);
+
+export function PullDialog({ open, onOpenChange, waiting, universal = [] }: {
   open: boolean; onOpenChange: (v: boolean) => void; waiting: readonly string[];
+  /** Universal models finished on FASRC (not ensemble members; this pull leaves them out). */
+  universal?: readonly string[];
 }) {
   const fasrc = useFasrcStatus().data;
   const offline = fasrc ? !fasrc.ssh_connected : false;
@@ -34,6 +45,10 @@ export function PullDialog({ open, onOpenChange, waiting }: {
   const choices = changed ?? (waiting.length ? [...waiting] : null);
   const parsed = parseMemberList(text);
   const wanted = [...new Set([...picked, ...parsed.names])];
+  const typedUniversal = parsed.names.filter((n) => universal.includes(n));
+  const skipped = [...new Set([...skippedOf(probe.job), ...skippedOf(pull.job)])];
+  const nums = (names: readonly string[]) => names.map((n) => memberNumber(n) ?? n).join(", ");
+  const universalLink = <Link to={pagePath("models", { tab: "universal" })} onClick={() => onOpenChange(false)}>Models › Universal</Link>;
   const check = () => probe.run("/ensemble/pull", { dry_run: "1" }, { onDone: (j: Job) => {
     const r = j.result as { changed?: string[] } | null;
     setPicked(r?.changed ?? []);
@@ -72,6 +87,18 @@ export function PullDialog({ open, onOpenChange, waiting }: {
             className="mdl-grow" />
         </div>
         {parsed.bad.length > 0 && <span className="mdl-warn">Not member names: {parsed.bad.join(", ")}</span>}
+        {typedUniversal.length > 0 && (
+          <span className="mdl-warn">
+            {nums(typedUniversal)} {typedUniversal.length === 1 ? "is a universal model" : "are universal models"}, not{" "}
+            {typedUniversal.length === 1 ? "an ensemble member" : "ensemble members"}: this pull leaves {typedUniversal.length === 1 ? "it" : "them"} out.
+            Pull {typedUniversal.length === 1 ? "it" : "them"} on {universalLink}.
+          </span>
+        )}
+        {skipped.length > 0 && (
+          <span className="mdl-muted">
+            Left out as universal models (not ensemble members): {nums(skipped)}. Pull {skipped.length === 1 ? "it" : "them"} on {universalLink}.
+          </span>
+        )}
         {choices && (choices.length === 0
           ? <span className="mdl-muted">Every member is up to date on FASRC.</span>
           : (

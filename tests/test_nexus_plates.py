@@ -117,6 +117,8 @@ def test_request_validation(plates):
     spec, tiles, _meta = nexus_plates.resolve_request(["40", "f200w-0040", "nexus/f200w-0042"], "member:rbf".replace("member:", ""))
     assert spec == "rbf" and [tile.id for tile in tiles] == ["f200w-0040", "f200w-0042"]
     assert nexus_plates.model_short("member:member_196") == "member 196"
+    assert nexus_plates.model_short("universal:member_211") == "universal 211"
+    assert nexus_plates.default_tag("universal:211").startswith("universal-member_211-")
     assert nexus_plates.model_short("gate:v1") == "gate v1"
     assert nexus_plates.default_tag("gate:26m").startswith("gate-26m-")
 

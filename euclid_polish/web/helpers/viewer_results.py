@@ -105,7 +105,7 @@ _SAFE_SIMPLE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _MEMBERS = re.compile(r"^[0-9]+(?:,[0-9]+)*$")
 _BAND_NAME = re.compile(r"^[A-Za-z0-9_+-]{1,40}$")
 # ``real`` collection model specs (C9): production, mean, rbf,
-# member:member_<N>, gate:<variant>; a comma list of at most 64.
+# member:member_<N>, gate:<variant>, universal:member_<N>; a comma list of at most 64.
 _MODEL_SPEC = re.compile(r"^[A-Za-z0-9._+-]{1,64}(?::[A-Za-z0-9._+-]{1,64})?$")
 _TIER_KEY = re.compile(r"^[A-Za-z0-9._+:-]{1,120}$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")

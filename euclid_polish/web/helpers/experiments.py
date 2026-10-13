@@ -6,8 +6,9 @@ An experiment = a set of real tiles (``source/id``) × a set of model specs
 1. resolves the specs once (unavailable ones are *skipped* with the reason)
    and refuses (:class:`DiskSpaceError`) when the new outputs would leave
    less than ``MIN_FREE_BYTES`` free;
-2. per tile, computes the union of the members the specs read — each member
-   SR once, cached on disk under ``experiments/cache/<source>/<id>/`` keyed by
+2. per tile, computes the union of the members the specs read (a universal
+   model is read like a member, by its ``NN·psnr`` label) — each member SR
+   once, cached on disk under ``experiments/cache/<source>/<id>/`` keyed by
    the member's checkpoint fingerprint and the LR content hash (a retrained
    member or a re-cached tile invalidates it). The cache is bounded
    (:class:`MemberCacheBudget`): at most ``MEMBER_CACHE_BUDGET_BYTES`` over all
@@ -153,15 +154,18 @@ def _label_slug(label: str) -> str:
     return model_catalog.member_name(label)
 
 
-#: Labels of ensemble members (``170·psnr``) — the only entries a purge judges.
+#: Labels of ensemble members and universal models (``170·psnr``) — the only
+#: entries a purge judges.
 _MEMBER_LABEL = re.compile(r"\d+·psnr")
 
 
 def purge_stale_member_sr_cache(base_dir: str | None = None) -> dict[str, Any]:
-    """Delete member-SR cache entries their member can no longer reuse: made
-    by another checkpoint than the member's current one (an archived member
-    has none). Entries of other models are kept. ``base_dir``: the ensemble
-    (default the canonical one)."""
+    """Delete member-SR cache entries their model can no longer reuse: made
+    by another checkpoint than the model's current one (an archived member
+    or universal model has none). A universal model lives in
+    ``<ensemble>/member_NNN`` like a member, so its current entries are kept;
+    entries of other models are kept. ``base_dir``: the ensemble (default the
+    canonical one)."""
     base = base_dir or model_catalog.ensemble_dir()
     root = model_catalog.member_cache_root()
     freed = deleted = 0

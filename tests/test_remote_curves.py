@@ -150,6 +150,16 @@ def test_remote_curves_read_once_per_ttl(fake_fasrc, monkeypatch):
     assert fake_fasrc.calls == 2
 
 
+def test_remote_entries_of_universal_models_are_tagged(fake_fasrc):
+    """Members › Curves tells a universal model training on FASRC from a
+    member in waiting: ``universal`` on every remote entry (the cache is
+    shared, the tag is per call)."""
+    out = rc.remote_training_curves([], [], universal_names=["member_208"])
+    assert {m["name"]: m["universal"] for m in out} == {"member_207": False, "member_208": True}
+    again = rc.remote_training_curves([], [])
+    assert [m["universal"] for m in again] == [False, False] and fake_fasrc.calls == 1
+
+
 def test_pulled_or_archived_members_are_not_fetched(fake_fasrc):
     assert [m["name"] for m in rc.remote_training_curves(["member_207"], ["member_208"])] == []
     assert fake_fasrc.calls == 0
@@ -165,7 +175,7 @@ def test_curves_endpoint_appends_remote_members(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
     seen = {}
 
-    def fake_remote(active, archived):
+    def fake_remote(active, archived, *, universal_names=()):
         seen.update(active=list(active), archived=list(archived))
         return [{"name": "member_207", "remote": True}]
 

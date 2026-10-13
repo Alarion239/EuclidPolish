@@ -333,11 +333,8 @@ _LEGACY_KIND_SPECS = {
 
 
 def _spec_kind(spec: str) -> str:
-    if spec.startswith(model_catalog.MEMBER_PREFIX):
-        return "member"
-    if spec.startswith(model_catalog.GATE_PREFIX):
-        return "gate"
-    return spec                                   # production | mean | rbf
+    """production | mean | rbf | member | gate | universal (the catalogue's)."""
+    return model_catalog.spec_kind(spec)
 
 
 def legacy_spec(record: Mapping[str, Any]) -> str | None:

@@ -116,6 +116,33 @@ describe("Sky › Compare", () => {
     expect(screen.getByText(/Median enclosed-flux ratio over the peaks/)).toBeTruthy();
   });
 
+  it("reads well for production against many universal models: they reach the viewer, own colours, a best-universal headline", async () => {
+    const uni = Array.from({ length: 9 }, (_, i) => `universal:member_${206 + i}`);
+    const holes = (v: number) => ({ per_band: { VIS: { hole_pct: v, flux_ratio: 1 } } });
+    const rec = {
+      ...RECORD, id: "u1", label: "universal sweep", models: ["production", "mean", ...uni],
+      model_labels: Object.fromEntries(uni.map((s) => [s, `Universal ${s.slice(-3)}`])),
+      summary: { production: holes(8), mean: holes(30), ...Object.fromEntries(uni.map((s, i) => [s, holes(10 - i)])) },
+      results: { "nexus/f200w-0001": { production: { state: "computed", metrics: holes(8) } } },
+    };
+    routes["GET /api/experiments"] = () => ({ body: { experiments: [rec] } });
+    routes["GET /api/experiments/u1"] = () => ({ body: rec });
+    show(<Compare />, "/sky/compare");
+    const viewer = await screen.findByTestId("viewer");
+    // production first, then the universal models (the viewer opens on the first four model tiers)
+    expect(viewer.textContent).toBe(
+      `real|f200w-0001|lr,m:production,m:${uni[0]},m:${uni[1]},m:${uni[2]},jwst|production,${uni.join(",")},mean`);
+    const pivot = screen.getByRole("grid", { name: "Hole % per model and band" });
+    expect([...pivot.querySelectorAll(".cmp-model")].slice(0, 3).map((m) => m.textContent)).toEqual(
+      ["production", "universal 206", "universal 207"]);
+    // eleven models, eleven different swatches (the categorical cycle repeats after 8)
+    const swatches = [...pivot.querySelectorAll<HTMLElement>(".cmp-swatch")].map((s) => s.style.background);
+    expect(swatches).toHaveLength(11);
+    expect(new Set(swatches).size).toBe(11);
+    const history = screen.getByRole("grid", { name: "Comparisons" });
+    expect(within(history).getByText("production 8.0 % (VIS) · member mean 30.0 % (VIS) · universal 214 2.0 % (VIS), best of 9 universal")).toBeTruthy();
+  });
+
   it("logs the comparison on Notebook › Log, appending nothing itself", async () => {
     show(<Compare />, "/sky/compare?exp=20260926-101010-abcdef");
     fireEvent.click(await screen.findByRole("button", { name: "Log to notebook" }));
@@ -161,6 +188,23 @@ describe("Sky › Compare › New comparison", () => {
     expect(screen.getByTestId("loc").textContent).toContain("tiles=poster%2Fp1");
     // the NEXUS chip is the shared selection's NEXUS tiles: none selected, nothing to add
     expect((screen.getByRole("button", { name: "NEXUS selection" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("preselects the models of a deep link (?new=1&models=…), e.g. the Models › Universal tab's \"Compare on real fields\"", async () => {
+    routes["POST /api/experiments"] = () => ({ body: { ok: true, job_id: "j3", experiment_id: "20261013-121212-111111", skipped: {} } });
+    show(<Compare />, "/sky/compare?new=1&models=production%2Cuniversal%3Amember_211");
+    const picked = await screen.findByRole("checkbox", { name: /universal:member_211/ });
+    expect((picked as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("checkbox", { name: /^production/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("checkbox", { name: /^mean/ }) as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByRole("group", { name: /Universal models/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Poster galaxy 1" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Run 2 models on 1 tile…" }));
+    const dlg = await answer(/Run 2 models on 1 tile/, "Run");
+    expect(dlg.textContent).toContain("production, u211 on poster/p1.");
+    await waitFor(() => expect(posts[0]).toEqual({
+      url: "/api/experiments", form: { tiles: "poster/p1", models: "production,universal:member_211" },
+    }));
   });
 
   it("before any comparison: says so and opens the drawer", async () => {

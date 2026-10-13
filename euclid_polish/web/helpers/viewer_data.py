@@ -2203,6 +2203,10 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
 # real-tile ids, so ``?id=`` works as for every collection.
 
 _SPEC_ORDER = ("production", "mean", "rbf")
+#: Default tier order after the core specs: members, gate variants, universal
+#: models, then anything else.
+_SPEC_PREFIX_ORDER = (model_catalog.MEMBER_PREFIX, model_catalog.GATE_PREFIX,
+                      model_catalog.UNIVERSAL_PREFIX)
 
 
 def _real_source(params: dict[str, str]) -> str:
@@ -2217,8 +2221,11 @@ def _real_default_specs(outputs: list[dict[str, Any]]) -> list[str]:
     seen = {spec for tile in outputs for spec in tile}
 
     def order(spec: str) -> tuple[int, str]:
-        return (_SPEC_ORDER.index(spec) if spec in _SPEC_ORDER else
-                len(_SPEC_ORDER) + (0 if spec.startswith("member:") else 1), spec)
+        if spec in _SPEC_ORDER:
+            return _SPEC_ORDER.index(spec), spec
+        rank = next((i for i, prefix in enumerate(_SPEC_PREFIX_ORDER)
+                     if spec.startswith(prefix)), len(_SPEC_PREFIX_ORDER))
+        return len(_SPEC_ORDER) + rank, spec
 
     return sorted(seen, key=order)
 
@@ -2244,6 +2251,15 @@ _SPEC_NAMES = {model_catalog.SPEC_PRODUCTION: "Production", model_catalog.SPEC_M
                model_catalog.SPEC_RBF: "RBF"}
 
 
+def _spec_label(spec: str) -> str:
+    """A spec's name without the catalogue: "Member 170·psnr", "Universal
+    211" for a ``member:`` / ``universal:`` spec, else the spec itself."""
+    try:
+        return model_catalog.spec_label(spec)
+    except ValueError:
+        return spec
+
+
 def _members_text(counts: list[int]) -> str:
     """"4 members", "10 or 20 members", "10–30 members" ("" when unknown)."""
     if not counts:
@@ -2262,8 +2278,9 @@ def _real_tier_label(spec: str, catalog_label: str | None,
     the current model (an older poster / NEXUS run) is NOT the catalogue's
     model: when every output is one, the label names what is served — the
     kind, the member count(s) and "legacy"; when only some are, it says how
-    many."""
-    base = _plain_label(catalog_label or spec)
+    many. A member or universal model no longer in the catalogue keeps its
+    catalogue name ("Universal 211")."""
+    base = _plain_label(catalog_label or _spec_label(spec))
     if base.startswith("Mean of "):
         # the chip is the part before " · ": "Mean", the tooltip "Mean · 30 starfull members"
         base = f"Mean · {base.removeprefix('Mean of ')}"

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ExperimentRecord, TileRow } from "../results/api";
 import {
-  comparisonLabel, compareSentence, csvText, deltaMags, headline, headlineText, longCsv, pivotRows, pivotBest, setRefs,
+  comparisonLabel, compareSentence, csvText, deltaMags, headline, headlineText, longCsv, pivotRows, pivotBest, setRefs, specColors,
 } from "./model";
 
 const RECORD: ExperimentRecord = {
@@ -37,6 +37,59 @@ describe("pivot: models × bands for one metric", () => {
     expect(pivotBest(pivotRows(RECORD, "pooled", "hole_pct"), "hole_pct")).toEqual({ VIS: "gate:p20", Y_E: "production", J_E: "production", H_E: "production" });
     // flux: closest to 1
     expect(pivotBest(pivotRows(RECORD, "pooled", "flux_ratio"), "flux_ratio").VIS).toBe("gate:p20");
+  });
+});
+
+const UNI: ExperimentRecord = {
+  id: "20261013-101010-aaaaaa", label: "universal vs production", status: "done",
+  tiles: ["poster/new4"], models: ["universal:member_211", "mean", "universal:member_206", "production", "universal:member_209"],
+  summary: {
+    production: { per_band: { VIS: { hole_pct: 15 }, J_E: { hole_pct: 20 } } },
+    mean: { per_band: { VIS: { hole_pct: 32 } } },
+    "universal:member_206": { per_band: { VIS: { hole_pct: 12 }, H_E: { hole_pct: 13 } } },
+    "universal:member_209": { per_band: { VIS: { hole_pct: 9.5 } } },
+    "universal:member_211": { per_band: { VIS: { hole_pct: 4 }, Y_E: { hole_pct: 6.25 } } },
+  },
+};
+
+describe("production against universal models", () => {
+  it("puts the universal models right after production in the pivot", () => {
+    expect(pivotRows(UNI, "pooled", "hole_pct").map((r) => r.spec)).toEqual([
+      "production", "universal:member_206", "universal:member_209", "universal:member_211", "mean",
+    ]);
+  });
+
+  it("gives every universal model its own colour on one ramp, the other models the categorical cycle", () => {
+    const specs = ["production", ...Array.from({ length: 12 }, (_, i) => `universal:member_${206 + i}`), "mean", "gate:p20"];
+    const colors = specColors(specs);
+    const uni = specs.filter((s) => s.startsWith("universal:")).map((s) => colors[s]);
+    expect(new Set(uni).size).toBe(12);                                   // no repeat past 8 models
+    expect(uni.every((c) => /^#[0-9a-f]{6}$/.test(c))).toBe(true);
+    // the others keep the colours they have without universal models in the run
+    expect([colors.production, colors.mean, colors["gate:p20"]]).toEqual(Object.values(specColors(["production", "mean", "gate:p20"])));
+    expect(uni).not.toContain(colors.production);
+  });
+
+  it("adds the best universal model to the history headline", () => {
+    expect(headline(UNI)).toEqual([
+      { spec: "production", label: "production", holes: 20, band: "J" },
+      { spec: "mean", label: "member mean", holes: 32, band: "VIS" },
+      { spec: "universal:member_211", label: "universal 211", holes: 6.25, band: "Y", of: 3 },
+    ]);
+    expect(headlineText(UNI)).toBe("production 20.0 % (J) · member mean 32.0 % (VIS) · universal 211 6.3 % (Y), best of 3 universal");
+    // one universal model: no "best of"
+    const one = { summary: { production: UNI.summary!.production, "universal:member_206": UNI.summary!["universal:member_206"] } };
+    expect(headlineText(one)).toBe("production 20.0 % (J) · universal 206 13.0 % (H)");
+    // only universal models ran: the fewest holes, as before
+    expect(headline({ summary: { "universal:member_206": UNI.summary!["universal:member_206"], "universal:member_209": UNI.summary!["universal:member_209"] } }))
+      .toEqual([{ spec: "universal:member_209", label: "universal 209", holes: 9.5, band: "VIS", best: true }]);
+  });
+
+  it("compares production with the best universal model when the mean did not run", () => {
+    const noMean: ExperimentRecord = { ...UNI, summary: { ...UNI.summary }, models: UNI.models!.filter((m) => m !== "mean") };
+    delete noMean.summary!.mean;
+    expect(compareSentence(noMean, "pooled")?.map((p) => p.text).join("")).toBe(
+      "On 1 tile, production leaves holes in 20.0 % of the bright pixels of its worst band (J), against 6.3 % for universal 211 (Y), the best of 3 other models.");
   });
 });
 

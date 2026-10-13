@@ -127,16 +127,19 @@ def check_band(band: str) -> str:
 
 
 def model_short(spec: str) -> str:
-    """Compact plate title of a spec: ``member:member_196`` → ``member 196``."""
+    """Compact plate title of a spec: ``member:member_196`` → ``member 196``,
+    ``universal:member_211`` → ``universal 211``."""
     if spec == "production":
         return "production gate"
     if spec == "mean":
         return "member mean"
     if spec == "rbf":
         return "RBF"
-    if spec.startswith("member:"):
+    if spec.startswith(model_catalog.MEMBER_PREFIX):
         return "member " + spec.split(":", 1)[1].removeprefix("member_")
-    if spec.startswith("gate:"):
+    if spec.startswith(model_catalog.UNIVERSAL_PREFIX):
+        return "universal " + spec.split(":", 1)[1].removeprefix("member_")
+    if spec.startswith(model_catalog.GATE_PREFIX):
         return "gate " + spec.split(":", 1)[1]
     return spec
 

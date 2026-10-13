@@ -80,7 +80,43 @@ export type TileCard = Omit<TileRow, "models"> & {
 
 /* ── GET /api/models ───────────────────────────────────────────────────── */
 
-export type ModelKind = "production" | "mean" | "rbf" | "member" | "gate";
+/** `universal` = a standalone single-image multi-knee model (spec
+ *  `universal:member_NNN`), registered locally but not an ensemble member. */
+export type ModelKind = "production" | "mean" | "rbf" | "member" | "gate" | "universal";
+
+/** What the server reads about a universal model (cheap reads of its
+ *  origin.json and training_log.csv); any field may be missing. */
+type UniversalFacts = {
+  /** Residual blocks (the depth). */
+  num_res_blocks?: number | null;
+  /** The step the checkpoint was trained to, and the step it aimed for. */
+  steps?: number | null; target_steps?: number | null;
+  batch_size?: number | null; crops_per_field?: number | null;
+  /** The fixed output knee in electrons (a learned knee's starting value). */
+  output_knee?: number | null;
+  /** The training step ran XLA-compiled / in bf16 mixed precision. */
+  jit_compile?: boolean | null; mixed_precision?: boolean | null;
+  /** Σ duration_s over its training_log.csv rows, in hours. */
+  train_hours?: number | null;
+};
+
+/** The `details` of a universal model, as `universalDetails()` reads them:
+ *  every kind `universal` row (`class: "universal"`), and the `member` rows of
+ *  active members that are universal too (`class: "member"`; they stay
+ *  ensemble members). */
+export type UniversalDetails = UniversalFacts & {
+  universal: true;
+  class: "universal" | "member";
+  /** The output knee: learned per band, or fixed at `output_knee`. */
+  knee?: "learned" | "fixed" | null;
+};
+
+/** A catalogue row's `details` on the wire: free-form (a combiner's mix
+ *  space, fit time, …), with the universal fields named. */
+export type ModelDetails = Record<string, unknown> & UniversalFacts & {
+  universal?: boolean; class?: string; knee?: string | null;
+};
+
 export type ModelSpecRow = {
   spec: string; kind: ModelKind | string; label: string; slug?: string;
   members?: string[]; member_names?: string[]; reads?: string[]; n_members?: number;
@@ -88,7 +124,7 @@ export type ModelSpecRow = {
   n_fitted?: number;
   available: boolean; reason?: string | null; fingerprint?: string | null;
   combiner_kind?: string | null; combiner_fingerprint?: string | null;
-  details?: Record<string, unknown>;
+  details?: ModelDetails;
 };
 export type ModelsPayload = { regime: string; production_kind?: string; members?: string[]; models: ModelSpecRow[] };
 

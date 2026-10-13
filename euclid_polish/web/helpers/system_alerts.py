@@ -15,7 +15,10 @@ Risks), so each stage reads the existing read-only checks:
   its "records built with this?" tick) and the ``records-noise`` alert;
 * Members — the STARFULL roster (:func:`ensemble_viz.members_payload`) and the
   local ``ensemble_train`` job log (:func:`ensemble_viz.training_jobs`): what
-  finished on FASRC and is not local yet (the Models › Members rule);
+  finished on FASRC and is not local yet (the Models › Members rule). Universal
+  models are not ensemble members: registered ones count as local, and the
+  job log's (:func:`ensemble_viz.ledger_universal_names`, forks resolved
+  through their source) are only mentioned for Models › Universal — never stale;
 * Evaluation, Gate, Real SR — the ``evaluation``, ``knee``, ``combiner`` and
   ``real-sr`` checks of ``GET /api/system/alerts``;
 * Figures — the newest NEXUS render (:func:`nexus_plates.list_runs`) against
@@ -39,8 +42,13 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
 
+from euclid_polish import ensemble_registry
 from euclid_polish.web.helpers import model_catalog, nexus_plates
-from euclid_polish.web.helpers.ensemble_viz import members_payload, training_jobs
+from euclid_polish.web.helpers.ensemble_viz import (
+    ledger_universal_names,
+    members_payload,
+    training_jobs,
+)
 from euclid_polish.web.helpers.realism_overview import overview_payload
 
 #: How long a computed Loop is served before it is recomputed (``?fresh=1`` skips it).
@@ -282,15 +290,35 @@ def _job_regime(job: Mapping[str, Any]) -> str:
     return "starfull"
 
 
-def waiting_on_fasrc(jobs: Sequence[Mapping[str, Any]], members: Mapping[str, Any], now: float) -> list[str]:
-    """STARFULL members that finished on FASRC and are not here yet: new members
-    of add / fork batches that ended in the last :data:`WAITING_DAYS` and are
-    neither active nor archived, and continued members whose job's target
-    lies past their local step."""
+def _member_key(name: Any) -> str:
+    """One spelling of a member name (``217·psnr`` → ``member_217``); anything else as is."""
+    try:
+        return ensemble_registry.member_name(name)
+    except ValueError:
+        return str(name)
+
+
+def _ledger_universal(jobs: Sequence[Mapping[str, Any]]) -> set[str]:
+    """The job log's universal models (:func:`ensemble_viz.ledger_universal_names`);
+    a log it cannot classify reads as none (the stage still answers)."""
+    try:
+        return set(ledger_universal_names([dict(j) for j in jobs]))
+    except Exception:  # noqa: BLE001 - one broken source must not hide the stage
+        return set()
+
+
+def _split_waiting(
+    jobs: Sequence[Mapping[str, Any]], members: Mapping[str, Any], now: float
+) -> tuple[list[str], list[str]]:
+    """``(ensemble members, universal models)`` that finished on FASRC and are
+    not here yet (the ``model.ts waitingOnFasrc`` rule)."""
     local = {r.get("name"): r for r in members.get("members") or []}
     archived = {r.get("name") for r in members.get("archived") or []}
+    registered = {_member_key(n) for n in members.get("universal") or []}
+    universal = _ledger_universal(jobs)
     cutoff = now - WAITING_DAYS * 86400
     out: dict[str, None] = {}
+    uni: dict[str, None] = {}
     for job in jobs:
         if str(job.get("state") or "").upper() not in _TERMINAL_WITH_CHECKPOINT:
             continue
@@ -308,9 +336,39 @@ def waiting_on_fasrc(jobs: Sequence[Mapping[str, Any]], members: Mapping[str, An
         if _job_regime(job) != "starfull":
             continue
         for name in names:
-            if name not in local and name not in archived:
-                out[name] = None
-    return list(out)
+            if name in local or name in archived:
+                continue
+            key = _member_key(name)
+            if key in registered:
+                continue
+            (uni if key in universal else out)[name] = None
+    return list(out), list(uni)
+
+
+def waiting_on_fasrc(jobs: Sequence[Mapping[str, Any]], members: Mapping[str, Any], now: float) -> list[str]:
+    """STARFULL members that finished on FASRC and are not here yet: new members
+    of add / fork batches that ended in the last :data:`WAITING_DAYS` and are
+    neither active, archived nor universal models, and continued members whose
+    job's target lies past their local step."""
+    return _split_waiting(jobs, members, now)[0]
+
+
+def universal_on_fasrc(
+    jobs: Sequence[Mapping[str, Any]], members: Mapping[str, Any], now: float
+) -> list[str]:
+    """Universal models (the job log's, forks included) that finished on FASRC
+    in the same window and are neither registered, active nor archived: they
+    are pulled on Models › Universal, never into the ensemble."""
+    return _split_waiting(jobs, members, now)[1]
+
+
+def _universal_note(names: Sequence[str]) -> str | None:
+    """``"2 universal models on FASRC → Models › Universal (members 216, 217)."``"""
+    if not names:
+        return None
+    who = member_range(names) or ", ".join(names)
+    plural = "s" if len(names) != 1 else ""
+    return f"{len(names)} universal model{plural} on FASRC → Models › Universal ({who})."
 
 
 def members_stage(
@@ -319,19 +377,25 @@ def members_stage(
     to = "/models/members"
     if m is None:
         return _loading("members", to)
-    waiting = waiting_on_fasrc(jobs, m, now) if jobs else []
+    waiting, universal = _split_waiting(jobs, m, now) if jobs else ([], [])
+    note = _universal_note(universal)
     if waiting:
         who = member_range(waiting) or ", ".join(waiting)
+        detail = f"{who} finished on FASRC and are not pulled: Pull from FASRC… on Models › Members."
         return _stage(
             "members",
             "stale",
             f"{len(waiting)} new on FASRC",
             to=to,
-            detail=f"{who} finished on FASRC and are not pulled: Pull from FASRC… on Models › Members.",
+            detail=f"{detail} {note}" if note else detail,
         )
     n = len(m.get("members") or [])
     return _stage(
-        "members", "current" if n else "unknown", f"{n} active" if n else "no active members", to=to
+        "members",
+        "current" if n else "unknown",
+        f"{n} active" if n else "no active members",
+        to=to,
+        detail=note,
     )
 
 

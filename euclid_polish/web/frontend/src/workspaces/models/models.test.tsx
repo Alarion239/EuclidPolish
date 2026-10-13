@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import ModelsWorkspace from "./index";
 
 vi.mock("./tabs/Leaderboard", () => ({ default: () => <p>tab:leaderboard</p> }));
+vi.mock("./tabs/Universal", () => ({ default: () => <p>tab:universal</p> }));
 vi.mock("./tabs/Members", () => ({ default: () => <p>tab:members</p> }));
 vi.mock("./tabs/Train", () => ({ default: () => <p>tab:train</p> }));
 vi.mock("./tabs/Combiner", () => ({ default: () => <p>tab:combiner</p> }));
@@ -39,6 +40,14 @@ describe("models workspace", () => {
     await act(() => router.navigate("/models"));
     await screen.findByText("tab:combiner");
     expect(router.state.location.pathname).toBe("/models/combiner");
+  });
+
+  it("opens the Universal tab, second in the strip", async () => {
+    const router = go("/models/universal");
+    await screen.findByText("tab:universal");
+    expect(router.state.location.pathname).toBe("/models/universal");
+    const links = screen.getAllByRole("link").map((a) => a.textContent);
+    expect(links.slice(0, 2)).toEqual(["Leaderboard", "Universal"]);
   });
 
   it("puts nothing beside the tab strip: no regime switch, no member popover", async () => {

@@ -1548,7 +1548,7 @@ workspace has its own subsection below (§11.7–§11.15).
 |---|---|---|
 | `/` Home | `workspaces/home/Dashboard.tsx` (+ `homeModel.ts` headlines and the notebook catch-up entry, `loop.ts` Loop strip / Running now / thumbnails) | — |
 | `synthetic` | `tabs/{Status,Records,Galaxies,Stars,Noise,Psf,Fields}.tsx` (+ `galaxies/`, `stars/`, `psf/`, `fields/`, `statusModel.ts`, `recordsModel.ts`, `noiseModel.ts`, `generate.tsx`, `header.tsx`) | `readiness`, `noisepos`, `archivefield`, `star`, `truth`, `psf`, `tng` |
-| `models/:mode` | `tabs/{Leaderboard,Members,Train,Combiner,Diagnostics,Images}.tsx` (+ `members/`, `diagnostics/`, `images/`, `model.ts`, `trainModel.ts`, `notes.ts`, `common.tsx`, `PixelTrace.tsx`) | `member`, `combiner` |
+| `models` | `tabs/{Leaderboard,Universal,Members,Train,Combiner,Diagnostics,Images}.tsx` (+ `members/`, `diagnostics/`, `images/`, `model.ts`, `universal.ts`, `trainModel.ts`, `notes.ts`, `common.tsx`, `PixelTrace.tsx`, `testing/` the Universal payload fixture) | `member`, `combiner` |
 | `sky` | `tabs/{Atlas,Targets,Compare}.tsx` (+ `atlas/`, `targets/`, `compare/`, `results/` the tile card and model picker, `src/sky/` Aladin engine) | `tile`, `source`, `realtile`, `experiment` |
 | `figures` | `tabs/{Plates,Sheet,Studies}.tsx` (+ `plates/`, `sheet/`, `grid/`, `studies/`) | `figure` |
 | `files` | `FilesPage.tsx` (`?fits=`, `?path=`, `dir`, `q`, `hdu`, `slice`, `view`) | `fits` |
@@ -1736,15 +1736,58 @@ rest, counts on the chips and controls they belong to (so a `DataTable` beside t
   URLs redirect, `?inspect=` kept. A bare `/models` returns to the last tab visited. The data
   endpoints keep their `/ensemble/` prefix and `?mode=starfull` (API.md). `register.ts` registers `member` and `combiner`.
 - One knee colour everywhere (`common.tsx kneeColor` / `kneeOrderOf`) and one gate-share precision
-  rule (`model.ts share()`: a zero share reads "0%" with no band tag).
+  rule (`model.ts share()`: a zero share reads "0%" with no band tag). One universal rule,
+  `model.ts isUniversal` (multi-knee with ONE output image: a fixed `output_knee` or a learned one;
+  `ensemble_registry.is_universal_origin` in Python): the knee colour, the Leaderboard's facet
+  ("multi-knee → 1 image", solid) and the Universal tab all use it.
 - **Leaderboard**: one status line ("All current", or each failing staleness check with its
   confirmed fix), the verdict, the gate / plain mean / best member table with the real holes of
   the newest Sky › Compare run of THIS production (`model.ts leaderboardBenchmark`) or "no real
   benchmark for this membership", one TIMEOUT alert line ("5 members stopped short · Continue" →
   Train with `?mode=continue&members=`), the knee curves and the full ranking (Test VIS @100 e⁻
-  and Test 4b hidden columns).
+  and Test 4b hidden columns). The comparison table adds "Best universal model (#N)" (the best
+  CURRENT score of `/ensemble/universal.json`, `universal.ts bestUniversal`; real columns through its
+  spec) linking to Universal, or a caption line naming how many universal models have no score.
+- **Universal** (`/models/universal`, second in the strip): the universal models as first-class
+  models (registered standalone `universal:member_NNN` and the active members that are universal,
+  `member:member_NNN`), from `GET /ensemble/universal.json`; pure shaping in `universal.ts`. A
+  summary line (the best against the production gate and its weighted hours), callouts with
+  confirmed jobs (`jobs.ts scoreUniversal` "Score N models on the 100 test fields";
+  `measureGateWeights` "Measure gate weights" while the payload's `weights_pending` names gates
+  whose shares the validate cubes can measure — the score job with no models named, which measures
+  the gates first and then scores whatever has no current score, said in the confirm;
+  `pullUniversal` "Pull N models from FASRC" for the `pullable` rows only — COMPLETED / TIMEOUT —
+  and "Pull N again" for the `registered` ones whose pull left no checkpoint here, disabled
+  offline; a stale production score → the Leaderboard), the toolbar (`?x=time|steps`,
+  `?y=mean|VIS|Y_E|J_E|H_E`, `?w=max|mean|sum`: the combiner's training hours weighted by each
+  member's peak gate share, its mean share, or not), ONE plot: by training time (log hours, a dot
+  per model coloured by depth — `DEPTH_SLOTS` `[1,3,4,5,6,7]` skip the plain mean's blue and the
+  combiner's orange — a ring for a MIG slice, faded for a stale score, which sits at its
+  `scored_hours` / `scored_steps`; the gates as diamonds at their weighted hours, thin when
+  `missing_hours` makes them a lower bound) or by training length (log steps, a line per depth),
+  production and the plain mean as y guides, a click opens the nearest point (`nearestPoint`).
+  The models table (Δ vs production; Δ vs the time-matched combiner — the scored gate nearest in
+  log hours, named, never a partial one, and a Δ only when THAT gate's score is `comparable`
+  (`combinerComparable`: the server's flag, else knee-PSNR follows the payload and a compare report
+  never counts) and current, else "other fields" / "stale gate score"; a stale model's Δs marked
+  `*`; real holes / R̃ from the newest Sky › Compare run that scored THIS checkpoint, `realPicks`
+  over `useExperimentDetails`; row → member inspector; "Compare on real fields" →
+  `/sky/compare?new=1&models=production,<spec>`), "Compare all on real fields", the combiners table
+  (Σ, max- and mean-weighted hours, "≥" when partial; ∫PSNR `*` stale, `†` other fields) and the
+  models on FASRC (`fasrcKind`: Pull, Try pull for a job that ended FAILED / CANCELLED /
+  OUT_OF_MEMORY with its state in the confirm, Pull again, nothing while training). Opening it
+  reads caches only.
 - **Members**: a "Pull from FASRC…" banner only when finished members wait there (`model.ts
-  waitingOnFasrc`), views roster · curves (`?view=curves`) · archived. "Gate use": the all-pixel
+  waitingOnFasrc`; new universal models — `knownUniversal`: members.json `universal`, the active
+  rows that `isUniversal`, and every job's `universalJobMembers(job, known)` repeated until no fork
+  adds one, since a fork inherits its source's knees — are not ensemble members, so a quiet line
+  sends them to Universal, and the registered ones count as local; the Pull dialog flags a typed
+  universal model and names the server's `universal_skipped`, never sending `allow_universal`), views roster · curves
+  (`?view=curves`; a remote universal model's curve is tagged `remoteCurveTag` "universal · live")
+  · archived (Restore worded by the tombstone's `class`, `restoreText`: a universal model comes
+  back standalone and nothing goes stale). The member inspector gives a universal model's "vs plain
+  mean" only when `comparable` and its score is current (`inspectorVsMean`), and marks a stale
+  ∫PSNR. "Gate use": the all-pixel
   mean over the bands rounds a core specialist to 0.0%, so when the row has `gate_usage_peak`
   the cell reads "0.0% mean · 48% peak (VIS cores)" (`model.ts gatePeak / gateUseText`).
 - **Train** seeds CPUs / memory / time from the newest COMPLETED job of the same kind
@@ -1780,7 +1823,7 @@ rest, counts on the chips and controls they belong to (so a `DataTable` beside t
   (confirmed). The viewer opens on LR | SR | HR with ONE SR tier (production); the member picker is
   a side panel (`?sel=`, the button names what the movie shows, `model.ts membersButtonText`).
 - **Notebook entries** (`notes.ts`, pure): `evaluationNote`, `kneeNote`, `variantNote`,
-  `compareNote`, `promoteNote` — each lands on Notebook › Log (§11.6).
+  `compareNote`, `promoteNote`, `universalNote` — each lands on Notebook › Log (§11.6).
 
 ### 11.10 Sky: page notes
 
@@ -1805,8 +1848,15 @@ rest, counts on the chips and controls they belong to (so a `DataTable` beside t
   once in its info popover (`?defs=1`, Targets links there); the New comparison drawer (`?new=1`)
   holds the target-set chips and the model picker (`results/ModelPicker.tsx`: production says how
   many members it runs, `results/model.ts productionMembersText`; the legacy RBF sits behind a
-  "Legacy RBF" toggle, shown while one is picked).
-  It is the only producer of the real-holes numbers Leaderboard, Combiner and Home read.
+  "Legacy RBF" toggle, shown while one is picked; the Universal models group comes right after
+  production and lists every kind-`universal` spec plus every active member whose
+  `details.universal` is true — those stay in Members too — each with `results/model.ts
+  universalDetailText` (depth · steps · knee · training hours); quick picks "Production +
+  universal" and "+ all universal"). Universal specs rank right after production (`specRank` 1),
+  so the viewer opens on production plus the first three universal models; they share one viridis
+  ramp (`compare/model.ts specColors`) while the other models keep the categorical cycle; the
+  history headline adds the best universal model; `?new=1&models=a,b` preselects the drawer.
+  It is the only producer of the real-holes numbers Leaderboard, Combiner, Universal and Home read.
 - **Tier labels come from the backend in plain words** (API.md "Labels"): the chip is the part
   before " · " — "LR VIS · HDU 1", "Mean · 30 starfull members", "Gate p20 · variant", "JWST
   (native)"; a spec whose every output in the source is an older legacy SR is named for what is

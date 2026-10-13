@@ -87,7 +87,7 @@ export function runMessage(refs: readonly string[], specs: readonly string[], ca
   const cost = catalogue ? experimentCostText(experimentCost(specs, catalogue, refs.length)) : "";
   return [
     what,
-    cost || "Runs the needed ensemble members on this machine; cached ones are reused.",
+    cost || "Runs the networks the models need (ensemble members, universal models) on this machine; cached SRs are reused.",
     "A local TensorFlow job; every SR is scored with the real-data metrics.",
   ].join(" ");
 }

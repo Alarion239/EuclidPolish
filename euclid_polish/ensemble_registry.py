@@ -5,16 +5,36 @@ level ABOVE the ensemble dir on purpose: the FASRC checkpoint mirror
 (:mod:`euclid_polish.web.fasrc_mirror`, manual) rsyncs the ensemble dir with
 ``--delete-after``, which would delete any local-only file inside it.
 
+It holds three keys (an older file without ``universal`` reads it as ``[]``)::
+
+    {"active": [...], "archived": [tombstone, ...], "universal": [...]}
+
 Bootstrap rule: any ``member_*`` directory with a checkpoint that the registry
-has never seen (neither active nor archived) is auto-added to ``active`` — so
-members trained on FASRC and pulled/mirrored down just work. Archived
+has never seen (not active, archived or universal) is auto-added to ``active``
+— so members trained on FASRC and pulled/mirrored down just work. Archived
 tombstones are permanent: a member dir reappearing on disk (e.g. mirrored back
 from FASRC after a local archive) is NOT re-activated.
 
-A tombstone records where the member went::
+``universal`` lists standalone models: single-image multi-knee members
+(:func:`is_universal_origin`) pulled to compare on their own. They live in the
+same ``member_NNN`` dirs and namespace as members but are NOT ensemble members
+— not in the mean, the gates, Evaluate or any cache keyed on the active
+labels (:func:`active_member_dirs`, :func:`active_labels` and
+:func:`regime_labels` stay ensemble-only). A pull registers the name BEFORE its
+rsync, so the bootstrap never activates the arriving dir, and an entry is
+never dropped for a missing dir (mid-pull, or deleted by the mirror); a pull
+whose rsync fails removes the registration it added
+(:func:`remove_universal_entry`).
+
+A tombstone records where the member went and which class it left::
 
     {"name": "member_02", "archived_at": "...", "zip": "models/…zip",
-     "commit": "abc1234"}
+     "commit": "abc1234", "class": "member"}
+
+(``"class": "universal"`` for a universal model; tombstones written before the
+key existed are members.) Every read-modify-write of the file holds one
+module-level lock: jobs are threads in the console process, and page reads
+bootstrap-write too.
 """
 
 from __future__ import annotations
@@ -23,6 +43,8 @@ import glob
 import json
 import os
 import re
+import threading
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -32,6 +54,13 @@ from euclid_polish.tracking._utils import _read_json, _write_json
 _MEMBER_GLOB = "member_*"
 REGISTRY_FILENAME = "ensemble_registry.json"
 _MEMBER_SPELLING = re.compile(r"^(?:member_)?(\d{1,6})(?:·psnr)?$")
+
+#: Tombstone ``class`` values: an ensemble member or a universal model.
+MEMBER_CLASS = "member"
+UNIVERSAL_CLASS = "universal"
+
+#: Guards every read-modify-write of the registry file (see the module doc).
+_LOCK = threading.Lock()
 
 
 def member_name(label: str) -> str:
@@ -66,6 +95,27 @@ def member_is_starless(member_dir: str) -> bool:
         return False
 
 
+def is_universal_origin(origin: Mapping[str, Any] | None) -> bool:
+    """Whether a member's recipe makes it a UNIVERSAL model: a multi-knee
+    member (non-empty ``asinh_knees``) that outputs ONE image — at a fixed
+    ``output_knee`` (members 195/196) or at a learned one
+    (``learned_output_knee``, a dict and no ``output_knee`` key; 206+).
+    Six-head multi-knee members (197/198: one image per knee) and single-knee
+    members are not.
+
+    Takes an ``origin.json`` dict; also accepts a FASRC job-ledger
+    ``member_spec`` entry, whose learned-knee spelling is
+    ``learn_output_knee: true`` (and an ``output_knee`` init value)."""
+    if not isinstance(origin, Mapping):
+        return False
+    knees = origin.get("asinh_knees")
+    if not (isinstance(knees, Sequence) and not isinstance(knees, str) and len(knees) > 0):
+        return False
+    return (origin.get("output_knee") is not None
+            or bool(origin.get("learned_output_knee"))
+            or bool(origin.get("learn_output_knee")))
+
+
 def default_ensemble_dir() -> str:
     """THE model location: ``<ckpt parent>/ensemble`` (members in
     ``member_NN/``). Lives here (not in :mod:`euclid_polish.ensemble`) so
@@ -93,24 +143,43 @@ def _member_dirs_on_disk(base_dir: str) -> list[str]:
         if os.path.isdir(d) and _checkpoint_exists(d))
 
 
-def load_registry(base_dir: str) -> dict[str, Any]:
-    """Load + bootstrap the registry; persists any change it makes."""
+def _tombstoned(reg: Mapping[str, Any]) -> set[str]:
+    return {str(t.get("name")) for t in reg["archived"]}
+
+
+def _load_locked(base_dir: str) -> dict[str, Any]:
+    """:func:`load_registry` for a caller already holding :data:`_LOCK`."""
     reg = _read_json(registry_path(base_dir)) or {}
     active = [str(n) for n in reg.get("active", [])]
     archived = list(reg.get("archived", []))
-    seen = set(active) | {str(t.get("name")) for t in archived}
+    tombstoned = {str(t.get("name")) for t in archived}
+    listed = [str(n) for n in reg.get("universal") or []]
+    # One class per name: a tombstone is permanent and an ensemble member
+    # outranks a universal registration (only a hand edit makes either clash).
+    universal = sorted(set(listed) - set(active) - tombstoned)
+    changed = universal != listed
+    seen = set(active) | tombstoned | set(universal)
     on_disk = {os.path.basename(d) for d in _member_dirs_on_disk(base_dir)}
-    changed = False
     for name in sorted(on_disk - seen):          # bootstrap new members
         active.append(name)
         changed = True
     kept = [n for n in active if n in on_disk]   # drop vanished actives
     if kept != active:
         active, changed = kept, True
-    out = {"active": sorted(active), "archived": archived}
-    if changed and (on_disk or archived):
+    # Universal entries are never dropped for a missing dir: the pull
+    # registers before its rsync, and the mirror may delete the dir.
+    out = {"active": sorted(active), "archived": archived, "universal": universal}
+    if changed and (on_disk or archived or universal):
         _write_json(registry_path(base_dir), out)
     return out
+
+
+def load_registry(base_dir: str) -> dict[str, Any]:
+    """Load + bootstrap the registry; persists any change it makes. Always
+    returns ``{"active", "archived", "universal"}``; a write always carries
+    all three keys."""
+    with _LOCK:
+        return _load_locked(base_dir)
 
 
 def active_member_dirs(base_dir: str) -> list[str]:
@@ -146,6 +215,74 @@ def regime_labels(base_dir: str, starless: bool) -> list[str]:
     return out
 
 
+def universal_names(base_dir: str) -> list[str]:
+    """Every registered universal model (sorted), whether or not its dir is
+    on disk yet."""
+    return list(load_registry(base_dir)["universal"])
+
+
+def universal_member_dirs(base_dir: str) -> list[str]:
+    """The loadable universal models: registered ∩ dir exists ∩ has a
+    checkpoint, in name order. Never part of :func:`active_member_dirs`."""
+    out = []
+    for n in universal_names(base_dir):
+        d = os.path.join(base_dir, n)
+        if os.path.isdir(d) and _checkpoint_exists(d):
+            out.append(d)
+    return out
+
+
+def universal_labels(base_dir: str) -> list[str]:
+    """``NNN·psnr`` labels of :func:`universal_member_dirs` (PSNR-best
+    checkpoint, like the members)."""
+    return [os.path.basename(d).removeprefix("member_") + "·psnr"
+            for d in universal_member_dirs(base_dir)]
+
+
+def add_universal_entry(base_dir: str, name: str) -> str:
+    """Register ``name`` (any :func:`member_name` spelling) as a universal
+    model and return its normalised name. Idempotent (no write when already
+    registered). Call it BEFORE the pull's rsync so the arriving dir is never
+    bootstrapped into the ensemble. Raises :class:`ValueError` for a
+    malformed name, an active ensemble member or a tombstoned name (archived
+    names are never reused)."""
+    name = member_name(name)
+    with _LOCK:
+        reg = _load_locked(base_dir)
+        if name in reg["active"]:
+            raise ValueError(f"{name} is an active ensemble member")
+        if name in _tombstoned(reg):
+            raise ValueError(f"{name} is archived (tombstoned)")
+        if name not in reg["universal"]:
+            reg["universal"] = sorted([*reg["universal"], name])
+            _write_json(registry_path(base_dir), reg)
+    return name
+
+
+def remove_universal_entry(base_dir: str, name: str) -> str:
+    """Unregister a universal model (any :func:`member_name` spelling) and
+    return its normalised name — the rollback of a pull whose rsync failed
+    after :func:`add_universal_entry`. Raises :class:`ValueError` for a
+    malformed name or one that is not a registered universal model (an
+    active member, a tombstone or an unknown name is never touched). The
+    caller makes sure no checkpoint of it is left on disk first, or the
+    bootstrap would activate that dir."""
+    name = member_name(name)
+    with _LOCK:
+        reg = _load_locked(base_dir)
+        if name not in reg["universal"]:
+            raise ValueError(f"{name} is not a registered universal model")
+        reg["universal"] = [n for n in reg["universal"] if n != name]
+        _write_json(registry_path(base_dir), reg)
+    return name
+
+
+def tombstone_class(tombstone: Mapping[str, Any]) -> str:
+    """The class a tombstone left: :data:`UNIVERSAL_CLASS` or
+    :data:`MEMBER_CLASS` (tombstones predating the key are members)."""
+    return UNIVERSAL_CLASS if tombstone.get("class") == UNIVERSAL_CLASS else MEMBER_CLASS
+
+
 def _member_index(name: str) -> int | None:
     tail = str(name).removeprefix("member_")
     return int(tail) if tail.isdigit() else None
@@ -154,13 +291,15 @@ def _member_index(name: str) -> int | None:
 def next_member_names(base_dir: str, k: int) -> list[str]:
     """``k`` fresh consecutive member names that can never collide.
 
-    Starts at max(index over active ∪ archived tombstones ∪ ``member_*`` on
-    disk) + 1 — tombstoned indices are skipped FOREVER (the bootstrap ignores
-    a reincarnated archived name, so reuse would create a ghost member).
-    Called locally at FASRC submit time; the job receives explicit names.
+    Starts at max(index over active ∪ archived tombstones ∪ universal ∪
+    ``member_*`` on disk) + 1 — tombstoned indices are skipped FOREVER (the
+    bootstrap ignores a reincarnated archived name, so reuse would create a
+    ghost member), and a registered universal model owns its index before
+    its dir is pulled. Called locally at FASRC submit time; the job receives
+    explicit names.
     """
     reg = load_registry(base_dir)
-    names = set(reg["active"]) | {str(t.get("name")) for t in reg["archived"]}
+    names = set(reg["active"]) | _tombstoned(reg) | set(reg["universal"])
     names |= {os.path.basename(d)
               for d in glob.glob(os.path.join(base_dir, _MEMBER_GLOB))}
     used = [i for i in (_member_index(n) for n in names) if i is not None]
@@ -170,37 +309,50 @@ def next_member_names(base_dir: str, k: int) -> list[str]:
 
 def archive_member_entry(base_dir: str, name: str, *, zip_path: str,
                          commit: str | None) -> dict[str, Any]:
-    """Move ``name`` from active → archived tombstone. Returns the registry."""
-    reg = load_registry(base_dir)
-    if name not in reg["active"]:
-        raise ValueError(f"{name!r} is not an active ensemble member")
-    reg["active"] = [n for n in reg["active"] if n != name]
-    reg["archived"].append({
-        "name": name,
-        "archived_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "zip": zip_path,
-        "commit": commit,
-    })
-    _write_json(registry_path(base_dir), reg)
+    """Move ``name`` — an active member or a universal model — to an archived
+    tombstone recording its ``class``. Returns the registry."""
+    with _LOCK:
+        reg = _load_locked(base_dir)
+        if name in reg["active"]:
+            key, cls = "active", MEMBER_CLASS
+        elif name in reg["universal"]:
+            key, cls = "universal", UNIVERSAL_CLASS
+        else:
+            raise ValueError(f"{name!r} is not an active ensemble member or a universal model")
+        reg[key] = [n for n in reg[key] if n != name]
+        reg["archived"].append({
+            "name": name,
+            "archived_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "zip": zip_path,
+            "commit": commit,
+            "class": cls,
+        })
+        _write_json(registry_path(base_dir), reg)
     return reg
 
 
 def restore_member_entry(base_dir: str, name: str) -> dict[str, Any]:
-    """Move an archived tombstone back to ``active`` (the inverse of
+    """Move an archived tombstone back into the class it left — ``active`` for
+    a member, ``universal`` for a universal model (the inverse of
     :func:`archive_member_entry`). The member directory must already be back
     on disk with a checkpoint, else the bootstrap would drop it again."""
     name = member_name(name)
-    reg = load_registry(base_dir)
-    if name in reg["active"]:
-        raise ValueError(f"{name} is already active")
-    if not any(str(t.get("name")) == name for t in reg["archived"]):
-        raise ValueError(f"{name} is not archived")
-    d = os.path.join(base_dir, name)
-    if not (os.path.isdir(d) and _checkpoint_exists(d)):
-        raise ValueError(f"{name} has no checkpoint on disk at {d}")
-    reg["archived"] = [t for t in reg["archived"] if str(t.get("name")) != name]
-    reg["active"] = sorted([*reg["active"], name])
-    _write_json(registry_path(base_dir), reg)
+    with _LOCK:
+        reg = _load_locked(base_dir)
+        if name in reg["active"]:
+            raise ValueError(f"{name} is already active")
+        if name in reg["universal"]:
+            raise ValueError(f"{name} is already a universal model")
+        tomb = next((t for t in reg["archived"] if str(t.get("name")) == name), None)
+        if tomb is None:
+            raise ValueError(f"{name} is not archived")
+        d = os.path.join(base_dir, name)
+        if not (os.path.isdir(d) and _checkpoint_exists(d)):
+            raise ValueError(f"{name} has no checkpoint on disk at {d}")
+        reg["archived"] = [t for t in reg["archived"] if str(t.get("name")) != name]
+        key = "universal" if tombstone_class(tomb) == UNIVERSAL_CLASS else "active"
+        reg[key] = sorted([*reg[key], name])
+        _write_json(registry_path(base_dir), reg)
     return reg
 
 

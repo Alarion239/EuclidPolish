@@ -1,7 +1,8 @@
 /* Job helpers of the Models workspace: the shared job keys (so the palette
    and these tabs never start the same job twice), the
    confirmed starters of the loop's local jobs (evaluate, PSNR vs knee,
-   member PSNR) and an end-of-job effect. Jobs start through `startJob`
+   member PSNR, the universal models' score and pull) and an end-of-job
+   effect. Jobs start through `startJob`
    (app/RunActions), which confirms, registers the job under its key and
    toasts the start; the shell toasts the end. */
 import { useEffect, useRef } from "react";
@@ -9,7 +10,7 @@ import { isTerminal, type Job } from "../../api/jobs";
 import { invalidate } from "../../api/query";
 import { startJob } from "../../app/RunActions";
 import { confirm } from "../../ui";
-import { REGIME } from "./api";
+import { REGIME, url } from "./api";
 
 export const JOB = {
   evaluate: "run:evaluate",        // == app/RunActions (same url → same key)
@@ -26,6 +27,8 @@ export const JOB = {
   generateSr: "data:generate-sr",  // == Synthetic › Records (same job)
   fieldDiagnostics: "sky:field-diagnostics",
   bandEvals: "ensemble:band-evals",
+  universalScore: "ensemble:universal-score",
+  universalPull: "ensemble:universal-pull",
 } as const;
 
 /** Evaluate the ensemble on `n` test fields (confirmed; `asked`: the
@@ -88,6 +91,69 @@ export const computeBandEvals = () => startJob({
     confirmLabel: "Compute",
   },
 });
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const numbers = (names: readonly string[]) => names.map((n) => n.replace(/^member_/, "")).join(", ");
+
+/** Score universal models on the test fields, the Leaderboard's ∫PSNR
+ *  (confirmed). `names`: those models only; none = every universal model
+ *  whose score is missing or stale. `force` re-scores them even when their
+ *  score is current. */
+export function scoreUniversal(names: readonly string[], nFields: number, force = false) {
+  const what = names.length ? plural(names.length, "universal model") : force ? "every universal model" : "the unscored universal models";
+  const verb = force ? "Re-score" : "Score";
+  return startJob({
+    key: JOB.universalScore, url: url.universalScore(),
+    label: `${verb} ${what}`,
+    data: { mode: REGIME, ...(names.length ? { members: names.join(",") } : {}), force: force ? "1" : "0" },
+    question: {
+      title: `${verb} ${what} on the ${nFields} test fields?`,
+      message: `Loads ${names.length ? numbers(names) : "each model"} (TensorFlow) and scores its PSNR at every knee against the blurred HR truth: the Leaderboard's metric. It writes only the universal scores, never the ensemble's cubes. Minutes per model.`,
+      confirmLabel: verb,
+    },
+  });
+}
+
+/** Measure the gates' member shares (Models › Universal's combiner hours)
+ *  from the validate cubes: the score job with no models named, which
+ *  measures the gates first, then scores whatever has no current score
+ *  (`unscored`, named in the confirm). */
+export function measureGateWeights(gates: readonly string[], unscored: readonly string[], nFields: number) {
+  return startJob({
+    key: JOB.universalScore, url: url.universalScore(),
+    label: "Measure gate weights",
+    data: { mode: REGIME, force: "0" },
+    question: {
+      title: `Measure the weights of ${plural(gates.length, "gate")}?`,
+      message: `Reads ${gates.join(", ")} over the validate cubes (no model runs) for the members' gate shares, which set the combiners' training hours.${unscored.length
+        ? ` The same job then scores ${plural(unscored.length, "universal model")} without a current score (${numbers(unscored)}) on the ${nFields} test fields (TensorFlow, minutes per model).`
+        : ""}`,
+      confirmLabel: "Measure",
+    },
+  });
+}
+
+/** Pull universal models from FASRC as standalone models (confirmed).
+ *  `again`: registered ones whose last pull left no checkpoint here;
+ *  `state`: a job that ended without COMPLETED / TIMEOUT (a try: FASRC may
+ *  hold no checkpoint, and then nothing is registered). */
+export function pullUniversal(names: readonly string[], opts: { again?: boolean; state?: string | null } = {}) {
+  const what = plural(names.length, "universal model");
+  const message = opts.again
+    ? `Copies ${numbers(names)} from FASRC again: ${names.length === 1 ? "it is" : "they are"} registered as universal ${names.length === 1 ? "model" : "models"}, but the last pull left no checkpoint here.`
+    : `Registers ${numbers(names)} as universal models and copies ${names.length === 1 ? "its checkpoint" : "their checkpoints"} here. They stay out of the ensemble: the production gate, the plain mean and Evaluate never read them.`;
+  const tried = opts.state ? ` ${names.length === 1 ? "Its job" : "Their jobs"} ended ${opts.state}: when FASRC holds no checkpoint the pull refuses and registers nothing.` : "";
+  return startJob({
+    key: JOB.universalPull, url: url.universalPull(),
+    label: `${opts.again ? "Pull again" : "Pull"} ${what}`,
+    data: { members: names.join(",") },
+    question: {
+      title: `${opts.again ? "Pull again" : "Pull"} ${what} from FASRC?`,
+      message: message + tried,
+      confirmLabel: opts.again ? "Pull again" : "Pull",
+    },
+  });
+}
 
 /** Score the members' test PSNR (changed or unscored ones only; confirmed). */
 export const refreshMemberPsnr = () => startJob({

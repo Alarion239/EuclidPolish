@@ -651,7 +651,8 @@ Models › Images' Generate SR) load the model through `eval.ensemble_infer.load
 
 The test-set **Evaluate** job instead runs every active starfull member, caches their cubes and
 applies combiners from that cache. Real tiles (Sky, Figures › Plates) pick a model spec
-(`production`, `mean`, `member:<name>`, `gate:<variant>`) from `web/helpers/model_catalog.py`;
+(`production`, `mean`, `member:<name>`, `gate:<variant>`, `universal:<name>` — a pulled universal
+multi-knee model, never an ensemble member) from `web/helpers/model_catalog.py`;
 there `production` has no mean fallback.
 
 **The spatial gate** (`eval/spatial_gate.py`) is a small convolutional network. Its input is each
@@ -770,13 +771,18 @@ both read it; `spa_redirect_cases.json` pins identical legacy redirects on both 
 |---|---|---|
 | Home | `/` | production verdict, the research loop, running jobs, latest results |
 | Synthetic | `/synthetic/<tab>` | status, records, galaxies, stars, noise, psf, fields |
-| Models | `/models/<tab>` | leaderboard, members, train, combiner, diagnostics, images |
+| Models | `/models/<tab>` | leaderboard, universal, members, train, combiner, diagnostics, images |
 | Sky | `/sky/<tab>` | atlas (Aladin Lite), targets, compare |
 | Figures | `/figures/<tab>` | plates, sheet, studies |
 | Files | `/files` | FITS browser and inspector |
 | Runs | `/runs/<tab>` | live, history, resources, steps |
 | Notebook | `/notebook/<tab>` | log, backups, sandboxes |
 | System | `/system/<tab>` | connections, config, lineage, code, storage, appearance |
+
+**Models › Universal** sets the universal models (multi-knee members with ONE output image, a
+fixed or learned knee; pulled as standalone models, never read by the production gate) against
+the combiners by training time and training length: score them on the 100 test fields, pull the
+finished ones from FASRC, compare them on real fields in Sky › Compare.
 
 Old URLs (`/app/...`, `/fasrc`, `/config`, `/tracking`, `/ensemble/...`) answer 308 to their new
 home. Two console rules: **opening a page never starts a job**, and **nothing is pinned over the

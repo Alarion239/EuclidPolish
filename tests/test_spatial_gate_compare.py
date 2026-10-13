@@ -8,9 +8,12 @@ import os
 import numpy as np
 import pytest
 
+from euclid_polish.ensemble import member_fingerprint
 from euclid_polish.eval import spatial_gate_compare as sgc
 from euclid_polish.eval.knee_psnr import KNEE_GRID_E
 from euclid_polish.eval.spatial_gate_fit import GateField
+from euclid_polish.web.helpers import ensemble_viz as ev
+from tests._ensemble_cube_cache_fixtures import N_FIELDS, Cap, make_env, member_dir
 
 
 class _Gate:
@@ -122,6 +125,33 @@ def test_compare_without_blackout_fields_is_strict_json(tmp_path):
     assert sgc.best_member(report) == "member:00·psnr"
     text = sgc.format_report(report)
     assert "natural test fields" in text and "blackout test fields" not in text
+
+
+def test_compare_reports_record_the_cube_identity_and_member_fingerprints(tmp_path,
+                                                                         monkeypatch):
+    """A compare report says which test fields, records and target it
+    scored and which checkpoints made the member cubes, so a reader (Models ›
+    Universal) can tell a report on other fields, or of a member retrained
+    since, from a current one."""
+    env = make_env(tmp_path, monkeypatch)
+    ev.job_ensemble_evaluate(Cap(), num_images=N_FIELDS, starless=False)
+    result = sgc.run_compare(regime_dir=str(env["regime"]), records_dir=str(env["records"]),
+                             gates=[], runner=None, blackout_fields=0)
+    manifest = json.loads((env["cubes"] / "viz_index.json").read_text())
+    identity = result.report["identity"]
+    assert identity == {"records_fp": manifest["records_fp"], "subset": "test",
+                        "indices": list(range(N_FIELDS)),
+                        "target_psf_fwhm_arcsec": manifest["target_psf_fwhm_arcsec"]}
+    assert identity["records_fp"]
+    assert result.report["member_fps"] == {
+        label: member_fingerprint(str(member_dir(env["base"], int(label.split("·")[0]))))
+        for label in env["labels"]}
+    json.dumps(result.report)                               # served as JSON
+    scores_identity = {"records_fp": identity["records_fp"], "subset": "test",
+                       "indices": list(range(N_FIELDS)),
+                       "target_psf_fwhm_arcsec": identity["target_psf_fwhm_arcsec"]}
+    assert ev.report_identity_matches(identity, scores_identity)
+    assert not ev.report_identity_matches(identity, {**scores_identity, "indices": [0]})
 
 
 def test_parse_loss_knees():

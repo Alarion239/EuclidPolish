@@ -3,7 +3,10 @@
    other workspaces (the Sky › Compare runs, the model catalogue, the
    catalogue evaluation's synthetic stamps, the SR over the local records,
    System › Config), typed here to the fields this workspace uses. */
-import { useResource } from "../../api/query";
+import { useQueries, type UseQueryResult } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { apiGet } from "../../api/client";
+import { queryClient, resourceKey, useResource } from "../../api/query";
 
 /** The `?mode=` of every ensemble read and job. The models are starfull only
  *  (the training still injects stars into starless scenes); the endpoints
@@ -49,6 +52,9 @@ export type MemberJob = {
 export type MemberStatus = "complete" | "timeout" | "running" | "unknown";
 export type MemberRow = KneeInfo & {
   name: string; label: string;
+  /** `universal`: a registered universal model's row (member/<name>.json),
+   *  not an ensemble member; `member`: an active member that is universal. */
+  class?: "universal" | "member" | null;
   origin: Record<string, unknown> | null; op?: string | null; forked_from?: string | null;
   loss: string; blocks?: number | null;
   noise_aug?: number | null; bootstrap?: number | null; icnr?: boolean | null; seed?: number | null;
@@ -60,6 +66,9 @@ export type MemberRow = KneeInfo & {
   /** eval_summary headline metric (VIS asinh, the "Test VIS" column) */
   vis_psnr?: number | null;
   knee_integrated?: Record<string, number | null> | null; knee_rank?: number | null;
+  /** A universal model's row: its ∫PSNR (`knee_integrated`) is from an earlier
+   *  checkpoint or other test fields (null: not scored). */
+  score_stale?: boolean | null;
   gate_usage?: Record<string, number | null> | null; gate_usage_source?: Record<string, number | null> | null;
   /** The member's largest share of the production gate's weight over the
    *  bands and brightness bins (a bare share, or where it is). */
@@ -72,9 +81,15 @@ export type MemberRow = KneeInfo & {
 export type Tombstone = {
   name: string; archived_at?: string; zip?: string; commit?: string | null;
   zip_found: boolean; zip_path?: string | null; campaign?: string | null; size_bytes?: number | null;
+  /** What a restore brings it back as: an ensemble member (absent on old
+   *  tombstones) or a standalone universal model. */
+  class?: "member" | "universal" | null;
 };
 export type MembersPayload = {
   members: MemberRow[]; archived: Tombstone[];
+  /** The registered universal models (standalone, not ensemble members): local
+   *  for the Pull banner, listed in the Universal tab. */
+  universal?: string[] | null;
   knee: { available: boolean; stale: boolean; n_fields?: number | null };
   gate: { available: boolean; stale: boolean; n_members: number };
   psnr_fields: number; eval_subset: string;
@@ -91,6 +106,14 @@ export type KneeModel = KneeInfo & {
 };
 export type MemberDetail = {
   name: string; label: string; active: boolean; archived: Tombstone | null;
+  /** A registered universal model (standalone; Models › Universal). */
+  universal?: boolean | null;
+  /** `universal` for a registered universal model and for an archived one
+   *  (from its tombstone); `member` otherwise. */
+  class?: "member" | "universal" | null;
+  /** A universal model: its score is on the knee payload's fields, records
+   *  and target, so the plain mean and gate curves are its references. */
+  comparable?: boolean | null;
   row: MemberRow | null; curves: MemberCurves | null;
   knee: { knees: number[]; bands: string[]; stale: boolean; models: KneeModel[] } | null;
   gate: {
@@ -109,6 +132,8 @@ export type Curve = MemberCurves & KneeInfo & {
   remote?: boolean; jobid?: string; last_step?: number | null;
   /** A remote member that reached its target steps (pull it to keep its curve). */
   finished?: boolean;
+  /** A remote universal model (pulled on Models › Universal, never into the ensemble). */
+  universal?: boolean;
 };
 
 /** A member still training on FASRC (its curve grows while the page polls). */
@@ -158,6 +183,89 @@ export type CompareReport = {
   usage?: Record<string, { labels: string[]; all_pixels: number[][]; source_pixels: number[][] }>;
   knee?: { knees: number[]; n_fields: number; methods: Record<string, { psnr: number[][]; integrated: number[] }> };
   timing_s?: Record<string, number | null>; members_needed?: Record<string, number>;
+};
+
+/* ── universal.json (the Universal tab) ─────────────────────────────────── */
+/** A score on the test fields: ∫PSNR per band (VIS Y J H) and their mean. */
+export type UniversalScore = {
+  integrated: (number | null)[]; mean: number | null; n_fields?: number | null; stale: boolean; scored_at?: string | null;
+};
+/** Where a model trained: the partition and a hardware label ("A100",
+ *  "A100 MIG slice", "mixed"), with the jobs that trained it. */
+export type UniversalHardware = { partition: string | null; label: string | null; jobs: string[] };
+/** One universal model (a single-image multi-knee member): a standalone
+ *  universal model (`class` universal, spec `universal:member_NNN`) or an
+ *  active ensemble member that happens to be one (`class` member). */
+export type UniversalRow = {
+  name: string; label: string; spec: string; class: "universal" | "member";
+  num_res_blocks?: number | null; steps?: number | null; served_step?: number | null; target_steps?: number | null;
+  batch_size?: number | null; crops_per_field?: number | null;
+  knee: "learned" | "fixed"; output_knee?: number | null;
+  /** The learned output knee per band (e⁻), recorded when it was scored. */
+  learned_knees?: (number | null)[] | null;
+  jit_compile?: boolean | null; mixed_precision?: boolean | null; bootstrap?: number | null; seed?: number | null;
+  /** Σ duration_s of its training_log.csv windows (rolled-back ones included), in hours. */
+  train_hours: number | null; train_rows: number;
+  /** The training hours and steps when its score was made (null: an older
+   *  score that did not record them); a stale score is placed there. */
+  scored_hours?: number | null; scored_steps?: number | null;
+  hardware: UniversalHardware;
+  /** The checkpoint identity (null: no local checkpoint yet). */
+  fingerprint: string | null;
+  score: UniversalScore | null;
+  vs_production_db: number | null;
+  created_at?: string | null; commit?: string | null;
+};
+/** One member a combiner reads, with its training hours and its gate shares
+ *  (peak = the largest over bands and brightness bins; mean = over bands). */
+export type CombinerMemberHours = { label: string; name: string; hours: number | null; max_weight: number | null; mean_weight: number | null };
+export type UniversalCombiner = {
+  id: string; name: string; label: string; spec: string; production: boolean;
+  reads: string[]; n_reads: number;
+  integrated: (number | null)[] | null; mean: number | null;
+  score_source: "knee-psnr" | "compare" | null; stale: boolean;
+  weights_source: "production" | "variant" | null; weights_reason: string | null;
+  /** Its score is on the universal scores' fields, records and target
+   *  (absent: a knee-PSNR score follows the payload's `comparable`, a compare
+   *  report's is not). */
+  comparable?: boolean | null;
+  members: CombinerMemberHours[];
+  /** Σ hours × max weight, Σ hours × mean weight, Σ hours (every member read),
+   *  over the members with known hours: a lower bound when `missing_hours`. */
+  hours: { max: number | null; mean: number | null; sum: number | null };
+  missing_hours: string[];
+  fit_hours: number | null;
+};
+/** A universal model trained on FASRC that is not here (not active, not
+ *  archived; registered only when its pull left no checkpoint here). */
+export type UniversalFasrcRow = {
+  name: string; jobids: string[]; state?: string | null; num_res_blocks?: number | null; steps?: number | null;
+  knee?: "learned" | "fixed" | null; submitted_at?: string | null; ended_at?: string | null; partition?: string | null;
+  /** Its newest job is in a final state (COMPLETED, TIMEOUT, FAILED, …). */
+  finished: boolean;
+  /** Its newest job ended COMPLETED or TIMEOUT (it left a checkpoint). */
+  pullable?: boolean;
+  /** Registered as a universal model but with no checkpoint here: pull it again. */
+  registered?: boolean;
+};
+export type UniversalReference = { integrated: (number | null)[]; mean: number | null; stale: boolean };
+export type UniversalPayload = {
+  available: boolean; knees: number[]; bands: string[];
+  integration: { from_e: number; to_e: number } | null;
+  /** The scores store's identity: the test fields (`indices`) and the truth. */
+  identity: { indices?: number[] | null; subset?: string | null; [key: string]: unknown } | null;
+  production: UniversalReference | null;
+  mean_model: UniversalReference | null;
+  /** Whether `production` / `mean_model` were scored on the scores' own fields
+   *  (absent: read off the rows, universal.ts isComparable). */
+  comparable?: boolean | null;
+  models: UniversalRow[];
+  combiners: UniversalCombiner[];
+  fasrc: UniversalFasrcRow[];
+  /** Combiner ids whose gate weights are not measured yet but can be now
+   *  (the score job measures them from the validate cubes). */
+  weights_pending?: string[] | null;
+  notes: string[];
 };
 
 /* ── experiments (Sky › Compare; the real-data benchmark) ─────────────── */
@@ -262,6 +370,9 @@ export const url = {
   combiners: () => `/ensemble/combiners.json?mode=${REGIME}`,
   report: (id?: string | null) => `/ensemble/combiners/compare.json?mode=${REGIME}${id ? `&report=${encodeURIComponent(id)}` : ""}`,
   trainingJobs: () => "/ensemble/training-jobs.json",
+  universal: () => `/ensemble/universal.json?mode=${REGIME}`,
+  universalScore: () => "/ensemble/universal/score",
+  universalPull: () => "/ensemble/universal/pull",
   experiments: () => "/api/experiments",
   experiment: (id: string) => `/api/experiments/${encodeURIComponent(id)}`,
   models: () => "/api/models",
@@ -291,5 +402,39 @@ export const useExperiments = () => useResource<{ experiments: ExperimentSummary
 export const useExperiment = (id: string | null | undefined) =>
   useResource<ExperimentDetail>(id ? url.experiment(id) : null, [id], { ttl: 5 * MIN });
 export const useModelCatalog = () => useResource<ModelCatalog>(url.models(), [], { ttl: MIN });
+export const useUniversal = () => useResource<UniversalPayload>(url.universal(), [], { ttl: 30_000 });
+
+type DetailSlim = { data: ExperimentDetail | undefined; at: number; failed: boolean };
+/* Stable (module-level) so TanStack keeps the combined array referentially
+   stable while no query result changes. */
+const combineDetails = (results: UseQueryResult<ExperimentDetail>[]): DetailSlim[] =>
+  results.map((r) => ({ data: r.data, at: r.dataUpdatedAt, failed: r.isError && !r.data }));
+
+/** Several Sky › Compare run records at once (the Universal tab checks each
+ *  model's newest run against the catalogue), keyed by id; the shared GET
+ *  cache of `useExperiment`. `details`: the records in; `failed`: the ids that
+ *  could not be read (the rest are still loading). */
+export function useExperimentDetails(ids: readonly string[]): { details: Map<string, ExperimentDetail>; failed: Set<string> } {
+  const key = ids.join(",");
+  const wanted = useMemo(() => (key ? key.split(",") : []), [key]);
+  const results = useQueries({
+    queries: wanted.map((id) => ({
+      queryKey: resourceKey(url.experiment(id)),
+      queryFn: ({ signal }: { signal: AbortSignal }) => apiGet<ExperimentDetail>(url.experiment(id), { signal }),
+      staleTime: 5 * MIN,
+    })),
+    combine: combineDetails,
+  }, queryClient);
+  return useMemo(() => {
+    const details = new Map<string, ExperimentDetail>();
+    const failed = new Set<string>();
+    wanted.forEach((id, i) => {
+      const r = results[i];
+      if (r?.data) details.set(id, r.data);
+      else if (r?.failed) failed.add(id);
+    });
+    return { details, failed };
+  }, [wanted, results]);
+}
 export const useEvalRuns = () => useResource<EvalRuns>(url.evalRuns(), [], { ttl: 30_000 });
 export const useSrStatus = (poll?: number) => useResource<SrStatus>(url.srStatus(), [], { ttl: 30_000, poll });

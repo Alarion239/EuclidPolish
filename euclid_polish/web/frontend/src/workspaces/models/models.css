@@ -52,6 +52,8 @@
 /* member cells */
 .mdl-member { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); }
 .mdl-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex: none; background: var(--sw, var(--series-muted)); }
+/* a model trained on a MIG slice: a ring, as its plot marker */
+.mdl-swatch[data-ring] { box-sizing: border-box; border-radius: 50%; background: transparent; border: 2px solid var(--sw, var(--series-muted)); }
 .mdl-progress { display: grid; grid-template-columns: minmax(40px, 1fr) auto; align-items: center; gap: 6px; min-width: 110px; }
 .mdl-progress__track { height: 6px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
 .mdl-progress__fill { height: 100%; border-radius: var(--r-pill); background: var(--accent); }

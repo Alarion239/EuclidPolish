@@ -189,6 +189,8 @@ describe("one rule for the numbers the Models tabs repeat", () => {
     expect(kneeColor(rows[0], order)).toBe(viridis(0.9));
     expect(kneeColor(rows[3], order)).toBe(categorical(1));
     expect(kneeColor({ asinh_knees: [0.1, 1], output_knee: null }, order)).toBe(categorical(3));
+    // a learned output knee is one image too (the universal models 206+), never the heads' hue
+    expect(kneeColor({ asinh_knees: [0.1, 1], output_knee: null, learned_output_knee: true }, order)).toBe(categorical(1));
   });
 
   it("counts the Config knobs a step reads that differ from their defaults", () => {

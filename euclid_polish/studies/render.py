@@ -47,6 +47,7 @@ from euclid_polish.visualization.presentation_style import (
     apply_presentation_figure,
     presentation_rc,
 )
+from euclid_polish.web.helpers import model_catalog
 from euclid_polish.web.helpers.publication_figures import GRID, INK, MUTED, PAPER
 
 CHARTS = ("knee", "integrated", "paired", "gate", "training", "real")
@@ -357,29 +358,53 @@ def _training_table(data: StudyData, sel: Selection) -> tuple[list[str], list[di
     return ["member", "group", "metric", "step", "value"], out
 
 
+def _universal_name(spec: str) -> str:
+    """``"Universal 211"`` for a ``universal:`` spec (a malformed one keeps its spec)."""
+    try:
+        return model_catalog.spec_label(spec)
+    except ValueError:
+        return spec
+
+
+def _real_rows(experiment: Mapping[str, Any], labels: set[str]) -> list[dict]:
+    """One experiment's real-tile rows: ensemble specs (a ``member:`` one only
+    when selected) and every universal model — never a study member, so never
+    filtered by the member selection, and named ``Universal NNN`` so its tick
+    does not read as member NNN."""
+    out = []
+    for spec, entry in (experiment.get("specs") or {}).items():
+        member = entry.get("member_label")
+        universal = model_catalog.spec_kind(spec) == "universal"
+        if not universal and member is not None and member not in labels:
+            continue
+        model = _universal_name(spec) if universal else member or spec
+        summary = entry.get("summary") or {}
+        for band, metrics in (summary.get("per_band") or {}).items():
+            out.append({"experiment": experiment.get("id"), "spec": spec,
+                        "model": model, "band": band,
+                        **{key: metrics.get(key) for key, _label in REAL_METRICS},
+                        "n_tiles": summary.get("n_tiles")})
+    return out
+
+
 def _real_table(data: StudyData, sel: Selection) -> tuple[list[str], list[dict]]:
     experiments = data.real.get("experiments") or []
     if not experiments:
         raise StudyError(404, "this study has no real-tile metrics: no Sky › Compare run used "
                               "its membership before the freeze")
+    labels = {row["label"] for row in _selected(data, sel)}
     if sel.experiment:
         chosen = next((e for e in experiments if e.get("id") == sel.experiment), None)
         if chosen is None:
             raise StudyError(404, f"this study has no experiment {sel.experiment!r}")
+        out = _real_rows(chosen, labels)
     else:
-        chosen = experiments[0]
-    labels = {row["label"] for row in _selected(data, sel)}
-    out = []
-    for spec, entry in (chosen.get("specs") or {}).items():
-        member = entry.get("member_label")
-        if member is not None and member not in labels:
-            continue
-        summary = entry.get("summary") or {}
-        for band, metrics in (summary.get("per_band") or {}).items():
-            out.append({"experiment": chosen.get("id"), "spec": spec,
-                        "model": member or spec, "band": band,
-                        **{key: metrics.get(key) for key, _label in REAL_METRICS},
-                        "n_tiles": summary.get("n_tiles")})
+        # The newest experiment with rows of the selected ensemble models, else
+        # the newest with any rows (one that ran only universal models).
+        tables = [rows for rows in (_real_rows(e, labels) for e in experiments) if rows]
+        out = next((rows for rows in tables
+                    if any(model_catalog.spec_kind(r["spec"]) != "universal" for r in rows)),
+                   tables[0] if tables else [])
     if not out:
         raise StudyError(404, "the frozen experiment has no metrics for the selected models")
     return (["experiment", "spec", "model", "band", *(k for k, _l in REAL_METRICS), "n_tiles"],

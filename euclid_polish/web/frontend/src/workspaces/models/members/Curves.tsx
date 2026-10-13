@@ -6,8 +6,9 @@
    uniform); the legend toggles a group everywhere; the members picked on the
    roster are highlighted (?sel=). Members not pulled yet come live from
    their jobs on FASRC (dashed; the page refreshes every 30 s while one
-   trains). Wall time per step lives in Runs › History. Everything is in the
-   URL. */
+   trains); a universal model's is tagged "universal" (pulled on Models ›
+   Universal, never into the ensemble). Wall time per step lives in Runs ›
+   History. Everything is in the URL. */
 import { useMemo, useState } from "react";
 import Plot, { Legend, useLegend, type Guide, type Series } from "../../../charts/Plot";
 import { C } from "../../../colors";
@@ -18,7 +19,7 @@ import {
 } from "../../../ui";
 import { BAND_SHORT, BANDS, isTraining, useCurves, type Curve } from "../api";
 import { ColorBySelect, LoadState, openMember, useFacetColors } from "../common";
-import { facetOf, kneeText, lossFacets, memberNumber, smooth, xy, type ColorBy } from "../model";
+import { facetOf, kneeText, lossFacets, memberNumber, remoteCurveTag, smooth, xy, type ColorBy } from "../model";
 
 type Show = "all" | "bands" | "psnr" | "loss" | "gnorm";
 type Panel = { key: string; title: string; y: string; log: boolean; curves: Curve[]; get: (c: Curve) => [number, number][] };
@@ -50,9 +51,6 @@ function commonTarget(curves: readonly Curve[]): number | null {
 
 /** Refresh period while a member trains on FASRC (the server caches 20 s). */
 const LIVE_POLL_MS = 30_000;
-
-/** "live" for a member still training on FASRC, "on FASRC" for one finished but not pulled. */
-const remoteTag = (c: Curve) => (c.remote ? (c.finished ? "on FASRC" : "live") : null);
 
 export function Curves() {
   const [poll, setPoll] = useState<number | undefined>();
@@ -101,7 +99,7 @@ export function Curves() {
       if (!x.length) continue;
       xMax = Math.max(xMax, x[x.length - 1]);
       const picked = sel.has(memberNumber(c.name) ?? "");
-      const tag = remoteTag(c);
+      const tag = remoteCurveTag(c);
       series.push({
         x, y: smooth(y, w), color: colors.of(c),
         width: picked ? 2.4 : 1.2, alpha: sel.size && !picked ? 0.35 : 0.9,
@@ -152,13 +150,16 @@ export function Curves() {
         <div className="mdl-stack">
           {remote.length > 0 && (
             <div className="mdl-row" aria-label="Members on FASRC">
-              <span className="mdl-faint">Not pulled yet (dashed, from FASRC{wantPoll ? ", refreshing every 30 s" : ""}):</span>
+              <span className="mdl-faint">
+                Not pulled yet (dashed, from FASRC{wantPoll ? ", refreshing every 30 s" : ""}
+                {remote.some((c) => c.universal) ? "; a universal model is pulled on Models › Universal" : ""}):
+              </span>
               {remote.map((c) => {
                 const n = memberNumber(c.name) ?? "";
                 return (
                   <Chip key={c.name} on={sel.has(n)} dot={colors.of(c)} onClick={() => toggleSel(n)}
-                    title={`SLURM job ${c.jobid ?? "?"} — click to highlight`}>
-                    #{n} · {remoteTag(c)} · step {kfmt(c.last_step ?? 0)}{c.target_steps ? ` / ${kfmt(c.target_steps)}` : ""}
+                    title={`SLURM job ${c.jobid ?? "?"}${c.universal ? " — a universal model: pulled on Models › Universal, not into the ensemble" : ""} — click to highlight`}>
+                    #{n} · {remoteCurveTag(c)} · step {kfmt(c.last_step ?? 0)}{c.target_steps ? ` / ${kfmt(c.target_steps)}` : ""}
                   </Chip>
                 );
               })}

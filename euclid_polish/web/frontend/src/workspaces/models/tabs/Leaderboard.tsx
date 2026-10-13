@@ -5,9 +5,11 @@
    - the verdict (the production gate against the best member and the plain
      mean on ONE metric, the knee-integrated PSNR) and its caption;
    - the comparison table gate / plain mean / best member × ∫PSNR, ∫VIS/Y/J/H
-     and, from the newest Sky › Compare run of THIS production, the real holes
-     (worst band) and R̃ — or the line saying there is no real benchmark for
-     this membership (model.ts leaderboardBenchmark);
+     (+ the best universal model with a current score, linking to the
+     Universal tab) and, from the newest Sky › Compare run of THIS
+     production, the real holes (worst band) and R̃ — or the line saying
+     there is no real benchmark for this membership (model.ts
+     leaderboardBenchmark);
    - one alert line for the members that stopped short (TIMEOUT) · Continue;
    - the knee curves' toolbar (view, band, colour, members, the integration
      range, Log to notebook, the run menu), the PSNR-vs-knee curves per band;
@@ -30,16 +32,18 @@ import {
   SummaryLine, Table, Toolbar, ToolbarGroup, ToolbarSpacer, Tooltip, type Column, type DataColumn,
 } from "../../../ui";
 import {
-  BAND_SHORT, BANDS, useExperiment, useExperiments, useKnee, useMembers, useModelCatalog, useOverview,
+  BAND_SHORT, BANDS, useExperiment, useExperiments, useKnee, useMembers, useModelCatalog, useOverview, useUniversal,
   type KneeModel, type MemberRow, type Overview,
 } from "../api";
 import { kneeColor, kneeOrderOf, LoadState } from "../common";
 import { JOB, computeKnee, evaluate, refreshMemberPsnr, useOnJobEnd } from "../jobs";
 import {
-  compareRunPath, db, dbDelta, kneeLeaderboard, kneeModelName, kneeNum, kneeText, leaderboardBenchmark, memberNumber, overviewComparison,
-  productionRun, relativeTo, statusChecks, type Comparison, type ComparisonRow, type LeaderBenchmark, type LeaderRow, type StatusCheck,
+  compareRunPath, db, dbDelta, isUniversal, kneeLeaderboard, kneeModelName, kneeNum, kneeText, leaderboardBenchmark, memberNumber,
+  overviewComparison, productionRun, relativeTo, statusChecks,
+  type Comparison, type ComparisonRow, type LeaderBenchmark, type LeaderRow, type StatusCheck,
 } from "../model";
 import { evaluationNote, kneeNote } from "../notes";
+import { bestUniversal } from "../universal";
 import { FreezeStudyDialog } from "../../shared/FreezeStudyDialog";
 import { LogToNotebookButton } from "../../shared/LogToNotebook";
 import "../models.css";
@@ -159,16 +163,19 @@ function Verdict({ cmp }: { cmp: Comparison }) {
 
 const SPEC: Record<ComparisonRow["id"], (best: string | null) => string | null> = {
   gate: () => "production", mean: () => "mean", best: (n) => (n ? `member:member_${n}` : null),
+  universal: () => null,   // the row names its own spec
 };
 
 function ComparisonTable({ cmp, bands, bench }: { cmp: Comparison; bands: readonly string[]; bench: LeaderBenchmark }) {
   const real = bench.state === "current" ? bench : null;
   const facts = (r: ComparisonRow) => {
-    const spec = SPEC[r.id](cmp.bestNumber);
+    const spec = r.spec ?? SPEC[r.id](cmp.bestNumber);
     return real && spec ? real.facts(spec) : null;
   };
   const columns: Column<ComparisonRow>[] = [
-    { header: "", cell: (r) => (r.id === "gate" ? <strong>{r.label}</strong> : r.label) },
+    { header: "", cell: (r) => (r.id === "gate" ? <strong>{r.label}</strong>
+      : r.id === "universal" ? <Link to={tabPath("universal")} title="Models › Universal: every universal model by training time">{r.label}</Link>
+        : r.label) },
     { header: "∫PSNR [dB]", align: "right", cell: (r) => <span className="mdl-tnum">{db(r.integrated)}</span> },
     ...bands.map((b, i): Column<ComparisonRow> => ({
       header: `∫${BAND_SHORT[b] ?? b} [dB]`, align: "right", cell: (r) => <span className="mdl-tnum">{db(r.bands[i])}</span>,
@@ -237,7 +244,7 @@ function memberFacet(m: KneeModel, by: Colour, kneeOrder: number[]): Facet {
     return { key: `members:loss:${l}`, label: l.toUpperCase(), color, rank: LOSS_ORDER.indexOf(l) + 1 || 99 };
   }
   if (k.kind === "multi") {
-    return m.output_knee != null
+    return isUniversal(m)
       ? { key: "members:multi:image", label: "multi-knee → 1 image", color, rank: 1e7 }
       : { key: "members:multi:heads", label: "multi-knee, heads", color, dash: true, rank: 1e7 + 1 };
   }
@@ -287,8 +294,18 @@ export default function Leaderboard() {
   const memberRows = members.data?.members;
   const checks = useMemo(() => (o ? statusChecks(o.checks, memberRows) : []), [o, memberRows]);
   const kneeOffered = checks.some((c) => c.fix === "knee" || c.action === "knee");
-  const cmp = useMemo(() => overviewComparison(kneeData, o?.headline.knee), [kneeData, o]);
+  const universal = useUniversal();
+  const cmp = useMemo(() => {
+    const c = overviewComparison(kneeData, o?.headline.knee);
+    // The best universal model with a current score on the same test fields (Models › Universal).
+    const u = c.rows.length ? bestUniversal(universal.data) : null;
+    if (!u) return c;
+    const row: ComparisonRow = { id: "universal", label: `Best universal model (#${memberNumber(u.row.name) ?? u.row.name})`,
+      integrated: u.mean, bands: u.bands, spec: u.row.spec };
+    return { ...c, rows: [...c.rows, row] };
+  }, [kneeData, o, universal.data]);
   const bench = leaderboardBenchmark(exps.data?.experiments, detail.data, catalog.data);
+  const nUniversal = universal.data?.models?.length ?? 0;
   const timeouts = (memberRows ?? []).filter((m) => m.timeout);
 
   const run_ = {
@@ -323,7 +340,7 @@ export default function Leaderboard() {
       const k = kneeText(m);
       series.push({
         x: knees, y, color: modelColor(m, colorBy, kneeOrder), width: main ? 2.6 : 1.2, alpha: main ? 1 : 0.8,
-        dots: main, dash: k.kind === "multi" && m.output_knee == null ? [5, 3] : undefined,
+        dots: main, dash: k.kind === "multi" && !isUniversal(m) ? [5, 3] : undefined,
         name: `${kneeModelName(m)}${m.kind === "member" ? ` · ${k.text}` : ""}`,
         key: m.kind === "member" ? memberFacet(m, colorBy, kneeOrder).key : kneeModelName(m),
       });
@@ -428,6 +445,12 @@ export default function Leaderboard() {
               <Caption>{caption}</Caption>
               {cmp.rows.length > 0 && <ComparisonTable cmp={cmp} bands={bands} bench={bench} />}
               {cmp.rows.length > 0 && <RealSource bench={bench} />}
+              {cmp.rows.length > 0 && nUniversal > 0 && !cmp.rows.some((r) => r.id === "universal") && (
+                <Caption>
+                  {nUniversal} universal model{nUniversal === 1 ? "" : "s"} here, none with a current score on these test fields:{" "}
+                  <Link to={tabPath("universal")}>Models › Universal</Link>.
+                </Caption>
+              )}
             </section>
             {timeouts.length > 0 && (
               <Callout tone="warn" dense action={(

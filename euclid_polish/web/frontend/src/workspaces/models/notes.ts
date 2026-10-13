@@ -1,14 +1,18 @@
 /* Tracking-notebook notes of the Ensemble loop (pure; notes.test.ts): the
    markdown the "Log to notebook" buttons (workspaces/shared/LogToNotebook)
    open with — the Evaluate summary, the knee leaderboard over its
-   integration range, a gate variant's fit, a compare report and a promote.
+   integration range, a gate variant's fit, a compare report, a promote and
+   the universal models against the combiners.
    Each states the facts on the page with their definitions; the user edits
    before appending. */
 import { utcText } from "../shared/noteText";
-import { BAND_SHORT, type CompareReport, type Overview, type Variant } from "./api";
+import { BAND_SHORT, type CompareReport, type Overview, type UniversalCombiner, type Variant } from "./api";
 import {
   db, dbDelta, kneeModelName, kneeNum, kneeText, memberNumber, readsText, variantLabel, type Bench, type Benchmark, type LeaderRow,
 } from "./model";
+import {
+  WEIGHTINGS, classText, combinerHoursText, combinerName, hardwareText, hoursText, kneeWords, stepImplText, stepsShort, type ShapedRow, type Weighting,
+} from "./universal";
 
 export { utcText };
 
@@ -161,5 +165,48 @@ export function promoteNote(result: { promoted?: string | null; backup?: string 
     const s = [after?.testVis != null ? `VIS ${db(after.testVis)} dB` : null, after?.kneeMean != null ? `∫PSNR ${db(after.kneeMean)} dB` : null].filter(Boolean).join(" · ");
     lines.push(`- Test cubes re-scored${s ? `: production now ${s}` : ""}`);
   } else lines.push("- Test cubes not re-scored (the variant does not read the cached members)");
+  return lines.join("\n");
+}
+
+/* ── Universal: the universal models against the combiners ─────────────── */
+
+/** A model's Δ vs the time-matched combiner: "+0.40 vs gate p20s1 (0.60 h)",
+ *  or why there is none ("— (gate p20s1: other fields)"). */
+function matchText(r: ShapedRow): string {
+  if (!r.match) return "—";
+  const at = `${r.match.name} (${hoursText(r.match.hours)})`;
+  if (r.vsMatch != null) return `${dbDelta(r.vsMatch)}${r.stale ? " (stale)" : ""} vs ${at}`;
+  if (r.matchBlock) return `— (${r.match.name}: ${r.matchBlock === "stale" ? "stale score" : "other fields"})`;
+  return "—";
+}
+
+/** The models (shaped on the band mean) and the combiners, with the
+ *  training-time definitions the tab states. */
+export function universalNote(rows: readonly ShapedRow[], combiners: readonly UniversalCombiner[], opts: {
+  weighting: Weighting; nFields: number; integration?: { from_e: number; to_e: number } | null;
+}): string {
+  const w = WEIGHTINGS.find((x) => x.value === opts.weighting)?.text ?? opts.weighting;
+  const from = opts.integration?.from_e ?? 0.1, to = opts.integration?.to_e ?? 1e4;
+  const sorted = [...rows].sort((a, b) => (b.mean ?? -Infinity) - (a.mean ?? -Infinity));
+  const lines = [
+    `**Universal models** — ${rows.length} model${rows.length === 1 ? "" : "s"} · ∫PSNR over ${range(from, to)}, mean of the bands, on ${opts.nFields} test fields · combiner hours ${w}`, "",
+    row(["Model", "Class", "Depth", "Steps", "Batch × crops", "Knee", "Step", "Hardware", "Train h", "∫PSNR", "vs production", "Time-matched combiner"]),
+    row(["---", "---", "---:", "---:", "---", "---", "---", "---", "---:", "---:", "---:", "---"]),
+    ...sorted.map((r) => row([
+      `#${r.num}`, classText(r.class), r.depth == null ? "—" : String(r.depth), stepsShort(r.stepsDone),
+      `${r.batch_size ?? "—"} × ${r.crops_per_field ?? "—"}`, kneeWords(r), stepImplText(r), hardwareText(r.hardware),
+      r.hours == null ? "—" : hoursText(r.hours).replace(/ h$/, ""), `${db(r.mean)}${r.status === "stale" ? " (stale)" : ""}`,
+      `${dbDelta(r.vsProduction)}${r.stale && r.vsProduction != null ? " (stale)" : ""}`, matchText(r),
+    ])),
+  ];
+  if (combiners.length) {
+    lines.push("", row(["Combiner", "Reads", "Σ h", "Max-weighted h", "Mean-weighted h", "∫PSNR"]),
+      row(["---", "---:", "---:", "---:", "---:", "---:"]),
+      ...combiners.map((c) => row([
+        combinerName(c), String(c.n_reads), ...(["sum", "max", "mean"] as const).map((k) => combinerHoursText(c, k, false)),
+        `${db(c.mean)}${c.stale ? " (stale)" : ""}`,
+      ])));
+  }
+  lines.push("", "Training time: Σ of the training log's windows (rolled-back ones included), on the hardware named. A combiner's: Σ over the members it reads of hours × the member's peak gate share (max), its mean share (mean), or plain hours (Σ); ≥ when a member it reads has no training time (never time-matched).");
   return lines.join("\n");
 }

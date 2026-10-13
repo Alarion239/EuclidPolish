@@ -210,17 +210,51 @@ def uniform_gate(labels) -> SpatialGateCombiner:
                                mix_space=MIX_LINEAR, fit_meta={"loss": "test"})
 
 
-def stub_regime(tmp_path: Path, monkeypatch) -> dict:
-    """Three fake STARFULL members, a production gate over them, one variant."""
+#: A universal model's recipe (learned output knee, depth 16) — ``origin.json``.
+UNIVERSAL_ORIGIN = {
+    "num_res_blocks": 16, "target_steps": 1_000_000, "batch_size": 4, "crops_per_field": 8,
+    "asinh_knees": [0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0],
+    "learned_output_knee": {"init_e": 10.0, "min_e": 0.1, "max_e": 1000.0},
+    "jit_compile": True, "mixed_precision": True, "starless": False,
+}
+
+
+def write_universal_member(ensemble: Path, label: str, *, hours: float = 2.0,
+                           steps: int = 2000) -> Path:
+    """A universal model's dir ``<ensemble>/member_<N>``: its ``origin.json``
+    and a ``training_log.csv`` of two 1000-step rows summing to ``hours``."""
+    directory = ensemble / model_catalog.member_name(label)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "origin.json").write_text(json.dumps(UNIVERSAL_ORIGIN), encoding="utf-8")
+    half = hours * 3600.0 / 2
+    (directory / "training_log.csv").write_text(
+        "step,wall_time,loss,duration_s,is_baseline\n"
+        f"{steps - 1000},1.0,0.5,{half},\n{steps},2.0,0.4,{half},\n", encoding="utf-8")
+    return directory
+
+
+def stub_regime(tmp_path: Path, monkeypatch, *, universal: tuple[str, ...] = ()) -> dict:
+    """Three fake STARFULL members, a production gate over them, one variant;
+    plus a pulled universal model (registered, checkpointed, with its recipe)
+    per ``universal`` label. The ensemble dir is a fresh ``tmp_path`` dir, so
+    nothing reads the real checkpoints or registry."""
     root = tmp_path / "regime" / "starfull"
+    ensemble = tmp_path / "regime" / "ensemble"
     save_spatial_gate(uniform_gate(LABELS), str(root / "spatial_gate_combiner"))
     save_spatial_gate(uniform_gate(LABELS[:2]), str(root / "spatial_gate_two"))
     fingerprints = {label: f"ckpt-{i}:10:100" for i, label in enumerate(LABELS)}
+    for label in universal:
+        write_universal_member(ensemble, label)
+        fingerprints[label] = f"ckpt-{label.split('·')[0]}:10:100"
+    registered = list(universal)
     monkeypatch.setattr(model_catalog, "regime_dir", lambda: root)
+    monkeypatch.setattr(model_catalog, "ensemble_dir", lambda: str(ensemble))
     monkeypatch.setattr(model_catalog, "active_member_labels", lambda: list(LABELS))
+    monkeypatch.setattr(model_catalog, "universal_labels", lambda: list(registered))
     monkeypatch.setattr(model_catalog, "member_fingerprints",
                         lambda labels: {label: fingerprints.get(label) for label in labels})
-    return {"root": root, "fingerprints": fingerprints}
+    return {"root": root, "fingerprints": fingerprints, "ensemble": ensemble,
+            "universal": registered}
 
 
 class StubRunner:

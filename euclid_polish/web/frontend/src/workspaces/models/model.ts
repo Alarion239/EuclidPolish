@@ -10,7 +10,8 @@
 import type { SlurmJob } from "../../api/jobs";
 import { formatCount, formatDate } from "../../format";
 import type {
-  Check, CurveFacetRow, EvalRow, ExperimentSummary, Headline, KneeInfo, KneeModel, KneePayload, MemberRow, SrSplit, SrStatus, TrainingJob, Variant,
+  Check, Curve, CurveFacetRow, EvalRow, ExperimentSummary, Headline, KneeInfo, KneeModel, KneePayload, MemberDetail, MemberRow, SrSplit, SrStatus,
+  Tombstone, TrainingJob, Variant,
 } from "./api";
 
 /* ── member names ──────────────────────────────────────────────────────── */
@@ -90,6 +91,15 @@ export function kneeText(m: KneeInfo): { text: string; kind: KneeKind; title: st
   return { text: `${DEFAULT_KNEE_E} e⁻`, kind: "default", sort: DEFAULT_KNEE_E, title: "The per-band default knee (100 e⁻)" };
 }
 
+/** A universal model: trained at several knees at once with ONE output image
+ *  (a fixed `output_knee` or one learned per band) — the rule of
+ *  `ensemble_registry.is_universal_origin`. Multi-head members (one image per
+ *  knee) are not. */
+export function isUniversal(m: KneeInfo): boolean {
+  const knees = Array.isArray(m.asinh_knees) ? m.asinh_knees.filter((v) => Number.isFinite(v)) : [];
+  return knees.length > 0 && (m.output_knee != null || !!m.learned_output_knee);
+}
+
 /* ── colour facets ─────────────────────────────────────────────────────── */
 
 export type ColorBy = "loss" | "depth" | "knee" | "multi" | "uniform";
@@ -107,11 +117,8 @@ export function facetOf(m: FacetSource, by: ColorBy): string {
     case "loss": return (m.loss_norm ?? m.loss ?? "l1").toLowerCase();
     case "depth": return m.blocks != null ? `${m.blocks} blocks` : "unknown depth";
     case "knee": return kneeText(m).text;
-    case "multi": {
-      const k = kneeText(m);
-      const oneImage = m.output_knee != null || !!m.learned_output_knee;
-      return k.kind === "multi" ? (oneImage ? "multi-knee, 1 image" : "multi-knee, heads") : "single knee";
-    }
+    case "multi":
+      return kneeText(m).kind === "multi" ? (isUniversal(m) ? "multi-knee, 1 image" : "multi-knee, heads") : "single knee";
     default: return "members";
   }
 }
@@ -223,7 +230,11 @@ export function kneeModelName(m: { id: string; kind: string; label: string }): s
 
 /* ── the Leaderboard comparison ───────────────────────────────────────── */
 
-export type ComparisonRow = { id: "gate" | "mean" | "best"; label: string; integrated: number | null; bands: (number | null)[] };
+export type ComparisonRow = {
+  id: "gate" | "mean" | "best" | "universal"; label: string; integrated: number | null; bands: (number | null)[];
+  /** The row's model catalogue spec, when the row names it itself (the best universal model). */
+  spec?: string;
+};
 export type Comparison = { rows: ComparisonRow[]; source: "knee" | "headline"; bestNumber: string | null };
 
 const finiteOr = (v: number | null | undefined): number | null => (v != null && Number.isFinite(v) ? v : null);
@@ -718,11 +729,17 @@ export const WAITING_DAYS = 14;
  *  14) and are neither active here nor archived — never those of a legacy
  *  starless batch (isStarlessJob), which the roster does not list; and
  *  continued members whose recent finished job's target lies past their
- *  local step. A job without an end time counts as recent. */
+ *  local step. A job without an end time counts as recent. New universal
+ *  models (knownUniversal: the job recipes, a fork of a universal model
+ *  included) are not ensemble members: they belong to the Universal tab, so
+ *  they come back apart (`universal`), and the registered ones
+ *  (`opts.universal`, members.json `universal`) count as local. */
 export function waitingOnFasrc(jobs: readonly TrainingJob[], members: readonly MemberRow[], archived: readonly string[],
-  opts: { now?: number; days?: number } = {}): { members: string[]; continued: string[] } {
+  opts: { now?: number; days?: number; universal?: readonly string[] | null } = {}): { members: string[]; continued: string[]; universal: string[] } {
   const local = new Map(members.map((m) => [m.name, m]));
   const gone = new Set(archived);
+  const registered = new Set(opts.universal ?? []);
+  const known = knownUniversal(jobs, members, opts.universal);
   const cutoff = (opts.now ?? Date.now()) - (opts.days ?? WAITING_DAYS) * 86_400_000;
   const recent = (j: TrainingJob) => {
     const t = Date.parse(String(j.ended_at ?? j.submitted_at ?? ""));
@@ -730,6 +747,7 @@ export function waitingOnFasrc(jobs: readonly TrainingJob[], members: readonly M
   };
   const fresh = new Set<string>();
   const continued = new Set<string>();
+  const universal = new Set<string>();
   for (const j of jobs) {
     if (!TERMINAL_WITH_CHECKPOINT.has(String(j.state ?? "").toUpperCase()) || !recent(j)) continue;
     if (j.mode === "continue") {
@@ -740,13 +758,105 @@ export function waitingOnFasrc(jobs: readonly TrainingJob[], members: readonly M
       continue;
     }
     if (isStarlessJob(j)) continue;
-    for (const n of j.member_names) if (!local.has(n) && !gone.has(n)) fresh.add(n);
+    for (const n of j.member_names) {
+      if (local.has(n) || gone.has(n) || registered.has(n)) continue;
+      (known.has(n) ? universal : fresh).add(n);
+    }
   }
   const byNum = (a: string, b: string) => Number(memberNumber(a)) - Number(memberNumber(b));
-  return { members: [...fresh].sort(byNum), continued: [...continued].sort(byNum) };
+  return { members: [...fresh].sort(byNum), continued: [...continued].sort(byNum), universal: [...universal].sort(byNum) };
 }
 
 const TRUTHY = ["1", "true", "yes", "on"];
+
+const truthy = (v: unknown) => (typeof v === "boolean" ? v : typeof v === "number" ? v !== 0
+  : typeof v === "string" ? TRUTHY.includes(v.trim().toLowerCase()) : !!v && typeof v === "object");
+const hasKnees = (v: unknown): boolean => {
+  if (Array.isArray(v)) return v.some((k) => Number.isFinite(Number(k)) && String(k).trim() !== "");
+  return typeof v === "string" && v.split(",").some((k) => k.trim() !== "" && Number.isFinite(Number(k)));
+};
+const hasValue = (v: unknown) => v != null && String(v).trim() !== "" && Number.isFinite(Number(v));
+
+/** The models a fork job forked (`params.fork_from`, any spelling → member_NNN). */
+export function forkSource(job: Pick<TrainingJob, "params"> & { mode?: string | null }): string | null {
+  const p = job.params ?? {};
+  if (job.mode !== "fork" && p.mode !== "fork") return null;
+  return memberName(String(p.fork_from ?? ""));
+}
+
+/** The members a training job trained as universal models (isUniversal on
+ *  the job's recipe: the run-wide params, overridden per member by
+ *  `member_spec[i]`; the ledger spells the learned knee `learn_output_knee`).
+ *  A fork inherits its source's knees, so a fork of a name in
+ *  `knownUniversal` is universal whatever its own recipe says. */
+export function universalJobMembers(job: Pick<TrainingJob, "member_names" | "params"> & { mode?: string | null },
+  knownUniversal: ReadonlySet<string> = new Set()): Set<string> {
+  const p = job.params ?? {};
+  const source = forkSource(job);
+  if (source && knownUniversal.has(source)) return new Set(job.member_names);
+  let spec: unknown;
+  try { spec = typeof p.member_spec === "string" ? JSON.parse(p.member_spec) : p.member_spec; } catch { spec = null; }
+  const specs = Array.isArray(spec) ? spec : [];
+  const out = new Set<string>();
+  job.member_names.forEach((name, i) => {
+    const own = specs[i] && typeof specs[i] === "object" ? specs[i] as Record<string, unknown> : {};
+    const o = { ...p, ...own };
+    const learned = truthy(o.learn_output_knee) || truthy(o.learned_output_knee);
+    if (hasKnees(o.asinh_knees) && (learned || hasValue(o.output_knee))) out.add(name);
+  });
+  return out;
+}
+
+/** Every name known to be a universal model: the registered ones
+ *  (members.json `universal`), the active members that are (isUniversal on
+ *  their row), and every job's universal members (universalJobMembers),
+ *  repeated until no fork adds one, so a fork of a fork of 211 counts. */
+export function knownUniversal(jobs: readonly (Pick<TrainingJob, "member_names" | "params"> & { mode?: string | null })[],
+  members: readonly (KneeInfo & { name: string })[] = [], registered: readonly string[] | null = []): Set<string> {
+  const known = new Set<string>(registered ?? []);
+  for (const m of members) if (isUniversal(m)) known.add(m.name);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const j of jobs) {
+      if (j.mode === "continue") continue;
+      for (const n of universalJobMembers(j, known)) if (!known.has(n)) { known.add(n); grew = true; }
+    }
+  }
+  return known;
+}
+
+/** The Restore confirm of an archived name, by its tombstone's class: an
+ *  ensemble member comes back active (evaluations read stale); a universal
+ *  model comes back standalone, and nothing goes stale. */
+export function restoreText(t: Pick<Tombstone, "class"> | null | undefined): string {
+  return t?.class === "universal"
+    ? "Unzips the archive and registers it as a universal model again (standalone, not an ensemble member); no evaluation or gate goes stale."
+    : "Unzips the archive back into the ensemble and makes the member active again. The evaluation and the production gate then read stale until re-run.";
+}
+
+/** The inspector's "vs plain mean" (knee-integrated ∫PSNR minus the plain
+ *  mean's, dB): an ensemble member's always; a universal model's only when
+ *  its score is current and on the knee payload's fields (`comparable`),
+ *  else null. */
+export function inspectorVsMean(d: Pick<MemberDetail, "active" | "universal" | "class" | "comparable" | "row" | "knee">): number | null {
+  const r = d.row;
+  const mine = r?.knee_integrated?.mean;
+  const meanModel = d.knee?.models.find((x) => x.kind === "mean");
+  const vals = (meanModel?.integrated ?? []).filter((x) => Number.isFinite(x));
+  if (mine == null || !Number.isFinite(mine) || !vals.length) return null;
+  const universal = !d.active && (d.universal === true || d.class === "universal" || r?.class === "universal");
+  if (universal && (d.comparable !== true || r?.score_stale !== false)) return null;
+  return mine - vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+/** A remote curve's tag (Members › Curves): "live" while it trains on
+ *  FASRC, "on FASRC" once finished there, with "universal" in front for a
+ *  universal model (pulled on Models › Universal, not into the ensemble). */
+export function remoteCurveTag(c: Pick<Curve, "remote" | "finished" | "universal">): string | null {
+  if (!c.remote) return null;
+  return `${c.universal ? "universal · " : ""}${c.finished ? "on FASRC" : "live"}`;
+}
+
 /** Whether a past training job trained starless members (the run-wide flag
  *  or a per-member one): legacy batches only, the Train tab never sends it. */
 export function isStarlessJob(job: Pick<TrainingJob, "params">): boolean {

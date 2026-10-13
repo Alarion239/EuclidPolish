@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.eval.knee_psnr import KNEE_GRID_E, integrated_psnr
-from euclid_polish.studies import numbers, stats
+from euclid_polish.studies import candidates, numbers, stats
 from euclid_polish.studies.store import StudyError
 from euclid_polish.web.helpers import ensemble_viz as ev
 from tests._studies_fixtures import LABELS, N_FIELDS, make_env
@@ -153,3 +153,17 @@ def test_fields_dropped_by_a_missing_cube_are_recorded(tmp_path, monkeypatch):
     knee = json.loads(bundle.files["knee_psnr.json"])
     assert knee["fields"] == [0, 2] and knee["dropped_fields"] == [1]
     assert any("1 of 3 test fields" in w for w in bundle.snapshot["warnings"])
+
+
+def test_real_numbers_name_the_model_of_member_and_universal_specs(monkeypatch):
+    """A universal model's spec carries the label it runs, like a member's."""
+    record = {"id": "e1", "tiles": ["nexus/f200w-0000"],
+              "matching_specs": ["production", "member:member_01", "universal:member_211"],
+              "model_labels": {"universal:member_211": "Universal 211"},
+              "fingerprints": {}, "summary": {}, "results": {}}
+    monkeypatch.setattr(candidates, "matching_experiments", lambda starless: [record])
+    specs = numbers.real_numbers(False)["experiments"][0]["specs"]
+    assert specs["production"]["member_label"] is None
+    assert specs["member:member_01"]["member_label"] == "01·psnr"
+    assert specs["universal:member_211"]["member_label"] == "211·psnr"
+    assert specs["universal:member_211"]["label"] == "Universal 211"

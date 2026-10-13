@@ -116,3 +116,42 @@ def test_restore_member_entry_refusals(tmp_path):
     shutil.rmtree(os.path.join(base, "member_03"))
     with pytest.raises(ValueError, match="no checkpoint"):
         er.restore_member_entry(base, "member_03")
+
+
+def test_restore_member_entry_returns_a_universal_model_to_its_class(tmp_path):
+    base = str(tmp_path / "ensemble")
+    _mk_member(base, 0)
+    er.add_universal_entry(base, "member_211")
+    _mk_member(base, 211)
+    er.archive_member_entry(base, "member_211", zip_path="models/u.zip", commit=None)
+    assert er.load_registry(base)["universal"] == []
+
+    reg = er.restore_member_entry(base, "211·psnr")
+    assert reg["universal"] == ["member_211"]
+    assert reg["active"] == ["member_00"]                   # never into the ensemble
+    assert all(t["name"] != "member_211" for t in reg["archived"])
+    reg = er.load_registry(base)
+    assert reg["universal"] == ["member_211"] and reg["active"] == ["member_00"]
+
+
+def test_restore_member_entry_treats_a_classless_tombstone_as_a_member(tmp_path):
+    base = str(tmp_path / "ensemble")
+    _mk_member(base, 0)
+    _mk_member(base, 1)
+    # a tombstone written before the universal class existed
+    with open(er.registry_path(base), "w") as f:
+        json.dump({"active": ["member_00"],
+                   "archived": [{"name": "member_01", "archived_at": "2026-07-02T00:00:00+00:00",
+                                 "zip": "models/ensemble-member-01.zip", "commit": None}]}, f)
+    reg = er.restore_member_entry(base, "member_01")
+    assert reg["active"] == ["member_00", "member_01"]
+    assert reg["universal"] == []
+
+
+def test_restore_member_entry_refuses_a_registered_universal_model(tmp_path):
+    base = str(tmp_path / "ensemble")
+    _mk_member(base, 0)
+    er.add_universal_entry(base, "member_211")
+    _mk_member(base, 211)
+    with pytest.raises(ValueError, match="already a universal model"):
+        er.restore_member_entry(base, "member_211")

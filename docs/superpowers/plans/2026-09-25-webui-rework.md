@@ -169,7 +169,9 @@ Endpoints (exact paths): `GET /api/real/sources`, `GET /api/real/<source>`,
 `GET /api/sky/at?ra&dec`, `POST /api/sky/jwst/discover`, `GET /api/sky/jwst/footprints?ra&dec&r`,
 `POST /api/sky/jwst/pair`. Viewer collection `real` (params `source`, `models`) with tiers `lr`,
 `jwst` (if any) and `m:<spec>`. Model specs: `production`, `mean`, `member:<name>`,
-`gate:<variant>`, `rbf`. Response shapes are documented by WP-B2 in `API.md`.
+`gate:<variant>`, `rbf`, and (2026-10-13) `universal:<name>` for pulled universal multi-knee
+models (docs/superpowers/specs/2026-10-13-universal-models-design.md). Response shapes are
+documented by WP-B2 in `API.md`.
 
 ---
 

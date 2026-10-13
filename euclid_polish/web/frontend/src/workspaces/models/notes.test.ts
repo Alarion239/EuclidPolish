@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { CompareReport, KneeModel, Overview, Variant } from "./api";
 import { benchmarkExperiment, kneeLeaderboard } from "./model";
-import { compareNote, compareRows, evaluationNote, kneeNote, promoteNote, utcText, variantNote } from "./notes";
+import { compareNote, compareRows, evaluationNote, kneeNote, promoteNote, universalNote, utcText, variantNote } from "./notes";
+import { comb, payload } from "./testing/universalFixture";
+import { shapeRows } from "./universal";
 
 const OVERVIEW: Overview = {
   active_members: ["196·psnr", "195·psnr"], n_members: 30, test_present: true,
@@ -150,5 +152,31 @@ describe("promote note", () => {
     expect(md).toContain("- Test cubes re-scored: production now VIS 44.20 dB · ∫PSNR 38.30 dB");
     const plain = promoteNote({ promoted: "spatial_gate_linear", test_rescored: false }, null);
     expect(plain).toContain("- Test cubes not re-scored (the variant does not read the cached members)");
+  });
+});
+
+describe("universal note", () => {
+  it("tables the models best first and the combiners' hours, with the definitions", () => {
+    const p = payload();
+    const md = universalNote(shapeRows(p, { weighting: "max", metric: "mean" }), p.combiners,
+      { weighting: "max", nFields: 100, integration: p.integration });
+    expect(md).toContain("**Universal models** — 6 models · ∫PSNR over 0.1–10k e⁻, mean of the bands, on 100 test fields · combiner hours max-weighted");
+    const lines = md.split("\n");
+    const first = lines.findIndex((l) => l.startsWith("| #"));
+    expect(lines[first]).toBe("| #211 | universal | 16 | 1.0M | 4 × 8 | learned | plain | A100 | 12.7 | 61.60 | +1.10 | +1.10 vs production gate (2.00 h) |");
+    expect(md).toContain("| #215 | universal | 16 | 200k | 4 × 8 | learned | XLA + bf16 | A100 MIG slice | 1.90 | 60.80 (stale) |");
+    expect(md).toContain("| #196 | ensemble member | 32 | 96k | 4 × 8 | fixed 10 e⁻ | plain | A100 | — | — | — | — |");
+    expect(md).toContain("| production gate | 2 | 6.00 | 2.00 | 0.90 | 60.50 |");
+    expect(md).toContain("| gate p20s1 | 2 | 3.00 | 0.60 | 0.30 | 60.20 |");
+    expect(md).toContain("Training time: Σ of the training log's windows");
+  });
+
+  it("marks a stale model's Δs, says why a match has no Δ, and gives a partial combiner's hours as a lower bound", () => {
+    const p = payload({ combiners: [comb("production", { comparable: true, missing_hours: ["member_160"] }),
+      comb("gate:p20s1", { mean: 60.2, hours: { max: 0.6, mean: 0.3, sum: 3 }, score_source: "compare", comparable: false })] });
+    const md = universalNote(shapeRows(p, { weighting: "sum", metric: "mean" }), p.combiners, { weighting: "sum", nFields: 100 });
+    // #215 (stale, scored at 1.2 h): Δ vs production marked; its nearest gate (p20s1, 3 h) is on other fields
+    expect(md).toContain("| 60.80 (stale) | +0.30 (stale) | — (gate p20s1: other fields) |");
+    expect(md).toContain("| production gate | 2 | ≥ 6.00 | ≥ 2.00 | ≥ 0.90 | 60.50 |");
   });
 });

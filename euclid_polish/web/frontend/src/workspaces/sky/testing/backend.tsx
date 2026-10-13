@@ -26,7 +26,18 @@ export const MODELS = {
     { spec: "gate:old", kind: "gate", label: "Old gate", available: false, reason: "fitted for 20 archived members" },
     { spec: "rbf", kind: "rbf", label: "RBF", available: false, reason: "fitted for 20 archived members" },
     { spec: "member:member_1", kind: "member", label: "Member 1·psnr", available: true, n_members: 1 },
-    { spec: "member:member_2", kind: "member", label: "Member 2·psnr", available: true, n_members: 1 },
+    // an active member that is also a universal (single-image multi-knee) model: listed in both groups
+    { spec: "member:member_2", kind: "member", label: "Member 2·psnr", available: true, n_members: 1,
+      details: { universal: true, class: "member", num_res_blocks: 8, steps: 300_000, target_steps: 300_000,
+        knee: "fixed", output_knee: 10, train_hours: 3.14 } },
+    // standalone universal models (registered, not ensemble members), after the gate variants
+    { spec: "universal:member_211", kind: "universal", label: "Universal 211", available: true, n_members: 1,
+      reads: ["211·psnr"], members: ["211·psnr"],
+      details: { universal: true, class: "universal", num_res_blocks: 16, steps: 1_000_000, target_steps: 1_000_000,
+        knee: "learned", output_knee: null, jit_compile: true, mixed_precision: true, train_hours: 12.7 } },
+    { spec: "universal:member_209", kind: "universal", label: "Universal 209", available: false,
+      reason: "no checkpoint: pull it from FASRC", n_members: 1, reads: ["209·psnr"],
+      details: { universal: true, class: "universal", num_res_blocks: 32, steps: 500_000, knee: "learned" } },
   ],
 };
 

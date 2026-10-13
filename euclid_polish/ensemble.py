@@ -236,11 +236,15 @@ def _psnr(a: np.ndarray, b: np.ndarray, peak: float) -> float:
 
 
 def _select_member_dirs(dirs: Sequence[str], labels: Sequence[str], *,
-                        starless: bool | None) -> list[str]:
-    """``dirs`` (registry-active member dirs) reduced to ``labels``, in the
-    order given; a label that is unknown, repeated, or of the other star
-    regime raises :class:`ValueError` naming it."""
+                        starless: bool | None,
+                        include_universal: bool = False) -> list[str]:
+    """``dirs`` (registry-active member dirs, plus the universal model dirs
+    when ``include_universal``) reduced to ``labels``, in the order given; a
+    label that is unknown, repeated, or of the other star regime raises
+    :class:`ValueError` naming it."""
     by_name = {os.path.basename(d): d for d in dirs}
+    known = ("an active ensemble member or a universal model" if include_universal
+             else "an active ensemble member")
     out: list[str] = []
     seen: set[str] = set()
     for raw in labels:
@@ -250,7 +254,7 @@ def _select_member_dirs(dirs: Sequence[str], labels: Sequence[str], *,
         seen.add(name)
         d = by_name.get(name)
         if d is None:
-            raise ValueError(f"{name} is not an active ensemble member with a checkpoint")
+            raise ValueError(f"{name} is not {known} with a checkpoint")
         if starless is not None and member_is_starless(d) != bool(starless):
             regime = "starless" if member_is_starless(d) else "starfull"
             raise ValueError(f"{name} is a {regime} member")
@@ -286,6 +290,13 @@ class EnsembleModel:
         regime when that is given), else :class:`ValueError`. Used to run a
         combiner variant fitted for a SUBSET of the active members, so a
         caller never has to load the whole ensemble and slice it.
+    include_universal : bool, optional
+        Also accept registered UNIVERSAL models
+        (:func:`~euclid_polish.ensemble_registry.universal_member_dirs`) as
+        ``labels`` — a standalone universal model loads as an ensemble of
+        one. Needs explicit ``labels`` (else :class:`ValueError`), so the
+        default ensemble (mean, Evaluate, gate fits, production) never sees
+        them. Default ``False``.
     """
 
     def __init__(
@@ -298,8 +309,11 @@ class EnsembleModel:
         include_loss_best: bool = False,
         starless: bool | None = None,
         labels: Sequence[str] | None = None,
+        include_universal: bool = False,
         _models: Sequence[Model] | None = None,
     ) -> None:
+        if include_universal and labels is None:
+            raise ValueError("include_universal needs explicit labels")
         self.base_dir = base_dir
         self._scale = int(scale)
         self._num_res_blocks = int(num_res_blocks)
@@ -313,8 +327,11 @@ class EnsembleModel:
         # still sit on disk (e.g. mirrored back from FASRC) but never loads.
         dirs = [d for d in ensemble_registry.active_member_dirs(base_dir)
                 if os.path.isdir(d) and _checkpoint_exists(d)]
+        if include_universal:                        # explicit labels only (above)
+            dirs += ensemble_registry.universal_member_dirs(base_dir)
         if labels is not None:
-            dirs = _select_member_dirs(dirs, labels, starless=starless)
+            dirs = _select_member_dirs(dirs, labels, starless=starless,
+                                       include_universal=include_universal)
         # Star-regime filter: a starless/starfull eval mixes only members of the
         # matching regime (they score against different targets — clean vs hr).
         elif starless is not None:
@@ -322,21 +339,21 @@ class EnsembleModel:
         if n_members is not None:
             dirs = dirs[: int(n_members)]
         models: list[Model] = []
-        labels: list[str] = []
+        loaded: list[str] = []
         for d in dirs:
             idx = os.path.basename(d).removeprefix("member_")
             models.append(
                 Model(d, scale=self._scale, num_res_blocks=self._num_res_blocks))
-            labels.append(f"{idx}·psnr")
+            loaded.append(f"{idx}·psnr")
             if include_loss_best:
                 lb = os.path.join(d, "loss_best")
                 if os.path.isdir(lb) and _checkpoint_exists(lb):
                     models.append(Model(
                         lb, scale=self._scale,
                         num_res_blocks=self._num_res_blocks))
-                    labels.append(f"{idx}·loss")
+                    loaded.append(f"{idx}·loss")
         self._models = models
-        self._member_labels = labels
+        self._member_labels = loaded
 
     # -- introspection -- #
 

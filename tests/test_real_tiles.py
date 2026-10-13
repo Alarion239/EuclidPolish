@@ -12,7 +12,7 @@ from astropy.wcs import WCS
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.sky.observation import q1_mer_tiles
-from euclid_polish.web.helpers import jwst_euclid, real_tiles
+from euclid_polish.web.helpers import jwst_euclid, model_catalog, real_tiles
 from tests import _real_fixtures as fx
 
 
@@ -144,3 +144,21 @@ def test_cache_tile_reports_an_archive_failure(store, monkeypatch):
                         lambda **_kwargs: (False, "archive down"))
     with pytest.raises(RuntimeError, match="archive down"):
         real_tiles.cache_tile(fx.NEXUS_RA, fx.NEXUS_DEC)
+
+
+def test_universal_specs_are_their_own_kind_in_legacy_records(tmp_path):
+    """A NEXUS / pair record of a universal model (design 2026-10-13 §4) keeps
+    its kind and rebuilds its fingerprint with the catalogue formula."""
+    assert real_tiles._spec_kind("universal:member_211") == "universal"
+    assert real_tiles._spec_kind("member:member_211") == "member"
+    assert real_tiles._spec_kind("gate:two") == "gate"
+    assert real_tiles._spec_kind("production") == "production"
+    (tmp_path / "sr.fits").write_bytes(b"")
+    record = real_tiles.legacy_record({
+        "spec": "universal:211", "combiner_kind": "universal",
+        "member_labels": ["211·psnr"], "member_fingerprints": ["ckpt-5:10:1"],
+        "files": {"starfull": "sr.fits"}}, directory=tmp_path, origin="pair")
+    assert record["spec"] == "universal:member_211" and record["kind"] == "universal"
+    assert record["slug"] == "universal-member_211"
+    assert record["fingerprint"] == model_catalog.spec_fingerprint(
+        "universal", member_labels=["211·psnr"], member_fingerprints=["ckpt-5:10:1"])

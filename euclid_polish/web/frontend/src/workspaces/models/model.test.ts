@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { KneeModel, TrainingJob } from "./api";
+import type { KneeModel, MemberDetail, MemberRow, TrainingJob } from "./api";
 import {
   benchmarkChoices, benchmarkExperiment, combinerVariant, dbDelta, facetOf, facetValues, formatE, gateUsage, heldOutComparable, holesText,
   integrateKnee, kneeLeaderboard, kneeModelName, kneeText, memberLabel, memberMatches, memberName, memberNumber, membersButtonText,
   movieStatus, parseMemberList, readsText, relativeTo, smooth, stepsText, stampBacking, stampKnee, variantLabel,
-  gatePeak, gateUseText, productionRunsText, pruneThreshold, usedByGate, fieldErrorRatio, overviewComparison, isStarlessJob,
+  gatePeak, gateUseText, productionRunsText, pruneThreshold, usedByGate, fieldErrorRatio, overviewComparison, isStarlessJob, isUniversal,
+  inspectorVsMean, remoteCurveTag, restoreText,
 } from "./model";
 import {
   RECIPE_RESOURCES, buildParams, buildSpec, continueTarget, defaultForm, defaultResources, formFromJob, lastBatch,
@@ -42,6 +43,16 @@ describe("knee description", () => {
     const d = kneeText({});
     expect(d.kind).toBe("default");
     expect(d.text).toBe("100 e⁻");
+  });
+
+  it("calls a multi-knee member with one output image (fixed or learned knee) universal; heads and single knees are not", () => {
+    const knees = [0.1, 1, 10, 100, 1000, 10000];
+    expect(isUniversal({ asinh_knees: knees, output_knee: 10 })).toBe(true);
+    expect(isUniversal({ asinh_knees: knees, output_knee: null, learned_output_knee: true })).toBe(true);
+    expect(isUniversal({ asinh_knees: knees, output_knee: null })).toBe(false);
+    expect(isUniversal({ asinh_knees: [], output_knee: 10 })).toBe(false);
+    expect(isUniversal({ asinh_knee: 10, output_knee: 10 })).toBe(false);
+    expect(facetOf({ asinh_knees: knees, output_knee: null }, "multi")).toBe("multi-knee, heads");
   });
 
   it("orders facets meaningfully", () => {
@@ -474,5 +485,43 @@ describe("calibration ratio (field RMSE vs mean σ)", () => {
     expect(fieldErrorRatio([1, 2, 4, 0, null], [10, 30, 40, 5, 3])).toEqual({ ratio: 10, n: 3 });
     expect(fieldErrorRatio([1, 2], [10, 30])).toEqual({ ratio: 12.5, n: 2 });
     expect(fieldErrorRatio([], [])).toEqual({ ratio: null, n: 0 });
+  });
+});
+
+describe("universal models in the member views", () => {
+  const knee = (mean: number) => ({ knees: [0.1, 1], bands: ["VIS"], stale: false, models: [
+    { id: "ensemble_mean", kind: "mean", label: "ensemble mean", psnr: [[mean], [mean]], integrated: [mean - 1, mean + 1] },
+  ] as KneeModel[] });
+  const detail = (patch: Partial<MemberDetail>, row: Partial<MemberRow> = {}): MemberDetail => ({
+    name: "member_211", label: "211·psnr", active: false, archived: null, universal: true, class: "universal", comparable: true,
+    row: { name: "member_211", label: "211·psnr", class: "universal", knee_integrated: { mean: 61.6 }, score_stale: false, ...row } as MemberRow,
+    curves: null, knee: knee(59.5), gate: null, ...patch,
+  });
+
+  it("gives a universal model's Δ vs the plain mean only when its score is current and on the same fields", () => {
+    expect(inspectorVsMean(detail({}))).toBeCloseTo(2.1, 9);
+    expect(inspectorVsMean(detail({ comparable: false }))).toBeNull();
+    expect(inspectorVsMean(detail({ comparable: undefined }))).toBeNull();
+    expect(inspectorVsMean(detail({}, { score_stale: true }))).toBeNull();
+    expect(inspectorVsMean(detail({}, { knee_integrated: null }))).toBeNull();
+    expect(inspectorVsMean(detail({ knee: null }))).toBeNull();
+    // an ensemble member's always (its score and the mean's come from one knee payload)
+    expect(inspectorVsMean(detail({ active: true, universal: false, class: "member", comparable: undefined },
+      { class: null, score_stale: undefined }))).toBeCloseTo(2.1, 9);
+  });
+
+  it("words a restore by the tombstone's class", () => {
+    expect(restoreText({ class: "universal" })).toMatch(/registers it as a universal model again .*no evaluation or gate goes stale/);
+    expect(restoreText({ class: "member" })).toMatch(/back into the ensemble .* read stale until re-run/);
+    expect(restoreText({})).toBe(restoreText({ class: "member" }));
+    expect(restoreText(null)).toBe(restoreText({ class: "member" }));
+  });
+
+  it("tags a remote curve live or on FASRC, universal ones as such", () => {
+    expect(remoteCurveTag({ remote: true, finished: false })).toBe("live");
+    expect(remoteCurveTag({ remote: true, finished: true })).toBe("on FASRC");
+    expect(remoteCurveTag({ remote: true, finished: false, universal: true })).toBe("universal · live");
+    expect(remoteCurveTag({ remote: true, finished: true, universal: true })).toBe("universal · on FASRC");
+    expect(remoteCurveTag({ remote: false, universal: true })).toBeNull();
   });
 });

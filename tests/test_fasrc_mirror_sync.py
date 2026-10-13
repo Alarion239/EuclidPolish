@@ -3,9 +3,13 @@ the remote ensemble dir — and only it — into the local ensemble dir."""
 
 from __future__ import annotations
 
+import json
 import os
 
-from euclid_polish.web import fasrc_config, fasrc_mirror
+from euclid_polish import ensemble_registry
+from euclid_polish.config import Config
+from euclid_polish.observability import JobLog, JobRecord
+from euclid_polish.web import fasrc_config, fasrc_jobs, fasrc_mirror
 
 
 class _RecordingSSH:
@@ -62,3 +66,34 @@ def test_trigger_without_ssh_records_the_error_and_pulls_nothing(tmp_path, monke
 
     assert status.last_error == "ssh not connected"
     assert os.listdir(tmp_path) == []
+
+
+def test_trigger_excludes_universal_models_the_registry_does_not_know(tmp_path, monkeypatch):
+    """The mirror would bootstrap every unknown member dir into the ENSEMBLE:
+    universal models the job log created on FASRC that are neither active
+    nor registered universal (nor archived, nor read by a local gate) are
+    excluded; registered ones, ordinary members and ensemble members a gate
+    reads (195, its dir gone) are mirrored."""
+    local = tmp_path / "ensemble"
+    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
+    gate = tmp_path / "vis" / "ensemble" / "starfull" / "spatial_gate_combiner"
+    gate.mkdir(parents=True)
+    (gate / "combiner.json").write_text(json.dumps({"member_labels": ["195·psnr"]}))
+    ensemble_registry.add_universal_entry(str(local), "211")
+    monkeypatch.setattr(fasrc_jobs, "JOBLOG", JobLog(str(tmp_path / "joblog.csv")))
+    spec = {"asinh_knees": [0.1, 1, 10], "output_knee": 10, "learn_output_knee": True}
+    for jobid, name, member in (("1", "member_211", spec), ("2", "member_218", spec),
+                                ("3", "member_219", {"asinh_knee": 3.0}),
+                                ("4", "member_195", spec)):
+        fasrc_jobs.JOBLOG.record_submission(JobRecord(
+            jobid=jobid, step_id="ensemble_train", submitted_at=f"2026-10-1{jobid}T00:00:00Z",
+            params_json=json.dumps({"mode": "add", "member_names": name,
+                                    "member_spec": json.dumps([member])})))
+    monkeypatch.setattr(fasrc_config, "load", lambda: _config(str(local)))
+    ssh = _RecordingSSH()
+    monkeypatch.setattr(fasrc_mirror, "STATE", _State(ssh))
+
+    fasrc_mirror.Mirror().trigger()
+
+    assert ssh.pulls == [("/n/scratch/ckpt/ensemble/", str(local),
+                          ("--delete-after", "--exclude=/member_218/"))]

@@ -1,12 +1,16 @@
 /* Models › Members (`/models/members`; absorbs the old Ensemble Members
    and Curves tabs): a "Pull from FASRC" banner only when finished members are
    waiting there (model.ts waitingOnFasrc: the job log vs the local
-   registry), then the view switch — roster (default), curves (?view=curves)
+   registry; new universal models are not ensemble members, so a quiet line
+   sends them to Models › Universal instead, and the registered ones count
+   as local), then the view switch — roster (default), curves (?view=curves)
    and archived (?view=archived; the counts are the tables' own row counts,
    not repeated on the options), and the
    "Pull from FASRC…" dialog one click away. Opening the page reads local
    files only; the FASRC check runs on request. */
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { pagePath } from "../../../app/nav";
 import { usePageActions } from "../../../app/palette";
 import { useFasrcStatus } from "../../../app/status";
 import { useUrlState } from "../../../hooks/useUrlState";
@@ -31,8 +35,8 @@ export default function Members() {
   const [pullOpen, setPullOpen] = useState(false);
   const data = res.data;
   const waiting = useMemo(() => (data && jobs.data
-    ? waitingOnFasrc(jobs.data.jobs, data.members, data.archived.map((t) => t.name))
-    : { members: [], continued: [] }), [data, jobs.data]);
+    ? waitingOnFasrc(jobs.data.jobs, data.members, data.archived.map((t) => t.name), { universal: data.universal })
+    : { members: [], continued: [], universal: [] }), [data, jobs.data]);
   const nWaiting = waiting.members.length + waiting.continued.length;
   usePageActions([
     { id: "mem-pull", label: "Pull members from FASRC…", group: "Members", keywords: ["download", "rsync", "checkpoints"], run: () => setPullOpen(true) },
@@ -53,6 +57,12 @@ export default function Members() {
           {waitText}.
         </Callout>
       )}
+      {waiting.universal.length > 0 && (
+        <p className="mdl-note">
+          {`${waiting.universal.length} universal model${waiting.universal.length === 1 ? "" : "s"} finished on FASRC (${waiting.universal.map((n) => memberNumber(n)).join(", ")}): not ensemble members, pulled in `}
+          <Link to={pagePath("models", { tab: "universal" })}>Models › Universal</Link>.
+        </p>
+      )}
       <Toolbar label="Members view">
         <Segmented<View> size="sm" aria-label="Members view" value={view} onChange={setView} options={[
           { value: "roster", label: "Roster" },
@@ -71,7 +81,8 @@ export default function Members() {
           {data && (view === "archived" ? <Archived rows={data.archived} /> : <Roster data={data} />)}
         </LoadState>
       )}
-      {pullOpen && <PullDialog open={pullOpen} onOpenChange={setPullOpen} waiting={[...waiting.members, ...waiting.continued]} />}
+      {pullOpen && <PullDialog open={pullOpen} onOpenChange={setPullOpen} waiting={[...waiting.members, ...waiting.continued]}
+        universal={waiting.universal} />}
     </Page>
   );
 }

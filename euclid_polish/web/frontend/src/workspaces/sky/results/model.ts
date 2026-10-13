@@ -7,7 +7,8 @@ import { extent } from "../../../ticks";
 import type { Tone } from "../../../ui";
 import { productionRunsText, shareThreshold } from "../../models/model";
 import {
-  BANDS, SOURCES, type BandMetrics, type ExperimentRecord, type Metrics, type ModelSpecRow, type TileRow,
+  BANDS, SOURCES, type BandMetrics, type ExperimentRecord, type Metrics, type ModelDetails, type ModelSpecRow, type TileRow,
+  type UniversalDetails,
 } from "./api";
 
 /* ── small value helpers ───────────────────────────────────────────────── */
@@ -55,14 +56,23 @@ export function deltaMagText(ratio: unknown): string {
 
 /* ── model specs ───────────────────────────────────────────────────────── */
 
-/** Sort key: production, mean, rbf, gate variants, members (then natural). */
+const UNIVERSAL_PREFIX = "universal:";
+
+/** A standalone universal model's spec (`universal:member_211`). An active
+ *  member that is universal too keeps its `member:` spec. */
+export const isUniversalSpec = (spec: string): boolean => spec.startsWith(UNIVERSAL_PREFIX);
+
+/** Sort key: production, universal models (right after production, so
+ *  Compare's first viewer tiers reach them), mean, rbf, gate variants,
+ *  members (then natural). */
 export function specRank(spec: string): number {
   if (spec === "production") return 0;
-  if (spec === "mean") return 1;
-  if (spec === "rbf") return 2;
-  if (spec.startsWith("gate:")) return 3;
-  if (spec.startsWith("member:")) return 4;
-  return 5;
+  if (isUniversalSpec(spec)) return 1;
+  if (spec === "mean") return 2;
+  if (spec === "rbf") return 3;
+  if (spec.startsWith("gate:")) return 4;
+  if (spec.startsWith("member:")) return 5;
+  return 6;
 }
 
 const COLLATOR = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
@@ -73,35 +83,102 @@ export function sortSpecs(specs: Iterable<string>): string[] {
 
 const SPEC_WORDS: Record<string, string> = { production: "production", mean: "member mean", rbf: "RBF combiner" };
 
-/** A spec in words: `gate:p20` → "gate p20", `member:member_196` → "member 196". */
+/** `member:member_196` / `universal:member_211` / `universal:211` → "196" / "211". */
+const specNumber = (spec: string, prefix: string) => spec.slice(prefix.length).replace(/^member_/, "");
+
+/** A spec in words: `gate:p20` → "gate p20", `member:member_196` → "member 196",
+ *  `universal:member_211` → "universal 211". */
 export function specWords(spec: string): string {
   if (spec.startsWith("gate:")) return `gate ${spec.slice(5)}`;
-  if (spec.startsWith("member:")) return `member ${spec.slice(7).replace(/^member_/, "")}`;
+  if (spec.startsWith("member:")) return `member ${specNumber(spec, "member:")}`;
+  if (isUniversalSpec(spec)) return `universal ${specNumber(spec, UNIVERSAL_PREFIX)}`;
   return SPEC_WORDS[spec] ?? spec;
 }
 
-/** Compact label: `member:member_196` → `m196`, `gate:26m` → `gate 26m`. */
+/** Compact label: `member:member_196` → `m196`, `universal:member_211` →
+ *  `u211`, `gate:26m` → `gate 26m`. */
 export function specShort(spec: string): string {
-  if (spec.startsWith("member:")) return `m${spec.slice("member:".length).replace(/^member_/, "")}`;
+  if (spec.startsWith("member:")) return `m${specNumber(spec, "member:")}`;
+  if (isUniversalSpec(spec)) return `u${specNumber(spec, UNIVERSAL_PREFIX)}`;
   if (spec.startsWith("gate:")) return `gate ${spec.slice("gate:".length)}`;
   return spec;
 }
 
 export type ModelGroup = { id: string; label: string; items: ModelSpecRow[] };
 
-/** The model catalogue grouped for pickers (spec §7.3): production, mean,
- *  rbf, gate variants, members — each group in catalogue order. */
+/** The model catalogue grouped for pickers (spec §7.3): production, universal
+ *  models, mean, rbf, gate variants, members — each group in catalogue order.
+ *  The universal group holds the kind `universal` rows AND the active members
+ *  whose details say they are universal (those stay in Members too). */
 export function groupModels(models: readonly ModelSpecRow[]): ModelGroup[] {
   const groups: ModelGroup[] = [
     { id: "production", label: "Production", items: [] },
+    { id: "universal", label: "Universal models", items: [] },
     { id: "mean", label: "Mean", items: [] },
     { id: "rbf", label: "RBF", items: [] },
     { id: "gate", label: "Gate variants", items: [] },
     { id: "member", label: "Members", items: [] },
   ];
   const byId = new Map(groups.map((g) => [g.id, g]));
-  for (const m of models) (byId.get(String(m.kind)) ?? byId.get("member"))!.items.push(m);
+  for (const m of models) {
+    (byId.get(String(m.kind)) ?? byId.get("member"))!.items.push(m);
+    if (m.kind === "member" && m.details?.universal === true) byId.get("universal")!.items.push(m);
+  }
   return groups.filter((g) => g.items.length);
+}
+
+const UNIVERSAL_NUMBERS = [
+  "num_res_blocks", "steps", "target_steps", "batch_size", "crops_per_field", "output_knee", "train_hours",
+] as const;
+
+/** A catalogue row's universal details, typed (null when it is not a
+ *  universal model): kind `universal`, or a member whose details say
+ *  `universal: true`. Missing or malformed fields are left out. */
+export function universalDetails(m: Partial<Pick<ModelSpecRow, "kind" | "details">>): UniversalDetails | null {
+  const d: ModelDetails = m.details ?? {};
+  if (m.kind !== "universal" && d.universal !== true) return null;
+  const out: UniversalDetails = {
+    universal: true,
+    class: d.class === "universal" || d.class === "member" ? d.class : m.kind === "universal" ? "universal" : "member",
+  };
+  for (const key of UNIVERSAL_NUMBERS) {
+    const v = num(d[key]);
+    if (v != null) out[key] = v;
+  }
+  if (typeof d.jit_compile === "boolean") out.jit_compile = d.jit_compile;
+  if (typeof d.mixed_precision === "boolean") out.mixed_precision = d.mixed_precision;
+  if (d.knee === "learned" || d.knee === "fixed") out.knee = d.knee;
+  return out;
+}
+
+/** A step count, compact: 620000 → "620k", 1000000 → "1.0M". */
+function stepCount(n: number): string {
+  if (Math.round(n / 1e3) >= 1000) return `${(n / 1e6).toFixed(1)}M`;
+  return n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
+}
+
+/** Training hours: two significant digits under an hour, one decimal below 100. */
+function hoursText(h: number): string {
+  return formatNumber(h, h < 1 ? { sig: 2 } : { digits: h < 100 ? 1 : 0 });
+}
+
+/** A universal model in one line: "depth 16 · 1.0M steps · learned knee ·
+ *  12.7 h" ("620k of 1.0M steps" when it stopped short; "fixed knee 10 e⁻";
+ *  "ensemble member" for an active member). "" when it is not universal. */
+export function universalDetailText(m: Partial<Pick<ModelSpecRow, "kind" | "details">>): string {
+  const u = universalDetails(m);
+  if (!u) return "";
+  const bits: string[] = [];
+  if (u.num_res_blocks != null) bits.push(`depth ${u.num_res_blocks}`);
+  if (u.steps != null) {
+    const target = u.target_steps;
+    bits.push(target != null && u.steps < target ? `${stepCount(u.steps)} of ${stepCount(target)} steps` : `${stepCount(u.steps)} steps`);
+  }
+  if (u.knee === "learned") bits.push("learned knee");
+  else if (u.knee === "fixed") bits.push(u.output_knee != null ? `fixed knee ${formatNumber(u.output_knee)} e⁻` : "fixed knee");
+  if (u.train_hours != null) bits.push(`${hoursText(u.train_hours)} h`);
+  if (bits.length && u.class === "member") bits.push("ensemble member");
+  return bits.join(" · ");
 }
 
 /** How many members a model reads: "6 of 20 members" when a pruned gate
@@ -249,7 +326,8 @@ export type BandSeries = { spec: string; label: string; x: number[]; y: (number 
 export function bandSeries(record: ExperimentRecord, scope: string, metric: MetricKey): BandSeries[] {
   const specs = recordSpecs(record);
   const n = specs.length;
-  const spread = n > 1 ? Math.min(0.36, 0.06 * (n - 1)) : 0;
+  // up to 0.6 of a band's slot: production against a dozen universal models stays readable
+  const spread = n > 1 ? Math.min(0.6, 0.06 * (n - 1)) : 0;
   return specs.map((spec, i) => {
     const perBand = metricsFor(record, scope, spec)?.per_band ?? {};
     const offset = n > 1 ? -spread / 2 + (spread * i) / (n - 1) : 0;
@@ -357,13 +435,17 @@ export function cardViewerTiers(specs: readonly string[], hasJwst: boolean): str
   return ["lr", ...(hasJwst ? ["jwst"] : [])];
 }
 
-/** Where an output came from, in words ("legacy nexus-field · 2 members · spatial gate"). */
+/** Where an output came from, in words ("legacy nexus-field · 2 members ·
+ *  spatial gate"); a universal model's output (kind `universal`, else its
+ *  `universal:` spec) is one standalone network: "universal model". */
 export function outputOrigin(m: {
   legacy?: boolean; origin?: string | null; member_labels?: readonly string[] | null; combiner_kind?: string | null;
+  kind?: string | null; spec?: string;
 }): string {
   const parts: string[] = [];
   if (m.legacy) parts.push(`legacy ${m.origin ?? "record"}`);
-  if (m.member_labels?.length) parts.push(`${m.member_labels.length} member${m.member_labels.length === 1 ? "" : "s"}`);
+  if (m.kind === "universal" || (m.spec != null && isUniversalSpec(m.spec))) parts.push("universal model");
+  else if (m.member_labels?.length) parts.push(`${m.member_labels.length} member${m.member_labels.length === 1 ? "" : "s"}`);
   if (m.combiner_kind) parts.push(m.combiner_kind.replace(/_/g, " "));
   return parts.join(" · ");
 }

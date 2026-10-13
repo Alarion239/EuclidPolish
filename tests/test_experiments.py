@@ -11,6 +11,8 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
+from euclid_polish import ensemble_registry
+from euclid_polish.ensemble import member_fingerprint
 from euclid_polish.web.helpers import experiments, model_catalog, real_tiles
 from euclid_polish.web.jobs import JobCancelled
 from tests import _real_fixtures as fx
@@ -225,6 +227,7 @@ def test_default_runner_skips_members_of_specs_already_current(world, monkeypatc
 def test_member_runner_widens_to_the_union_when_asked_for_another_member(monkeypatch):
     active = ["1·psnr", "2·psnr", "3·psnr"]
     monkeypatch.setattr(model_catalog, "active_member_labels", lambda: list(active))
+    monkeypatch.setattr(model_catalog, "universal_labels", lambda: [])
     built: list[dict] = []
 
     class FakeEnsemble:
@@ -271,3 +274,98 @@ def test_purge_removes_member_sr_entries_made_by_another_checkpoint(tmp_path, mo
     assert out["members"] == ["171·psnr", "172·psnr"] and out["files_deleted"] == 4
     assert sorted(p.name for p in tile.iterdir()) == [
         "member_170.json", "member_170.npy", "single.json", "single.npy"]
+
+
+# ---------------------------------------------------------------------------
+# universal models (design 2026-10-13 §4)
+# ---------------------------------------------------------------------------
+
+UNIVERSAL = "211·psnr"
+
+
+@pytest.fixture
+def universe(tmp_path, monkeypatch):
+    store = fx.point_store(tmp_path, monkeypatch)
+    regime = fx.stub_regime(tmp_path, monkeypatch, universal=(UNIVERSAL,))
+    fx.make_nexus_field(n_tiles=2)
+    return {**store, **regime}
+
+
+def test_a_universal_model_runs_like_a_member_and_is_cached_by_its_checkpoint(universe):
+    runner = fx.StubRunner()
+    record = experiments.run_experiment(
+        [("nexus", "f200w-0000")], ["universal:211", "member:member_1"], runner=runner)
+    assert record["status"] == "done" and record["models"] == [
+        "universal:member_211", "member:member_1"]
+    assert record["model_labels"]["universal:member_211"] == "Universal 211"
+    assert sorted(runner.calls) == ["1·psnr", UNIVERSAL]
+    vis = record["results"]["nexus/f200w-0000"]["universal:member_211"]["metrics"]
+    assert vis["per_band"]["VIS"]["flux_ratio"] == pytest.approx(211.0, rel=1e-5)
+    meta = json.loads((model_catalog.member_cache_dir("nexus", "f200w-0000")
+                       / "member_211.json").read_text())
+    assert meta["label"] == UNIVERSAL and meta["member_fingerprint"] == "ckpt-211:10:100"
+    output = model_catalog.list_outputs("nexus", "f200w-0000")["universal:member_211"]
+    assert output["kind"] == "universal" and output["file"] == "universal-member_211.fits"
+    # current output reused; a new checkpoint makes it (and the cached SR) stale
+    again = experiments.run_experiment([("nexus", "f200w-0000")], ["universal:211"],
+                                       runner=runner)
+    assert again["results"]["nexus/f200w-0000"]["universal:member_211"]["state"] == "reused"
+    universe["fingerprints"][UNIVERSAL] = "ckpt-212:11:200"
+    runner.calls.clear()
+    fresh = experiments.run_experiment([("nexus", "f200w-0000")], ["universal:211"],
+                                       runner=runner)
+    assert fresh["results"]["nexus/f200w-0000"]["universal:member_211"]["state"] == "computed"
+    assert runner.calls == [UNIVERSAL]
+
+
+def test_default_runner_is_told_about_universal_models(universe, monkeypatch):
+    made: list[dict] = []
+
+    def factory(*args, **kwargs):
+        made.append(kwargs)
+        return fx.StubRunner()
+
+    monkeypatch.setattr(model_catalog, "EnsembleMemberRunner", factory)
+    experiments.run_experiment([("nexus", "f200w-0000")], ["universal:211", "member:member_2"])
+    assert made == [{"labels": [UNIVERSAL, "2·psnr"]}]
+
+
+def test_an_unpulled_universal_model_is_skipped_with_its_reason(universe):
+    universe["universal"].append("212·psnr")
+    _entries, runnable, skipped = experiments.plan(
+        [("nexus", "f200w-0000")], ["universal:212", "mean"])
+    assert [item.spec for item in runnable] == ["mean"]
+    assert "no checkpoint" in skipped["universal:member_212"]
+
+
+def _checkpoint(directory, name="ckpt-5"):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "checkpoint").write_text(f'model_checkpoint_path: "{name}"\n')
+    (directory / f"{name}.index").write_bytes(b"i" * 10)
+    (directory / f"{name}.data-00000-of-00001").write_bytes(b"d" * 100)
+
+
+def test_purge_keeps_current_universal_model_entries(tmp_path, monkeypatch):
+    """A universal model lives in ``<ensemble>/member_NNN`` like a member: its
+    current cached SRs survive the purge, an older checkpoint's do not."""
+    root = tmp_path / "cache"
+    monkeypatch.setattr(model_catalog, "member_cache_root", lambda: root)
+    ensemble = tmp_path / "ckpt" / "ensemble"
+    _checkpoint(ensemble / "member_170")
+    # registered BEFORE its files arrive, like a pull: never bootstrapped active
+    assert ensemble_registry.add_universal_entry(str(ensemble), "211") == "member_211"
+    _checkpoint(ensemble / "member_211")
+    assert ensemble_registry.load_registry(str(ensemble))["active"] == ["member_170"]
+    current = member_fingerprint(str(ensemble / "member_211"))
+    tile = root / "nexus" / "f200w-0000"
+    tile.mkdir(parents=True)
+    for slug, label, fp in (("member_211", UNIVERSAL, current),
+                            ("member_170", "170·psnr", "old")):
+        np.save(tile / f"{slug}.npy", np.zeros(4, np.float32))
+        (tile / f"{slug}.json").write_text(json.dumps(
+            {"label": label, "member_fingerprint": fp}))
+
+    out = experiments.purge_stale_member_sr_cache(str(ensemble))
+
+    assert out["members"] == ["170·psnr"]
+    assert sorted(p.name for p in tile.iterdir()) == ["member_211.json", "member_211.npy"]

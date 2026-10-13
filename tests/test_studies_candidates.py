@@ -166,6 +166,29 @@ def test_ensemble_snapshot_counts_matching_experiments(tmp_path, monkeypatch):
     assert blocks["real"]["state"] == "current" and "1 " in blocks["real"]["detail"]
 
 
+def test_a_universal_spec_alone_never_qualifies_an_experiment(tmp_path, monkeypatch):
+    """A standalone universal model is not part of the membership: a run that
+    matches only through its spec is not frozen; one that qualifies through an
+    ensemble spec keeps its current universal specs as extras (review fix §9)."""
+    make_env(tmp_path, monkeypatch)
+    rf.point_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(model_catalog, "current_fingerprints", lambda specs=None: {
+        "production": "p-new", "mean": "m1", "universal:member_211": "u1"})
+    root = experiments.records_root()
+    root.mkdir(parents=True)
+    for rid, fps in (("20260929-000000-cccccc", {"production": "p-old", "universal:member_211": "u1"}),
+                     ("20260928-000000-bbbbbb", {"mean": "m1", "universal:member_211": "u1",
+                                                 "universal:member_212": "u-old"}),
+                     ("20260927-000000-aaaaaa", {"mean": "old"})):
+        (root / f"{rid}.json").write_text(json.dumps({
+            "id": rid, "fingerprints": fps, "tiles": [], "models": list(fps), "summary": {}}))
+    matched = candidates.matching_experiments(False)
+    assert [r["id"] for r in matched] == ["20260928-000000-bbbbbb"]
+    assert matched[0]["matching_specs"] == ["mean", "universal:member_211"]
+    blocks = {b["id"]: b for b in candidates.candidates(False)["ensemble"]["blocks"]}
+    assert blocks["real"]["detail"].startswith("1 Sky › Compare run(s)")
+
+
 def test_fields_whose_core_cannot_be_fetched_are_refused(tmp_path, monkeypatch):
     make_env(tmp_path, monkeypatch)
     before = _by_fid(candidates.candidates(False))["test-00000"]

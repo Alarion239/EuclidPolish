@@ -98,7 +98,8 @@
 .res-models__detail { font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .res-models__item[data-unavailable] .res-models__detail { color: var(--warn); }
 .res-models__filter { max-width: 220px; }
-.res-models[data-compact] .res-models__grid { max-height: 180px; overflow-y: auto; }
+.res-models[data-compact] .res-models__grid,
+.res-models[data-compact] [data-group="universal"] .res-models__list { max-height: 180px; overflow-y: auto; }
 .res-run { display: flex; flex-direction: column; gap: var(--s3); max-height: min(70vh, 560px); overflow-y: auto; }
 .res-run__foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--s2); }
 .res-run__foot .ui-input { flex: 1; min-width: 0; }

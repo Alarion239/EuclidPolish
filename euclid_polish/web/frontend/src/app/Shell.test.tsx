@@ -404,17 +404,17 @@ describe("Shell", () => {
       await screen.findByText("models:images");
       const strip = screen.getByRole("navigation", { name: "Models tabs" });
       const shown = () => within(strip).getAllByRole("link").map((a) => a.textContent);
-      // Leaderboard 116 + Members 84 = 200, + the widest later tab (Diagnostics 116) fits
-      // 420 − More (60); Images (76) is active and takes the reserved slot
-      await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Members", "Images"]));
+      // Leaderboard 116 + Universal 100 = 216, + the widest later tab (Diagnostics 116) fits
+      // 420 − More (60); Members (84) does not; Images (76) is active and takes the reserved slot
+      await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Universal", "Images"]));
       expect(within(strip).getByRole("link", { name: "Images" }).getAttribute("aria-current")).toBe("page");
       const more = screen.getByRole("button", { name: /^More tabs: / });
       expect(strip.contains(more)).toBe(true);                   // inside the tabs landmark
-      expect(more.getAttribute("aria-label")).toBe("More tabs: Train, Combiner, Diagnostics");
+      expect(more.getAttribute("aria-label")).toBe("More tabs: Members, Train, Combiner, Diagnostics");
       fireEvent.pointerDown(more, { button: 0, ctrlKey: false, pointerType: "mouse" });
       const menu = await screen.findByRole("menu");
       expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent))
-        .toEqual(["Train", "Combiner", "Diagnostics"]);
+        .toEqual(["Members", "Train", "Combiner", "Diagnostics"]);
       // items are router links: a middle- or ⌘-click opens a new browser tab
       const train = within(menu).getByRole("menuitem", { name: "Train" });
       expect(train.tagName).toBe("A");
@@ -423,7 +423,7 @@ describe("Shell", () => {
       await screen.findByText("models:train");
       expect(router.state.location.pathname).toBe("/models/train");
       // the new active tab takes the reserved slot; the leading tabs never move
-      await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Members", "Train"]));
+      await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Universal", "Train"]));
       // no label is ever cut: every visible tab is a whole label
       for (const a of within(strip).getAllByRole("link")) expect(a.textContent?.length).toBeGreaterThan(2);
     } finally {

@@ -180,7 +180,9 @@ Job dict:
   (contract C9), `system-disk-usage` (`routes/system.py`), `nexus-inference`
   (`routes/jwst_euclid.py`), `figure-nexus-plates` (`routes/figures.py`), `ensemble-band-evals` (`routes/ensemble.py`), `sky-sync`,
   `sky-generate-sr`, `psf-sync`, `tng-properties`, `tng-result` (the Synthetic and Models record routes),
-  `storage-purge-stale` ("Storage: delete stale cubes", `helpers/stale_purge.py`).
+  `storage-purge-stale` ("Storage: delete stale cubes", `helpers/stale_purge.py`),
+  `universal-score`, `universal-pull` (the universal models, `routes/ensemble.py`;
+  one at a time each).
 - **Stale-cube purge.** Archiving or pulling members, the FASRC ensemble mirror
   and a records sync request a purge (`<vis>/ensemble/stale_purge_pending.json`);
   when no job runs, a registry finish hook starts one `storage-purge-stale` job.
@@ -418,12 +420,25 @@ a local job): **nothing is FASRC-gated**.
   ("N member(s) joined after this fit; refit to consider them") and
   `details.joined_after_fit`; unavailable otherwise, no silent fallback),
   `mean` (all active STARFULL members), `member:member_<N>` (each active
-  member; aliases `member:170`, `member:170·psnr`), `gate:<variant>` (every
+  member; aliases `member:170`, `member:170·psnr`; an active member whose
+  recipe is universal — 195/196 — keeps this spec and carries
+  `details.universal: true` with the universal details below), `gate:<variant>` (every
   `spatial_gate_<variant>/` beside the production artifact, applied with
   **its own** member labels via `eval.spatial_gate.load_spatial_gate`;
   unavailable, with `reason`, unless every member it reads is an active
   STARFULL member), `rbf` (the RBF combiner, own labels, all of them
-  needed). Members always run through `EnsembleModel` by label — exactly the
+  needed), `universal:member_<N>` (kind `universal`: each REGISTERED
+  universal model — a single-image multi-knee model pulled as a standalone
+  model, never an ensemble member (registry key `universal`); aliases
+  `universal:211`, `universal:211·psnr`, `universal:member_211`; listed after
+  the gate variants; available while it has a checkpoint and an `origin.json`
+  with a STARFULL recipe (otherwise unavailable, with `reason`: not pulled
+  yet, knees unknown, or starless); it runs alone, as
+  an ensemble of one (`EnsembleModel(labels=[…], include_universal=True)`);
+  `details{universal: true, class: "universal"|"member", num_res_blocks,
+  steps, target_steps, batch_size, crops_per_field, knee: "learned"|"fixed",
+  output_knee, jit_compile, mixed_precision, train_hours}` from
+  `origin.json` and `training_log.csv` only). Members always run through `EnsembleModel` by label — exactly the
   members a job needs (`EnsembleModel(labels=…)`), never a registry prefix. A
   spec's `fingerprint` hashes the checkpoint fingerprints of the members it
   READS (a pruned gate: archiving or retraining a member it ignores leaves
@@ -519,7 +534,7 @@ a local job): **nothing is FASRC-gated**.
 |---|---|---|---|
 | GET, POST | `/api/experiments` |  | GET: `{experiments:[{id, label, created, finished, status, job_id, tiles, models, skipped, summary, errors, counts}]}` newest first. POST: start an experiment (local job `real-experiment`): `tiles` = comma list of `source/id`, `models` = comma list of specs, `label?`. `{ok, job_id, experiment_id, tiles, models (runnable), skipped:{spec: reason}}`. 400 bad/unknown spec (`unknown model spec 'gate:x'`) or no runnable model; 404 unknown tile; 409 tile without four-band LR; **507** `{ok:false, code:"insufficient_storage", needed_bytes, free_bytes}` when the new outputs (`(4, 2H, 2W)` float32 per (tile, spec) not yet in the store) would leave < 5 GiB free. Job result: `{experiment_id, status, tiles, models, errors, counts}`. |
 | GET | `/api/experiments/<experiment_id>` |  | The experiment record (above); 404 unknown. |
-| GET | `/api/models` |  | `{regime:"starfull", production_kind, members:[labels], models:[{spec, kind, label, slug, members, member_names, reads, n_members, n_fitted, available, reason, note (soft remark, e.g. members joined after the fit)|null, fingerprint, member_fingerprints, combiner_kind, combiner_fingerprint, details{mix_space, use_lr, width, active_members, fitted_at, artifact_dir, loss, loss_knees_e, steps, complete, used_threshold, …}}]}` — order: production, mean, rbf, members, gate variants. `members` = the members the spec was built for (its staleness key), `reads` = the members it actually runs; `n_members` = `len(reads)` (a pruned gate: 6 of the 20 it was fitted with), `n_fitted` = `len(members)`. |
+| GET | `/api/models` |  | `{regime:"starfull", production_kind, members:[labels], models:[{spec, kind, label, slug, members, member_names, reads, n_members, n_fitted, available, reason, note (soft remark, e.g. members joined after the fit)|null, fingerprint, member_fingerprints, combiner_kind, combiner_fingerprint, details{mix_space, use_lr, width, active_members, fitted_at, artifact_dir, loss, loss_knees_e, steps, complete, used_threshold, …}}]}` — order: production, mean, rbf, members, gate variants, universal models (`universal:member_<N>`, kind `universal`; `details` as in the Model specs bullet). `members` = the members the spec was built for (its staleness key), `reads` = the members it actually runs; `n_members` = `len(reads)` (a pruned gate: 6 of the 20 it was fitted with), `n_fitted` = `len(members)`. |
 | GET | `/api/real/<source>` |  | `{source, label, description, count, tiles:[tile entry + models:{spec:{state, legacy, label, fingerprint, created, experiment_id, file, origin, summary, flux_ratio?{band: ΣSR/ΣLR}}} + production_state]}` (models = the tile's merged outputs; `flux_ratio` only on a scored output, so Sky › Targets plots and sorts the flux ratio without opening every card). 404 unknown source. |
 | GET | `/api/real/<source>/<identifier>` |  | Card: tile entry + `models:{spec:{state, legacy, label, kind, fingerprint, created, experiment_id, file, member_labels, combiner_kind, lr_sha, shape, origin, metrics{per_band, summary, gate_core_weights?}, image_url}}` (store + legacy outputs), `production_state`, `legacy` (= `extras.legacy_sr`: the pre-C9 production-pipeline SR record or `null`), `runnable_models`, `experiments:[ids]`, `disk{tile_bytes, output_bytes, cache_bytes (member-SR cache), legacy_bytes (NEXUS / pair legacy SR files), total_bytes}`, `q1_tile` (the containing Q1 tile), `image_urls{tier: url}` (one per `m:<spec>` with an output), `files{lr?, sr?, "m:<spec>"?: project-relative FITS path}` (what the card's "Open in Files" opens — `/files?fits=<path>`; only files inside the inspectable roots; `sr` is a catalogue object's own evaluation SR), `viewer{collection:"real", params{source}, id}`. |
 | POST | `/api/real/<source>/<identifier>/delete-outputs` |  | Delete the tile's cached model outputs and member-SR cache (never the LR itself): `{ok, ref, removed:[paths], removed_count, cache_bytes_freed}`. |
@@ -712,7 +727,7 @@ progress comes from its `.events` stream, `/api/fasrc/jobs/<jobid>/status`).
 | GET | `/api/fasrc/git-status` | fasrc | The FASRC checkout after a `git fetch`: `{repo, branch, ahead, behind (vs its upstream), head (full hash), local_head (this laptop's HEAD), relation {relation: same\|remote_behind\|remote_ahead\|diverged\|unknown, ahead, behind} (FASRC HEAD vs local HEAD; unknown when the local repo lacks that commit), dirty, dirty_files (≤ 50 porcelain lines), last{hash,subject,relative}}`. |
 | GET | `/api/fasrc/jobs/<jobid>/status` |  | Structured status from one job's `.events` stream; an empty status offline (never gated). |
 | GET | `/api/fasrc/mirror/status` |  | The last checkpoint pull `{last_run_at, last_rc, last_error, last_stdout, remote_dir, local_dir, job_id}` (`job_id` of a pull running now, else null). Manual only: there is no periodic mirror. Local. |
-| POST | `/api/fasrc/mirror/trigger` | fasrc | Pull the remote ensemble checkpoints into the local mirror as a local job (`kind="fasrc-mirror"`): `{ok, job_id}` (a running pull's id with `already_running`). `rsync --delete-after` removes local files the FASRC copy lacks, so `confirm=1` is required (else 400 `code:"confirm_required"`). |
+| POST | `/api/fasrc/mirror/trigger` | fasrc | Pull the remote ensemble checkpoints into the local mirror as a local job (`kind="fasrc-mirror"`): `{ok, job_id}` (a running pull's id with `already_running`). `rsync --delete-after` removes local files the FASRC copy lacks, so `confirm=1` is required (else 400 `code:"confirm_required"`). Universal models the job log created on FASRC (forks of universal models included) that are neither active, registered universal, archived nor read by a local gate or cube manifest are excluded (`--exclude`), so the registry bootstrap never makes them ensemble members. |
 | GET | `/api/fasrc/queue` | fasrc | The user's live `squeue` rows. |
 | POST | `/api/fasrc/queue/clear` |  | Clear the local submission queue. |
 | POST | `/api/fasrc/queue/remove` |  | Remove one queued submission (`id`): `{ok, queue}`. |
@@ -945,8 +960,9 @@ The Models workspace (`/models/<tab>`, starfull only since 064fa13; was `/models
 takes `mode` = `starfull` (default) | `starless` (query or form). Errors under
 `/ensemble/` are JSON `{error}` (`errors.json_errors_for`); the new endpoints
 answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
-`/ensemble/pull` (FASRC). Local jobs return `{job_id}` (C2); kinds
-`ensemble-compare`, `gate-fit`, `gate-promote`, `member-restore`.
+`/ensemble/pull` and `/ensemble/universal/pull` (FASRC). Local jobs return `{job_id}` (C2); kinds
+`ensemble-compare`, `gate-fit`, `gate-promote`, `member-restore`,
+`universal-score`, `universal-pull`.
 
 - **Eval summary** (`<vis>/ensemble/<regime>/eval_summary.json`, both the
   full evaluation and the rebuild from cached cubes): every headline number is
@@ -1013,12 +1029,113 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
   source_pixels}}, knee{knees, n_fields, methods{method: {psnr[knee][band],
   integrated[band]}}} (natural fields; same grid as knee-psnr.json),
   timing_s, members_needed, member_inference_s_per_field, blackout_seed,
-  gates_requested}`. A variant fitted for a subset of the cube members is
-  applied to exactly its members.
+  gates_requested, identity{records_fp, subset, indices (sorted),
+  target_psf_fwhm_arcsec} (the test cube manifest's: the fields, records and
+  target scored), member_fps{label: checkpoint fingerprint the scored member
+  cubes were made with}}` (`identity`/`member_fps` absent from reports
+  written before 2026-10-13). A variant fitted for a subset of the cube
+  members is applied to exactly its members.
+- **Universal models** (`helpers/universal_models.py`; Models › Universal). A
+  universal model is a single-image multi-knee member (`origin.json`:
+  non-empty `asinh_knees` and a fixed `output_knee` or a `learned_output_knee`;
+  `ensemble_registry.is_universal_origin`): class `member` = an active
+  STARFULL member (195/196, it stays in the ensemble), class `universal` = a
+  model registered under the registry's `universal` key (pulled by
+  `/ensemble/universal/pull`, never in the mean, the gates, Evaluate or any
+  cache keyed on the active members). The job log's recipe of a member is
+  its add/fork job's run-wide params overridden by its `member_spec` entry;
+  a FORK inherits its source's `asinh_knees`, output knee and depth (from
+  the source's local `origin.json`, else the source's own ledger recipe,
+  through chains of forks), so a fork of a universal model is universal.
+  A name read by a local gate (`<regime>/spatial_gate_*/combiner.json`
+  `member_labels`, backups included) or held by a cube manifest
+  (`<regime>/cubes*/viz_index.json`) was an ensemble member and is never
+  treated as a FASRC-only universal model (not in `fasrc`, not excluded from
+  the ensemble pull or the mirror, refused by the universal pull).
+  **Training time** of a model = Σ
+  `duration_s` over every non-baseline row of its `training_log.csv`
+  (rolled-back windows included, never deduplicated), in hours; an archived
+  member's comes from its tracking zip. **Combiner training time** = Σ over
+  the members a gate READS of hours × weight: `max` = the member's PEAK share
+  (`eval/gate_members.member_peak_weights`: max over bands of the all-pixel,
+  source-pixel and brightness-bin mean weights; the headline), `mean` = mean
+  over bands of its all-pixel share, `sum` = unweighted. The production
+  gate's shares come from `spatial_gate_combiner_evals.json` (when its
+  `artifact_fp` is the gate on disk); a variant's from
+  `<regime>/<variant dir>_evals.json` `{artifact_fp, member_labels,
+  computed_at, gate_diagnostics}`, measured by the score job from the
+  validate cubes (unavailable, with the reason, when the cubes lack a member
+  it reads; listed in the payload's `weights_pending` while missing but
+  measurable). **Scores** = the Leaderboard's knee-integrated PSNR (`hr_test`
+  blurred to the target PSF, `stretched_truth`, `knee_psnr`, field-mean curve
+  integrated over log knee) on its test fields (the knee payload's `indices`
+  when it exists for `test`, else the first 100), stored in
+  `<vis>/ensemble/starfull/universal/`: `<member_NNN>.npz` `{fields int[F],
+  knees float[21], curves float[F,21,4]}` + `index.json` `{schema: 1,
+  identity{records_fp, subset: "test", indices, target_psf_fwhm_arcsec,
+  knees}, models{member_NNN: {fingerprint (member checkpoint), integrated[4],
+  mean, n_fields, scored_at, seconds, learned_knees[4]|null (per band, read
+  from the checkpoint at scoring), served_step, scored_hours|null,
+  scored_steps|null (its training hours and furthest logged step when it
+  was scored; absent from entries scored before 2026-10-13)}}}` — never a
+  cube bucket. A
+  score is `stale` when the model's checkpoint fingerprint or the identity
+  changed (test records that are not local cannot invalidate it).
+  `GET /ensemble/universal.json` = `{available (any universal model known,
+  local or on FASRC), knees[21], bands, integration{from_e, to_e},
+  identity (the store's)|null, production{integrated[4], mean,
+  stale}|null, mean_model{…}|null (the knee payload's production gate and
+  plain mean, with its `stale` flag), comparable (they were scored on the
+  same fields, records and target as the universal scores),
+  models[UniversalRow], combiners[CombinerRow],
+  fasrc[FasrcRow], weights_pending[combiner ids] (gates whose shares are
+  missing but measurable now from the validate cubes — the score job
+  measures them first), notes[]}`. UniversalRow = `{name, label, spec
+  ("universal:member_211" | "member:member_196"), class, num_res_blocks,
+  steps (last logged), served_step|null (the scored checkpoint's step),
+  scored_hours|null, scored_steps|null (train hours / steps when the score
+  was made; null for legacy entries), target_steps, status
+  (complete|timeout|running|unknown), batch_size, crops_per_field, knee:
+  "learned"|"fixed", output_knee|null, learned_knees|null, jit_compile,
+  mixed_precision, bootstrap, seed, train_hours|null, train_rows,
+  hardware{partition ("gpu", "gpu_test", "mixed", …)|null, label ("A100",
+  "A100 MIG slice", "mixed")|null, jobs[]}, fingerprint|null,
+  score{integrated[4], mean, n_fields, stale, scored_at}|null,
+  vs_production_db|null (score mean − production mean, when both were scored
+  on the same fields and records), created_at, commit}`
+  (`served_step`, `scored_hours`, `scored_steps` are kept for a stale score,
+  so it can be placed where it was made; `learned_knees` only while the
+  score is for the current checkpoint). CombinerRow (production first, then every variant; promotion
+  backups left out) = `{id ("production" | "gate:<x>"), name (dir), label,
+  spec, production, reads, n_reads, integrated[4]|null, mean|null,
+  score_source: "knee-psnr" (production, the knee payload) | "compare" (the
+  newest saved compare report that scored it) | null, stale (knee payload
+  stale; a compare report older than the gate's fit or promotion, a read
+  member no longer active, or a read member whose current checkpoint
+  fingerprint differs from the report's `member_fps` — a legacy report
+  without them: a read member's checkpoint index is newer than the report),
+  comparable (its score is on the universal scores' fields, records and
+  target: production = the payload's `comparable`; a compare score = the
+  report's `identity` matches the scores identity; a legacy report without
+  one, or no score → false), weights_source: "production"|"variant"|null,
+  weights_reason|null, members[{label, name, hours|null, max_weight|null,
+  mean_weight|null}], hours{max, mean, sum} (over the read members with
+  known hours; `max`/`mean` null without shares), missing_hours[labels],
+  fit_hours|null (`fit_meta.fit_seconds`)}`. FasrcRow (universal models the
+  job log's add/fork jobs created that are not here: neither active,
+  archived, read by a local gate / cube manifest, nor a registered universal
+  model WITH a local checkpoint) = `{name, jobids[] (newest first), state,
+  num_res_blocks, steps (the add budget, raised to a continue job's absolute
+  target), knee, submitted_at, ended_at, partition, finished (the newest job
+  reached a final state), pullable (the newest job ended COMPLETED or
+  TIMEOUT: a checkpoint to pull), registered (a registered universal model
+  with no local checkpoint — a failed pull or a dir the mirror removed —
+  listed so it can be pulled again)}`. Training hours are wall hours on the hardware used (MIG
+  slices are not A100-equivalent).
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| POST | `/ensemble/archive-member` |  | Retire one member (`member`: any member spelling): zip → tracking campaign, registry tombstone, member dir deleted, cube cache purged. The name is validated and must be ACTIVE before the job starts (400 `{ok:false, error}`); `{ok, job_id}`. |
+| POST | `/ensemble/archive-member` |  | Retire one member (`member`: any member spelling): zip → tracking campaign, registry tombstone, member dir deleted, cube cache purged. A registered universal model archives the same way (zip `universal-member-NNN.zip`, tombstone `class: "universal"`, so a restore brings it back as a universal model; no evaluation goes stale). The name is validated and must be ACTIVE or a registered universal model before the job starts (400 `{ok:false, error}`); `{ok, job_id}`; job result `{zip, member, class: "member"\|"universal", remote, stale_regime (null for a universal model)}`. |
 | GET | `/ensemble/combiners.json` |  | Variant registry: `{regime, production (dir), active_members, cube_members, variants:[variant row], compare:{id, created, methods, n_fields}\|null, reports:[{id, created, methods, n_fields, gates_requested}]}`. |
 | POST | `/ensemble/combiners/compare` |  | Compare job: `gates` (comma list of `spatial_gate_*` dirs or `gate:<x>`; default every variant that applies to the test cubes, backups excluded), `blackout_fields` (0–400, default 40), `seed`, `knee` (default 1). The legacy RBF is never scored (`include_rbf` is ignored). Writes `spatial_gate_comparisons/<id>.json` + the latest `spatial_gate_comparison.json`. Job result `{report_id, methods, n_fields}`. |
 | GET | `/ensemble/combiners/compare.json` |  | One compare report (`?report=<id>`, default the latest); 404 before any compare. |
@@ -1029,17 +1146,20 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
 | POST | `/ensemble/evaluate` |  | Evaluate the ensemble on local test records (local job; `num_images`, `mode`, `force=1` re-infers even when an identical evaluation is cached, `target_psf_fwhm_arcsec`). Archives queued since the last evaluation are applied first from the cached cubes: the production spatial gate is left byte-identical while every member it reads stays active (archiving a member it does not read keeps its fingerprint, so its outputs stay current), and is moved to `spatial_gate_backup_<UTC stamp>` (promotable again once the member is restored) when a member it reads was archived. The spatial gate is applied and scored on the test cubes by label (members that joined after its fit are skipped); the RBF needs exactly the active members. |
 | POST | `/ensemble/knee-psnr` |  | Compute PSNR-vs-knee curves (local job; `mode`). |
 | GET | `/ensemble/knee-psnr.json` |  | PSNR-vs-knee curves + integrated PSNR for every model of a regime (``?mode=``), flagged ``stale`` when the cubes or combiners changed. |
-| GET | `/ensemble/member/<name>.json` |  | One member (`member_196`, `196`, `196·psnr`): `{name, label, active, archived (tombstone row)\|null, regime, row (member row)\|null, curves{psnr, band_psnr, loss_series, train_loss, gnorm, gnorm_max, step_time}\|null, knee{knees, bands, stale, models:[this member, the mean, the combiners]}\|null, gate{stale, bands, brightness_names, usage, usage_source, by_brightness, uniform}\|null}`. 400 bad name, 404 unknown. |
+| GET | `/ensemble/member/<name>.json` |  | One member (`member_196`, `196`, `196·psnr`): `{name, label, active, archived (tombstone row, with its `class`)\|null, class ("member" \| "universal": a registered universal model, or an archived one — its tombstone's class), universal (true for a registered universal model only), comparable (a registered universal model: its score is on the knee payload's fields, records and target; null otherwise), regime, row (member row)\|null, curves{psnr, band_psnr, loss_series, train_loss, gnorm, gnorm_max, step_time}\|null, knee{knees, bands, stale, models:[this member, the mean, the combiners]}\|null, gate{stale, bands, brightness_names, usage, usage_source, by_brightness, uniform}\|null}`. A registered universal model: `row` = the member row with `class: "universal"`, no gate fields (null), `psnr_rank`/`knee_rank` null, `knee_integrated` from the universal scores store + `score_stale` (true when its checkpoint or the score identity changed since); `knee` = its store curve (`kind: "member"`, the inspector's own-curve rule), beside the knee payload's mean and production gate only when `comparable`; `gate` null; `row` null while it is registered but not on disk. 400 bad name, 404 unknown. |
 | POST | `/ensemble/member-psnr` |  | Refresh the members table's test PSNRs (asinh space). |
-| GET | `/ensemble/members.json` |  | Members tab: `{regime, members:[member row] (active, this regime), other_regime_members, archived:[{name, archived_at, zip, commit, zip_found, zip_path, campaign, size_bytes}] newest first, knee{available, stale, n_fields}, gate{available, stale, n_members}, psnr_fields, vis_psnr{metric, knee_e, n_scored}\|null, eval_subset}`. Two per-member test PSNRs, never mixed: row `psnr` (+`psnr_rank`) = the member-PSNR cache, joint 4-band asinh `psnr_stretched` over `psnr_fields` test fields; row `vis_psnr` = the last evaluation's headline metric (VIS asinh, `eval_summary.per_member_vis_psnr`, or `per_member_psnr_stretched` of a cube-recomputed summary), the Overview "Best member" number. |
+| GET | `/ensemble/members.json` |  | Members tab: `{regime, members:[member row] (active, this regime), other_regime_members, universal:[registered universal model names] (standalone, no row here), archived:[{name, archived_at, zip, commit, class ("member" \| "universal": the class it left; absent on tombstones written before 2026-10-13 = member), zip_found, zip_path, campaign, size_bytes}] newest first, knee{available, stale, n_fields}, gate{available, stale, n_members}, psnr_fields, vis_psnr{metric, knee_e, n_scored}\|null, eval_subset}`. Two per-member test PSNRs, never mixed: row `psnr` (+`psnr_rank`) = the member-PSNR cache, joint 4-band asinh `psnr_stretched` over `psnr_fields` test fields; row `vis_psnr` = the last evaluation's headline metric (VIS asinh, `eval_summary.per_member_vis_psnr`, or `per_member_psnr_stretched` of a cube-recomputed summary), the Overview "Best member" number. |
 | GET | `/ensemble/overview.json` |  | Models › Leaderboard's status and verdict lines: `{regime, active_members, n_members, records_dir, eval_subset, test_present, evaluated_at, summary (eval_summary.json)\|null, headline{metric, knee_e, n_scored, production{psnr, vs_mean_db, vs_best_member_db}, mean{psnr, vs_mean_member_db}, best_member{psnr, label, mean_member_psnr}, knee{available, stale, n_fields, integration, production, production_bands, mean, best_member, best_member_label}}, checks:[{id, ok, tone, title, detail, action}] (eval vs members / records / production gate, gate vs members, knee, pending archives), production_gate{available, n_members, mix_space, fitted_at, promoted_from}}`. |
 | GET | `/ensemble/pixel-trace.json` |  | Back-trace a diagnostic heatmap cell to real image stamps (`?mode=`, `diag` = `std_err` or `bright_std`, `model`, `i`, `j`, `band` = VIS (default) or Y_E/J_E/H_E: that band's back-tracing sidecar and per-pixel numbers; any other `diag` is 404, another band 400). |
-| POST | `/ensemble/pull` | fasrc | Download changed members from FASRC (local job): `members` (comma list) limits it to those; `dry_run=1` only probes — job result `{dry_run, changed, tombstoned_skipped}`; else `{local, n_members, changed, up_to_date, requested, psnr}`. |
-| POST | `/ensemble/restore-member` |  | Restore an archived member (`member`) from its tracking zip (searched in the active and every archived campaign; zip-slip refused): unzip into the ensemble dir, tombstone → active. Job result `{member, zip, regime}`. |
+| POST | `/ensemble/pull` | fasrc | Download changed members from FASRC (local job): `members` (comma list) limits it to those; `dry_run=1` only probes — job result `{dry_run, changed, tombstoned_skipped, universal_skipped}`; else `{local, n_members, changed, up_to_date, requested, universal_skipped, psnr}`. Universal models the job log created on FASRC (forks of universal models included) that are neither active, registered universal, archived nor read by a local gate or cube manifest are excluded from the rsync and listed in `universal_skipped` — pull them with `/ensemble/universal/pull`: without `members` (and in the dry run) all of them; with `members` the named ones, unless `allow_universal=1` (then they are pulled and the registry bootstrap makes them ensemble members). A `members` list of only such names is a 400 before spawning ("pull it on Models › Universal"); the job refuses one too. A registered universal model refreshes in place and stays standalone. |
+| POST | `/ensemble/restore-member` |  | Restore an archived member (`member`) from its tracking zip (searched in the active and every archived campaign; zip-slip refused): unzip into the ensemble dir, tombstone → the class it left (`active`, or `universal` for a tombstone of class `universal`). Job result `{member, zip, regime}`. |
 | GET | `/ensemble/status.json` |  | Members table + summary payload; `?mode=` picks the regime's eval summary + staleness (default `starfull`). Home reads it; the workspace uses `members.json`. |
 | POST | `/ensemble/train/preview` |  | What an `ensemble_train` submit with this form would run, without FASRC: `{ok, mode, member_names (allocated from the local registry, tombstones never reused), count, array{tasks, max_parallel}\|null, command[argv], command_text, base_seed (null = drawn at submit), star_prior, params}`; 400 `{ok:false, error}` for a form the submit would refuse. The Train tab never sends `starless` (Models is starfull only; cloning a legacy starless job trains starfull); a posted run-wide `starless=1` still reaches the command as `--starless 1` (a fork keeps its source's regime, continue each member's recorded one). |
-| GET | `/ensemble/training-curves.json` |  | `{members:[{name, label, starless, psnr, band_psnr{VIS,Y_E,J_E,H_E}, loss_series, loss (= loss_series, deprecated), train_loss, gnorm, gnorm_max, step_time (s / 1000 steps), loss_norm, blocks, asinh_knee, asinh_knees, output_knee, learned_output_knee, knee_loss, target_steps, test_psnr}]}` — `[[step, value]…]` series (rollback-deduped): the registry-active members, then the members of `ensemble_train` jobs from the last 3 days that are neither pulled nor archived, read live from their jobs' Reporter `metric` events on FASRC (extra keys `remote: true, jobid, last_step, finished`; cached 20 s; left out offline). |
+| GET | `/ensemble/training-curves.json` |  | `{members:[{name, label, starless, psnr, band_psnr{VIS,Y_E,J_E,H_E}, loss_series, loss (= loss_series, deprecated), train_loss, gnorm, gnorm_max, step_time (s / 1000 steps), loss_norm, blocks, asinh_knee, asinh_knees, output_knee, learned_output_knee, knee_loss, target_steps, test_psnr}]}` — `[[step, value]…]` series (rollback-deduped): the registry-active members, then the members of `ensemble_train` jobs from the last 3 days that are not local (active members and registered universal models count as local) nor archived, read live from their jobs' Reporter `metric` events on FASRC (extra keys `remote: true, jobid, last_step, finished, universal` — `universal: true` when the job log created it as a universal model, forks included; cached 20 s; left out offline). |
 | GET | `/ensemble/training-jobs.json` |  | `{jobs:[{jobid, state, submitted_at, started_at, ended_at, elapsed_seconds, req_time_limit, req_memory, req_cpus, req_gpus, partition, gpu_util_mean, mode, member_names, steps, continue_basis, target_steps, extra_steps, params}]}` — every ensemble_train submission in the local job log, newest first (the Train tab's presets / clone). |
+| GET | `/ensemble/universal.json` |  | Models › Universal: the universal models payload (see **Universal models** above) — `{available, knees, bands, integration, identity, production, mean_model, comparable, models, combiners, fasrc, weights_pending, notes}`. Local files only (registry, `origin.json`, training logs, the job log, the scores store, the knee payload, gate payloads, compare reports): no SSH, no TensorFlow, no file of its own written (the shared registry and knee readers behave as on every Models GET); answers on an empty ensemble. `?mode=starless` answers an empty payload (universal models are STARFULL only). |
+| POST | `/ensemble/universal/pull` | fasrc | Pull universal models from FASRC as standalone models (local job `universal-pull`, one at a time): `members` (comma list, required). 400 for a malformed, active or archived name, or one a local gate or cube manifest reads (an ensemble member whose dir vanished), before spawning. Per name the job refuses the same names, then in ONE ssh call checks that the remote dir holds a checkpoint (`checkpoint` or `*.index`) and reads its `origin.json`: no checkpoint → refused "no checkpoint on FASRC" and nothing registered; no `origin.json`, or a recipe that is not universal → refused. It registers the name (`ensemble_registry.add_universal_entry`) BEFORE the rsync of `<remote ensemble>/<name>/` → `ckpt/ensemble/<name>/`, so the registry never makes it an ensemble member; an rsync that raises or leaves no loadable checkpoint (manifest + the index it names) deletes the partial dir this call created, then removes the registration this call added (`ensemble_registry.remove_universal_entry`; a registration that predates the call stays, so the model is still offered as a FasrcRow with `registered: true`); one name's failure never stops the others. Prunes orphaned checkpoint files; requests a stale-cube purge. `{ok, job_id, already_running}`; job result `{pulled:[names], refused:{name: reason}}`. |
+| POST | `/ensemble/universal/score` |  | Score universal models on the Leaderboard's test fields (local job `universal-score`, TensorFlow, one at a time): `members` (comma list; default every local universal model — active universal members and registered universal models with a checkpoint), `force=1` rescores current entries. Each model loads alone (`EnsembleModel(labels=[label], include_universal=True, starless=False)`); an entry whose checkpoint fingerprint and identity are unchanged is reused; scores made under another identity (fields, records, target) are dropped. The weight diagnostic of every gate variant without a current one (`<variant dir>_evals.json`, validate cubes only) is measured FIRST — also when nothing needs scoring or the test records are not local (POST with no `members` and no `force` = "Measure gate weights"); one gate that fails is reported unavailable, never stops the others. Without local test records the job succeeds when every score is current (scores left as they are) and fails, after the gate weights, when a model needs a score. Each score records `scored_hours`/`scored_steps`. 400 for a name that is not a local universal model with a checkpoint. `{ok, job_id, already_running}`; job result `{scored, reused, failed{name: error}, gates{computed, reused, unavailable{variant: reason}}, identity}`. |
 
 ### Evaluation (`routes/evaluation.py`)
 

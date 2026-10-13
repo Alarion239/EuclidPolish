@@ -10,7 +10,11 @@ as a local job; ``GET /api/fasrc/mirror/status`` reports the last run.
 The mirror syncs the remote *ensemble* dir (sibling of ``cfg.ckpt_dir``) into
 the local ensemble dir. The member registry lives OUTSIDE the ensemble dir
 precisely so this mirror's ``--delete-after`` can't wipe it, and its archived
-tombstones keep a mirrored-back member from re-activating.
+tombstones keep a mirrored-back member from re-activating. Universal models
+the job log created on FASRC that are not registered (as active members or
+universal models) are excluded (``--exclude``), so the registry bootstrap
+never makes them ensemble members; pull them on Models › Universal. A
+registered universal model refreshes in place and stays standalone.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from dataclasses import dataclass
 
 from euclid_polish.ensemble_registry import default_ensemble_dir
 from euclid_polish.web import fasrc_config
+from euclid_polish.web.helpers.ensemble_viz import unregistered_universal_names
 from euclid_polish.web.remote import STATE
 
 
@@ -64,10 +69,13 @@ class Mirror:
         remote = remote_ensemble_dir(cfg).rstrip("/") + "/"
         local  = (cfg.local_ckpt_mirror or default_ensemble_dir()).rstrip("/")
         os.makedirs(local, exist_ok=True)
+        # FASRC-only universal models stay out (an excluded dir is neither
+        # copied nor deleted by --delete-after).
+        excludes = [f"--exclude=/{name}/" for name in unregistered_universal_names(local)]
         try:
             rc, out, err = STATE.ssh.rsync_pull(
                 remote, local,
-                extra_args=["--delete-after"],
+                extra_args=["--delete-after", *excludes],
                 timeout=600,
             )
         except Exception as e:

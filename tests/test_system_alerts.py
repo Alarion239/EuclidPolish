@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from euclid_polish.web.helpers import ensemble_viz as ev
 from euclid_polish.web.helpers import system_alerts as sa
 
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC).timestamp()
@@ -145,6 +146,82 @@ def test_members_finished_on_fasrc_and_not_pulled():
     m = stages(jobs=jobs)["members"]
     assert (m["state"], m["reason"], m["to"]) == ("stale", "4 new on FASRC", "/models/members")
     assert m["detail"].startswith("members 171, 199–201 finished on FASRC")
+
+
+UNIVERSAL_SPEC = json.dumps([{"asinh_knees": [0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0],
+                               "output_knee": 10, "learn_output_knee": True}])
+
+
+def _job(jobid, name, **params):
+    return {"jobid": jobid, "state": "COMPLETED", "mode": "add", "ended_at": iso(1),
+            "member_names": [name], "params": params}
+
+
+def test_universal_models_on_fasrc_never_make_the_members_stage_stale():
+    """Universal models are not ensemble members (review fix §9): a registered
+    one counts as local, a FASRC-only one is mentioned for Models › Universal —
+    never "Pull from FASRC… on Models › Members"."""
+    members = {**MEMBERS, "universal": ["member_216"]}
+    jobs = [_job("1", "member_216", member_spec=UNIVERSAL_SPEC),       # pulled, registered
+            _job("2", "member_217", member_spec=UNIVERSAL_SPEC),       # FASRC-only
+            _job("3", "member_218", asinh_knees="0.1,1,10", output_knee="10")]   # run-wide recipe
+    m = stages(members=members, jobs=jobs)["members"]
+    assert (m["state"], m["reason"], m["to"]) == ("current", "30 active", "/models/members")
+    assert m["detail"] == "2 universal models on FASRC → Models › Universal (members 217, 218)."
+    assert sa.waiting_on_fasrc(jobs, members, NOW) == []
+    assert sa.universal_on_fasrc(jobs, members, NOW) == ["member_217", "member_218"]
+    # a new ensemble member still makes it stale; the universal ones ride along in the detail
+    mixed = stages(members=members, jobs=[*jobs, _job("4", "member_219")])["members"]
+    assert (mixed["state"], mixed["reason"]) == ("stale", "1 new on FASRC")
+    assert mixed["detail"] == ("member 219 finished on FASRC and are not pulled: Pull from FASRC… on "
+                               "Models › Members. 2 universal models on FASRC → Models › Universal "
+                               "(members 217, 218).")
+    # a registered universal model counts as local under any spelling
+    local = {**MEMBERS, "universal": ["member_216", "217·psnr", "218"]}
+    assert stages(members=local, jobs=jobs)["members"]["detail"] is None
+    one = stages(members={**MEMBERS, "universal": ["member_216", "member_218"]}, jobs=jobs)["members"]
+    assert one["detail"] == "1 universal model on FASRC → Models › Universal (member 217)."
+
+
+def test_forks_of_universal_models_stay_out_of_the_members_stage(tmp_path, monkeypatch):
+    """A fork inherits its source's knees: a fork of a FASRC-only universal
+    model (its ledger recipe) or of an active universal member (its local
+    origin.json) is a universal model too, never a member to pull."""
+    monkeypatch.setattr(ev, "ensemble_dir", lambda: str(tmp_path))
+    (tmp_path / "member_170").mkdir()
+    (tmp_path / "member_170" / "origin.json").write_text(json.dumps(
+        {"asinh_knees": [0.1, 1.0, 10.0], "output_knee": 10.0, "num_res_blocks": 32}))
+    jobs = [{**_job("3", "member_301", fork_from="member_170"), "mode": "fork"},
+            {**_job("2", "member_300", fork_from="member_211"), "mode": "fork"},
+            _job("1", "member_211", member_spec=UNIVERSAL_SPEC)]
+    m = stages(jobs=jobs)["members"]
+    assert (m["state"], m["reason"]) == ("current", "30 active")
+    assert m["detail"] == "3 universal models on FASRC → Models › Universal (members 211, 300, 301)."
+
+
+def test_the_members_stage_classifies_with_the_ledger_rule(monkeypatch):
+    """The Home loop reads ``ensemble_viz.ledger_universal_names`` (forks of a
+    universal model resolve through their source there), not its own guess."""
+    seen = []
+
+    def ledger(jobs):
+        seen.append([j["jobid"] for j in jobs])
+        return {"member_300"}
+
+    monkeypatch.setattr(sa, "ledger_universal_names", ledger)
+    jobs = [{**_job("9", "member_300", fork_from="member_211"), "mode": "fork"},
+            _job("8", "member_211", member_spec=UNIVERSAL_SPEC)]
+    m = stages(jobs=jobs)["members"]
+    assert seen and seen[0] == ["9", "8"]
+    assert (m["state"], m["reason"]) == ("stale", "1 new on FASRC")       # 211: the stub says member
+    assert m["detail"].startswith("member 211 finished on FASRC")
+    assert m["detail"].endswith("1 universal model on FASRC → Models › Universal (member 300).")
+
+    def broken(jobs):
+        raise OSError("origin.json unreadable")
+
+    monkeypatch.setattr(sa, "ledger_universal_names", broken)
+    assert stages(jobs=jobs)["members"]["state"] == "stale"      # still a verdict, never a crash
 
 
 def test_evaluation_gate_and_real_sr_from_their_checks():

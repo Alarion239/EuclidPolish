@@ -2,24 +2,39 @@
 
 A **model spec** names one way of turning a real LR tile into an SR image:
 
-==================  ==========================================================
-``production``      the production combiner — the spatial gate
-                    (``ACTIVE_COMBINER_KINDS[0]``); available while every
-                    member it READS is an active STARFULL member with a
-                    checkpoint (members that joined after the fit are a
-                    ``note``), unavailable otherwise (no fallback)
-``mean``            plain mean of every active STARFULL member
-``member:<name>``   one active member, e.g. ``member:member_170``
-``gate:<variant>``  a named spatial-gate variant (``spatial_gate_<variant>/``
-                    beside the production artifact), applied with its OWN
-                    member labels; unavailable (with the reason) unless every
-                    member it reads is an active STARFULL member
-``rbf``             the legacy RBF combiner, with its own member labels
-==================  ==========================================================
+====================  ========================================================
+``production``        the production combiner — the spatial gate
+                      (``ACTIVE_COMBINER_KINDS[0]``); available while every
+                      member it READS is an active STARFULL member with a
+                      checkpoint (members that joined after the fit are a
+                      ``note``), unavailable otherwise (no fallback)
+``mean``              plain mean of every active STARFULL member
+``member:<name>``     one active member, e.g. ``member:member_170``
+``gate:<variant>``    a named spatial-gate variant (``spatial_gate_<variant>/``
+                      beside the production artifact), applied with its OWN
+                      member labels; unavailable (with the reason) unless every
+                      member it reads is an active STARFULL member
+``rbf``               the legacy RBF combiner, with its own member labels
+``universal:<name>``  one registered UNIVERSAL model, e.g.
+                      ``universal:member_211`` — a single-image multi-knee
+                      model pulled to compare on its own (registry class
+                      ``universal``), never an ensemble member: not in the
+                      mean, the gates or ``members``; unavailable (with the
+                      reason) until its checkpoint and ``origin.json`` are on
+                      disk
+====================  ========================================================
+
+Catalogue order: production, mean, rbf, the members, the gate variants, the
+universal models. A universal model or an active member that is one (195/196
+— its kind stays ``member``) carries ``details`` read from its
+``origin.json`` and ``training_log.csv`` (:func:`member_details`; cached by
+file stamp, never a TensorFlow read).
 
 Members are always run through :class:`~euclid_polish.ensemble.EnsembleModel`
 (ensemble-only rule: a single model is an ensemble of one) and addressed by
-their ``NN·psnr`` labels (:class:`EnsembleMemberRunner`).
+their ``NN·psnr`` labels (:class:`EnsembleMemberRunner`); a universal model
+shares the members' label and directory namespace (``<ensemble>/member_NNN``)
+and runs as an ensemble of one (``include_universal=True``).
 
 Every spec has a **fingerprint**: a hash of the checkpoint identities of the
 members it READS (:func:`euclid_polish.ensemble.member_fingerprint`; a pruned
@@ -36,8 +51,10 @@ The **output store** keeps one SR per (real tile, spec) under
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
+import math
 import os
 import re
 import warnings
@@ -70,6 +87,7 @@ SPEC_MEAN = "mean"
 SPEC_RBF = "rbf"
 MEMBER_PREFIX = "member:"
 GATE_PREFIX = "gate:"
+UNIVERSAL_PREFIX = "universal:"
 GATE_DIR_PREFIX = "spatial_gate_"
 PRODUCTION_KIND = ACTIVE_COMBINER_KINDS[0]
 PRODUCTION_ARTIFACT_DIR = COMBINER_MODELS[PRODUCTION_KIND].artifact_dir
@@ -110,29 +128,190 @@ def member_label(name: str) -> str:
     return str(name).removeprefix("member_").split("·")[0] + "·psnr"
 
 
+def universal_labels() -> list[str]:
+    """``NN·psnr`` labels of every REGISTERED universal model, in name order —
+    on disk or not (one still being pulled lists as unavailable). Never
+    ensemble members (:mod:`euclid_polish.ensemble_registry`)."""
+    return [member_label(name)
+            for name in ensemble_registry.universal_names(ensemble_dir())]
+
+
 def member_fingerprints(labels: Iterable[str]) -> dict[str, str | None]:
-    """Checkpoint identity of each member (``None`` without a checkpoint)."""
+    """Checkpoint identity of each member or universal model — both live in
+    ``<ensemble>/member_NNN`` (``None`` without a checkpoint)."""
     base = ensemble_dir()
     return {label: member_fingerprint(os.path.join(base, member_name(label)))
             for label in labels}
 
 
 # ---------------------------------------------------------------------------
+# a model's recipe and training log (cheap reads, cached by file stamp)
+# ---------------------------------------------------------------------------
+
+_BASELINE = frozenset({"1", "1.0", "true", "True"})
+
+
+def _stamp(path: str) -> tuple[int, int] | None:
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return info.st_mtime_ns, info.st_size
+
+
+@lru_cache(maxsize=256)
+def _origin_cached(path: str, stamp: tuple[int, int] | None) -> dict[str, Any] | None:
+    if stamp is None:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _origin(member_dir: str) -> dict[str, Any] | None:
+    """A model's ``origin.json`` (the shared cached dict — never mutate it)."""
+    path = os.path.join(member_dir, "origin.json")
+    return _origin_cached(path, _stamp(path))
+
+
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+@lru_cache(maxsize=256)
+def _training_log_cached(path: str, stamp: tuple[int, int] | None
+                         ) -> tuple[int | None, float | None, int]:
+    if stamp is None:
+        return None, None, 0
+    steps: int | None = None
+    seconds = 0.0
+    rows = 0
+    try:
+        with open(path, newline="", encoding="utf-8", errors="replace") as handle:
+            for row in csv.DictReader(handle):
+                if str(row.get("is_baseline") or "").strip() in _BASELINE:
+                    continue                 # a resume marker: no training in it
+                step = _finite(row.get("step"))
+                if step is None:
+                    continue
+                rows += 1
+                steps = int(step) if steps is None else max(steps, int(step))
+                duration = _finite(row.get("duration_s"))
+                if duration is not None and duration >= 0:
+                    seconds += duration
+    except (OSError, csv.Error):
+        return None, None, 0
+    return steps, (round(seconds / 3600.0, 4) if rows else None), rows
+
+
+def training_log_summary(member_dir: str) -> dict[str, Any]:
+    """``{steps, hours, rows}`` of a model's ``training_log.csv``, over its
+    non-baseline rows: the furthest logged step, Σ ``duration_s`` in hours
+    (rolled-back windows included, never deduplicated; 4 decimals) and how
+    many rows (``None`` / ``None`` / ``0`` without a log or rows). The same
+    definition as ``universal_models.train_time``."""
+    path = os.path.join(member_dir, "training_log.csv")
+    steps, hours, rows = _training_log_cached(path, _stamp(path))
+    return {"steps": steps, "hours": hours, "rows": rows}
+
+
+def _int(value: Any) -> int | None:
+    number = _finite(value)
+    return None if number is None else int(number)
+
+
+def _universal_details(member_dir: str, origin: Mapping[str, Any] | None,
+                       cls: str) -> dict[str, Any]:
+    recipe = origin or {}
+    log = training_log_summary(member_dir)
+    output_knee = _finite(recipe.get("output_knee"))
+    knee = ("learned" if recipe.get("learned_output_knee")
+            else "fixed" if output_knee is not None else None)
+    return {
+        "universal": True, "class": cls,
+        "num_res_blocks": _int(recipe.get("num_res_blocks")),
+        "steps": log["steps"],
+        "target_steps": _int(recipe.get("target_steps")),
+        "batch_size": _int(recipe.get("batch_size")),
+        "crops_per_field": _int(recipe.get("crops_per_field")),
+        "knee": knee,
+        "output_knee": None if knee == "learned" else output_knee,
+        "jit_compile": bool(recipe.get("jit_compile", False)),
+        "mixed_precision": bool(recipe.get("mixed_precision", False)),
+        "train_hours": log["hours"],
+    }
+
+
+def member_details(label: str, cls: str) -> dict[str, Any]:
+    """The ``details`` of a universal model (``cls`` =
+    ``ensemble_registry.UNIVERSAL_CLASS``) or of an active member
+    (``MEMBER_CLASS``): ``{universal, class, num_res_blocks, steps,
+    target_steps, batch_size, crops_per_field, knee: learned|fixed,
+    output_knee, jit_compile, mixed_precision, train_hours}`` from its
+    ``origin.json`` and ``training_log.csv`` (``steps``/``train_hours`` as
+    :func:`training_log_summary`). A member that is not a universal model
+    gets ``{}``. Cheap reads, cached by file stamp — never TensorFlow."""
+    member_dir = os.path.join(ensemble_dir(), member_name(label))
+    origin = _origin(member_dir)
+    if cls != ensemble_registry.UNIVERSAL_CLASS and not ensemble_registry.is_universal_origin(origin):
+        return {}
+    return _universal_details(member_dir, origin, cls)
+
+
+def _universal_reason(label: str, fingerprint: str | None) -> str | None:
+    """Why a registered universal model cannot run now (``None`` when it can)."""
+    if not fingerprint:
+        return "universal model has no checkpoint (not pulled yet)"
+    origin = _origin(os.path.join(ensemble_dir(), member_name(label)))
+    if origin is None:
+        # Without its recipe a multi-knee checkpoint would load single-knee.
+        return "universal model has no origin.json yet (its knees are unknown)"
+    if origin.get("starless"):
+        return "universal model is starless (real tiles run STARFULL models only)"
+    return None
+
+
+def runnable_universal_labels(labels: Iterable[str]) -> list[str]:
+    """``labels`` that are registered universal models able to run now (a
+    checkpoint and a STARFULL recipe on disk), in the order given."""
+    wanted = list(dict.fromkeys(labels))
+    registered = set(universal_labels()) if wanted else set()
+    candidates = [label for label in wanted if label in registered]
+    fps = member_fingerprints(candidates)
+    return [label for label in candidates if _universal_reason(label, fps.get(label)) is None]
+
+
+# ---------------------------------------------------------------------------
 # spec names
 # ---------------------------------------------------------------------------
 
+def _numbered_spec(raw: str, text: str, prefix: str) -> str:
+    """``<prefix>member_<N>`` from any spelling of the member after ``prefix``."""
+    name = text[len(prefix):].strip().removeprefix("member_").split("·")[0]
+    if not _MEMBER_DIGITS.fullmatch(name):
+        kind = prefix.removesuffix(":")
+        raise ValueError(f"bad {kind} spec {raw!r} (use {prefix}member_<N>)")
+    return f"{prefix}member_{name}"
+
+
 def canonical_spec(raw: str) -> str:
     """Normalise a spec string (aliases: ``member:170``, ``member:170·psnr``,
-    ``gate:spatial_gate_26m``); :class:`ValueError` when malformed."""
+    ``universal:211``, ``universal:211·psnr``, ``gate:spatial_gate_26m``);
+    :class:`ValueError` when malformed."""
     text = str(raw or "").strip()
     lower = text.lower()
     if lower in (SPEC_PRODUCTION, SPEC_MEAN, SPEC_RBF):
         return lower
     if lower.startswith(MEMBER_PREFIX):
-        name = text[len(MEMBER_PREFIX):].strip().removeprefix("member_").split("·")[0]
-        if not _MEMBER_DIGITS.fullmatch(name):
-            raise ValueError(f"bad member spec {raw!r} (use member:member_<N>)")
-        return f"{MEMBER_PREFIX}member_{name}"
+        return _numbered_spec(raw, text, MEMBER_PREFIX)
+    if lower.startswith(UNIVERSAL_PREFIX):
+        return _numbered_spec(raw, text, UNIVERSAL_PREFIX)
     if lower.startswith(GATE_PREFIX):
         name = text[len(GATE_PREFIX):].strip().removeprefix(GATE_DIR_PREFIX)
         if name == PRODUCTION_ARTIFACT_DIR.removeprefix(GATE_DIR_PREFIX):
@@ -142,7 +321,7 @@ def canonical_spec(raw: str) -> str:
         return f"{GATE_PREFIX}{name}"
     raise ValueError(
         f"unknown model spec {raw!r}: use production, mean, rbf, "
-        "member:<name> or gate:<variant>")
+        "member:<name>, gate:<variant> or universal:<name>")
 
 
 def parse_specs(raw: str | Iterable[str]) -> list[str]:
@@ -159,8 +338,45 @@ def parse_specs(raw: str | Iterable[str]) -> list[str]:
 
 
 def spec_slug(spec: str) -> str:
-    """Filesystem-safe name of a canonical spec (``gate:26m`` → ``gate-26m``)."""
+    """Filesystem-safe name of a canonical spec (``gate:26m`` → ``gate-26m``,
+    ``universal:member_211`` → ``universal-member_211``)."""
     return canonical_spec(spec).replace(":", "-")
+
+
+_PREFIX_KINDS = ((MEMBER_PREFIX, "member"), (GATE_PREFIX, "gate"),
+                 (UNIVERSAL_PREFIX, "universal"))
+
+
+def spec_kind(spec: str) -> str:
+    """The kind of a canonical spec (``production`` | ``mean`` | ``rbf`` |
+    ``member`` | ``gate`` | ``universal``); an unknown spec is its own kind."""
+    text = str(spec)
+    return next((kind for prefix, kind in _PREFIX_KINDS if text.startswith(prefix)), text)
+
+
+def spec_member_label(spec: str) -> str | None:
+    """The ``NN·psnr`` label a ``member:`` / ``universal:`` spec runs
+    (``None`` for every other spec, a malformed one included)."""
+    try:
+        text = canonical_spec(spec)
+    except ValueError:
+        return None
+    for prefix in (MEMBER_PREFIX, UNIVERSAL_PREFIX):
+        if text.startswith(prefix):
+            return member_label(text[len(prefix):])
+    return None
+
+
+def spec_label(spec: str) -> str:
+    """The catalogue label of a ``member:`` / ``universal:`` spec
+    (``Member 170·psnr``, ``Universal 211``) — also for one no longer in the
+    catalogue; any other spec is its own label."""
+    label = spec_member_label(spec)
+    if label is None:
+        return canonical_spec(spec)
+    if spec_kind(canonical_spec(spec)) == "universal":
+        return f"Universal {label.split('·')[0]}"
+    return f"Member {label}"
 
 
 def array_sha(array: np.ndarray) -> str:
@@ -195,8 +411,8 @@ def spec_fingerprint(kind: str, *, combiner_kind: str | None = None,
     if len(fps) != len(labels) or any(not fp for fp in fps):
         return None
     pairs = [f"{label}={fp}" for label, fp in zip(labels, fps, strict=True)]
-    if kind == "member":
-        return _hash("member", labels[0], fps[0]) if len(labels) == 1 else None
+    if kind in ("member", "universal"):
+        return _hash(kind, labels[0], fps[0]) if len(labels) == 1 else None
     if kind == "mean":
         return _hash("mean", *pairs) if labels else None
     if not combiner_fingerprint or not combiner_kind:
@@ -213,7 +429,7 @@ class ModelSpec:
     """One runnable (or explained-unavailable) model spec."""
 
     spec: str
-    kind: str                       # production | mean | member | gate | rbf
+    kind: str                       # production | mean | member | gate | rbf | universal
     label: str
     member_labels: tuple[str, ...]  # the members it was built for (staleness key)
     reads: tuple[str, ...]          # the members it actually runs
@@ -372,7 +588,8 @@ def _load_combiner(directory: str, labels: Sequence[str], kind: str):
 
 def list_specs() -> list[ModelSpec]:
     """Every model spec: production, mean, rbf, each active member, each
-    gate variant (unavailable ones carry a ``reason``)."""
+    gate variant, each registered universal model (unavailable ones carry a
+    ``reason``). Read-only; never opens a checkpoint (no TensorFlow)."""
     active = active_member_labels()
     fps = member_fingerprints(active)
     root = regime_dir()
@@ -406,13 +623,15 @@ def list_specs() -> list[ModelSpec]:
 
     for label in active:
         fp = fps.get(label)
+        spec = f"{MEMBER_PREFIX}{member_name(label)}"
         specs.append(ModelSpec(
-            f"{MEMBER_PREFIX}{member_name(label)}", "member", f"Member {label}",
+            spec, "member", spec_label(spec),
             (label,), (label,), bool(fp),
             reason=None if fp else "member has no checkpoint",
             fingerprint=spec_fingerprint("member", member_labels=(label,),
                                          member_fingerprints=(fp,)),
-            member_fingerprints=(fp,)))
+            member_fingerprints=(fp,),
+            details=member_details(label, ensemble_registry.MEMBER_CLASS)))
 
     variants = sorted(path for path in root.glob(f"{GATE_DIR_PREFIX}*")
                       if path.is_dir() and path.name != PRODUCTION_ARTIFACT_DIR)
@@ -423,6 +642,24 @@ def list_specs() -> list[ModelSpec]:
         specs.append(_combiner_spec(
             spec=f"{GATE_PREFIX}{name}", kind="gate", label=f"Gate {name} · variant",
             directory=directory, fitted_for_current=False, active=active, fps=fps))
+
+    # Standalone universal models — after the gates, so the first three specs
+    # stay production, mean, rbf. The registry keeps the classes apart; the
+    # filter only guards a hand-edited file.
+    universal = [label for label in universal_labels() if label not in set(active)]
+    universal_fps = member_fingerprints(universal)
+    for label in universal:
+        fp = universal_fps.get(label)
+        reason = _universal_reason(label, fp)
+        spec = f"{UNIVERSAL_PREFIX}{member_name(label)}"
+        specs.append(ModelSpec(
+            spec, "universal", spec_label(spec), (label,), (label,), reason is None,
+            reason=reason,
+            fingerprint=(spec_fingerprint("universal", member_labels=(label,),
+                                          member_fingerprints=(fp,))
+                         if reason is None else None),
+            member_fingerprints=(fp,),
+            details=member_details(label, ensemble_registry.UNIVERSAL_CLASS)))
     return specs
 
 
@@ -483,7 +720,7 @@ def predict(spec: ModelSpec, lr_e: np.ndarray, members: MemberSource) -> np.ndar
     """SR ``(2H, 2W, 4)`` electrons of ``spec`` for one LR tile."""
     if not spec.available:
         raise ValueError(f"model {spec.spec} is unavailable: {spec.reason}")
-    if spec.kind == "member":
+    if spec.kind in ("member", "universal"):
         return np.asarray(members.get(spec.reads[0]), np.float32)
     if spec.kind == "mean":
         total = None
@@ -515,15 +752,21 @@ def gate_weights(spec: ModelSpec, lr_e: np.ndarray, members: MemberSource) -> np
 
 
 class EnsembleMemberRunner:
-    """Runs STARFULL members by label through one lazily loaded
-    :class:`EnsembleModel` (only the requested members are evaluated).
+    """Runs STARFULL members — and universal models — by label through one
+    lazily loaded :class:`EnsembleModel` (only the requested models are
+    evaluated).
 
-    ``labels`` — the members a job will ask for — are exactly the members the
+    ``labels`` — the models a job will ask for — are exactly the models the
     ensemble restores (``EnsembleModel(labels=…)``, in that order; labels that
-    are not active STARFULL members are left out so :meth:`predict` reports
-    them). ``None`` loads every active member. A request for an active member
-    outside ``labels`` (a job's plan changed, e.g. a reusable output turned
-    out stale) rebuilds the ensemble once over the union.
+    are neither active STARFULL members nor runnable universal models
+    (:func:`runnable_universal_labels`) are left out so :meth:`predict`
+    reports them). A universal model among them adds
+    ``include_universal=True`` (an ensemble of one each); an active-only job
+    keeps the plain ensemble call. ``None`` loads every active member. A
+    request for a runnable model outside ``labels`` (a job's plan changed,
+    e.g. a reusable output turned out stale) rebuilds the ensemble once over
+    the union; so does a planned model left out of the first build that can
+    run now (a universal model mid-pull), without listing it twice.
     """
 
     def __init__(self, base_dir: str | None = None, factory=EnsembleModel, *,
@@ -533,30 +776,39 @@ class EnsembleMemberRunner:
         self._labels = None if labels is None else list(dict.fromkeys(labels))
         self._ensemble = None
 
-    def _restore_labels(self) -> list[str] | None:
-        if self._labels is None:
-            return None
+    @staticmethod
+    def _runnable(labels: Sequence[str]) -> tuple[list[str], set[str]]:
+        """``(runnable labels in order, each once; the universal ones among them)``."""
+        labels = list(dict.fromkeys(labels))       # EnsembleModel refuses a label listed twice
         active = set(active_member_labels())
-        return [label for label in self._labels if label in active]
+        universal = set(runnable_universal_labels(lb for lb in labels if lb not in active))
+        return [lb for lb in labels if lb in active or lb in universal], universal
 
     @property
     def ensemble(self):
         if self._ensemble is None:
             kwargs: dict[str, Any] = {"starless": False}
-            labels = self._restore_labels()
-            if labels is not None:
+            if self._labels is not None:
+                labels, universal = self._runnable(self._labels)
                 kwargs["labels"] = labels
+                if universal:
+                    kwargs["include_universal"] = True
             self._ensemble = self._factory(self._base_dir or ensemble_dir(), **kwargs)
         return self._ensemble
 
     def predict(self, lr_e: np.ndarray, label: str) -> np.ndarray:
         labels = list(self.ensemble.member_labels)
         if (label not in labels and self._labels is not None
-                and label in active_member_labels()):
-            self._labels, self._ensemble = [*self._labels, label], None
+                and self._runnable([label])[0]):
+            # A planned label left out of the first build (not runnable then,
+            # e.g. mid-pull) is already in the plan: rebuild, never re-append.
+            if label not in self._labels:
+                self._labels = [*self._labels, label]
+            self._ensemble = None
             labels = list(self.ensemble.member_labels)
         if label not in labels:
-            raise KeyError(f"member {label} is not an active STARFULL member")
+            raise KeyError(f"member {label} is not an active STARFULL member "
+                           "or a runnable universal model")
         stack = self.ensemble.member_arrays(np.asarray(lr_e, np.float32),
                                             indices=[labels.index(label)])
         return np.asarray(stack[0], np.float32)
@@ -759,6 +1011,7 @@ __all__ = [
     "SPEC_MEAN",
     "SPEC_PRODUCTION",
     "SPEC_RBF",
+    "UNIVERSAL_PREFIX",
     "active_member_labels",
     "array_sha",
     "canonical_spec",
@@ -772,6 +1025,7 @@ __all__ = [
     "member_fingerprints",
     "member_cache_dir",
     "member_cache_root",
+    "member_details",
     "member_label",
     "member_name",
     "needed_members",
@@ -781,9 +1035,15 @@ __all__ = [
     "predict",
     "regime_dir",
     "resolve_spec",
+    "runnable_universal_labels",
     "save_output",
-    "spec_slug",
     "spec_fingerprint",
+    "spec_kind",
+    "spec_label",
+    "spec_member_label",
+    "spec_slug",
     "sr_header",
+    "training_log_summary",
+    "universal_labels",
     "update_output_meta",
 ]

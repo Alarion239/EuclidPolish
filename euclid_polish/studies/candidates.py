@@ -235,8 +235,13 @@ def production_gate(starless: bool, active: Sequence[str]) -> dict[str, Any]:
 
 
 def matching_experiments(starless: bool) -> list[dict[str, Any]]:
-    """Real-tile experiment records with at least one spec whose fingerprint
-    is the current one (the specs of this membership); STARFULL only."""
+    """Real-tile experiment records that ran this membership: at least one
+    ENSEMBLE spec (production, mean, rbf, ``member:``, ``gate:``) whose
+    fingerprint is the current one; STARFULL only.
+
+    A standalone universal model is not part of the membership, so a current
+    ``universal:`` spec never qualifies a record on its own; once a record
+    qualifies, its current universal specs ride along in ``matching_specs``."""
     if starless:
         return []
     listed = experiments.list_experiments()
@@ -251,7 +256,7 @@ def matching_experiments(starless: bool) -> list[dict[str, Any]]:
             continue
         specs = [spec for spec, fp in (record.get("fingerprints") or {}).items()
                  if fp and current.get(spec) == fp]
-        if specs:
+        if any(model_catalog.spec_kind(spec) != "universal" for spec in specs):
             out.append({**record, "matching_specs": specs})
     return out
 
