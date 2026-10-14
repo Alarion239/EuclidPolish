@@ -439,9 +439,11 @@ class ObservationSimulator:
         hr_e = psf.convolved_with(hr_channel)
         star_e = None
         if star_hr_channel is not None and np.any(star_hr_channel):
-            star_psf = self._psf_for_sample(
+            # process() gives the star plane the scene's own sample: reuse
+            # its realised (warped) kernel rather than warping it again.
+            star_psf = (psf if star_psf_spec is psf_spec else self._psf_for_sample(
                 band, star_psf_spec, warp_displacements,
-            )
+            ))
             star_e = self._convolve_sparse_deltas(star_hr_channel, star_psf)
             hr_e += star_e
 

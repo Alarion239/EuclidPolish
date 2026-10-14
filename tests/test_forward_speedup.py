@@ -8,8 +8,15 @@ import pytest
 from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.signal import fftconvolve
 
+from euclid_polish.config import Config
+from euclid_polish.image import Image
 from euclid_polish.psf import PSF
 from euclid_polish.psf.fast_ops import bilinear_warp_reflect, circular_same_length, same_convolve
+from euclid_polish.psf.psf_set import PSFSet
+from euclid_polish.sky.observation.observation_simulator import (
+    ObservationSimulator,
+    ObservationSimulatorConfig,
+)
 
 
 @pytest.mark.parametrize("img_shape,ker_shape", [
@@ -104,3 +111,37 @@ def test_displacement_is_float32_and_keeps_the_random_stream():
     ref_dx = gaussian_filter(rng.uniform(-1.0, 1.0, size=(40, 30)), 3.0, mode="reflect") * 5.0
     np.testing.assert_allclose(dy, ref_dy, rtol=0, atol=1e-5)
     np.testing.assert_allclose(dx, ref_dx, rtol=0, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# the star plane reuses the scene's realised PSF
+# ---------------------------------------------------------------------------
+
+def _gauss_psf(n, s):
+    yy, xx = np.indices((n, n)) - (n - 1) / 2
+    g = np.exp(-(yy ** 2 + xx ** 2) / (2 * s * s)).astype(np.float32)
+    return PSF(data=g / g.sum(), pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+
+
+def test_star_plane_reuses_the_scene_psf(monkeypatch):
+    """One realised (warped) PSF per band, shared by the scene and its stars."""
+    sets = {b.name: PSFSet.from_psfs([_gauss_psf(31, 2.0), _gauss_psf(31, 3.0)])
+            for b in Config.BANDS}
+    calls = []
+    original = PSFSet.apply_sample
+
+    def counted(self, *a, **k):
+        calls.append(1)
+        return original(self, *a, **k)
+
+    monkeypatch.setattr(PSFSet, "apply_sample", counted)
+    sim = ObservationSimulator(psf_sets_by_band=sets, config=ObservationSimulatorConfig(
+        add_noise=False, add_saturation=False, randomize_psf=True, psf_unrotated_prob=1.0,
+        psf_warp_prob=1.0, psf_warp_alpha_max=5.0, psf_warp_sigma=3.0))
+    field = np.full((96, 96, 4), 5.0, np.float32)
+    stars = np.zeros_like(field)
+    stars[40, 50, :] = 1e4
+    hr = Image(data=field, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+               band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True)
+    sim.process(hr, np.random.default_rng(3), star_hr_4ch=stars)
+    assert len(calls) == len(Config.LR_INPUT_BAND_NAMES)
