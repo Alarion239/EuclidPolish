@@ -77,10 +77,11 @@ export const defaultForm = (): TrainForm => ({
 const num = (s: string) => (s.trim() === "" ? NaN : Number(s));
 
 /** SLURM resources per model of the recipe (the 2026-09-24 batch 48107719:
- *  a 70k-step member takes 2.5–3 h). 24 CPUs: the live forward model's field
- *  simulation saturates there (2026-10-11 benchmark; 32 add nothing). */
+ *  a 70k-step member takes 2.5–3 h). 16 CPUs: after the 2026-10-14 forward-
+ *  model speed-up and the on-device stretch they feed an A100 step with 1.8×
+ *  headroom at 16 crops per field. */
 export type Resources = { n_cpus: string; memory: string; time_limit: string };
-export const RECIPE_RESOURCES: Resources = { n_cpus: "24", memory: "32G", time_limit: "3:00:00" };
+export const RECIPE_RESOURCES: Resources = { n_cpus: "16", memory: "32G", time_limit: "3:00:00" };
 
 /** Jobs of the same kind as a form mode: a continue job runs members a few
  *  thousand steps further; add and fork train whole new members. */

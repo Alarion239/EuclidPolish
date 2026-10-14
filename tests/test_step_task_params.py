@@ -466,7 +466,7 @@ def test_training_takes_no_partition_but_its_own_or_its_test_one(
     assert "--xla" not in captured["built"]["body"]
     steps = {s["step_id"]: s for s in client.get("/api/fasrc/steps/status").get_json()["steps"]}
     assert steps["ensemble_train"]["test_partition"] == "gpu_test"
-    assert steps["ensemble_train"]["defaults"]["n_cpus"] == 24
+    assert steps["ensemble_train"]["defaults"]["n_cpus"] == 16
     assert steps["euclid_query"]["test_partition"] is None
 
 

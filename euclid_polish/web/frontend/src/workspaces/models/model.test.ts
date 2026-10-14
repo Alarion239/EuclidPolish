@@ -357,7 +357,7 @@ describe("train resources and continue targets", () => {
     expect(defaultResources([{ ...JOB, state: "RUNNING", req_cpus: 2, req_time_limit: "1:00:00" }]))
       .toEqual({ ...RECIPE_RESOURCES, from: null });
     expect(defaultResources([])).toEqual({ ...RECIPE_RESOURCES, from: null });
-    expect(RECIPE_RESOURCES).toEqual({ n_cpus: "24", memory: "32G", time_limit: "3:00:00" });
+    expect(RECIPE_RESOURCES).toEqual({ n_cpus: "16", memory: "32G", time_limit: "3:00:00" });
   });
   it("seeds a new batch from the last finished NEW batch, never a newer short continue job", () => {
     const add = { ...JOB, jobid: "100", mode: "add", req_cpus: 16, req_memory: "32G", req_time_limit: "3:00:00" };

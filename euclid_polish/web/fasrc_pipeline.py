@@ -1590,10 +1590,13 @@ class EnsembleTrainStep(FASRCPipelineStep):
             step_id="ensemble_train",
             label="Train ensemble (N members, distinct seeds)",
             job_name="ensemble-train",
-            # 24 CPUs: the live forward model's field simulation saturates
-            # near 20 fields/s there (2026-10-11 benchmark; 32 adds nothing).
+            # 16 CPUs (one A100 node's share): after the 2026-10-14
+            # forward-model speed-up and the on-device stretch, the live input
+            # pipeline delivers ~685 crops/s at 16 crops per field on 16 Ice
+            # Lake CPUs, 1.8x the ~380 an A100 step (XLA + bf16, depth 16,
+            # batch 4) consumes; 8 crops per field gives ~360.
             defaults=StepResources(
-                partition="gpu", n_cpus=24, n_gpus=1,
+                partition="gpu", n_cpus=16, n_gpus=1,
                 memory="32G", time_limit="48:00:00",
             ),
             needs_gpu=True,
