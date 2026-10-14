@@ -245,6 +245,7 @@ class Trainer:
         output_electrons: bool = False,
         asinh_knee: float | None = None,
         jit_compile: bool = False,
+        batch_stretch: Callable[[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor]] | None = None,
     ):
         """
         Initialize the trainer.
@@ -293,8 +294,16 @@ class Trainer:
             int32 counter lives in host memory, out of reach of an XLA step
             on the GPU. Needs weight norms without tfp's per-call
             initialisation check (``wdsr(eager_weight_norm_init=True)``).
+        batch_stretch : callable, optional
+            ``(lr, hr) -> (lr, hr)`` applied to every TRAINING batch as the
+            first op of the gradient step, on the device (inside the XLA
+            step when compiled): the member's asinh stretch for a pipeline
+            that yields raw electrons, so the CPUs that feed the GPU never
+            compute the 6× wider knee stack. ``None`` → batches arrive
+            stretched. Validation batches are unaffected.
         """
         self.now = None
+        self._batch_stretch = batch_stretch
         # The gradient step, XLA-compiled on request; without XLA it is traced
         # straight into ``train_step`` (the graph training always had).
         self._gradient_step = (tf.function(self._gradient_step_impl, jit_compile=True)
@@ -1059,6 +1068,8 @@ class Trainer:
     def _gradient_step_impl(self, lr, hr):
         """Forward, loss, backward, global-norm clip and the Adam update →
         ``(loss, pre-clip gradient norm)``."""
+        if self._batch_stretch is not None:
+            lr, hr = self._batch_stretch(lr, hr)
         with tf.GradientTape() as tape:
             sr = self.checkpoint.model(lr, training=True)
             loss_value = self.loss(sr, hr)

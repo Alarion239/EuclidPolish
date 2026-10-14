@@ -154,3 +154,45 @@ def test_a_continued_member_keeps_the_speedups_it_was_created_with(tmp_path, mon
                                   "--target-steps", "10", "--member-spec",
                                   json.dumps([{"xla": False}])]), str(base))[0]
     assert not off.jit_compile and off.mixed_precision
+
+
+@pytest.mark.parametrize("jit", [False, True])
+def test_a_device_stretch_takes_the_same_step_as_a_stretched_batch(tmp_path, jit):
+    """Raw electron batches stretched inside the (compiled) step = the same
+    step as batches the CPU stretched."""
+    rng = np.random.default_rng(3)
+    lr_e = tf.constant(rng.uniform(0, 200, (2, 8, 8, 4)).astype(np.float32))
+    hr_e = tf.constant(rng.uniform(0, 200, (2, 16, 16, 4)).astype(np.float32))
+    stretch = Model(str(tmp_path / "m"), scale=2, num_res_blocks=1, asinh_knees=KNEES,
+                    output_knee=10.0, learn_output_knee=True).batch_stretch()
+    loss = knee_stretched_loss(channel_balanced_loss("l2"), KNEES)
+    results = []
+    for on_device in (False, True):
+        seed_everything(5)
+        net = _learned_net()
+        trainer = Trainer(net, loss=loss, learning_rate=1e-3,
+                          checkpoint_dir=str(tmp_path / f"{jit}{on_device}"),
+                          knees=KNEES, output_electrons=True, jit_compile=jit,
+                          batch_stretch=stretch if on_device else None)
+        batch = (lr_e, hr_e) if on_device else stretch_pair(lr_e, hr_e, knees=KNEES)
+        value, gnorm = trainer.train_step(*batch)
+        results.append((float(value), float(gnorm), [w.copy() for w in net.get_weights()]))
+    (l0, g0, w0), (l1, g1, w1) = results
+    np.testing.assert_allclose(l1, l0, rtol=1e-6)
+    np.testing.assert_allclose(g1, g0, rtol=1e-5)
+    for a, b in zip(w1, w0, strict=True):              # float rounding of the op order
+        np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-6)
+
+
+def test_batch_stretch_is_the_members_stretch(tmp_path):
+    rng = np.random.default_rng(1)
+    lr_e = tf.constant(rng.uniform(0, 500, (1, 4, 4, 4)).astype(np.float32))
+    hr_e = tf.constant(rng.uniform(0, 500, (1, 8, 8, 4)).astype(np.float32))
+    multi = Model(str(tmp_path / "a"), scale=2, num_res_blocks=1, asinh_knees=(1.0, 100.0))
+    for got, want in zip(multi.batch_stretch()(lr_e, hr_e),
+                         stretch_pair(lr_e, hr_e, knees=(1.0, 100.0)), strict=True):
+        np.testing.assert_array_equal(got.numpy(), want.numpy())
+    single = Model(str(tmp_path / "b"), scale=2, num_res_blocks=1, asinh_knee=30.0)
+    for got, want in zip(single.batch_stretch()(lr_e, hr_e),
+                         stretch_pair(lr_e, hr_e, knee=30.0), strict=True):
+        np.testing.assert_array_equal(got.numpy(), want.numpy())

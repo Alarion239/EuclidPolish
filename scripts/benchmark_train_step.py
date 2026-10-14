@@ -127,9 +127,10 @@ def _twin(depth: int, *, bf16: bool, eagerwn: bool, n_knees: int = len(KNEES)):
                 mixed_precision=bf16, eager_weight_norm_init=eagerwn)
 
 
-def _make_step(net, loss_fn, learning_rate: float, *, jit: bool = False):
-    """The trainer's step: tape → loss → global-norm clip → Adam → step
-    counter and window statistics; ``jit`` compiles it with XLA."""
+def _make_step(net, loss_fn, learning_rate: float, *, jit: bool = False, stretch=None):
+    """The trainer's step: [the member's stretch of a raw batch, on the
+    device] → tape → loss → global-norm clip → Adam → step counter and window
+    statistics; ``jit`` compiles it with XLA."""
     optimizer = Adam(learning_rate)
     # int64, unlike the trainer's int32 counter: TensorFlow keeps an int32
     # variable in host memory, out of reach of a step XLA compiles for the GPU.
@@ -137,6 +138,8 @@ def _make_step(net, loss_fn, learning_rate: float, *, jit: bool = False):
     window = {k: tf.Variable(0.0) for k in ("loss", "gnorm_sum", "gnorm_max", "steps", "spike")}
 
     def step(lr, hr):
+        if stretch is not None:
+            lr, hr = stretch(lr, hr)
         with tf.GradientTape() as tape:
             loss = loss_fn(net(lr, training=True), hr)
         grads = tape.gradient(loss, net.trainable_variables)
@@ -255,8 +258,11 @@ def _speed(args: argparse.Namespace, meta: dict) -> int:
                     # needs a network built with it.
                     net = (model._tf_model if not flags & {"bf16", "eagerwn"}
                            else _twin(depth, bf16="bf16" in flags, eagerwn="eagerwn" in flags))
+                    # The live pipeline yields raw electrons; the step
+                    # stretches them on the device, as the trainer does.
                     step = _make_step(net, model._member_loss("l2", "balanced"),
-                                      args.learning_rate, jit="xla" in flags)
+                                      args.learning_rate, jit="xla" in flags,
+                                      stretch=model.batch_stretch())
                     datasets = {k: model._build_onthefly_pipeline(clean, batch, forwards[k])
                                 for k in ks}
                     lr, hr = next(iter(datasets[ks[0]]))

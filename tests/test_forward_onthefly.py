@@ -340,8 +340,8 @@ def test_onthefly_pipeline_yields_batches(gaussian_sets, tmp_path):
     lr, hr = next(iter(ds))
     assert lr.shape == (8, CROP // 2, CROP // 2, 4)
     assert hr.shape == (8, CROP, CROP, 4)
-    # asinh-stretched values, not raw electrons
-    assert float(tf.reduce_max(tf.abs(hr))) < 25.0
+    # raw electrons (the trainer stretches on the device), not asinh values
+    assert float(tf.reduce_max(hr)) > 1e3
     assert np.isfinite(lr.numpy()).all()
 
 
@@ -363,7 +363,8 @@ def test_onthefly_pipeline_prefetch_depth_is_fixed(gaussian_sets, tmp_path):
 
 
 def test_onthefly_pipeline_stretches_every_knee(gaussian_sets, tmp_path):
-    """A multi-knee member gets LR and target stretched at each knee, stacked
+    """The pipeline yields raw electrons; the member's batch stretch (applied
+    on the device by the trainer) stacks LR and target at each knee,
     knee-major; every block encodes the same electrons."""
     imgs = [Image(data=_field(seed=i), pixel_scale_arcsec=0.05,
                   band_names=Config.HR_TARGET_BAND_NAMES, is_clean=True,
@@ -378,6 +379,8 @@ def test_onthefly_pipeline_stretches_every_knee(gaussian_sets, tmp_path):
     ds = m._build_onthefly_pipeline(
         tfrecord_path(str(tmp_path), "clean_train"), 8, fwd)
     lr, hr = next(iter(ds))
+    assert lr.shape == (8, CROP // 2, CROP // 2, 4)
+    lr, hr = m.batch_stretch()(lr, hr)
     assert lr.shape == (8, CROP // 2, CROP // 2, 8)
     assert hr.shape == (8, CROP, CROP, 8)
     for x in (lr.numpy(), hr.numpy()):

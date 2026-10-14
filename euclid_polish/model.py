@@ -403,7 +403,10 @@ class Model:
     ):
         """Training pipeline with the LIVE forward model: clean TFRecord →
         parse → [bootstrap] → full-field forward (PSF + rebin + noise +
-        artifacts) → K crops → dihedral → asinh stretch → batch.
+        artifacts) → K crops → dihedral [+ LR noise] → batch, in raw
+        electrons. The member's asinh stretch (:meth:`batch_stretch`) runs on
+        the device inside the training step, so the CPUs never compute the
+        6× wider knee stack nor copy it to the GPU.
 
         The dirty records are never read — every visit of a field re-draws
         the PSF (from the member's bagged pool) and the noise realization on
@@ -442,13 +445,10 @@ class Model:
             return lr, hr
 
         noise_rn = float(noise_aug_rn)
-        knee = self._asinh_knee    # per-member stretch (None → per-band 100 e⁻)
-        knees = self._asinh_knees
 
-        def _augment_then_stretch(lr, hr):
+        def _augment(lr, hr):
             lr, hr = random_dihedral(lr, hr)
-            lr = add_lr_noise(lr, noise_rn)
-            return stretch_pair(lr, hr, knee=knee, knees=knees)
+            return add_lr_noise(lr, noise_rn), hr
 
         # Field-level shuffle is small (each element is a full 510² field);
         # the crop-level shuffle after unbatch de-correlates the K siblings
@@ -458,10 +458,22 @@ class Model:
                   .map(_fwd, num_parallel_calls=AUTOTUNE)
                   .unbatch()
                   .shuffle(max(256, 4 * batch_size, 16 * k))
-                  .map(_augment_then_stretch, num_parallel_calls=AUTOTUNE)
+                  .map(_augment, num_parallel_calls=AUTOTUNE)
                   .repeat()
                   .batch(batch_size)
                   .prefetch(Config.TRAIN_PREFETCH_BATCHES))
+
+    def batch_stretch(self) -> Callable[[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor]]:
+        """This member's ``(lr, hr)`` asinh stretch of raw electron batches:
+        at every knee of a multi-knee member, else at its single knee
+        (``None`` → the per-band default). The trainer applies it on the
+        device to the live pipeline's batches."""
+        knee = self._asinh_knee
+        knees = self._asinh_knees
+
+        def stretch(lr, hr):
+            return stretch_pair(lr, hr, knee=knee, knees=knees)
+        return stretch
 
     def _member_loss(self, loss_norm: str, knee_loss: str = "plain"):
         """The reconstruction loss this member trains under. A multi-knee
@@ -677,7 +689,11 @@ class Model:
                           plateau_lr_recovery=plateau_lr_recovery,
                           resume_track=resume_track,
                           provenance_fields=provenance_fields,
-                          jit_compile=bool(jit_compile))
+                          jit_compile=bool(jit_compile),
+                          # The live pipeline yields raw electrons; the record
+                          # pipeline stretches on the CPU as before.
+                          batch_stretch=(self.batch_stretch() if forward_onthefly
+                                         else None))
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):
