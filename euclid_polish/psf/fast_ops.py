@@ -53,7 +53,11 @@ def same_convolve(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
 @njit(nogil=True)
 def _reflect_index(i, n):
     """scipy.ndimage ``reflect`` (half-sample symmetric) index for any
-    integer ``i``: ``d c b a | a b c d | d c b a``."""
+    integer ``i``: ``d c b a | a b c d | d c b a``. Interior indices
+    (nearly every pixel of a warp) skip the modulo, which costs as much as
+    the rest of the interpolation on Ice Lake."""
+    if 0 <= i < n:
+        return i
     if n == 1:
         return 0
     period = 2 * n
