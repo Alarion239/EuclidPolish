@@ -45,7 +45,7 @@ from euclid_polish.provenance.fits import read_stamp_cards, write_stamp_cards
 from euclid_polish.provenance.persistable import StampCarrier
 from euclid_polish.provenance.records import Format
 from euclid_polish.psf import measurements as _meas
-from euclid_polish.psf.fast_ops import same_convolve
+from euclid_polish.psf.fast_ops import bilinear_warp_reflect, same_convolve
 
 # Canonical HR pixel scale (arcsec / pixel). Everything in the project
 # resamples PSFs to this scale before convolution. Exposed here so
@@ -437,20 +437,35 @@ class PSF(StampCarrier):
         if alpha == 0.0:
             return self
 
-        data = np.asarray(self.data, dtype=np.float64)
-        if data.ndim != 2:
-            raise ValueError(f"PSF data must be 2-D, got shape {data.shape}")
+        if np.ndim(self.data) != 2:
+            raise ValueError(f"PSF data must be 2-D, got shape {np.shape(self.data)}")
         if displacement is None:
             dy, dx = self.elastic_displacement(
-                data.shape, alpha, sigma, seed=seed,
+                np.shape(self.data), alpha, sigma, seed=seed,
             )
         else:
             dy, dx = displacement
-            if dy.shape != data.shape or dx.shape != data.shape:
+            if dy.shape != np.shape(self.data) or dx.shape != np.shape(self.data):
                 raise ValueError(
                     "elastic displacement shape must match PSF data: "
-                    f"dy={dy.shape}, dx={dx.shape}, PSF={data.shape}"
+                    f"dy={dy.shape}, dx={dx.shape}, PSF={np.shape(self.data)}"
                 )
+        if int(order) == 1:
+            # The forward model's bilinear warp: map_coordinates(order=1,
+            # mode="reflect") as a GIL-free kernel in the PSF's own dtype.
+            out = bilinear_warp_reflect(np.asarray(self.data), dy, dx)
+            if clip_negative:
+                np.maximum(out, 0.0, out=out)
+            total = float(out.sum(dtype=np.float64))
+            if total > 0.0:
+                out /= out.dtype.type(total)
+            return replace(
+                self,
+                data=out.astype(self.data.dtype, copy=False),
+                # A cached measurement from the unwarped kernel is no longer true.
+                fwhm_arcsec=None,
+            )
+        data = np.asarray(self.data, dtype=np.float64)
         yy, xx = np.indices(data.shape, dtype=np.float64)
         interpolation_order = cast(_SplineOrder, int(order))
         out = map_coordinates(
