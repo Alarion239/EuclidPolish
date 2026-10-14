@@ -1,8 +1,9 @@
 """Periodic GPU + CPU utilisation sampling for a running FASRC job.
 
 A :class:`ResourceSampler` runs a daemon thread that, every
-``interval_s`` seconds, reads node CPU%% (via ``psutil``) and per-GPU
-utilisation + memory (via ``nvidia-smi``) and emits one ``resource``
+``interval_s`` seconds, reads node CPU%% and this process's host RSS (via
+``psutil``) and per-GPU utilisation + memory (via ``nvidia-smi``) and emits
+one ``resource``
 event through a :class:`~euclid_polish.observability.reporter.Reporter`.
 The web UI folds those samples into a smoothed live gauge
 (:mod:`euclid_polish.web.job_status`); the post-mortem summarises them
@@ -119,12 +120,27 @@ def parse_nvidia_smi(text: str) -> tuple[float, float, float, float] | None:
     return (sum(utils) / n, sum(mem_utils) / n, sum(used), sum(total))
 
 
+def read_process_rss_mb() -> float | None:
+    """This process's resident set size in MiB (host memory, the figure
+    SLURM's MaxRSS and the cgroup OOM killer go by), or ``None``."""
+    if psutil is None:
+        return None
+    try:
+        return float(psutil.Process().memory_info().rss) / 2**20
+    except Exception:
+        return None
+
+
 def sample_once() -> dict[str, float]:
-    """One CPU+GPU probe → a ``resource`` event payload (may be partial)."""
+    """One CPU+GPU+host-RSS probe → a ``resource`` event payload (may be
+    partial)."""
     payload: dict[str, float] = {}
     cpu = read_cpu_percent()
     if cpu is not None:
         payload["cpu"] = round(cpu, 1)
+    rss = read_process_rss_mb()
+    if rss is not None:
+        payload["rss_mb"] = round(rss, 1)
     gpu = read_gpu()
     if gpu is not None:
         util, mem_util, used_mb, total_mb = gpu

@@ -389,7 +389,7 @@ class Model:
             knees = self._asinh_knees
             ds = ds.map(lambda lr, hr: stretch_pair(lr, hr, knee=knee, knees=knees),
                         num_parallel_calls=AUTOTUNE)
-        return ds.batch(batch_size).prefetch(AUTOTUNE)
+        return ds.batch(batch_size).prefetch(Config.TRAIN_PREFETCH_BATCHES)
 
     def _build_onthefly_pipeline(
         self,
@@ -461,7 +461,7 @@ class Model:
                   .map(_augment_then_stretch, num_parallel_calls=AUTOTUNE)
                   .repeat()
                   .batch(batch_size)
-                  .prefetch(AUTOTUNE))
+                  .prefetch(Config.TRAIN_PREFETCH_BATCHES))
 
     def _member_loss(self, loss_norm: str, knee_loss: str = "plain"):
         """The reconstruction loss this member trains under. A multi-knee

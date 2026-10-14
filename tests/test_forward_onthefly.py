@@ -345,6 +345,23 @@ def test_onthefly_pipeline_yields_batches(gaussian_sets, tmp_path):
     assert np.isfinite(lr.numpy()).all()
 
 
+def test_onthefly_pipeline_prefetch_depth_is_fixed(gaussian_sets, tmp_path):
+    """prefetch(AUTOTUNE) grows its buffer limit without bound in an input-bound
+    run (host RSS ratchet → member_218 OUT_OF_MEMORY); the depth is fixed."""
+    imgs = [Image(data=_field(seed=i), pixel_scale_arcsec=0.05,
+                  band_names=Config.HR_TARGET_BAND_NAMES, is_clean=True,
+                  index=i) for i in range(2)]
+    write_images(imgs, "clean_train", records_dir=str(tmp_path))
+    m = Model(str(tmp_path / "ckpt"), scale=2, num_res_blocks=1)
+    fwd = OnTheFlyForward(
+        gaussian_sets, seed=4, crops_per_field=4, hr_crop_size=CROP,
+        inject_stars=False,
+    )
+    ds = m._build_onthefly_pipeline(
+        tfrecord_path(str(tmp_path), "clean_train"), 8, fwd)
+    assert int(ds._buffer_size) == Config.TRAIN_PREFETCH_BATCHES > 0
+
+
 def test_onthefly_pipeline_stretches_every_knee(gaussian_sets, tmp_path):
     """A multi-knee member gets LR and target stretched at each knee, stacked
     knee-major; every block encodes the same electrons."""

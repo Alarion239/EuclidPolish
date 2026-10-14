@@ -700,6 +700,16 @@ class Config:
     DEFAULT_BATCH_SIZE           = 16
     DEFAULT_EVALUATE_EVERY       = 1000
     DEFAULT_VALIDATE_IMAGES      = 100
+    # Batches the training/validation input pipelines prefetch. A FIXED depth:
+    # ``prefetch(AUTOTUNE)`` runs TF's legacy prefetch autotuner, which doubles
+    # the buffer limit every time the consumer finds it empty and never lowers
+    # it (capped only by half the node's free RAM, not the job's cgroup). An
+    # input-bound run (the CPU forward model) drains it constantly, so after
+    # each validation/checkpoint pause it refills to an ever larger size, and
+    # the host allocators keep that peak. Host RSS grew from ~22 GB to >32 GB
+    # over 1.8M steps (member_218 OUT_OF_MEMORY). Two batches keep the GPU fed
+    # once the pipeline is the bottleneck anyway.
+    TRAIN_PREFETCH_BATCHES       = 2
     DEFAULT_NUM_RES_BLOCKS       = 32
     # PATH ANCHOR ONLY since the ensemble-only refactor: nothing loads a
     # model from this dir anymore — THE model is the ensemble at

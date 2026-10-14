@@ -49,21 +49,33 @@ class TestSampleOnce:
     def test_gpu_and_cpu_present(self, monkeypatch):
         monkeypatch.setattr(rs, "read_cpu_percent", lambda: 83.4)
         monkeypatch.setattr(rs, "read_gpu", lambda: (47.0, 60.0, 12000.0, 40960.0))
+        monkeypatch.setattr(rs, "read_process_rss_mb", lambda: 23456.78)
         p = rs.sample_once()
         assert p["cpu"] == 83.4
+        assert p["rss_mb"] == 23456.8
         assert p["gpu"] == 47.0 and p["gpu_mem"] == 60.0
         assert p["gpu_mem_used_mb"] == 12000.0 and p["gpu_mem_total_mb"] == 40960.0
 
     def test_cpu_only_node_omits_gpu(self, monkeypatch):
         monkeypatch.setattr(rs, "read_cpu_percent", lambda: 50.0)
         monkeypatch.setattr(rs, "read_gpu", lambda: None)
+        monkeypatch.setattr(rs, "read_process_rss_mb", lambda: None)
         p = rs.sample_once()
         assert p == {"cpu": 50.0}
 
     def test_empty_when_both_probes_blank(self, monkeypatch):
         monkeypatch.setattr(rs, "read_cpu_percent", lambda: None)
         monkeypatch.setattr(rs, "read_gpu", lambda: None)
+        monkeypatch.setattr(rs, "read_process_rss_mb", lambda: None)
         assert rs.sample_once() == {}
+
+    def test_rss_probe_reads_this_process(self):
+        rss = rs.read_process_rss_mb()
+        assert rss is not None and 1.0 < rss < 1e6
+
+    def test_rss_probe_without_psutil(self, monkeypatch):
+        monkeypatch.setattr(rs, "psutil", None)
+        assert rs.read_process_rss_mb() is None
 
 
 # ---------------------------------------------------------------------------

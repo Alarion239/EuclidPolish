@@ -79,6 +79,15 @@ def test_full_pipeline_round_trip(tmp_path):
         tfrecord_path(records_dir, "clean_train"),
         batch_size=2,
     )
+    # A fixed prefetch depth (never AUTOTUNE's ever-growing buffer), for
+    # training and validation alike.
+    assert int(ds._buffer_size) == Config.TRAIN_PREFETCH_BATCHES > 0
+    valid = m._build_training_pipeline(
+        tfrecord_path(records_dir, "dirty_validate"),
+        tfrecord_path(records_dir, "clean_validate"),
+        batch_size=2, augment=False,
+    )
+    assert int(valid._buffer_size) == Config.TRAIN_PREFETCH_BATCHES
 
     # 5. Train one step on WDSR (4-channel in, 4-channel out).
     model = wdsr(scale=2, num_res_blocks=2,

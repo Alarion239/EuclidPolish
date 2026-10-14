@@ -16,6 +16,7 @@ from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from tqdm import tqdm
 
 from euclid_polish.config import Config
+from euclid_polish.observability.resource_sampler import read_process_rss_mb
 from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.provenance.checkpoint import (
     read_checkpoint_provenance,
@@ -848,6 +849,12 @@ class Trainer:
                 f", |g| avg/max = {gnorm_avg:.3g}/{gnorm_peak:.3g} "
                 f"({duration:.2f}s)"
             )
+            # Host RSS per window: the job's memory trend (sacct only keeps
+            # the peak). After the duration, so log parsers keyed on the
+            # loss/PSNR/duration fields read the line as before.
+            rss_mb = read_process_rss_mb()
+            if rss_mb is not None:
+                status += f", host RSS {rss_mb / 1024:.1f} GB"
             tqdm.write(status)
 
             # Persist for later plotting. Append-only CSV so each row
