@@ -147,7 +147,10 @@ export function universalStatus(r: Pick<UniversalRow, "fingerprint" | "score">):
 
 /** A scored combiner at its weighted training hours: `partial` (a lower
  *  bound: a member it reads has no hours), `stale` (its score predates its
- *  fit or its members' checkpoints), `comparable` (combinerComparable). */
+ *  fit or its members' checkpoints), `comparable` (combinerComparable).
+ *  combinerPoints lists production last, so it paints over (and a click on
+ *  a shared spot opens) a variant at the same place — the variant it was
+ *  promoted from sits exactly there. */
 export type CombinerPoint = {
   id: string; name: string; production: boolean; hours: number; value: number;
   partial: boolean; stale: boolean; comparable: boolean; combiner: UniversalCombiner;
@@ -164,7 +167,7 @@ export function combinerPoints(combiners: readonly UniversalCombiner[], w: Weigh
         comparable: combinerComparable(c, payloadComparable), combiner: c });
     }
   }
-  return out;
+  return [...out.filter((p) => !p.production), ...out.filter((p) => p.production)];
 }
 
 /** The scored combiner nearest in log hours to `hours` (production on a

@@ -70,7 +70,8 @@ describe("values", () => {
 describe("combiners on the time axis", () => {
   it("places the scored combiners at their weighted hours", () => {
     const pts = combinerPoints(payload().combiners, "max", "mean");
-    expect(pts.map((p) => [p.name, p.hours, p.value])).toEqual([["production gate", 2, 60.5], ["gate p20s1", 0.6, 60.2]]);
+    // production last: drawn over (and clicked before) a variant at the same spot
+    expect(pts.map((p) => [p.name, p.hours, p.value])).toEqual([["gate p20s1", 0.6, 60.2], ["production gate", 2, 60.5]]);
     expect(combinerPoints([comb("production", { hours: { max: null, mean: null, sum: null }, members: [] })], "max", "mean")).toEqual([]);
     expect(combinerPoints([comb("production", { integrated: null, mean: null })], "max", "mean")).toEqual([]);
   });
@@ -95,7 +96,7 @@ describe("combiners on the time axis", () => {
     expect(combinerHoursText(comb("production"), "max")).toBe("2.00 h");
     expect(combinerHoursText(comb("production", { hours: { max: null, mean: null, sum: null }, members: [] }), "max")).toBe("—");
     const pts = combinerPoints([comb("production", { comparable: true }), partial], "max", "mean");
-    expect(pts.map((p) => [p.name, p.partial])).toEqual([["production gate", false], ["gate p20s1", true]]);
+    expect(pts.map((p) => [p.name, p.partial])).toEqual([["gate p20s1", true], ["production gate", false]]);
     // 0.5 h is nearest p20s1 (0.6 h), but its 0.6 h is only a lower bound
     expect(timeMatch(0.5, pts)?.name).toBe("production gate");
     expect(timeMatch(0.5, pts.filter((p) => p.partial))).toBeNull();
