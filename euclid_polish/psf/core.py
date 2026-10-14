@@ -39,13 +39,13 @@ from scipy.ndimage import (
 from scipy.ndimage import (
     shift as ndi_shift,
 )
-from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
 from euclid_polish.provenance.fits import read_stamp_cards, write_stamp_cards
 from euclid_polish.provenance.persistable import StampCarrier
 from euclid_polish.provenance.records import Format
 from euclid_polish.psf import measurements as _meas
+from euclid_polish.psf.fast_ops import same_convolve
 
 # Canonical HR pixel scale (arcsec / pixel). Everything in the project
 # resamples PSFs to this scale before convolution. Exposed here so
@@ -519,10 +519,11 @@ class PSF(StampCarrier):
         relies on.
         """
         k = self.with_unit_sum().data
-        return fftconvolve(
-            np.asarray(image, dtype=np.float32),
-            k,
-            mode="same",
+        # Same numbers as fftconvolve(mode="same") on the shortest exact
+        # circular FFT (1024² rather than 1536² for a 510² field and a
+        # 1023² kernel).
+        return same_convolve(
+            np.asarray(image, dtype=np.float32), k,
         ).astype(np.float32)
 
     # ------------------------------------------------------------------
