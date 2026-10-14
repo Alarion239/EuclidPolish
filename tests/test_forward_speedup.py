@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.signal import fftconvolve
 
 from euclid_polish.psf import PSF
@@ -90,3 +90,17 @@ def test_elastic_warp_equals_the_scipy_path_after_normalisation():
     out = psf.elastic_warp(5.0, 3.0, seed=9, displacement=(dy, dx)).data
     assert out.dtype == np.float32
     np.testing.assert_allclose(out, ref, rtol=0, atol=1e-6 * ref.max())
+
+
+# ---------------------------------------------------------------------------
+# float32 displacement smoothing
+# ---------------------------------------------------------------------------
+
+def test_displacement_is_float32_and_keeps_the_random_stream():
+    dy, dx = PSF.elastic_displacement((40, 30), 5.0, 3.0, seed=11)
+    assert dy.dtype == np.float32 and dx.dtype == np.float32
+    rng = np.random.default_rng(11)
+    ref_dy = gaussian_filter(rng.uniform(-1.0, 1.0, size=(40, 30)), 3.0, mode="reflect") * 5.0
+    ref_dx = gaussian_filter(rng.uniform(-1.0, 1.0, size=(40, 30)), 3.0, mode="reflect") * 5.0
+    np.testing.assert_allclose(dy, ref_dy, rtol=0, atol=1e-5)
+    np.testing.assert_allclose(dx, ref_dx, rtol=0, atol=1e-5)

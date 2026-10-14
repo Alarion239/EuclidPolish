@@ -512,15 +512,19 @@ class PSF(StampCarrier):
             raise ValueError(f"alpha must be >= 0, got {alpha}")
         if sigma <= 0.0:
             raise ValueError(f"sigma must be > 0, got {sigma}")
+        # The same draws as ever (record generation and resume replay their
+        # random streams), smoothed in float32: half the memory traffic, and
+        # sub-micro-pixel geometry differences.
         rng = np.random.default_rng(seed)
+        scale = np.float32(alpha)
         dy = gaussian_filter(
-            rng.uniform(-1.0, 1.0, size=validated_shape), sigma,
-            mode="reflect",
-        ) * alpha
+            rng.uniform(-1.0, 1.0, size=validated_shape).astype(np.float32),
+            sigma, mode="reflect",
+        ) * scale
         dx = gaussian_filter(
-            rng.uniform(-1.0, 1.0, size=validated_shape), sigma,
-            mode="reflect",
-        ) * alpha
+            rng.uniform(-1.0, 1.0, size=validated_shape).astype(np.float32),
+            sigma, mode="reflect",
+        ) * scale
         return dy, dx
 
     def convolved_with(self, image: np.ndarray) -> np.ndarray:
