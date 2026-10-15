@@ -159,3 +159,15 @@ def test_fused_needs_xla_and_several_steps_per_call(tmp_path):
                    fused_step=True)._fused_step is None                      # no XLA
     assert Trainer(_model(), checkpoint_dir=str(tmp_path / "b"), jit_compile=True,
                    fused_step=True)._fused_step is None                      # one step per call
+
+
+def test_a_finite_dataset_ends_the_fused_loop_with_the_right_count(tmp_path):
+    tf.keras.utils.set_random_seed(7)
+    net = wdsr(scale=2, nchan_in=4, nchan_out=1, num_res_blocks=1, num_filters=4,
+               eager_weight_norm_init=True)
+    trainer = Trainer(net, checkpoint_dir=str(tmp_path / "fused_finite"), jit_compile=True,
+                      steps_per_call=4, fused_step=True)
+    trainer.train(_pairs(n=14, batch=2, repeat=False), _pairs(n=2, seed=10, batch=1, repeat=False),
+                  steps=50, evaluate_every=100, save_best_only=False, validate_images=2)
+    assert int(trainer.checkpoint.step.numpy()) == 7
+    assert float(trainer._win_steps.numpy()) == 7.0

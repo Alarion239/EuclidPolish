@@ -320,11 +320,13 @@ class Trainer:
         fused_step : bool
             With ``jit_compile`` and ``steps_per_call`` > 1: compile the
             whole step (the learning rate, the gradient step, the window
-            statistics and the spike watch) as ONE XLA function instead of
-            only the gradient step, its step number passed in, so the small
-            bookkeeping ops stop running as separate kernels around it. The
-            int32 step counter (host memory, outside XLA's reach) is advanced
-            after each step.
+            statistics and the spike watch) as ONE XLA function, its step
+            number and learning rate passed in, and run each call's steps as
+            a plain Python loop over it on the (device-prefetched) batches.
+            On a gpu_test MIG slice the in-graph loop of :meth:`train_steps`
+            cost ~2.3 ms per step over this function's own 19.3 ms. The
+            int32 step counter (host memory, outside XLA's reach) advances
+            once per call.
         """
         self.now = None
         self._batch_stretch = batch_stretch
@@ -808,6 +810,8 @@ class Trainer:
                         self._apply_lr(step + 1)
                     lr, hr = next(batches)
                     self.train_step(lr, hr)
+                elif self._fused_step is not None:
+                    self._run_fused(batches, step, n)
                 else:
                     # Each step's own LR, set inside the call before its step.
                     self.train_steps(batches, tf.constant(
@@ -1133,18 +1137,27 @@ class Trainer:
         """``len(learning_rates)`` training steps in one call, each on the
         next batch of the ``batches`` iterator, after setting its learning
         rate (what :meth:`_apply_lr` sets per step on the one-step path)."""
-        base = self.checkpoint.step.read_value()
         for i in tf.range(tf.shape(learning_rates)[0]):
             # One step at a time: a step never starts before the last ends.
             tf.autograph.experimental.set_loop_options(parallel_iterations=1)
             lr, hr = next(batches)
-            if self._fused_step is not None:
-                loss_value, gnorm = self._fused_step(lr, hr, learning_rates[i], base + i + 1)
-                with tf.control_dependencies([loss_value, gnorm]):
-                    self.checkpoint.step.assign_add(1)
-            else:
-                self.checkpoint.optimizer.learning_rate.assign(learning_rates[i])
-                self._train_step_impl(lr, hr)
+            self.checkpoint.optimizer.learning_rate.assign(learning_rates[i])
+            self._train_step_impl(lr, hr)
+
+    def _run_fused(self, batches, step: int, n: int) -> None:
+        """Steps ``step + 1 … step + n`` (``fused_step``): each one call of
+        the XLA step on the next batch with its own LR and step number, the
+        host counter advanced once at the end. A dataset that runs out
+        mid-call still counts the steps it did."""
+        done = 0
+        try:
+            for s in range(step + 1, step + n + 1):
+                lr, hr = next(batches)
+                self._fused_step(lr, hr, tf.constant(self._lr_at(s), tf.float32),
+                                 tf.constant(s, tf.int32))
+                done += 1
+        finally:
+            self.checkpoint.step.assign_add(done)
 
     def _fused_step_impl(self, lr, hr, learning_rate, step):
         """One whole step for XLA (``fused_step``): set ``learning_rate``,
