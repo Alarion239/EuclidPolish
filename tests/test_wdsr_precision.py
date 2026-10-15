@@ -124,8 +124,11 @@ def test_benchmark_variant_names():
 
 
 def test_benchmark_feed_names():
-    assert parse_feed("spc1") == (1, False)
-    assert parse_feed("spc25+prefetch") == (25, True)
-    for bad in ("spc0", "spc", "25", "spc4+xla", "spc4+prefetch+x", ""):
+    assert parse_feed("spc1") == (1, False, False)
+    assert parse_feed("spc25+prefetch") == (25, True, False)
+    assert parse_feed("spc25+prefetch+fused") == (25, True, True)
+    assert parse_feed("spc8+fused") == (8, False, True)
+    for bad in ("spc0", "spc", "25", "spc4+xla", "spc4+prefetch+x", "spc1+fused",
+                "spc4+fused+fused", ""):
         with pytest.raises(ValueError):
             parse_feed(bad)

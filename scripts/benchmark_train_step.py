@@ -445,13 +445,40 @@ def _agreement_db(sr, ref) -> np.ndarray:
                      for i in range(len(ref))])
 
 
-def parse_feed(name: str) -> tuple[int, bool]:
-    """``spcN[+prefetch]`` → ``(steps_per_call, device_prefetch)``."""
-    head, _, tail = name.partition("+")
-    if not head.startswith("spc") or not head[3:].isdigit() or int(head[3:]) < 1 \
-            or tail not in ("", "prefetch"):
-        raise ValueError(f"unknown feed variant {name!r}: use spcN or spcN+prefetch")
-    return int(head[3:]), tail == "prefetch"
+FEED_FLAGS = ("prefetch", "fused")
+
+
+def parse_feed(name: str) -> tuple[int, bool, bool]:
+    """``spcN[+prefetch][+fused]`` → ``(steps_per_call, device_prefetch,
+    fused_step)``."""
+    head, *flags = name.split("+")
+    if (not head.startswith("spc") or not head[3:].isdigit() or int(head[3:]) < 1
+            or len(set(flags)) != len(flags) or not set(flags) <= set(FEED_FLAGS)
+            or ("fused" in flags and int(head[3:]) < 2)):
+        raise ValueError(f"unknown feed variant {name!r}: use spcN with optional "
+                         "+prefetch and +fused (fused needs N > 1)")
+    return int(head[3:]), "prefetch" in flags, "fused" in flags
+
+
+def _on_gpu(*tensors):
+    """The tensors copied to the first GPU (as they are without one)."""
+    gpus = tf.config.list_logical_devices("GPU")
+    if not gpus:
+        return tensors
+    with tf.device(gpus[0].name):
+        return tuple(tf.identity(t) for t in tensors)
+
+
+def _floor_ms(run_one, n: int, sync) -> float:
+    """ms per call of ``run_one`` after 20 warm-up calls, synced at both ends."""
+    for _ in range(20):
+        run_one()
+    sync()
+    t0 = time.perf_counter()
+    for _ in range(n):
+        run_one()
+    sync()
+    return (time.perf_counter() - t0) / n * 1000.0
 
 
 def _forwards(args, ks):
@@ -490,7 +517,7 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
     try:
         for k in ks:
             for feed in feeds:
-                per_call, prefetch = parse_feed(feed)
+                per_call, prefetch, fused = parse_feed(feed)
                 model = Model(os.path.join(tmp, f"k{k}_{feed}"), scale=2, num_res_blocks=depth,
                               asinh_knees=knees, output_knee=OUTPUT_KNEE_E, learn_output_knee=True,
                               seed=args.seed)
@@ -502,7 +529,8 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
                                   loss=model._member_loss("l2", "balanced"), knees=knees,
                                   output_electrons=True, jit_compile=True,
                                   batch_stretch=model.batch_stretch(),
-                                  steps_per_call=per_call, device_prefetch=prefetch)
+                                  steps_per_call=per_call, device_prefetch=prefetch,
+                                  fused_step=fused)
                 ds = model._build_onthefly_pipeline(clean, batch, forwards[k])
                 marks: dict[int, float] = {}
 
@@ -522,18 +550,29 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
                        "batch": batch, "knees": len(knees), "steps": steps,
                        "live_ms": round(live_ms, 2), "run_s": round(end - t0, 1),
                        "peak_rss_gb": round(_peak_rss_gb(), 1)}
-                if feed == feeds[0] and k == ks[0]:
-                    # The floor: the same compiled step on one batch already on the GPU.
-                    lr, hr = next(iter(ds))
-                    lr, hr = tf.identity(lr), tf.identity(hr)
-                    for _ in range(20):
-                        trainer.train_step(lr, hr)
-                    float(trainer.checkpoint.step.numpy())
-                    g0 = time.perf_counter()
-                    for _ in range(args.gpu_steps):
-                        trainer.train_step(lr, hr)
-                    float(trainer.checkpoint.step.numpy())
-                    row["gpu_ms"] = round((time.perf_counter() - g0) / args.gpu_steps * 1000.0, 2)
+                if k == ks[0] and (fused or per_call == 1):
+                    # The floor: this trainer's compiled step on one batch
+                    # already on the GPU (no input, no loop).
+                    lr, hr = _on_gpu(*next(iter(ds)))
+                    if fused:
+                        lr_value, step_no = _on_gpu(tf.constant(1e-4), tf.constant(10_000))
+
+                        def one(lr=lr, hr=hr, lr_value=lr_value, step_no=step_no, t=trainer):
+                            t._fused_step(lr, hr, lr_value, step_no)
+                    else:
+                        def one(lr=lr, hr=hr, t=trainer):
+                            t.train_step(lr, hr)
+                    row["gpu_ms"] = round(_floor_ms(one, args.gpu_steps,
+                                                    lambda t=trainer: float(t._win_steps.numpy())), 2)
+                    if feed == feeds[0]:
+                        # The reference: the benchmark's own step, everything in one
+                        # XLA function (int64 counter on the GPU), same network build.
+                        ref_net = _twin(depth, bf16=True, eagerwn=True, n_knees=len(knees))
+                        ref = _make_step(ref_net, model._member_loss("l2", "balanced"),
+                                         args.learning_rate, jit=True, stretch=model.batch_stretch())
+                        row["ref_xla_gpu_ms"] = round(_floor_ms(
+                            lambda ref=ref, lr=lr, hr=hr: ref(lr, hr), args.gpu_steps,
+                            lambda ref=ref, lr=lr, hr=hr: float(ref(lr, hr)[0])), 2)
                 rows.append(row)
                 print(json.dumps(row), flush=True)
                 del model, trainer, ds
@@ -543,7 +582,11 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
         if records_dir != args.records_dir:
             shutil.rmtree(records_dir, ignore_errors=True)
     floor = next((r["gpu_ms"] for r in rows if "gpu_ms" in r), None)
-    print(f"\n GPU-only floor: {floor} ms/step")
+    ref = next((r["ref_xla_gpu_ms"] for r in rows if "ref_xla_gpu_ms" in r), None)
+    print(f"\n GPU-only floor (the trainer's step): {floor} ms/step; fully-XLA reference step: {ref}")
+    for r in rows:
+        if "gpu_ms" in r:
+            print(f"   floor of {r['feed']}: {r['gpu_ms']} ms/step")
     print(" K    feed               live ms/step   × first feed   GPU busy")
     for k in ks:
         group = [r for r in rows if r["crops_per_field"] == k]
@@ -619,8 +662,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--crops-per-field", default="8,16",
                    help="comma list; the first feeds the gpu row, every value an input and a live row")
     p.add_argument("--hr-crop-size", type=int, default=256)
-    p.add_argument("--feeds", default="spc1,spc1+prefetch,spc25,spc25+prefetch",
-                   help="trainer mode: comma list of spcN[+prefetch] feed variants")
+    p.add_argument("--feeds", default="spc1,spc25+prefetch,spc25+prefetch+fused",
+                   help="trainer mode: comma list of spcN[+prefetch][+fused] feed variants")
     p.add_argument("--knees", default="0.001,0.01,0.1,1,10,100,1000,10000",
                    help="trainer mode: the member's asinh knees")
     p.add_argument("--trainer-steps", type=int, default=3000, help="trainer mode: steps per run")

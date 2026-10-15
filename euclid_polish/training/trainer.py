@@ -248,6 +248,7 @@ class Trainer:
         batch_stretch: Callable[[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor]] | None = None,
         steps_per_call: int = 1,
         device_prefetch: bool = False,
+        fused_step: bool = False,
     ):
         """
         Initialize the trainer.
@@ -316,6 +317,14 @@ class Trainer:
             (``copy_to_device`` + a device-side ``prefetch``), so the
             host→device copy overlaps the previous step instead of opening
             each one. No effect without a GPU.
+        fused_step : bool
+            With ``jit_compile`` and ``steps_per_call`` > 1: compile the
+            whole step (the learning rate, the gradient step, the window
+            statistics and the spike watch) as ONE XLA function instead of
+            only the gradient step, its step number passed in, so the small
+            bookkeeping ops stop running as separate kernels around it. The
+            int32 step counter (host memory, outside XLA's reach) is advanced
+            after each step.
         """
         self.now = None
         self._batch_stretch = batch_stretch
@@ -323,6 +332,8 @@ class Trainer:
             raise ValueError(f"steps_per_call must be at least 1, got {steps_per_call!r}")
         self._steps_per_call = int(steps_per_call)
         self._device_prefetch = bool(device_prefetch)
+        self._fused_step = (tf.function(self._fused_step_impl, jit_compile=True)
+                            if fused_step and jit_compile and self._steps_per_call > 1 else None)
         # The gradient step, XLA-compiled on request; without XLA it is traced
         # straight into ``train_step`` (the graph training always had).
         self._gradient_step = (tf.function(self._gradient_step_impl, jit_compile=True)
@@ -789,7 +800,7 @@ class Trainer:
                 evaluate_every=evaluate_every,
                 callback_every=step_callback_every if step_callback is not None else 0))
             try:
-                if n == 1:
+                if self._steps_per_call == 1:
                     # Follow the LR schedule (× the guard's halving scale).
                     # No-op for a constant LR with no halvings yet; assigns in
                     # place otherwise.
@@ -1122,12 +1133,28 @@ class Trainer:
         """``len(learning_rates)`` training steps in one call, each on the
         next batch of the ``batches`` iterator, after setting its learning
         rate (what :meth:`_apply_lr` sets per step on the one-step path)."""
+        base = self.checkpoint.step.read_value()
         for i in tf.range(tf.shape(learning_rates)[0]):
             # One step at a time: a step never starts before the last ends.
             tf.autograph.experimental.set_loop_options(parallel_iterations=1)
             lr, hr = next(batches)
-            self.checkpoint.optimizer.learning_rate.assign(learning_rates[i])
-            self._train_step_impl(lr, hr)
+            if self._fused_step is not None:
+                loss_value, gnorm = self._fused_step(lr, hr, learning_rates[i], base + i + 1)
+                with tf.control_dependencies([loss_value, gnorm]):
+                    self.checkpoint.step.assign_add(1)
+            else:
+                self.checkpoint.optimizer.learning_rate.assign(learning_rates[i])
+                self._train_step_impl(lr, hr)
+
+    def _fused_step_impl(self, lr, hr, learning_rate, step):
+        """One whole step for XLA (``fused_step``): set ``learning_rate``,
+        the gradient step and the window statistics, ``step`` being this
+        step's number (the counter itself advances outside) → ``(loss,
+        pre-clip gradient norm)``."""
+        self.checkpoint.optimizer.learning_rate.assign(learning_rate)
+        loss_value, gnorm = self._gradient_step_impl(lr, hr)
+        self._update_window(loss_value, gnorm, step)
+        return loss_value, gnorm
 
     def _train_step_impl(self, lr, hr):
         """One step's graph: the gradient step, the step counter and the
@@ -1140,6 +1167,11 @@ class Trainer:
         # inside a multi-step call) never counts.
         with tf.control_dependencies([loss_value, gnorm]):
             step = self.checkpoint.step.assign_add(1)
+        self._update_window(loss_value, gnorm, step)
+        return loss_value, gnorm
+
+    def _update_window(self, loss_value, gnorm, step):
+        """Fold one step into the window statistics."""
         self._win_loss_sum.assign_add(loss_value)
         self._win_gnorm_sum.assign_add(gnorm)
         self._win_gnorm_max.assign(tf.maximum(self._win_gnorm_max, gnorm))
@@ -1149,8 +1181,6 @@ class Trainer:
         watched = tf.where(tf.math.is_finite(gnorm), gnorm, float("inf"))
         watched = tf.where(step > GRAD_SPIKE_SKIP_WARMUP_STEPS, watched, 0.0)
         self._win_spike_norm.assign(tf.maximum(self._win_spike_norm, watched))
-
-        return loss_value, gnorm
 
     def _gradient_step_impl(self, lr, hr):
         """Forward, loss, backward, global-norm clip and the Adam update →

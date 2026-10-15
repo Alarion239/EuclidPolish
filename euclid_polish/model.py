@@ -531,6 +531,7 @@ class Model:
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
         device_prefetch: bool = Config.TRAIN_DEVICE_PREFETCH,
+        fused_step: bool = Config.TRAIN_FUSED_STEP,
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
@@ -581,7 +582,7 @@ class Model:
         blocks' convolutions in bfloat16. Either trains a rebuilt copy of the
         network (:meth:`_training_network`) whose checkpoints load into the
         standard float32 build, which inference keeps using.
-        ``steps_per_call`` and ``device_prefetch`` feed the GPU faster (see
+        ``steps_per_call``, ``device_prefetch`` and ``fused_step`` feed the GPU faster (see
         :class:`~euclid_polish.training.trainer.Trainer`); the steps are the
         same.
         """
@@ -697,6 +698,7 @@ class Model:
                           jit_compile=bool(jit_compile),
                           steps_per_call=int(steps_per_call),
                           device_prefetch=bool(device_prefetch),
+                          fused_step=bool(fused_step),
                           # The live pipeline yields raw electrons; the record
                           # pipeline stretches on the CPU as before.
                           batch_stretch=(self.batch_stretch() if forward_onthefly

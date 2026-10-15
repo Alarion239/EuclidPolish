@@ -719,6 +719,9 @@ class Config:
     # 95 %), 25.86 → 23.92 at K=8; 50 per call is no better than 25.
     TRAIN_STEPS_PER_CALL         = 25
     TRAIN_DEVICE_PREFETCH        = True
+    # The whole step (LR, gradient step, window statistics) as one XLA
+    # function (Trainer ``fused_step``; with XLA and steps_per_call > 1).
+    TRAIN_FUSED_STEP             = False
     DEFAULT_NUM_RES_BLOCKS       = 32
     # PATH ANCHOR ONLY since the ensemble-only refactor: nothing loads a
     # model from this dir anymore — THE model is the ensemble at
