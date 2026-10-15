@@ -405,16 +405,16 @@ describe("Shell", () => {
       const strip = screen.getByRole("navigation", { name: "Models tabs" });
       const shown = () => within(strip).getAllByRole("link").map((a) => a.textContent);
       // Leaderboard 116 + Universal 100 = 216, + the widest later tab (Diagnostics 116) fits
-      // 420 − More (60); Members (84) does not; Images (76) is active and takes the reserved slot
+      // 420 − More (60); Knees (68) does not; Images (76) is active and takes the reserved slot
       await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Universal", "Images"]));
       expect(within(strip).getByRole("link", { name: "Images" }).getAttribute("aria-current")).toBe("page");
       const more = screen.getByRole("button", { name: /^More tabs: / });
       expect(strip.contains(more)).toBe(true);                   // inside the tabs landmark
-      expect(more.getAttribute("aria-label")).toBe("More tabs: Members, Train, Combiner, Diagnostics");
+      expect(more.getAttribute("aria-label")).toBe("More tabs: Knees, Members, Train, Combiner, Diagnostics");
       fireEvent.pointerDown(more, { button: 0, ctrlKey: false, pointerType: "mouse" });
       const menu = await screen.findByRole("menu");
       expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent))
-        .toEqual(["Members", "Train", "Combiner", "Diagnostics"]);
+        .toEqual(["Knees", "Members", "Train", "Combiner", "Diagnostics"]);
       // items are router links: a middle- or ⌘-click opens a new browser tab
       const train = within(menu).getByRole("menuitem", { name: "Train" });
       expect(train.tagName).toBe("A");

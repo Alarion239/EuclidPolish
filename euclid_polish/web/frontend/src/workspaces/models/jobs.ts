@@ -1,8 +1,8 @@
 /* Job helpers of the Models workspace: the shared job keys (so the palette
    and these tabs never start the same job twice), the
    confirmed starters of the loop's local jobs (evaluate, PSNR vs knee,
-   member PSNR, the universal models' score and pull) and an end-of-job
-   effect. Jobs start through `startJob`
+   member PSNR, the universal models' score and pull, a knee-attribution
+   run) and an end-of-job effect. Jobs start through `startJob`
    (app/RunActions), which confirms, registers the job under its key and
    toasts the start; the shell toasts the end. */
 import { useEffect, useRef } from "react";
@@ -11,6 +11,7 @@ import { invalidate } from "../../api/query";
 import { startJob } from "../../app/RunActions";
 import { confirm } from "../../ui";
 import { REGIME, url } from "./api";
+import { kneeUrl } from "./kneesApi";
 
 export const JOB = {
   evaluate: "run:evaluate",        // == app/RunActions (same url → same key)
@@ -29,6 +30,7 @@ export const JOB = {
   bandEvals: "ensemble:band-evals",
   universalScore: "ensemble:universal-score",
   universalPull: "ensemble:universal-pull",
+  kneeAttribution: "models:knee-attribution",
 } as const;
 
 /** Evaluate the ensemble on `n` test fields (confirmed; `asked`: the
@@ -151,6 +153,22 @@ export function pullUniversal(names: readonly string[], opts: { again?: boolean;
       title: `${opts.again ? "Pull again" : "Pull"} ${what} from FASRC?`,
       message: message + tried,
       confirmLabel: opts.again ? "Pull again" : "Pull",
+    },
+  });
+}
+
+/** Start a knee-attribution run (Models › Knees; confirmed): `fields` are the
+ *  POSTed form (knees.ts runFormData), `estimate` the confirm's cost line
+ *  (knees.ts estimateText). Resolves the job id, or null when cancelled or
+ *  refused (the refusal is toasted). */
+export function startKneeAttribution(fields: Record<string, string>, estimate: string) {
+  return startJob({
+    key: JOB.kneeAttribution, url: kneeUrl.start(), label: "Knee attribution",
+    data: fields,
+    question: {
+      title: "Run knee attribution?",
+      message: `${estimate.charAt(0).toUpperCase()}${estimate.slice(1)}. Loads each model (TensorFlow) and back-propagates every sampled pixel through it on this machine (no FASRC); it writes a new run and changes nothing else.`,
+      confirmLabel: "Run",
     },
   });
 }

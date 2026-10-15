@@ -57,8 +57,9 @@ describe("paths", () => {
     expect(pages.length).toBeGreaterThan(30);
     for (const p of pages) expect(isPagePath(p.path), p.path).toBe(true);
     // one page per models tab (no star regime)
-    expect(pages.filter((p) => p.workspace === "models")).toHaveLength(7);
+    expect(pages.filter((p) => p.workspace === "models")).toHaveLength(8);
     expect(pages.find((p) => p.path === "/models/universal")?.label).toBe("Models › Universal");
+    expect(pages.find((p) => p.path === "/models/knees")?.label).toBe("Models › Knees");
     expect(pages.find((p) => p.path === "/models/train")?.label).toBe("Models › Train");
     expect(pages.find((p) => p.path === "/files")?.label).toBe("Files");
   });
