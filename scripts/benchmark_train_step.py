@@ -445,19 +445,20 @@ def _agreement_db(sr, ref) -> np.ndarray:
                      for i in range(len(ref))])
 
 
-FEED_FLAGS = ("prefetch", "fused")
+FEED_FLAGS = ("prefetch", "fused", "fixed")
 
 
-def parse_feed(name: str) -> tuple[int, bool, bool]:
-    """``spcN[+prefetch][+fused]`` → ``(steps_per_call, device_prefetch,
-    fused_step)``."""
+def parse_feed(name: str) -> tuple[int, bool, bool, bool]:
+    """``spcN[+prefetch][+fused][+fixed]`` → ``(steps_per_call,
+    device_prefetch, fused_step, fixed)``; ``fixed`` trains on one live
+    batch repeated (the loop without the input pipeline)."""
     head, *flags = name.split("+")
     if (not head.startswith("spc") or not head[3:].isdigit() or int(head[3:]) < 1
             or len(set(flags)) != len(flags) or not set(flags) <= set(FEED_FLAGS)
             or ("fused" in flags and int(head[3:]) < 2)):
         raise ValueError(f"unknown feed variant {name!r}: use spcN with optional "
-                         "+prefetch and +fused (fused needs N > 1)")
-    return int(head[3:]), "prefetch" in flags, "fused" in flags
+                         "+prefetch, +fused (needs N > 1) and +fixed")
+    return int(head[3:]), "prefetch" in flags, "fused" in flags, "fixed" in flags
 
 
 def _on_gpu(*tensors):
@@ -517,7 +518,7 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
     try:
         for k in ks:
             for feed in feeds:
-                per_call, prefetch, fused = parse_feed(feed)
+                per_call, prefetch, fused, fixed = parse_feed(feed)
                 model = Model(os.path.join(tmp, f"k{k}_{feed}"), scale=2, num_res_blocks=depth,
                               asinh_knees=knees, output_knee=OUTPUT_KNEE_E, learn_output_knee=True,
                               seed=args.seed)
@@ -532,6 +533,8 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
                                   steps_per_call=per_call, device_prefetch=prefetch,
                                   fused_step=fused)
                 ds = model._build_onthefly_pipeline(clean, batch, forwards[k])
+                if fixed:
+                    ds = tf.data.Dataset.from_tensors(next(iter(ds))).repeat()
                 marks: dict[int, float] = {}
 
                 def mark(step, _total, marks=marks):
@@ -550,7 +553,7 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
                        "batch": batch, "knees": len(knees), "steps": steps,
                        "live_ms": round(live_ms, 2), "run_s": round(end - t0, 1),
                        "peak_rss_gb": round(_peak_rss_gb(), 1)}
-                if k == ks[0] and (fused or per_call == 1):
+                if k == ks[0] and (fused or per_call == 1) and not fixed:
                     # The floor: this trainer's compiled step on one batch
                     # already on the GPU (no input, no loop).
                     lr, hr = _on_gpu(*next(iter(ds)))
