@@ -40,8 +40,9 @@ from euclid_polish.web.helpers import atomic_files, model_catalog, real_tiles
 from euclid_polish.web.helpers import ensemble_viz as ev
 from euclid_polish.web.jobs import JobCancelled
 
-#: 2: shares weighted by each input band's noise σ (1 weighted per electron).
-RECORD_VERSION = 2
+#: 3: adds the local (3×3 LR) splits; 2: shares weighted by each input
+#: band's noise σ (1 weighted per electron).
+RECORD_VERSION = 3
 _RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 #: Most synthetic test fields a run takes (the universal scores' 100).
@@ -260,8 +261,8 @@ def _field_samples(net, lr_e: np.ndarray, codes: np.ndarray, values: np.ndarray,
                    ablation: bool, sigma_e: np.ndarray
                    ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     """One field's samples: ``(JSON row samples, numpy part for aggregate)``.
-    The per-input knee split (C × K per sample) only goes to the part: it
-    would multiply the record's size."""
+    The per-input knee splits (C × K per sample) and the local band shares
+    only go to the part: they would multiply the record's size."""
     picked = ka.sample_pixels(codes, per_class, rng)
     shares = ka.attribute(net, lr_e, picked, ablation=ablation, sigma_e=sigma_e)
     band, y, x = picked["band"], picked["y"], picked["x"]
@@ -269,6 +270,9 @@ def _field_samples(net, lr_e: np.ndarray, codes: np.ndarray, values: np.ndarray,
     part = {"band": band, "code": picked["code"], "value_e": value_e,
             "knee_share": shares["knee_share"], "band_share": shares["band_share"],
             "knee_share_by_input": shares["knee_share_by_input"],
+            "knee_share_local": shares["knee_share_local"],
+            "band_share_local": shares["band_share_local"],
+            "knee_share_by_input_local": shares["knee_share_by_input_local"],
             "ablation_share": shares.get("ablation_share",
                                          np.zeros_like(shares["knee_share"]))}
     row = {"band": band.astype(int).tolist(), "y": y.astype(int).tolist(),
@@ -276,6 +280,7 @@ def _field_samples(net, lr_e: np.ndarray, codes: np.ndarray, values: np.ndarray,
            "class": [class_names[int(c)] for c in picked["code"]],
            "value_e": _round(value_e, 4),
            "knee_share": _round(shares["knee_share"], 4),
+           "knee_share_local": _round(shares["knee_share_local"], 4),
            "ablation_share": _round(part["ablation_share"], 4),
            "band_share": _round(shares["band_share"], 4),
            "sensitivity": _round(shares["sensitivity"], 6)}

@@ -99,19 +99,24 @@ def test_a_run_writes_samples_aggregates_and_field_images(tiny, monkeypatch):
     kinds = {f["ref"]: f["kind"] for f in entry["fields"]}
     assert kinds == {"test/7": "synthetic", "poster/t1": "real"}
     synth = next(f for f in entry["fields"] if f["ref"] == "test/7")
-    assert record["version"] == runs.RECORD_VERSION == 2
+    assert record["version"] == runs.RECORD_VERSION == 3
     np.testing.assert_allclose(synth["noise_sigma_e"], ka.noise_sigma(lr), rtol=1e-3)
     assert "knee_share_by_input" not in synth["samples"]       # aggregates only
     classes = set(synth["samples"]["class"])
     assert {"saturated", "galaxy core", "star wing"} <= classes
-    for share in synth["samples"]["knee_share"]:
-        assert len(share) == len(KNEES) and abs(sum(share) - 1.0) < 1e-3
+    for key in ("knee_share", "knee_share_local"):
+        for share in synth["samples"][key]:
+            assert len(share) == len(KNEES) and abs(sum(share) - 1.0) < 1e-3
     agg = entry["aggregate"]
     assert set(agg) == {"synthetic", "real"}
     assert "galaxy core" in agg["synthetic"]["by_class"]["0"]
     split = agg["synthetic"]["by_class"]["0"]["galaxy core"]["knee_share_by_input"]
     assert np.asarray(split).shape == (4, len(KNEES))
     np.testing.assert_allclose(np.asarray(split).sum(axis=1), 1.0, rtol=1e-3)
+    local = agg["synthetic"]["by_class"]["0"]["galaxy core"]
+    assert len(local["knee_share_local"]) == len(KNEES)
+    assert np.asarray(local["knee_share_by_input_local"]).shape == (4, len(KNEES))
+    assert len(agg["synthetic"]["cross_band_local"]) == 4
     assert set(agg["real"]["by_class"]["0"]) <= set(ka.REAL_CLASSES)
     assert len(agg["synthetic"]["by_brightness"]["edges_e"]) == len(ka.LOG_EDGES_E)
     # the field explorer's image

@@ -40,6 +40,11 @@ Reported per sample, with `a_{k,c} = σ_c Σ_u |t_{k,c}(u)|`:
 - `band_share[c] = Σ_k a_{k,c} / Σ a` (input band)
 - `knee_share_by_input[c][k] = a_{k,c} / Σ_k a_{k,c}`: each input band's own knee split. It does not depend on σ, and `knee_share = Σ_c band_share_c · knee_share_by_input_c`. It is only in the aggregates; per sample it would multiply the record's size.
 - `sensitivity = Σ a` (output e⁻ per input σ)
+- **Local splits (record version 3):** `knee_share_local`, `band_share_local` and `knee_share_by_input_local`.
+  - These are the same splits with `Σ_u` restricted to the 3×3 LR pixels under the sample (`LOCAL_RADIUS = 1`).
+  - The receptive-field sums are mostly sky around any pixel. So they say what the prediction depends on overall, and barely change with the pixel's class or brightness.
+  - The local ones say how the pixel's own neighbourhood is read.
+  - Per sample, the record keeps `knee_share_local`; the rest is only in the aggregates.
 - `ablation_share[k]`: replace knee `k`'s input channels with their window mean; `Δ_k = |y − y_k|`; `ablation_share = Δ / ΣΔ` (0s when ΣΔ = 0).
 
 **Windows.**
@@ -75,9 +80,9 @@ Per HR pixel and band, a class name and a brightness value (electrons) used for 
 
 ## Aggregates (over all fields of a run, per model and output band)
 
-- `by_class[band][class]`: mean `knee_share`, mean `ablation_share`, mean `band_share`, mean `knee_share_by_input` (C × K), `n`.
-- `by_brightness[band]`: half-decade log bins from 1e-3 to 1e7 e⁻ (bin edges stored), mean `knee_share` and `knee_share_by_input` per bin, and `n` per bin (bins with n = 0 are null).
-- `cross_band`: a 4×4 matrix of mean `band_share`, rows = output band, cols = input band.
+- `by_class[band][class]`: mean `knee_share`, mean `ablation_share`, mean `band_share`, mean `knee_share_by_input` (C × K), the three `*_local` means, `n`.
+- `by_brightness[band]`: half-decade log bins from 1e-3 to 1e7 e⁻ (bin edges stored), mean `knee_share`, `knee_share_by_input`, `knee_share_local` and `knee_share_by_input_local` per bin, and `n` per bin (bins with n = 0 are null).
+- `cross_band` (and `cross_band_local`): a 4×4 matrix of mean `band_share`, rows = output band, cols = input band.
 
 ## Job and store
 

@@ -43,13 +43,17 @@ def _full_field(net, lr, y, x, band):
     return g_s.numpy()[0], g_x.numpy()[0]
 
 
-def _reference_shares(net, lr, y, x, band, sigma):
+def _reference_shares(net, lr, y, x, band, sigma, radius=None):
     """``(knee_share, band_share, sensitivity, knee_share_by_input)`` on the
-    whole field, each input band's terms weighted by its ``sigma``."""
+    whole field, each input band's terms weighted by its ``sigma``; with
+    ``radius``, only the LR pixels within it of the sample's LR pixel."""
     g_s, _ = _full_field(net, lr, y, x, band)
     h, w, c = lr.shape
     q = np.asarray(net.knees, np.float64)[:, None]
     t = g_s.reshape(h, w, len(net.knees), c) / np.sqrt(q ** 2 + lr[:, :, None, :].astype(np.float64) ** 2)
+    if radius is not None:
+        rows, cols = np.abs(np.arange(h) - y // 2) <= radius, np.abs(np.arange(w) - x // 2) <= radius
+        t = t * (rows[:, None] & cols[None, :])[:, :, None, None]
     a = np.abs(t).sum(axis=(0, 1)) * np.asarray(sigma, np.float64)[None, :]   # (K, C)
     by_input = a.T / a.T.sum(axis=1, keepdims=True)
     return a.sum(axis=1) / a.sum(), a.sum(axis=0) / a.sum(), a.sum(), by_input
@@ -113,6 +117,10 @@ def test_a_window_reproduces_the_full_field_everywhere():
         np.testing.assert_allclose(got["band_share"][i], bands, rtol=1e-4, atol=1e-6)
         np.testing.assert_allclose(got["sensitivity"][i], sens, rtol=1e-4)
         np.testing.assert_allclose(got["knee_share_by_input"][i], by_input, rtol=1e-4, atol=1e-6)
+        knee, bands, _, by_input = _reference_shares(net, lr, y, x, band, sigma, radius=ka.LOCAL_RADIUS)
+        np.testing.assert_allclose(got["knee_share_local"][i], knee, rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(got["band_share_local"][i], bands, rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(got["knee_share_by_input_local"][i], by_input, rtol=1e-4, atol=1e-6)
 
 
 def test_noise_sigma_is_each_bands_own_noise():
@@ -163,9 +171,11 @@ def test_shares_sum_to_one_and_are_non_negative():
     got = ka.attribute(net, lr, samples, batch=8)
     assert got["knee_share"].shape == (n, len(KNEES)) and got["knee_share"].dtype == np.float32
     assert got["band_share"].shape == (n, 4) and got["ablation_share"].shape == (n, len(KNEES))
-    assert got["knee_share_by_input"].shape == (n, 4, len(KNEES))
+    assert got["knee_share_by_input"].shape == got["knee_share_by_input_local"].shape == (n, 4, len(KNEES))
+    assert got["knee_share_local"].shape == (n, len(KNEES)) and got["band_share_local"].shape == (n, 4)
     assert got["sensitivity"].shape == (n,)
-    for key in ("knee_share", "band_share", "ablation_share", "knee_share_by_input"):
+    for key in ("knee_share", "band_share", "ablation_share", "knee_share_by_input",
+                "knee_share_local", "band_share_local", "knee_share_by_input_local"):
         assert (got[key] >= 0).all()
         np.testing.assert_allclose(got[key].sum(axis=-1), 1.0, rtol=1e-5)
     assert (got["sensitivity"] > 0).all()
@@ -345,11 +355,35 @@ def test_aggregate_means_the_per_input_knee_split():
     bins = agg["by_brightness"]["bands"]["0"]["knee_share_by_input"]
     assert len(bins) == len(ka.LOG_EDGES_E) - 1 and bins[0] is None
     np.testing.assert_allclose(bins[6], [[0.5, 0, 0.5], [0.25, 0.75, 0]])
+    assert agg["by_class"]["0"]["c0"]["knee_share_local"] is None and "cross_band_local" not in agg
     # A part without the split (an older record's samples) leaves it out.
     old = {key: value for key, value in part.items() if key != "knee_share_by_input"}
     agg = ka.aggregate([part, old], ("c0",), 2, KNEES)
     assert agg["by_class"]["0"]["c0"]["knee_share_by_input"] is None
     assert "knee_share_by_input" not in agg["by_brightness"]["bands"]["0"]
+
+
+def test_aggregate_carries_the_local_splits():
+    local = {"knee_share_local": np.array([[0.0, 1.0, 0.0], [0.0, 0.5, 0.5]], np.float32),
+             "band_share_local": np.array([[1.0, 0.0], [0.0, 1.0]], np.float32),
+             "knee_share_by_input_local": np.array([[[0, 1.0, 0], [0, 0, 1.0]], [[1.0, 0, 0], [0, 1.0, 0]]],
+                                                   np.float32)}
+    part = {"band": np.array([1, 1]), "code": np.array([0, 0]), "value_e": np.array([200.0, 400.0]),
+            "knee_share": np.full((2, 3), 1 / 3, np.float32), "ablation_share": np.full((2, 3), 1 / 3, np.float32),
+            "band_share": np.full((2, 2), 0.5, np.float32),
+            "knee_share_by_input": np.full((2, 2, 3), 1 / 3, np.float32)} | local
+    agg = ka.aggregate([part], ("c0",), 2, KNEES)
+    json.dumps(agg, allow_nan=False)
+    c0 = agg["by_class"]["1"]["c0"]
+    np.testing.assert_allclose(c0["knee_share_local"], [0.0, 0.75, 0.25])
+    np.testing.assert_allclose(c0["band_share_local"], [0.5, 0.5])
+    np.testing.assert_allclose(c0["knee_share_by_input_local"], [[0.5, 0.5, 0], [0, 0.5, 0.5]])
+    np.testing.assert_allclose(agg["cross_band_local"][1], [0.5, 0.5])
+    assert agg["cross_band_local"][0] is None
+    bins = agg["by_brightness"]["bands"]["1"]
+    np.testing.assert_allclose(bins["knee_share_local"][10], [0.0, 1.0, 0.0])     # 200 e⁻: the 100–316 bin, 400 the next
+    np.testing.assert_allclose(bins["knee_share_local"][11], [0.0, 0.5, 0.5])
+    np.testing.assert_allclose(bins["knee_share_by_input_local"][11], [[1.0, 0, 0], [0, 1.0, 0]])
 
 
 def test_aggregate_of_nothing_is_empty_but_well_formed():

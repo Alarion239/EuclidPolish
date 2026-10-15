@@ -20,6 +20,11 @@ bands. :func:`attribute` reports, per sampled pixel, the share of
 output electrons per input σ), and an ablation check (``ablation_share``: each
 knee's channels replaced by their window mean, the change of ``y`` per knee).
 
+The sums run over the whole receptive field, which is mostly sky around any
+pixel, so they say what the prediction depends on overall. The ``*_local``
+shares sum only the 3×3 LR pixels under the sample (:data:`LOCAL_RADIUS`):
+how the pixel's own neighbourhood is read.
+
 Pixels are classed per HR pixel and band (:func:`predicted_classes` on any
 field, :func:`truth_classes` on synthetic fields, :func:`real_classes` on real
 tiles), sampled per class (:func:`sample_pixels`) and summarised over fields
@@ -64,6 +69,10 @@ LOG_EDGES_E: np.ndarray = np.logspace(-3.0, 7.0, 21)
 OUTPUTS: tuple[str, ...] = ("electrons", "stretched", "heads")
 #: Smallest LR window side (the ablation's context).
 MIN_WINDOW_SIDE = 64
+#: The local shares' reach in LR pixels around the sample's LR pixel (1: 3×3).
+LOCAL_RADIUS = 1
+#: The gradient splits: over the receptive field, and over the local block.
+_SPLITS: tuple[tuple[str, str], ...] = (("", "the receptive field"), ("_local", "the local block"))
 
 _BLANK = REAL_CLASSES.index("blank")
 #: Relative size of float32 rounding noise (a few ulps): ablation changes
@@ -333,18 +342,26 @@ def _terms(net: KneeNet, windows_e, y, x, band) -> tuple[tf.Tensor, tf.Tensor]:
 
 
 def _compiled(net: KneeNet) -> tuple[Any, Any]:
-    """``net``'s compiled passes: the gradient pass ``(x_e, idx) → (values,
-    Σ_u |t| (B, K, C))`` and the ablation pass ``(x_e, means, idx, k) →
-    values`` with knee ``k``'s channels set to ``means`` (B, K·C)."""
+    """``net``'s compiled passes: the gradient pass ``(x_e, idx, centre) →
+    (values, Σ_u |t| (B, K, C), the same Σ over the LR pixels within
+    :data:`LOCAL_RADIUS` of ``centre`` (B, 2: the sample's crop-local LR
+    pixel))`` and the ablation pass ``(x_e, means, idx, k) → values`` with
+    knee ``k``'s channels set to ``means`` (B, K·C)."""
     if "passes" not in net._fns:
         n_channels = len(net.knees) * net.n_bands
         x_spec = tf.TensorSpec([None, None, None, net.n_bands], tf.float32)
         idx_spec = tf.TensorSpec([None, 4], tf.int32)
 
-        @tf.function(input_signature=[x_spec, idx_spec])
-        def gradient_pass(x_e, idx):
+        @tf.function(input_signature=[x_spec, idx_spec, tf.TensorSpec([None, 2], tf.int32)])
+        def gradient_pass(x_e, idx, centre):
             values, t = _values_and_terms(net, x_e, idx)
-            return values, tf.reduce_sum(tf.abs(t), axis=[1, 2])
+            size = tf.abs(t)
+            shape = tf.shape(x_e)
+            near_y = tf.abs(tf.range(shape[1])[None, :] - centre[:, :1]) <= LOCAL_RADIUS
+            near_x = tf.abs(tf.range(shape[2])[None, :] - centre[:, 1:]) <= LOCAL_RADIUS
+            near = tf.cast(near_y[:, :, None] & near_x[:, None, :], size.dtype)   # (B, h, w)
+            return (values, tf.reduce_sum(size, axis=[1, 2]),
+                    tf.reduce_sum(size * near[:, :, :, None, None], axis=[1, 2]))
 
         @tf.function(input_signature=[x_spec, tf.TensorSpec([None, n_channels], tf.float32), idx_spec,
                                       tf.TensorSpec([], tf.int32)])
@@ -377,6 +394,19 @@ def _shares(parts: np.ndarray, total: np.ndarray) -> np.ndarray:
     return np.where(ok[:, None], parts / np.where(ok, total, 1.0)[:, None], 0.0).astype(np.float32)
 
 
+def _split_into(out: dict[str, np.ndarray], suffix: str, rows: slice, sums: np.ndarray) -> np.ndarray:
+    """Write one batch's knee, band and per-input shares of the σ-weighted
+    ``sums`` (B, K, C) under ``suffix``; returns the totals (B,)."""
+    n_knees = sums.shape[1]
+    total = sums.sum(axis=(1, 2))
+    out["knee_share" + suffix][rows] = _shares(sums.sum(axis=2), total)
+    out["band_share" + suffix][rows] = _shares(sums.sum(axis=1), total)
+    per_input = sums.transpose(0, 2, 1)                                  # (B, C, K)
+    out["knee_share_by_input" + suffix][rows] = _shares(
+        per_input.reshape(-1, n_knees), per_input.sum(axis=2).reshape(-1)).reshape(per_input.shape)
+    return total
+
+
 def attribute(net: KneeNet, lr_e: np.ndarray, samples: Mapping[str, np.ndarray], *,
               batch: int = 64, ablation: bool = True,
               sigma_e: Sequence[float] | None = None) -> dict[str, np.ndarray]:
@@ -390,7 +420,10 @@ def attribute(net: KneeNet, lr_e: np.ndarray, samples: Mapping[str, np.ndarray],
     ``band_share (N, C)``, ``knee_share_by_input (N, C, K)`` (each input
     band's own knee split), ``sensitivity (N,)`` (output electrons per input
     σ) and, with ``ablation``, ``ablation_share (N, K)``; shares sum to 1
-    (all 0 when the gradient, or every ablation change, is 0).
+    (all 0 when the gradient, or every ablation change, is 0). The gradient
+    splits come twice: over the receptive field (the keys above) and over
+    the local block (``knee_share_local``, ``band_share_local``,
+    ``knee_share_by_input_local``).
 
     Each sample is computed on LR crops around its LR pixel, kept inside the
     field: a crop edge on the field edge is the full field's own ``same``
@@ -408,10 +441,11 @@ def attribute(net: KneeNet, lr_e: np.ndarray, samples: Mapping[str, np.ndarray],
         raise ValueError(f"sigma_e needs one σ per input band ({net.n_bands}), got {sigma.size}")
     band, y, x = (np.asarray(samples[key], np.int64).reshape(-1) for key in ("band", "y", "x"))
     n, n_knees = band.size, len(net.knees)
-    out = {"knee_share": np.zeros((n, n_knees), np.float32),
-           "band_share": np.zeros((n, net.n_bands), np.float32),
-           "knee_share_by_input": np.zeros((n, net.n_bands, n_knees), np.float32),
-           "sensitivity": np.zeros(n, np.float32)}
+    out = {"sensitivity": np.zeros(n, np.float32)}
+    for suffix, _ in _SPLITS:
+        out["knee_share" + suffix] = np.zeros((n, n_knees), np.float32)
+        out["band_share" + suffix] = np.zeros((n, net.n_bands), np.float32)
+        out["knee_share_by_input" + suffix] = np.zeros((n, net.n_bands, n_knees), np.float32)
     if ablation:
         out["ablation_share"] = np.zeros((n, n_knees), np.float32)
     if n == 0:
@@ -433,16 +467,13 @@ def attribute(net: KneeNet, lr_e: np.ndarray, samples: Mapping[str, np.ndarray],
         x_e = tf.constant(_crops(lr, sy0[rows], sx0[rows], sh, sw))
         idx = tf.constant(_sample_index(y[rows] - scale * sy0[rows], x[rows] - scale * sx0[rows],
                                         band[rows]))
-        values, sums = gradient_pass(x_e, idx)
-        sums = sums.numpy().astype(np.float64) * sigma[None, None, :]   # (B, K, C), per input σ
-        total = sums.sum(axis=(1, 2))
-        out["knee_share"][rows] = _shares(sums.sum(axis=2), total)
-        out["band_share"][rows] = _shares(sums.sum(axis=1), total)
-        per_input = sums.transpose(0, 2, 1)                              # (B, C, K)
-        out["knee_share_by_input"][rows] = _shares(
-            per_input.reshape(-1, n_knees), per_input.sum(axis=2).reshape(-1)
-        ).reshape(per_input.shape)
-        out["sensitivity"][rows] = np.where(np.isfinite(total), total, 0.0)
+        centre = tf.constant(np.stack([cy[rows] - sy0[rows], cx[rows] - sx0[rows]], axis=1), tf.int32)
+        values, *sums = gradient_pass(x_e, idx, centre)
+        for (suffix, _), block in zip(_SPLITS, sums, strict=True):
+            block = block.numpy().astype(np.float64) * sigma[None, None, :]   # (B, K, C), per input σ
+            total = _split_into(out, suffix, rows, block)
+            if not suffix:
+                out["sensitivity"][rows] = np.where(np.isfinite(total), total, 0.0)
         if not ablation:
             continue
         window = asinh_stretch_multi_knee(tf.constant(_crops(lr, wy0[rows], wx0[rows], wh, ww)),
@@ -484,20 +515,23 @@ def aggregate(parts: Sequence[Mapping[str, Any]], class_names: Sequence[str], n_
               knees: Sequence[float]) -> dict[str, Any]:
     """Summarise per-field samples (each part: ``band``, ``code``,
     ``value_e``, ``knee_share``, ``band_share``, ``ablation_share`` and
-    optionally ``knee_share_by_input``, one row per sample) into a JSON-able
-    record, per output band ``"0"``…:
+    optionally ``knee_share_by_input`` and the local splits ``*_local``, one
+    row per sample) into a JSON-able record, per output band ``"0"``…:
 
     * ``by_class[band][class]``: mean ``knee_share``, ``ablation_share``
       (``None`` when no part carries it), ``band_share``,
-      ``knee_share_by_input`` (C × K, ``None`` when no part carries it) and
-      ``n``; classes without samples are left out;
+      ``knee_share_by_input`` (C × K, ``None`` when no part carries it), the
+      same three ``*_local`` (``None`` when not carried) and ``n``; classes
+      without samples are left out;
     * ``by_brightness``: the :data:`LOG_EDGES_E` edges and, per band, the
-      mean ``knee_share`` (and ``knee_share_by_input``, C × K, when carried)
+      mean ``knee_share`` (and ``knee_share_by_input``, C × K,
+      ``knee_share_local`` and ``knee_share_by_input_local``, when carried)
       and ``n`` per half-decade bin of ``value_e`` (``None`` and 0 for an
       empty bin; values below the first edge go to the first bin, values
       from the last edge on to the last, non-finite values nowhere);
-    * ``cross_band``: per output band the mean ``band_share`` over input
-      bands (``None`` for a band without samples);
+    * ``cross_band`` (and ``cross_band_local`` when carried): per output
+      band the mean ``band_share`` over input bands (``None`` for a band
+      without samples);
     * ``n_samples``.
     """
     n_knees = len(knees)
@@ -505,13 +539,19 @@ def aggregate(parts: Sequence[Mapping[str, Any]], class_names: Sequence[str], n_
     band = _column(parts, "band", None)
     code = _column(parts, "code", None)
     value = _column(parts, "value_e", None)
-    knee = _column(parts, "knee_share", n_knees)
-    cross = _column(parts, "band_share", n_bands)
-    has_ablation = bool(parts) and all("ablation_share" in p for p in parts)
-    abl = _column(parts, "ablation_share", n_knees) if has_ablation else None
-    has_by_input = bool(parts) and all("knee_share_by_input" in p for p in parts)
-    by_input = (_column(parts, "knee_share_by_input", n_bands * n_knees).reshape(-1, n_bands, n_knees)
-                if has_by_input else None)
+    shapes = {"knee_share": (n_knees,), "ablation_share": (n_knees,), "band_share": (n_bands,),
+              "knee_share_by_input": (n_bands, n_knees), "knee_share_local": (n_knees,),
+              "band_share_local": (n_bands,), "knee_share_by_input_local": (n_bands, n_knees)}
+    # Every key every part carries (knee_share and band_share always).
+    rows = {key: _column(parts, key, int(np.prod(shape))).reshape((-1, *shape))
+            for key, shape in shapes.items()
+            if key in ("knee_share", "band_share") or (parts and all(key in p for p in parts))}
+
+    def mean(key: str, sel: np.ndarray):
+        if key not in rows:
+            return None
+        block = rows[key][sel].mean(axis=0)
+        return _matrix(block) if block.ndim == 2 else [float(v) for v in block]
 
     by_class: dict[str, dict[str, Any]] = {}
     for b in range(n_bands):
@@ -520,12 +560,7 @@ def aggregate(parts: Sequence[Mapping[str, Any]], class_names: Sequence[str], n_
             sel = (band == b) & (code == c)
             if not sel.any():
                 continue
-            entry[name] = {"knee_share": _mean(knee[sel]),
-                           "ablation_share": _mean(abl[sel]) if abl is not None else None,
-                           "band_share": _mean(cross[sel]),
-                           "knee_share_by_input": (_matrix(by_input[sel].mean(axis=0))
-                                                   if by_input is not None else None),
-                           "n": int(sel.sum())}
+            entry[name] = {key: mean(key, sel) for key in shapes} | {"n": int(sel.sum())}
         by_class[str(b)] = entry
 
     n_bins = len(LOG_EDGES_E) - 1
@@ -536,19 +571,23 @@ def aggregate(parts: Sequence[Mapping[str, Any]], class_names: Sequence[str], n_
     for b in range(n_bands):
         sel = (band == b) & finite
         counts = np.bincount(bins[sel], minlength=n_bins)
-        sums = np.zeros((n_bins, n_knees))
-        np.add.at(sums, bins[sel], knee[sel])
-        bands[str(b)] = {"knee_share": [[float(v) for v in sums[i] / counts[i]] if counts[i] else None
-                                        for i in range(n_bins)],
-                         "n": [int(v) for v in counts]}
-        if by_input is not None:
-            input_sums = np.zeros((n_bins, n_bands, n_knees))
-            np.add.at(input_sums, bins[sel], by_input[sel])
-            bands[str(b)]["knee_share_by_input"] = [
-                _matrix(input_sums[i] / counts[i]) if counts[i] else None for i in range(n_bins)]
+        bands[str(b)] = {}
+        for key in ("knee_share", "knee_share_by_input", "knee_share_local", "knee_share_by_input_local"):
+            if key not in rows:
+                continue
+            sums = np.zeros((n_bins, *shapes[key]))
+            np.add.at(sums, bins[sel], rows[key][sel])
+            bands[str(b)][key] = [(_matrix(sums[i] / counts[i]) if sums.ndim == 3
+                                   else [float(v) for v in sums[i] / counts[i]]) if counts[i] else None
+                                  for i in range(n_bins)]
+        bands[str(b)]["n"] = [int(v) for v in counts]
 
-    return {"by_class": by_class,
-            "by_brightness": {"edges_e": [float(v) for v in LOG_EDGES_E], "bands": bands},
-            "cross_band": [_mean(cross[band == b]) if (band == b).any() else None
-                           for b in range(n_bands)],
-            "n_samples": int(band.size)}
+    out = {"by_class": by_class,
+           "by_brightness": {"edges_e": [float(v) for v in LOG_EDGES_E], "bands": bands}}
+    for suffix, _ in _SPLITS:
+        if "band_share" + suffix in rows:
+            cross = rows["band_share" + suffix]
+            out["cross_band" + suffix] = [_mean(cross[band == b]) if (band == b).any() else None
+                                          for b in range(n_bands)]
+    out["n_samples"] = int(band.size)
+    return out
