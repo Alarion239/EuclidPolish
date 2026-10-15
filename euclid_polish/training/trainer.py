@@ -246,6 +246,8 @@ class Trainer:
         asinh_knee: float | None = None,
         jit_compile: bool = False,
         batch_stretch: Callable[[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor]] | None = None,
+        steps_per_call: int = 1,
+        device_prefetch: bool = False,
     ):
         """
         Initialize the trainer.
@@ -301,9 +303,26 @@ class Trainer:
             that yields raw electrons, so the CPUs that feed the GPU never
             compute the 6× wider knee stack. ``None`` → batches arrive
             stretched. Validation batches are unaffected.
+        steps_per_call : int
+            Training steps per compiled call (:meth:`train_steps`): the
+            Python loop, the dataset hand-off and the function dispatch run
+            once per call instead of once per step, so the GPU is not left
+            waiting on them. Calls never cross a validation window or a
+            ``step_callback`` cadence boundary, and each step still takes its
+            own scheduled learning rate, so training is step-for-step the
+            same. 1 (default) → one step per call (:meth:`train_step`).
+        device_prefetch : bool
+            Copy upcoming training batches to the GPU in the background
+            (``copy_to_device`` + a device-side ``prefetch``), so the
+            host→device copy overlaps the previous step instead of opening
+            each one. No effect without a GPU.
         """
         self.now = None
         self._batch_stretch = batch_stretch
+        if int(steps_per_call) < 1:
+            raise ValueError(f"steps_per_call must be at least 1, got {steps_per_call!r}")
+        self._steps_per_call = int(steps_per_call)
+        self._device_prefetch = bool(device_prefetch)
         # The gradient step, XLA-compiled on request; without XLA it is traced
         # straight into ``train_step`` (the graph training always had).
         self._gradient_step = (tf.function(self._gradient_step_impl, jit_compile=True)
@@ -488,13 +507,44 @@ class Trainer:
         the decay) and after every rollback/halving (a restore can reset the
         optimiser LR, so re-assert the intended value). ``_lr_scale`` is driven
         by BOTH the gradient-spike guard and the plateau guard."""
+        lr = self._lr_at(step)
+        self.checkpoint.optimizer.learning_rate = lr
+        return lr
+
+    def _lr_at(self, step) -> float:
+        """The LR :meth:`_apply_lr` sets for ``step``, without setting it."""
         if self._lr_schedule is not None:
             base = float(self._lr_schedule(tf.constant(int(step), tf.int64)))
         else:
             base = self._initial_lr
-        lr = max(self._min_lr, base * self._lr_scale)
-        self.checkpoint.optimizer.learning_rate = lr
-        return lr
+        return max(self._min_lr, base * self._lr_scale)
+
+    def _feed(self, train_dataset):
+        """An iterator over the training batches: on the GPU, filled in the
+        background, with ``device_prefetch`` (and a GPU), else the dataset's
+        own."""
+        gpus = tf.config.list_logical_devices("GPU") if self._device_prefetch else []
+        if not gpus:
+            return iter(train_dataset)
+        device = gpus[0].name
+        on_device = train_dataset.apply(tf.data.experimental.copy_to_device(device))
+        # The iterator must be made on the device it copies to.
+        with tf.device(device):
+            return iter(on_device.prefetch(Config.TRAIN_PREFETCH_BATCHES))
+
+    @staticmethod
+    def _call_length(step: int, *, start_step: int, steps: int, per_call: int,
+                     evaluate_every: int, callback_every: int) -> int:
+        """Steps the next call runs from ``step``: up to ``per_call``, never
+        past ``steps``, a validation window's end or a callback cadence mark;
+        the first step of a run alone (its callback fires at once)."""
+        if step == start_step:
+            return 1
+        n = min(int(per_call), int(steps) - step,
+                int(evaluate_every) - step % int(evaluate_every))
+        if callback_every and callback_every > 0:
+            n = min(n, int(callback_every) - step % int(callback_every))
+        return max(1, n)
 
     def _reset_window(self) -> None:
         for var in (self._win_loss_sum, self._win_gnorm_sum, self._win_gnorm_max,
@@ -731,18 +781,35 @@ class Trainer:
         # (a per-step read made the GPU and the Python loop take turns).
         step = start_step
         self._reset_window()
+        batches = self._feed(train_dataset)
 
-        for batch in train_dataset:
-            if step >= steps:
+        while step < steps:
+            n = (1 if self._steps_per_call == 1 else self._call_length(
+                step, start_step=start_step, steps=steps, per_call=self._steps_per_call,
+                evaluate_every=evaluate_every,
+                callback_every=step_callback_every if step_callback is not None else 0))
+            try:
+                if n == 1:
+                    # Follow the LR schedule (× the guard's halving scale).
+                    # No-op for a constant LR with no halvings yet; assigns in
+                    # place otherwise.
+                    if self._lr_schedule is not None or self._lr_scale != 1.0:
+                        self._apply_lr(step + 1)
+                    lr, hr = next(batches)
+                    self.train_step(lr, hr)
+                else:
+                    # Each step's own LR, set inside the call before its step.
+                    self.train_steps(batches, tf.constant(
+                        [self._lr_at(s) for s in range(step + 1, step + n + 1)], tf.float32))
+            except (StopIteration, tf.errors.OutOfRangeError):
+                # A finite training dataset ran out (the live pipelines
+                # repeat forever): stop where the model is.
+                step = int(ckpt.step.numpy())
+                pbar.n = max(0, step)
+                pbar.refresh()
                 break
-            step += 1
-            # Follow the LR schedule (× the guard's halving scale). No-op for a
-            # constant LR with no halvings yet; assigns in place otherwise.
-            if self._lr_schedule is not None or self._lr_scale != 1.0:
-                self._apply_lr(step)
-            lr, hr = batch
-            self.train_step(lr, hr)
-            pbar.update(1)
+            step += n
+            pbar.update(n)
 
             # External progress callback (e.g. the JSONL events file).
             # Cadence-gated so a 200k-step run doesn't write 200k JSONL
@@ -1048,11 +1115,31 @@ class Trainer:
             monitoring; ``GRAD_CLIP_NORM`` is the rescaled magnitude actually
             applied).
         """
+        return self._train_step_impl(lr, hr)
+
+    @tf.function(reduce_retracing=True)
+    def train_steps(self, batches, learning_rates):
+        """``len(learning_rates)`` training steps in one call, each on the
+        next batch of the ``batches`` iterator, after setting its learning
+        rate (what :meth:`_apply_lr` sets per step on the one-step path)."""
+        for i in tf.range(tf.shape(learning_rates)[0]):
+            # One step at a time: a step never starts before the last ends.
+            tf.autograph.experimental.set_loop_options(parallel_iterations=1)
+            lr, hr = next(batches)
+            self.checkpoint.optimizer.learning_rate.assign(learning_rates[i])
+            self._train_step_impl(lr, hr)
+
+    def _train_step_impl(self, lr, hr):
+        """One step's graph: the gradient step, the step counter and the
+        window statistics → ``(loss, pre-clip gradient norm)``."""
         loss_value, gnorm = self._gradient_step(lr, hr)
 
         # Step counter and window statistics stay on the device; the training
-        # loop reads them once per validation window.
-        step = self.checkpoint.step.assign_add(1)
+        # loop reads them once per validation window. The counter waits for
+        # the step itself, so a batch that never came (a finite dataset ending
+        # inside a multi-step call) never counts.
+        with tf.control_dependencies([loss_value, gnorm]):
+            step = self.checkpoint.step.assign_add(1)
         self._win_loss_sum.assign_add(loss_value)
         self._win_gnorm_sum.assign_add(gnorm)
         self._win_gnorm_max.assign(tf.maximum(self._win_gnorm_max, gnorm))

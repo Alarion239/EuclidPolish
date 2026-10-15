@@ -710,6 +710,12 @@ class Config:
     # over 1.8M steps (member_218 OUT_OF_MEMORY). Two batches keep the GPU fed
     # once the pipeline is the bottleneck anyway.
     TRAIN_PREFETCH_BATCHES       = 2
+    # Training steps per compiled call (Trainer ``steps_per_call``) and the
+    # background copy of upcoming batches to the GPU (``device_prefetch``):
+    # the per-step Python loop, dataset hand-off and host→device copy left
+    # the GPU ~25 % idle on an A100 (live 13.95 vs GPU-only 10.44 ms/step).
+    TRAIN_STEPS_PER_CALL         = 1
+    TRAIN_DEVICE_PREFETCH        = False
     DEFAULT_NUM_RES_BLOCKS       = 32
     # PATH ANCHOR ONLY since the ensemble-only refactor: nothing loads a
     # model from this dir anymore — THE model is the ensemble at

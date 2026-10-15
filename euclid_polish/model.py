@@ -529,6 +529,8 @@ class Model:
         knee_loss: str = "plain",
         jit_compile: bool = False,
         mixed_precision: bool = False,
+        steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
+        device_prefetch: bool = Config.TRAIN_DEVICE_PREFETCH,
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
@@ -579,6 +581,9 @@ class Model:
         blocks' convolutions in bfloat16. Either trains a rebuilt copy of the
         network (:meth:`_training_network`) whose checkpoints load into the
         standard float32 build, which inference keeps using.
+        ``steps_per_call`` and ``device_prefetch`` feed the GPU faster (see
+        :class:`~euclid_polish.training.trainer.Trainer`); the steps are the
+        same.
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
@@ -690,6 +695,8 @@ class Model:
                           resume_track=resume_track,
                           provenance_fields=provenance_fields,
                           jit_compile=bool(jit_compile),
+                          steps_per_call=int(steps_per_call),
+                          device_prefetch=bool(device_prefetch),
                           # The live pipeline yields raw electrons; the record
                           # pipeline stretches on the CPU as before.
                           batch_stretch=(self.batch_stretch() if forward_onthefly

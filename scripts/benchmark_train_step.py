@@ -31,6 +31,13 @@ statistics) and the pipeline is
 the forward model training uses. ``clean_train`` is staged to node-local
 scratch first (and removed at the end), as a training job does.
 
+Trainer (``--mode trainer``): the real :meth:`Trainer.train` loop (warmup →
+cosine LR, XLA + bf16 blocks, the member's on-device stretch, the live
+pipeline), timed between step-callback marks after a warm-up, for each feed
+variant in ``--feeds``: ``spcN`` (``steps_per_call=N``), optionally
+``+prefetch`` (``device_prefetch``); plus the same trainer's one-step call on
+a fixed GPU-resident batch (the floor).
+
 Precision (``--mode precision``): runs a trained member on the scoring fields
 (knee-integrated PSNR, as the Leaderboard scores it) and takes its gradients
 on fixed training-sized crops of those fields, under one arithmetic per
@@ -79,10 +86,11 @@ from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.model import Model
 from euclid_polish.training.augmentation import asinh_stretch_multi_knee, stretch_pair
 from euclid_polish.training.forward_onthefly import OnTheFlyForward, member_psf_sets
+from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.staging import stage_records
 from euclid_polish.training.target_blur import blur_target_array, validate_target_fwhm_arcsec
-from euclid_polish.training.trainer import GRAD_CLIP_NORM, GRAD_SPIKE_SKIP_WARMUP_STEPS
+from euclid_polish.training.trainer import GRAD_CLIP_NORM, GRAD_SPIKE_SKIP_WARMUP_STEPS, Trainer
 
 #: The member-206 recipe's knees and starting output knee.
 KNEES = (0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0)
@@ -437,6 +445,118 @@ def _agreement_db(sr, ref) -> np.ndarray:
                      for i in range(len(ref))])
 
 
+def parse_feed(name: str) -> tuple[int, bool]:
+    """``spcN[+prefetch]`` → ``(steps_per_call, device_prefetch)``."""
+    head, _, tail = name.partition("+")
+    if not head.startswith("spc") or not head[3:].isdigit() or int(head[3:]) < 1 \
+            or tail not in ("", "prefetch"):
+        raise ValueError(f"unknown feed variant {name!r}: use spcN or spcN+prefetch")
+    return int(head[3:]), tail == "prefetch"
+
+
+def _forwards(args, ks):
+    """Staged ``clean_train`` path, its staged dir and one forward model per K."""
+    t0 = time.perf_counter()
+    records_dir = (args.records_dir if args.no_stage
+                   else stage_records(args.records_dir, ["clean_train"]))
+    clean = tfrecord_path(records_dir, "clean_train")
+    print(f"records: {clean} ({time.perf_counter() - t0:.0f} s to stage)", flush=True)
+    star_prior = None
+    if args.star_prior_file:
+        with open(args.star_prior_file) as fh:
+            star_prior = json.load(fh)
+    t0 = time.perf_counter()
+    psf_sets, note = member_psf_sets(seed=args.seed, psf_subset=64)
+    print(f"PSF: {note} ({time.perf_counter() - t0:.0f} s); peak RSS {_peak_rss_gb():.1f} GB", flush=True)
+    forwards = {k: OnTheFlyForward(psf_sets, seed=args.seed, crops_per_field=k,
+                                   hr_crop_size=args.hr_crop_size, scale=2, starless=False,
+                                   psf_warp_prob=1.0, psf_warp_alpha_max=5.0, psf_warp_sigma=3.0,
+                                   saturation_mask_prob=0.5,
+                                   target_fwhm_arcsec=Config.TARGET_PSF_FWHM_ARCSEC,
+                                   star_prior_payload=star_prior)
+                for k in ks}
+    return clean, records_dir, forwards
+
+
+def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
+    ks = [int(v) for v in args.crops_per_field.split(",") if v.strip()]
+    feeds = [v.strip() for v in args.feeds.split(",") if v.strip()]
+    knees = tuple(float(q) for q in args.knees.split(","))
+    depth, batch = int(args.depths.split(",")[0]), int(args.batches.split(",")[0])
+    steps, mark_every = int(args.trainer_steps), 50
+    clean, records_dir, forwards = _forwards(args, ks)
+    rows = []
+    tmp = tempfile.mkdtemp(prefix="bench_trainer_")
+    try:
+        for k in ks:
+            for feed in feeds:
+                per_call, prefetch = parse_feed(feed)
+                model = Model(os.path.join(tmp, f"k{k}_{feed}"), scale=2, num_res_blocks=depth,
+                              asinh_knees=knees, output_knee=OUTPUT_KNEE_E, learn_output_knee=True,
+                              seed=args.seed)
+                trainer = Trainer(model._training_network(mixed_precision=True),
+                                  learning_rate=WarmupCosineDecay(peak_lr=args.learning_rate,
+                                                                  final_lr=args.learning_rate * 0.01,
+                                                                  warmup_steps=1000, total_steps=steps),
+                                  checkpoint_dir=os.path.join(tmp, f"ckpt_k{k}_{feed}"),
+                                  loss=model._member_loss("l2", "balanced"), knees=knees,
+                                  output_electrons=True, jit_compile=True,
+                                  batch_stretch=model.batch_stretch(),
+                                  steps_per_call=per_call, device_prefetch=prefetch)
+                ds = model._build_onthefly_pipeline(clean, batch, forwards[k])
+                marks: dict[int, float] = {}
+
+                def mark(step, _total, marks=marks):
+                    marks.setdefault(step, time.perf_counter())
+
+                t0 = time.perf_counter()
+                # No validation inside the run: evaluate_every lies past its end.
+                trainer.train(ds, ds.take(1), steps=steps, evaluate_every=steps + 1,
+                              save_best_only=False, step_callback=mark,
+                              step_callback_every=mark_every)
+                float(trainer.checkpoint.step.numpy())               # drain the GPU
+                end = time.perf_counter()
+                first = min(s for s in marks if s >= args.trainer_warmup)
+                live_ms = (end - marks[first]) / (steps - first) * 1000.0
+                row = {"kind": "trainer", "crops_per_field": k, "feed": feed, "depth": depth,
+                       "batch": batch, "knees": len(knees), "steps": steps,
+                       "live_ms": round(live_ms, 2), "run_s": round(end - t0, 1),
+                       "peak_rss_gb": round(_peak_rss_gb(), 1)}
+                if feed == feeds[0] and k == ks[0]:
+                    # The floor: the same compiled step on one batch already on the GPU.
+                    lr, hr = next(iter(ds))
+                    lr, hr = tf.identity(lr), tf.identity(hr)
+                    for _ in range(20):
+                        trainer.train_step(lr, hr)
+                    float(trainer.checkpoint.step.numpy())
+                    g0 = time.perf_counter()
+                    for _ in range(args.gpu_steps):
+                        trainer.train_step(lr, hr)
+                    float(trainer.checkpoint.step.numpy())
+                    row["gpu_ms"] = round((time.perf_counter() - g0) / args.gpu_steps * 1000.0, 2)
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+                del model, trainer, ds
+                tf_keras.backend.clear_session()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if records_dir != args.records_dir:
+            shutil.rmtree(records_dir, ignore_errors=True)
+    floor = next((r["gpu_ms"] for r in rows if "gpu_ms" in r), None)
+    print(f"\n GPU-only floor: {floor} ms/step")
+    print(" K    feed               live ms/step   × first feed   GPU busy")
+    for k in ks:
+        group = [r for r in rows if r["crops_per_field"] == k]
+        base = group[0]["live_ms"] if group else None
+        for r in group:
+            busy = f"{floor / r['live_ms'] * 100:5.1f}%" if floor else "  -"
+            print(f" {k:<4d} {r['feed']:<18s} {r['live_ms']:12.2f}   {base / r['live_ms']:11.2f}   {busy}")
+    if args.out:
+        with open(args.out, "w") as fh:
+            json.dump({"meta": meta, "rows": rows}, fh, indent=1)
+    return 0
+
+
 def _compare(args: argparse.Namespace) -> int:
     runs = {}
     for path in args.inputs:
@@ -491,7 +611,7 @@ def _compare(args: argparse.Namespace) -> int:
 
 def _parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", choices=("speed", "precision", "compare"), default="speed")
+    p.add_argument("--mode", choices=("speed", "trainer", "precision", "compare"), default="speed")
     p.add_argument("--depths", default="16,32", help="comma list of residual-block counts")
     p.add_argument("--batches", default="4,8,16,32", help="comma list of batch sizes")
     p.add_argument("--variants", default="control",
@@ -499,6 +619,13 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--crops-per-field", default="8,16",
                    help="comma list; the first feeds the gpu row, every value an input and a live row")
     p.add_argument("--hr-crop-size", type=int, default=256)
+    p.add_argument("--feeds", default="spc1,spc1+prefetch,spc25,spc25+prefetch",
+                   help="trainer mode: comma list of spcN[+prefetch] feed variants")
+    p.add_argument("--knees", default="0.001,0.01,0.1,1,10,100,1000,10000",
+                   help="trainer mode: the member's asinh knees")
+    p.add_argument("--trainer-steps", type=int, default=3000, help="trainer mode: steps per run")
+    p.add_argument("--trainer-warmup", type=int, default=500,
+                   help="trainer mode: steps left out of the timing (compile, pipeline fill)")
     p.add_argument("--learning-rate", type=float, default=5e-4)
     p.add_argument("--records-dir", default=Config.RECORDS_DIR_V2)
     p.add_argument("--no-stage", action="store_true", help="read clean_train in place")
@@ -522,6 +649,13 @@ def _parse_args(argv=None) -> argparse.Namespace:
     args = p.parse_args(argv)
     if args.mode == "precision" and not (args.member and args.fields_json and args.out and args.sr_dir):
         p.error("precision mode needs --member, --fields-json, --out and --sr-dir")
+    if args.mode == "trainer":
+        for v in args.feeds.split(","):
+            if v.strip():
+                try:
+                    parse_feed(v.strip())
+                except ValueError as exc:
+                    p.error(str(exc))
     if args.mode == "speed":
         for v in args.variants.split(","):
             if v.strip():
@@ -542,6 +676,8 @@ def main(argv=None) -> int:
     print(json.dumps(meta), flush=True)
     if args.mode == "precision":
         return _precision(args, meta)
+    if args.mode == "trainer":
+        return _trainer_mode(args, meta)
     return _speed(args, meta)
 
 
