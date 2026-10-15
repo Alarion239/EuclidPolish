@@ -32,11 +32,15 @@ export type ImageLayer = "sr" | "lr";
 export const FIELD_SETS: readonly FieldSet[] = ["synthetic", "real"];
 export const MAX_SYNTHETIC = 100;
 export const MAX_PER_CLASS = 256;
+export const DEFAULT_PER_CLASS = 24;
 export const MAX_SEED = 2 ** 31 - 1;
 /** Models overlaid at once (small multiples). */
 export const MAX_OVERLAY = 4;
-/** The confirm's cost model: seconds per field per model. */
-export const SECONDS_PER_FIELD = 3;
+/** The confirm's cost model, per field per model: a fixed part (the SR and the
+ *  classes) plus a part per sample class (gradients and ablation, linear in
+ *  samples per class). Measured on an M4 CPU: ~19 s per field at 24 per class. */
+export const SECONDS_PER_FIELD = 2;
+export const SECONDS_PER_CLASS_SAMPLE = 0.7;
 
 /* ── normalisation ─────────────────────────────────────────────────────── */
 
@@ -145,7 +149,7 @@ export function normaliseRecord(raw: unknown): KneeRunRecord | null {
   const p = obj(raw.params);
   const params: KneeRunParams = {
     models: strs(p.models), synthetic: numOr(p.synthetic, 0), tiles: strs(p.tiles),
-    per_class: numOr(p.per_class, 24), seed: numOr(p.seed, 0),
+    per_class: numOr(p.per_class, DEFAULT_PER_CLASS), seed: numOr(p.seed, 0),
   };
   const models: Record<string, KneeModelResult> = {};
   const raws = obj(raw.models);
@@ -398,7 +402,7 @@ export function defaultModelPick(models: readonly KneeModelChoice[], n = 3): str
 }
 
 export type RunForm = { models: string[]; synthetic: string; tiles: string[]; perClass: string; seed: string };
-export const DEFAULT_FORM: Omit<RunForm, "models" | "tiles"> = { synthetic: "20", perClass: "24", seed: "0" };
+export const DEFAULT_FORM: Omit<RunForm, "models" | "tiles"> = { synthetic: "20", perClass: String(DEFAULT_PER_CLASS), seed: "0" };
 
 const wholeIn = (raw: string, lo: number, hi: number): number | null => {
   const t = raw.trim();
@@ -436,8 +440,9 @@ export function runFormData(f: { models: readonly string[]; synthetic: number; t
 }
 
 /** "local job: 3 models × 22 fields, ~3 min" (~3 s per field per model). */
-export function estimateText(nModels: number, nFields: number): string {
-  const s = SECONDS_PER_FIELD * Math.max(0, nModels) * Math.max(0, nFields);
+export function estimateText(nModels: number, nFields: number, perClass = DEFAULT_PER_CLASS): string {
+  const perField = SECONDS_PER_FIELD + SECONDS_PER_CLASS_SAMPLE * Math.max(0, perClass);
+  const s = perField * Math.max(0, nModels) * Math.max(0, nFields);
   const min = s / 60;
   const time = min < 90 ? `~${Math.max(1, Math.round(min))} min` : `~${+(min / 60).toPrecision(2)} h`;
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;

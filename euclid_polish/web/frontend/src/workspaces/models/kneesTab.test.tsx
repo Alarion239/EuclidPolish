@@ -192,14 +192,14 @@ describe("knees tab", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Filter real tiles" }), { target: { value: "poster" } });
     await waitFor(() => expect(within(tiles).getAllByRole("checkbox")).toHaveLength(1));
     fireEvent.click(within(tiles).getByRole("checkbox", { name: /poster\/target_181255/ }));
-    expect(screen.getByText("local job: 2 models × 6 fields, ~1 min")).toBeTruthy();
+    expect(screen.getByText("local job: 2 models × 6 fields, ~4 min")).toBeTruthy();
     expect(posts()).toHaveLength(0);
     expect(gets("/api/knee-attribution/models")).toHaveLength(1);
     expect(gets("/api/real/tile")).toHaveLength(0);                       // no cached tiles: never asked
 
     fireEvent.click(screen.getByRole("button", { name: "Run…" }));
     const dlg = await screen.findByRole("alertdialog", { name: "Run knee attribution?" });
-    expect(dlg.textContent).toContain("Local job: 2 models × 6 fields, ~1 min.");
+    expect(dlg.textContent).toContain("Local job: 2 models × 6 fields, ~4 min.");
     await answer("Run knee attribution?", "Cancel");
     expect(posts()).toHaveLength(0);
 

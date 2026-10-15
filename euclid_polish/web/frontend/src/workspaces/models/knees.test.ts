@@ -176,10 +176,11 @@ describe("the run form", () => {
   it("posts comma lists and numbers, and estimates ~3 s per field per model", () => {
     expect(runFormData({ models: ["universal:member_222", "universal:member_221"], synthetic: 20, tiles: ["poster/a", "nexus/b"], perClass: 24, seed: 7 }))
       .toEqual({ models: "universal:member_222,universal:member_221", synthetic: "20", tiles: "poster/a,nexus/b", per_class: "24", seed: "7" });
-    expect(estimateText(3, 22)).toBe("local job: 3 models × 22 fields, ~3 min");
+    expect(estimateText(3, 22)).toBe("local job: 3 models × 22 fields, ~21 min");
     expect(estimateText(1, 1)).toBe("local job: 1 model × 1 field, ~1 min");
-    expect(estimateText(4, 100)).toBe("local job: 4 models × 100 fields, ~20 min");
-    expect(estimateText(30, 100)).toBe("local job: 30 models × 100 fields, ~2.5 h");
+    expect(estimateText(4, 34)).toBe("local job: 4 models × 34 fields, ~43 min");
+    expect(estimateText(4, 100, 8)).toBe("local job: 4 models × 100 fields, ~51 min");
+    expect(estimateText(30, 100)).toBe("local job: 30 models × 100 fields, ~16 h");
   });
 });
 

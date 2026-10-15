@@ -15,7 +15,7 @@ import {
   KNEE_TILE_SOURCES, useKneeModels, useTileList, useTileSources, type KneeModelChoice, type TileList,
 } from "../kneesApi";
 import {
-  checkRunForm, defaultModelPick, estimateText, kneeLabel, MAX_PER_CLASS, MAX_SYNTHETIC, modelShort, normaliseModels, runFormData,
+  checkRunForm, DEFAULT_PER_CLASS, defaultModelPick, estimateText, kneeLabel, MAX_PER_CLASS, MAX_SYNTHETIC, modelShort, normaliseModels, runFormData,
   type RunForm,
 } from "../knees";
 import { startKneeAttribution } from "../jobs";
@@ -23,7 +23,7 @@ import { startKneeAttribution } from "../jobs";
 /** The panel's form state (`models: null` = the default pick until the user
  *  changes it). */
 export type RunDraft = Omit<RunForm, "models"> & { models: string[] | null; filter: string };
-export const EMPTY_DRAFT: RunDraft = { models: null, synthetic: "20", tiles: [], perClass: "24", seed: "0", filter: "" };
+export const EMPTY_DRAFT: RunDraft = { models: null, synthetic: "20", tiles: [], perClass: String(DEFAULT_PER_CLASS), seed: "0", filter: "" };
 
 const plural = (n: number, one: string, many = `${one}s`) => `${formatCount(n)} ${n === 1 ? one : many}`;
 const MAX_TILE_ROWS = 300;
@@ -58,7 +58,7 @@ function RunBody({ draft, setDraft, busy, onStarted }: {
   const form: RunForm = { models: picked, synthetic: draft.synthetic, tiles: draft.tiles, perClass: draft.perClass, seed: draft.seed };
   const check = checkRunForm(form);
   const nFields = (check.synthetic ?? 0) + draft.tiles.length;
-  const estimate = estimateText(picked.length, nFields);
+  const estimate = estimateText(picked.length, nFields, check.perClass ?? DEFAULT_PER_CLASS);
   const run = async () => {
     if (!check.ok || check.synthetic == null || check.perClass == null || check.seed == null) return;
     const id = await startKneeAttribution(runFormData({
