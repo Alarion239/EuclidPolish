@@ -715,13 +715,16 @@ class Config:
     # the per-step Python loop, dataset hand-off and host→device copy left
     # the GPU ~25 % idle on an A100 (live 13.95 vs GPU-only 10.44 ms/step).
     # gpu_test (3g MIG slice, d16, 8 knees, XLA + bf16, 16 CPUs, job
-    # 53200646): 25.32 → 23.18 ms/step at K=16 (floor 22.01; GPU busy 87 →
-    # 95 %), 25.86 → 23.92 at K=8; 50 per call is no better than 25.
+    # 53200646): 25.32 → 23.18 ms/step at K=16, 25.86 → 23.92 at K=8; A100
+    # (job 53207097): 16.99 → 14.23 at K=16, 17.84 → 14.84 at K=8. 50 per
+    # call is no better than 25. The bare compiled step takes 19.3 ms (MIG)
+    # and 10.5 ms (A100): ~1.4 ms of the rest is the input pipeline and
+    # ~2.3 ms the in-graph loop. Running the whole step as one XLA function
+    # from a Python loop instead was slower with live input (25.1 vs 23.2
+    # ms, isolated runs, job 53302342): the loop holds the GIL the forward
+    # model needs.
     TRAIN_STEPS_PER_CALL         = 25
     TRAIN_DEVICE_PREFETCH        = True
-    # The whole step (LR, gradient step, window statistics) as one XLA
-    # function (Trainer ``fused_step``; with XLA and steps_per_call > 1).
-    TRAIN_FUSED_STEP             = False
     DEFAULT_NUM_RES_BLOCKS       = 32
     # PATH ANCHOR ONLY since the ensemble-only refactor: nothing loads a
     # model from this dir anymore — THE model is the ensemble at

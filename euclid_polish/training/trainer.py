@@ -248,7 +248,6 @@ class Trainer:
         batch_stretch: Callable[[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor]] | None = None,
         steps_per_call: int = 1,
         device_prefetch: bool = False,
-        fused_step: bool = False,
     ):
         """
         Initialize the trainer.
@@ -317,16 +316,6 @@ class Trainer:
             (``copy_to_device`` + a device-side ``prefetch``), so the
             host→device copy overlaps the previous step instead of opening
             each one. No effect without a GPU.
-        fused_step : bool
-            With ``jit_compile`` and ``steps_per_call`` > 1: compile the
-            whole step (the learning rate, the gradient step, the window
-            statistics and the spike watch) as ONE XLA function, its step
-            number and learning rate passed in, and run each call's steps as
-            a plain Python loop over it on the (device-prefetched) batches.
-            On a gpu_test MIG slice the in-graph loop of :meth:`train_steps`
-            cost ~2.3 ms per step over this function's own 19.3 ms. The
-            int32 step counter (host memory, outside XLA's reach) advances
-            once per call.
         """
         self.now = None
         self._batch_stretch = batch_stretch
@@ -334,8 +323,6 @@ class Trainer:
             raise ValueError(f"steps_per_call must be at least 1, got {steps_per_call!r}")
         self._steps_per_call = int(steps_per_call)
         self._device_prefetch = bool(device_prefetch)
-        self._fused_step = (tf.function(self._fused_step_impl, jit_compile=True)
-                            if fused_step and jit_compile and self._steps_per_call > 1 else None)
         # The gradient step, XLA-compiled on request; without XLA it is traced
         # straight into ``train_step`` (the graph training always had).
         self._gradient_step = (tf.function(self._gradient_step_impl, jit_compile=True)
@@ -810,8 +797,6 @@ class Trainer:
                         self._apply_lr(step + 1)
                     lr, hr = next(batches)
                     self.train_step(lr, hr)
-                elif self._fused_step is not None:
-                    self._run_fused(batches, step, n)
                 else:
                     # Each step's own LR, set inside the call before its step.
                     self.train_steps(batches, tf.constant(
@@ -1143,31 +1128,6 @@ class Trainer:
             lr, hr = next(batches)
             self.checkpoint.optimizer.learning_rate.assign(learning_rates[i])
             self._train_step_impl(lr, hr)
-
-    def _run_fused(self, batches, step: int, n: int) -> None:
-        """Steps ``step + 1 … step + n`` (``fused_step``): each one call of
-        the XLA step on the next batch with its own LR and step number, the
-        host counter advanced once at the end. A dataset that runs out
-        mid-call still counts the steps it did."""
-        done = 0
-        try:
-            for s in range(step + 1, step + n + 1):
-                lr, hr = next(batches)
-                self._fused_step(lr, hr, tf.constant(self._lr_at(s), tf.float32),
-                                 tf.constant(s, tf.int32))
-                done += 1
-        finally:
-            self.checkpoint.step.assign_add(done)
-
-    def _fused_step_impl(self, lr, hr, learning_rate, step):
-        """One whole step for XLA (``fused_step``): set ``learning_rate``,
-        the gradient step and the window statistics, ``step`` being this
-        step's number (the counter itself advances outside) → ``(loss,
-        pre-clip gradient norm)``."""
-        self.checkpoint.optimizer.learning_rate.assign(learning_rate)
-        loss_value, gnorm = self._gradient_step_impl(lr, hr)
-        self._update_window(loss_value, gnorm, step)
-        return loss_value, gnorm
 
     def _train_step_impl(self, lr, hr):
         """One step's graph: the gradient step, the step counter and the

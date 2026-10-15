@@ -12,7 +12,6 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
-from euclid_polish.training import trainer as trainer_module
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import Trainer
@@ -123,51 +122,3 @@ def test_device_prefetch_without_a_gpu_is_the_plain_feed(tmp_path):
 def test_steps_per_call_must_be_positive(tmp_path):
     with pytest.raises(ValueError, match="steps_per_call"):
         Trainer(_model(), checkpoint_dir=str(tmp_path / "bad"), steps_per_call=0)
-
-
-def test_the_fused_xla_step_trains_like_the_unfused_one(tmp_path, monkeypatch):
-    """The whole step as one XLA function: the same weights, window
-    statistics and step count, the spike watch's warmup gate included (its
-    step number now comes in as an argument)."""
-    monkeypatch.setattr(trainer_module, "GRAD_SPIKE_SKIP_WARMUP_STEPS", 5)
-    runs = {}
-    for fused in (False, True):
-        tf.keras.utils.set_random_seed(7)
-        net = wdsr(scale=2, nchan_in=4, nchan_out=1, num_res_blocks=1, num_filters=4,
-                   eager_weight_norm_init=True)
-        t = Trainer(net, checkpoint_dir=str(tmp_path / f"fused{fused}"), seed=11,
-                    learning_rate=WarmupCosineDecay(peak_lr=1e-3, final_lr=1e-5, warmup_steps=4,
-                                                    total_steps=12),
-                    jit_compile=True, steps_per_call=4, fused_step=fused)
-        assert (t._fused_step is not None) == fused
-        # No validation inside: the window keeps every step.
-        t.train(_pairs(), _pairs(n=2, seed=10, batch=1, repeat=False), steps=12,
-                evaluate_every=100, save_best_only=False, validate_images=2)
-        runs[fused] = t
-    plain, fused = runs[False], runs[True]
-    assert int(fused.checkpoint.step.numpy()) == int(plain.checkpoint.step.numpy()) == 12
-    for name in ("_win_loss_sum", "_win_gnorm_sum", "_win_gnorm_max", "_win_spike_norm", "_win_steps"):
-        np.testing.assert_allclose(getattr(fused, name).numpy(), getattr(plain, name).numpy(),
-                                   rtol=1e-4, err_msg=name)
-    assert float(fused._win_spike_norm.numpy()) > 0.0              # steps 6–12 watched
-    for a, b in zip(plain.model.trainable_variables, fused.model.trainable_variables, strict=True):
-        np.testing.assert_allclose(a.numpy(), b.numpy(), rtol=1e-4, atol=1e-6)
-
-
-def test_fused_needs_xla_and_several_steps_per_call(tmp_path):
-    assert Trainer(_model(), checkpoint_dir=str(tmp_path / "a"), steps_per_call=4,
-                   fused_step=True)._fused_step is None                      # no XLA
-    assert Trainer(_model(), checkpoint_dir=str(tmp_path / "b"), jit_compile=True,
-                   fused_step=True)._fused_step is None                      # one step per call
-
-
-def test_a_finite_dataset_ends_the_fused_loop_with_the_right_count(tmp_path):
-    tf.keras.utils.set_random_seed(7)
-    net = wdsr(scale=2, nchan_in=4, nchan_out=1, num_res_blocks=1, num_filters=4,
-               eager_weight_norm_init=True)
-    trainer = Trainer(net, checkpoint_dir=str(tmp_path / "fused_finite"), jit_compile=True,
-                      steps_per_call=4, fused_step=True)
-    trainer.train(_pairs(n=14, batch=2, repeat=False), _pairs(n=2, seed=10, batch=1, repeat=False),
-                  steps=50, evaluate_every=100, save_best_only=False, validate_images=2)
-    assert int(trainer.checkpoint.step.numpy()) == 7
-    assert float(trainer._win_steps.numpy()) == 7.0

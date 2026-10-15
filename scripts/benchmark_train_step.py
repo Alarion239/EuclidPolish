@@ -445,20 +445,19 @@ def _agreement_db(sr, ref) -> np.ndarray:
                      for i in range(len(ref))])
 
 
-FEED_FLAGS = ("prefetch", "fused", "fixed")
+FEED_FLAGS = ("prefetch", "fixed")
 
 
-def parse_feed(name: str) -> tuple[int, bool, bool, bool]:
-    """``spcN[+prefetch][+fused][+fixed]`` → ``(steps_per_call,
-    device_prefetch, fused_step, fixed)``; ``fixed`` trains on one live
-    batch repeated (the loop without the input pipeline)."""
+def parse_feed(name: str) -> tuple[int, bool, bool]:
+    """``spcN[+prefetch][+fixed]`` → ``(steps_per_call, device_prefetch,
+    fixed)``; ``fixed`` trains on one live batch repeated (the loop without
+    the input pipeline)."""
     head, *flags = name.split("+")
     if (not head.startswith("spc") or not head[3:].isdigit() or int(head[3:]) < 1
-            or len(set(flags)) != len(flags) or not set(flags) <= set(FEED_FLAGS)
-            or ("fused" in flags and int(head[3:]) < 2)):
+            or len(set(flags)) != len(flags) or not set(flags) <= set(FEED_FLAGS)):
         raise ValueError(f"unknown feed variant {name!r}: use spcN with optional "
-                         "+prefetch, +fused (needs N > 1) and +fixed")
-    return int(head[3:]), "prefetch" in flags, "fused" in flags, "fixed" in flags
+                         "+prefetch and +fixed")
+    return int(head[3:]), "prefetch" in flags, "fixed" in flags
 
 
 def _on_gpu(*tensors):
@@ -584,7 +583,7 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
     try:
         for k in ks:
             for feed in feeds:
-                per_call, prefetch, fused, fixed = parse_feed(feed)
+                per_call, prefetch, fixed = parse_feed(feed)
                 model = Model(os.path.join(tmp, f"k{k}_{feed}"), scale=2, num_res_blocks=depth,
                               asinh_knees=knees, output_knee=OUTPUT_KNEE_E, learn_output_knee=True,
                               seed=args.seed)
@@ -596,8 +595,7 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
                                   loss=model._member_loss("l2", "balanced"), knees=knees,
                                   output_electrons=True, jit_compile=True,
                                   batch_stretch=model.batch_stretch(),
-                                  steps_per_call=per_call, device_prefetch=prefetch,
-                                  fused_step=fused)
+                                  steps_per_call=per_call, device_prefetch=prefetch)
                 ds = model._build_onthefly_pipeline(clean, batch, forwards[k])
                 if fixed:
                     ds = tf.data.Dataset.from_tensors(next(iter(ds))).repeat()
@@ -619,18 +617,13 @@ def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
                        "batch": batch, "knees": len(knees), "steps": steps,
                        "live_ms": round(live_ms, 2), "run_s": round(end - t0, 1),
                        "peak_rss_gb": round(_peak_rss_gb(), 1)}
-                if k == ks[0] and (fused or per_call == 1) and not fixed:
-                    # The floor: this trainer's compiled step on one batch
+                if k == ks[0] and per_call == 1 and not fixed:
+                    # The floor: this trainer's one-step call on one batch
                     # already on the GPU (no input, no loop).
                     lr, hr = _on_gpu(*next(iter(ds)))
-                    if fused:
-                        lr_value, step_no = _on_gpu(tf.constant(1e-4), tf.constant(10_000))
 
-                        def one(lr=lr, hr=hr, lr_value=lr_value, step_no=step_no, t=trainer):
-                            t._fused_step(lr, hr, lr_value, step_no)
-                    else:
-                        def one(lr=lr, hr=hr, t=trainer):
-                            t.train_step(lr, hr)
+                    def one(lr=lr, hr=hr, t=trainer):
+                        t.train_step(lr, hr)
                     row["gpu_ms"] = round(_floor_ms(one, args.gpu_steps,
                                                     lambda t=trainer: float(t._win_steps.numpy())), 2)
                     if feed == feeds[0]:
@@ -731,8 +724,8 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--crops-per-field", default="8,16",
                    help="comma list; the first feeds the gpu row, every value an input and a live row")
     p.add_argument("--hr-crop-size", type=int, default=256)
-    p.add_argument("--feeds", default="spc1,spc25+prefetch,spc25+prefetch+fused",
-                   help="trainer mode: comma list of spcN[+prefetch][+fused] feed variants")
+    p.add_argument("--feeds", default="spc1,spc25+prefetch,spc25+prefetch+fixed",
+                   help="trainer mode: comma list of spcN[+prefetch][+fixed] feed variants")
     p.add_argument("--knees", default="0.001,0.01,0.1,1,10,100,1000,10000",
                    help="trainer mode: the member's asinh knees")
     p.add_argument("--trainer-steps", type=int, default=3000, help="trainer mode: steps per run")
