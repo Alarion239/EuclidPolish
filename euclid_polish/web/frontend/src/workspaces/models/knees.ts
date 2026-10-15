@@ -5,10 +5,12 @@
    - the brightness curves (bin centres = geometric means of the edges, null
      bins skipped), the class bars, the gradient-vs-ablation agreement, the
      cross-band matrix and the field explorer's dots (dominant knee);
-   - the input band whose own knee split is drawn (all: the σ-weighted split
-     over every input band), with its fallbacks (the ablation split, a record
-     before the per-input split), the per-electron (version 1) warning and
-     the field's noise σ line;
+   - the split drawn (the receptive-field gradient, the local 3×3 gradient
+     or the ablation) and the input band whose own knee split is drawn (all:
+     the σ-weighted split over every input band), with their fallbacks (a
+     record before the local or the per-input split; the ablation has no
+     per-input split), the per-electron (version 1) warning and the field's
+     noise σ line;
    - one colour per knee value on a sequential ramp (faint knee → bright
      knee), the same value the same colour in every panel;
    - the run form: defaults, validation, the confirm's estimate and the
@@ -30,7 +32,9 @@ export const SYNTHETIC_CLASSES = ["saturated", "star core", "star wing", "galaxy
 export const REAL_CLASSES = ["sky", "faint", "mid", "bright", "core", "blank"] as const;
 
 export type FieldSet = "synthetic" | "real";
-export type ShareKind = "gradient" | "ablation";
+/** The split: the gradient summed over the receptive field (`gradient`) or
+ *  over the 3×3 LR pixels under the sample (`local`), or the ablation. */
+export type ShareKind = "gradient" | "local" | "ablation";
 export type ImageLayer = "sr" | "lr";
 
 export const FIELD_SETS: readonly FieldSet[] = ["synthetic", "real"];
@@ -62,6 +66,14 @@ const numbers = (v: unknown): number[] => (Array.isArray(v) ? v.map((x) => (fini
 /** A C × K share matrix (rows as `shares`); null when absent or empty. */
 const matrix = (v: unknown): number[][] | null =>
   (Array.isArray(v) && v.length ? v.map((row) => (Array.isArray(row) ? shares(row) : [])) : null);
+/** A share vector, null when absent. */
+const vector = (v: unknown): number[] | null => (Array.isArray(v) ? shares(v) : null);
+/** Per bin a share vector (null: no sample); the list null when absent. */
+const binVectors = (v: unknown): (number[] | null)[] | null =>
+  (Array.isArray(v) ? v.map((s) => (Array.isArray(s) ? shares(s) : null)) : null);
+/** A band × band matrix (missing cells null, a non-array row empty). */
+const crossMatrix = (v: unknown): (number | null)[][] | null =>
+  (Array.isArray(v) ? v.map((row) => (Array.isArray(row) ? row.map(numOrNull) : [])) : null);
 
 export function normaliseRuns(raw: unknown): KneeRunSummary[] {
   const list = Array.isArray(obj(raw).runs) ? (obj(raw).runs as unknown[]) : [];
@@ -85,7 +97,9 @@ function normaliseClassShares(raw: unknown): ClassShares {
   const r = obj(raw);
   return {
     knee_share: shares(r.knee_share), ablation_share: shares(r.ablation_share), band_share: shares(r.band_share),
-    knee_share_by_input: matrix(r.knee_share_by_input), n: numOr(r.n, 0),
+    knee_share_by_input: matrix(r.knee_share_by_input),
+    knee_share_local: vector(r.knee_share_local), band_share_local: vector(r.band_share_local),
+    knee_share_by_input_local: matrix(r.knee_share_by_input_local), n: numOr(r.n, 0),
   };
 }
 
@@ -101,24 +115,24 @@ export function normaliseAggregate(raw: unknown): KneeAggregate | null {
   for (const [band, v] of Object.entries(obj(bb.bands))) {
     const b = obj(v);
     bands[band] = {
-      knee_share: Array.isArray(b.knee_share) ? b.knee_share.map((s) => (Array.isArray(s) ? shares(s) : null)) : [],
+      knee_share: binVectors(b.knee_share) ?? [],
       knee_share_by_input: Array.isArray(b.knee_share_by_input) ? b.knee_share_by_input.map(matrix) : null,
+      knee_share_local: binVectors(b.knee_share_local),
+      knee_share_by_input_local: Array.isArray(b.knee_share_by_input_local) ? b.knee_share_by_input_local.map(matrix) : null,
       n: Array.isArray(b.n) ? b.n.map((x) => numOr(x, 0)) : [],
     };
   }
-  const cross = Array.isArray(raw.cross_band)
-    ? raw.cross_band.map((row) => (Array.isArray(row) ? row.map(numOrNull) : []))
-    : [];
   return {
     by_class: byClass,
     by_brightness: { edges_e: numbers(bb.edges_e), bands },
-    cross_band: cross,
+    cross_band: crossMatrix(raw.cross_band) ?? [],
+    cross_band_local: crossMatrix(raw.cross_band_local),
     n_samples: numOr(raw.n_samples, 0),
   };
 }
 
 const EMPTY_SAMPLES: KneeSamples = {
-  band: [], y: [], x: [], class: [], value_e: [], knee_share: [], ablation_share: [], band_share: [], sensitivity: [],
+  band: [], y: [], x: [], class: [], value_e: [], knee_share: [], ablation_share: [], band_share: [], sensitivity: [], knee_share_local: [],
 };
 
 function normaliseSamples(raw: unknown): KneeSamples {
@@ -127,7 +141,7 @@ function normaliseSamples(raw: unknown): KneeSamples {
   return {
     band: numbers(raw.band), y: numbers(raw.y), x: numbers(raw.x), class: strs(raw.class), value_e: numbers(raw.value_e),
     knee_share: mat(raw.knee_share), ablation_share: mat(raw.ablation_share), band_share: mat(raw.band_share),
-    sensitivity: numbers(raw.sensitivity),
+    sensitivity: numbers(raw.sensitivity), knee_share_local: mat(raw.knee_share_local),
   };
 }
 
@@ -249,7 +263,28 @@ export function binCentres(edges: readonly number[]): number[] {
   return out;
 }
 
-/* ── the input band ────────────────────────────────────────────────────── */
+/* ── the split and the input band ──────────────────────────────────────── */
+
+/** The splits (URL `?split=`), in the control's order. */
+export const SHARE_KINDS: readonly ShareKind[] = ["gradient", "local", "ablation"];
+
+/** Whether the aggregate carries the local (3×3) splits (version 3). */
+export function hasLocalSplit(agg: KneeAggregate | null | undefined): boolean {
+  if (!agg) return false;
+  return agg.cross_band_local != null
+    || Object.values(agg.by_brightness.bands).some((b) => b.knee_share_local != null)
+    || Object.values(agg.by_class).some((classes) => Object.values(classes).some((v) => v.knee_share_local != null));
+}
+
+export type SplitView = { split: ShareKind; missing: boolean };
+
+/** The split drawn: the URL's pick, except the receptive-field gradient for
+ *  `local` when an aggregate shown predates the local split (`missing`). */
+export function effectiveSplit(picked: ShareKind, aggs: readonly (KneeAggregate | null | undefined)[]): SplitView {
+  const shown = aggs.filter((a): a is KneeAggregate => !!a);
+  const missing = picked === "local" && shown.length > 0 && !shown.every(hasLocalSplit);
+  return { split: missing ? "gradient" : picked, missing };
+}
 
 /** Whose knee split is drawn (URL `?input=`): "all" = the σ-weighted split
  *  over every input band, else one input band's own split (its row of the
@@ -262,22 +297,25 @@ export const NOISE_WEIGHTED_VERSION = 2;
 /** The input's row in a by-input matrix (null: all input bands). */
 export const inputIndex = (input: KneeInput): number | null => (input === "all" ? null : KNEE_INPUTS.indexOf(input) - 1);
 
-/** Whether the aggregate carries the per-input knee split (version 2). */
-export function hasInputSplit(agg: KneeAggregate | null | undefined): boolean {
+/** Whether the aggregate carries the per-input knee split (version 2; the
+ *  local one with `local`, version 3). */
+export function hasInputSplit(agg: KneeAggregate | null | undefined, local = false): boolean {
   if (!agg) return false;
-  return Object.values(agg.by_brightness.bands).some((b) => b.knee_share_by_input != null)
-    || Object.values(agg.by_class).some((classes) => Object.values(classes).some((v) => v.knee_share_by_input != null));
+  const key = local ? "knee_share_by_input_local" : "knee_share_by_input";
+  return Object.values(agg.by_brightness.bands).some((b) => b[key] != null)
+    || Object.values(agg.by_class).some((classes) => Object.values(classes).some((v) => v[key] != null));
 }
 
 export type InputView = { input: KneeInput; disabled: boolean; missing: boolean };
 
-/** The input split drawn: the URL's pick, except "all" under the ablation
- *  split (it removes a knee in every input band at once: `disabled`) and
- *  when an aggregate shown predates the per-input split (`missing`). */
+/** The input split drawn under the split `kind` (the effective one): the
+ *  URL's pick, except "all" under the ablation split (it removes a knee in
+ *  every input band at once: `disabled`) and when an aggregate shown predates
+ *  the per-input split of that gradient (`missing`). */
 export function effectiveInput(picked: KneeInput, kind: ShareKind, aggs: readonly (KneeAggregate | null | undefined)[]): InputView {
   const disabled = kind === "ablation";
   const shown = aggs.filter((a): a is KneeAggregate => !!a);
-  const missing = !disabled && picked !== "all" && shown.length > 0 && !shown.every(hasInputSplit);
+  const missing = !disabled && picked !== "all" && shown.length > 0 && !shown.every((a) => hasInputSplit(a, kind === "local"));
   return { input: disabled || missing ? "all" : picked, disabled, missing };
 }
 
@@ -299,21 +337,25 @@ export type BrightnessLine = { knee: number; index: number; x: number[]; y: numb
 /** One line per knee: its mean share by pixel brightness in `band`, over the
  *  bins that hold samples (null / n = 0 bins skipped). `input`: one input
  *  band's own split (its row of each bin's by-input matrix) instead of the
- *  all-input one; an aggregate without the per-input split (an older record)
- *  draws the all-input split (effectiveInput says so). */
+ *  all-input one; `kind` "local": the local (3×3) split (the ablation has no
+ *  brightness curves: it draws the receptive-field gradient). An aggregate
+ *  without the local or the per-input split (an older record) draws the one
+ *  it has (effectiveSplit / effectiveInput say so). */
 export function brightnessLines(
-  agg: KneeAggregate | null | undefined, band: string, knees: readonly number[], input: KneeInput = "all",
+  agg: KneeAggregate | null | undefined, band: string, knees: readonly number[], input: KneeInput = "all", kind: ShareKind = "gradient",
 ): BrightnessLine[] {
   if (!agg) return [];
   const per = agg.by_brightness.bands[String(bandIndex(band))];
   if (!per) return [];
   const centres = binCentres(agg.by_brightness.edges_e);
   const row = inputIndex(input);
-  const byInput = row == null ? null : per.knee_share_by_input ?? null;
+  const local = kind === "local" ? per.knee_share_local ?? null : null;
+  const inputs = local ? per.knee_share_by_input_local : per.knee_share_by_input;
+  const byInput = row == null ? null : inputs ?? null;
   return knees.map((knee, k) => {
     const line: BrightnessLine = { knee, index: k, x: [], y: [], n: [] };
     centres.forEach((c, i) => {
-      const s = byInput && row != null ? byInput[i]?.[row] : per.knee_share[i];
+      const s = byInput && row != null ? byInput[i]?.[row] : (local ?? per.knee_share)[i];
       const n = per.n[i] ?? 0;
       if (!s || !(n > 0) || !Number.isFinite(c) || !(c > 0)) return;
       const v = s[k];
@@ -360,11 +402,13 @@ export const classOrder = (set: FieldSet): readonly string[] => (set === "real" 
 export type ClassRow = { cls: string; n: number; shares: number[]; gradient: number[]; ablation: number[]; band: number[] };
 
 /** The classes sampled in `band` (n > 0), in the set's order (unknown classes
- *  after, alphabetically); `shares` = the gradient or the ablation split.
- *  `input` picks one input band's own gradient split (the class's by-input
- *  row; the all-input split when the class has none); the ablation split is
- *  over all input bands at once and ignores it. `gradient` stays the
- *  all-input split (the agreement compares it with the ablation). */
+ *  after, alphabetically); `shares` = the split `kind`: the receptive-field
+ *  gradient, the local (3×3) one (the receptive field's when the class has
+ *  none) or the ablation. `input` picks one input band's own gradient split
+ *  (the class's by-input row; the all-input split when the class has none);
+ *  the ablation split is over all input bands at once and ignores it.
+ *  `gradient` stays the receptive-field, all-input split (the agreement
+ *  compares it with the ablation). */
 export function classRows(
   agg: KneeAggregate | null | undefined, band: string, set: FieldSet, kind: ShareKind, input: KneeInput = "all",
 ): ClassRow[] {
@@ -375,10 +419,11 @@ export function classRows(
   const row = inputIndex(input);
   return names.filter((c) => (per[c]?.n ?? 0) > 0).map((cls) => {
     const v = per[cls];
-    const own = row == null ? undefined : v.knee_share_by_input?.[row];
+    const local = kind === "local" ? v.knee_share_local ?? null : null;
+    const own = row == null ? undefined : (local ? v.knee_share_by_input_local : v.knee_share_by_input)?.[row];
     return {
       cls, n: v.n, gradient: v.knee_share, ablation: v.ablation_share, band: v.band_share,
-      shares: kind === "ablation" ? v.ablation_share : own ?? v.knee_share,
+      shares: kind === "ablation" ? v.ablation_share : own ?? local ?? v.knee_share,
     };
   });
 }
@@ -404,10 +449,12 @@ export function agreement(g: readonly number[], a: readonly number[]): number | 
 }
 
 /** The 4×4 mean band-share matrix (rows: output band, cols: input band);
- *  missing cells null. */
-export function crossBandMatrix(agg: KneeAggregate | null | undefined): (number | null)[][] {
+ *  missing cells null. `kind` "local": the local (3×3) band shares (the
+ *  receptive field's when the aggregate has none). */
+export function crossBandMatrix(agg: KneeAggregate | null | undefined, kind: ShareKind = "gradient"): (number | null)[][] {
+  const m = (kind === "local" ? agg?.cross_band_local : null) ?? agg?.cross_band;
   return KNEE_BANDS.map((_, r) => KNEE_BANDS.map((__, c) => {
-    const v = agg?.cross_band[r]?.[c];
+    const v = m?.[r]?.[c];
     return v == null || !Number.isFinite(v) ? null : v;
   }));
 }
@@ -420,17 +467,19 @@ export type FieldDot = {
 };
 
 /** The field's samples in `band` as dots, each with its dominant knee under
- *  the chosen split. */
+ *  the chosen split (`local`: the local 3×3 gradient split, the receptive
+ *  field's when the field has none). */
 export function fieldDots(field: KneeField | null | undefined, band: string, kind: ShareKind = "gradient"): FieldDot[] {
   if (!field) return [];
   const s = field.samples;
   const b = bandIndex(band);
+  const local = kind === "local" && s.knee_share_local?.length ? s.knee_share_local : null;
   const out: FieldDot[] = [];
   s.band.forEach((sb, i) => {
     if (sb !== b) return;
     const x = s.x[i], y = s.y[i];
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    const sh = (kind === "ablation" ? s.ablation_share[i] : s.knee_share[i]) ?? [];
+    const sh = (kind === "ablation" ? s.ablation_share[i] : (local ?? s.knee_share)[i]) ?? [];
     const v = s.value_e[i];
     const sens = s.sensitivity[i];
     out.push({ i, x, y, cls: s.class[i] ?? "", value: Number.isFinite(v) ? v : null, shares: sh, dominant: dominantKnee(sh),
@@ -559,6 +608,6 @@ export function errorRows(errors: Record<string, string>): { where: string; reas
 
 export const parseBand = (v: string): KneeBand => ((KNEE_BANDS as readonly string[]).includes(v) ? (v as KneeBand) : "VIS");
 export const parseSet = (v: string): FieldSet => (v === "real" ? "real" : "synthetic");
-export const parseShare = (v: string): ShareKind => (v === "ablation" ? "ablation" : "gradient");
+export const parseShare = (v: string): ShareKind => (SHARE_KINDS.includes(v as ShareKind) ? (v as ShareKind) : "gradient");
 export const parseLayer = (v: string): ImageLayer => (v === "lr" ? "lr" : "sr");
 export const parseInput = (v: string): KneeInput => ((KNEE_INPUTS as readonly string[]).includes(v) ? (v as KneeInput) : "all");

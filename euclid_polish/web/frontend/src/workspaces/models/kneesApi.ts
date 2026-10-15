@@ -27,14 +27,32 @@ export type KneeModelChoice = {
 /** One class's mean shares over the run's fields (one output band). The
  *  gradient shares are noise-weighted (record version 2): each input band's
  *  chain-rule terms times its noise σ, so a share is the output's response to
- *  a 1σ change of the input. */
+ *  a 1σ change of the input. They sum over the receptive field; the
+ *  `*_local` ones (version 3) only over the 3×3 LR pixels under the sample. */
 export type ClassShares = {
   knee_share: number[]; ablation_share: number[]; band_share: number[];
   /** C × K (rows: input bands VIS, Y, J, H; columns: the knees): each input
    *  band's own split over the knees, each row summing to 1 (σ cancels);
    *  knee_share = Σ_c band_share_c · row_c. Null before version 2. */
   knee_share_by_input?: number[][] | null;
+  /** The local (3×3) knee split, band split and C × K by-input split; null
+   *  before version 3. */
+  knee_share_local?: number[] | null;
+  band_share_local?: number[] | null;
+  knee_share_by_input_local?: number[][] | null;
   n: number;
+};
+
+/** One output band's brightness bins (null: no sample in the bin). */
+export type BrightnessBins = {
+  /** Per bin the mean knee share. */
+  knee_share: (number[] | null)[];
+  /** Per bin the mean C × K by-input split; the whole list null before version 2. */
+  knee_share_by_input?: (number[][] | null)[] | null;
+  /** Per bin the local (3×3) knee split and C × K by-input split; null before version 3. */
+  knee_share_local?: (number[] | null)[] | null;
+  knee_share_by_input_local?: (number[][] | null)[] | null;
+  n: number[];
 };
 
 /** The run's aggregate over all fields of one set (synthetic or real). */
@@ -44,13 +62,13 @@ export type KneeAggregate = {
   by_brightness: {
     /** Half-decade bin edges in e⁻ (21 edges, 1e-3 … 1e7). */
     edges_e: number[];
-    /** band index → per bin the mean knee share (null: no sample), the mean
-     *  C × K by-input split (null: no sample; the whole list null before
-     *  version 2) and n. */
-    bands: Record<string, { knee_share: (number[] | null)[]; knee_share_by_input?: (number[][] | null)[] | null; n: number[] }>;
+    /** band index → its bins. */
+    bands: Record<string, BrightnessBins>;
   };
   /** Mean band share: rows = output band, cols = input band. */
   cross_band: (number | null)[][];
+  /** The same from the local (3×3) band shares; null before version 3. */
+  cross_band_local?: (number | null)[][] | null;
   n_samples: number;
 };
 
@@ -58,6 +76,8 @@ export type KneeAggregate = {
 export type KneeSamples = {
   band: number[]; y: number[]; x: number[]; class: string[]; value_e: number[];
   knee_share: number[][]; ablation_share: number[][]; band_share: number[][]; sensitivity: number[];
+  /** The local (3×3) knee split per sample (absent before version 3). */
+  knee_share_local?: number[][];
 };
 
 export type KneeField = {
@@ -83,8 +103,9 @@ export type KneeRunParams = { models: string[]; synthetic: number; tiles: string
 
 /** GET /api/knee-attribution/<id>. */
 export type KneeRunRecord = {
-  /** 2: noise-weighted shares with the per-input split; absent (or 1): per
-   *  input electron, which leans every share toward NISP. */
+  /** 3: adds the local (3×3) splits; 2: noise-weighted shares with the
+   *  per-input split; absent (or 1): per input electron, which leans every
+   *  share toward NISP. */
   version?: number | null;
   id: string; created?: string | null; finished?: string | null; status: KneeRunStatus | string;
   params: KneeRunParams;

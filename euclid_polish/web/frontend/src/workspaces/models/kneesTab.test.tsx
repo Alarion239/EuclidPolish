@@ -3,8 +3,10 @@
  * GETs (no POST, and no catalogue read while the run panel is closed); the
  * main chart draws one line per knee in each model's panel with the knee
  * legend; the class bars list the classes in order with their n, and the
- * gradient / ablation toggle changes the values; the input band switches
- * the chart and the bars to that band's own knee split (disabled under the
+ * split toggle changes the values; the local (3×3) split swaps the chart,
+ * the bars, the cross-band tables and the explorer's dots (a version-2
+ * record → a note and the receptive field's); the input band switches the
+ * chart and the bars to that band's own knee split (disabled under the
  * ablation split; an older record → the per-electron warning and a note);
  * the cross-band tables; the field explorer draws a dot per sample of the
  * band on the record's image, with the field's noise σ; the run panel
@@ -21,7 +23,8 @@ import { resetConfirm } from "../../ui";
 import { kneeLabel, sharePct } from "./knees";
 import Knees from "./tabs/Knees";
 import {
-  KNEES_8, NEXUS_TILES, OLD_RUN_ID, POSTER_TILES, RUN_ID, SOURCES, byInput, catalogue, failedRecord, peaked, record, runs, v1Record,
+  KNEES_8, NEXUS_TILES, OLD_RUN_ID, POSTER_TILES, RUN_ID, SOURCES, byInput, catalogue, failedRecord, localSplit, peaked, record, runs,
+  v1Record, v2Record,
 } from "./testing/kneesFixture";
 
 type Reply = { status?: number; body: unknown };
@@ -80,6 +83,9 @@ const panels = () => [...document.querySelectorAll<HTMLElement>(".kn-chart")];
 /** The Plot's visually hidden summary: "N series; x: …". */
 const seriesCount = (fig: HTMLElement) => Number(/^(\d+) series/.exec(fig.querySelector(".plot .sr-only")?.textContent ?? "")?.[1] ?? NaN);
 const legendLabels = () => [...document.querySelectorAll(".plot-legend__label")].map((n) => n.textContent);
+/** A galaxy-core class bar's aria-label for the given shares (#222's knees). */
+const coreLabel = (shares: number[]) => `galaxy core: ${KNEES_8.map((q, k) => `${kneeLabel(q)} ${sharePct(shares[k])}`).join(", ")}`;
+const splitRadio = (name: string) => within(screen.getByRole("radiogroup", { name: "Split" })).getByRole("radio", { name });
 
 async function answer(title: RegExp | string, button: string) {
   const dlg = await screen.findByRole("alertdialog", { name: title });
@@ -134,7 +140,7 @@ describe("knees tab", () => {
     await waitFor(() => expect(bar()).not.toBe(gradient));
     expect(bar()).toMatch(/10⁻¹ e⁻ 4\d%/);                                   // the reversed split leads with the mirrored knee
     expect(lastLocation).toContain("split=ablation");
-    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Split" })).getByRole("radio", { name: "Gradient" }));
+    fireEvent.click(splitRadio("Gradient (receptive field)"));
     await waitFor(() => expect(bar()).toBe(gradient));
   });
 
@@ -145,7 +151,7 @@ describe("knees tab", () => {
     const bar = () => within(core).getByRole("img").getAttribute("aria-label");
     const agree = () => core.querySelector(".kn-barrow__agree")?.textContent;
     const summary = () => document.querySelector(".ui-summary")?.textContent ?? "";
-    const label = (shares: number[]) => `galaxy core: ${KNEES_8.map((q, k) => `${kneeLabel(q)} ${sharePct(shares[k])}`).join(", ")}`;
+    const label = coreLabel;
     const g = peaked(KNEES_8, 300);
     expect(bar()).toBe(label(g));
     const agreeAll = agree();
@@ -174,6 +180,63 @@ describe("knees tab", () => {
     expect(lastLocation).not.toContain("input=");
   });
 
+  it("the local split swaps every gradient view (chart, bars, cross-band, explorer dots); the agreement stays the receptive field's", async () => {
+    show("/models/knees?km=universal:member_222");
+    const syn = await screen.findByRole("region", { name: "Synthetic fields · truth classes" });
+    const core = syn.querySelector<HTMLElement>(".kn-class[data-class='galaxy core']")!;
+    const bar = () => within(core).getByRole("img").getAttribute("aria-label");
+    const agree = () => core.querySelector(".kn-barrow__agree")?.textContent;
+    const summary = () => document.querySelector(".ui-summary")?.textContent ?? "";
+    const dots = () => [...screen.getByRole("group", { name: "4 sampled pixels in VIS" }).querySelectorAll<SVGCircleElement>("circle")]
+      .map((d) => d.dataset.knee);
+    const crossRow = (name: string) => [...screen.getByRole("table", { name }).querySelectorAll("tbody tr")][0];
+    const cells = (tr: Element) => [...tr.querySelectorAll("th, td")].map((c) => c.textContent);
+    expect(within(screen.getByRole("radiogroup", { name: "Split" })).getAllByRole("radio").map((r) => r.textContent))
+      .toEqual(["Gradient (receptive field)", "Gradient (local 3×3)", "Ablation"]);
+    await waitFor(() => expect(dots()).toEqual(["5", "1", "6", "2"]));
+    const agreeRf = agree();
+    expect(cells(crossRow("Cross-band shares, #222"))).toEqual(["VIS", "82%", "6%", "6%", "6%"]);
+    expect(document.body.textContent).toContain("Summed over the whole receptive field, mostly the surrounding sky");
+
+    fireEvent.click(splitRadio("Gradient (local 3×3)"));
+    await waitFor(() => expect(bar()).toBe(coreLabel(localSplit(KNEES_8, 300))));
+    expect(agree()).toBe(agreeRf);
+    expect(lastLocation).toContain("split=local");
+    expect(screen.getByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic, local 3×3" })).toBeTruthy();
+    expect(summary()).toMatch(/^For #222 in VIS \(synthetic fields, local 3×3\), the faintest pixels .* lean on the 10⁻¹ e⁻ knee/);
+    expect(cells(crossRow("Cross-band shares, #222, local 3×3"))).toEqual(["VIS", "93%", "3%", "2%", "2%"]);
+    // galaxy core → 10³ e⁻, sky → 10⁻¹, star core → 10⁴, faint → 1 e⁻ (the fixture's local split leans on the knee nearest 10·b)
+    expect(dots()).toEqual(["6", "2", "7", "3"]);
+    expect(document.body.textContent).toContain("Summed only over the 3×3 LR pixels under the sample");
+
+    // the input band stays enabled and draws the local per-input rows
+    const picker = screen.getByRole("radiogroup", { name: "Input band" });
+    expect((within(picker).getAllByRole("radio") as HTMLButtonElement[]).some((r) => r.disabled)).toBe(false);
+    fireEvent.click(within(picker).getByRole("radio", { name: "Y" }));
+    await waitFor(() => expect(bar()).toBe(coreLabel(byInput(localSplit(KNEES_8, 300))[1])));
+    expect(screen.getByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic, local 3×3, Y input" })).toBeTruthy();
+    expect(agree()).toBe(agreeRf);
+  });
+
+  it("notes a version-2 record predates the local split and draws the receptive field's", async () => {
+    routes[`GET /api/knee-attribution/${RUN_ID}`] = () => ({ body: v2Record() });
+    show("/models/knees?km=universal:member_222&split=local");
+    expect(await screen.findByText(/^This run predates the local split; re-run to see it\./)).toBeTruthy();
+    expect(lastLocation).toContain("split=local");
+    expect(splitRadio("Gradient (receptive field)").getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic" })).toBeTruthy();
+    expect(screen.getByRole("table", { name: "Cross-band shares, #222" })).toBeTruthy();
+    const core = screen.getByRole("region", { name: "Synthetic fields · truth classes" }).querySelector<HTMLElement>(".kn-class[data-class='galaxy core']")!;
+    expect(within(core).getByRole("img").getAttribute("aria-label")).toBe(coreLabel(peaked(KNEES_8, 300)));
+    const dots = [...screen.getByRole("group", { name: "4 sampled pixels in VIS" }).querySelectorAll<SVGCircleElement>("circle")];
+    expect(dots.map((d) => d.dataset.knee)).toEqual(["5", "1", "6", "2"]);
+    expect(screen.queryByText(/Per-electron weights/)).toBeNull();          // version 2 is noise-weighted
+    expect(screen.queryByText(/predates the per-input split/)).toBeNull();
+    // the per-input split of version 2 still works
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Input band" })).getByRole("radio", { name: "Y" }));
+    await waitFor(() => expect(within(core).getByRole("img").getAttribute("aria-label")).toBe(coreLabel(byInput(peaked(KNEES_8, 300))[1])));
+  });
+
   it("disables the input band under the ablation split (it ablates every input band at once)", async () => {
     show("/models/knees?km=universal:member_222&input=Y&split=ablation");
     const picker = await screen.findByRole("radiogroup", { name: "Input band" });
@@ -183,7 +246,7 @@ describe("knees tab", () => {
     expect(screen.getByText("ablation: every input band at once")).toBeTruthy();
     expect(screen.getByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic" })).toBeTruthy();   // all inputs
     // back to the gradient: the URL's Y input returns
-    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Split" })).getByRole("radio", { name: "Gradient" }));
+    fireEvent.click(splitRadio("Gradient (receptive field)"));
     expect(await screen.findByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic, Y input" })).toBeTruthy();
     expect(radios().some((r) => r.disabled)).toBe(false);
     expect(screen.queryByText("ablation: every input band at once")).toBeNull();

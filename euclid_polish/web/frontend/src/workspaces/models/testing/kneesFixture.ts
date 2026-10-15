@@ -1,6 +1,6 @@
 /* Fixtures of Models › Knees (the knee-attribution API, spec 2026-10-15),
  * imported by tests only: knees.test.ts and kneesTab.test.tsx.
- * One finished run ("20261015-101500-abc123", record version 2) of two
+ * One finished run ("20261015-101500-abc123", record version 3) of two
  * universal models: #222 at eight knees (10⁻³ … 10⁴ e⁻) and #221 at six
  * (0.1 … 10⁴ e⁻), over two synthetic test fields and the poster galaxy.
  * Shares are deterministic: a pixel of brightness b leans on the knee nearest
@@ -9,9 +9,12 @@
  * (`knee_share_by_input`) tilts the all-input split: VIS toward the brighter
  * knees, Y toward the fainter ones, J and H equal to it; with the band shares
  * [0.4, 0.4, 0.1, 0.1] the identity knee_share = Σ_c band_share_c ·
- * knee_share_by_input_c holds. VIS has no `saturated` class (n = 0 is never
- * drawn); the brightness bins below 10⁻² e⁻ and above 10⁵·⁵ e⁻ are empty
- * (null). `v1Record()` is the same run before the noise weighting. */
+ * knee_share_by_input_c holds. The local (3×3) splits lean on the knee
+ * nearest 10·b, sharper (`localSplit`), with the same tilt per input and the
+ * band shares [0.45, 0.45, 0.05, 0.05], so the identity holds for them too.
+ * VIS has no `saturated` class (n = 0 is never drawn); the brightness bins
+ * below 10⁻² e⁻ and above 10⁵·⁵ e⁻ are empty (null). `v2Record()` is the
+ * same run before the local split, `v1Record()` before the noise weighting. */
 import type {
   ClassShares, KneeAggregate, KneeField, KneeModelChoice, KneeModelResult, KneeRunRecord, KneeRunSummary,
 } from "../kneesApi";
@@ -49,6 +52,16 @@ export function byInput(g: readonly number[], tilt = 0.9): number[][] {
   return [lean(1), lean(-1), [...g], [...g]];
 }
 
+/** The local (3×3) class band shares: VIS and Y equal again. */
+export const LOCAL_BAND_SHARE = [0.45, 0.45, 0.05, 0.05];
+
+/** The local (3×3) knee split of a pixel of brightness b: peaked at the knee
+ *  nearest 10·b, sharper than the receptive field's. */
+export const localSplit = (knees: readonly number[], brightness: number): number[] => peaked(knees, brightness * 10, 0.6);
+
+/** The 4×4 local band shares (rows: output band, cols: input band). */
+export const CROSS_LOCAL = [[0.93, 0.03, 0.02, 0.02], [0.12, 0.8, 0.04, 0.04], [0.1, 0.05, 0.8, 0.05], [0.08, 0.04, 0.04, 0.84]];
+
 const SYN_BRIGHT: Record<string, number> = {
   saturated: 5e4, "star core": 2e3, "star wing": 20, "galaxy core": 300, "galaxy outskirts": 8, faint: 0.3, sky: 0.02,
 };
@@ -59,7 +72,11 @@ function classes(knees: readonly number[], bright: Record<string, number>, skip:
   Object.entries(bright).forEach(([cls, b], i) => {
     if (skip.includes(cls)) return;
     const g = peaked(knees, b || 1e-3);
-    out[cls] = { knee_share: g, ablation_share: [...g].reverse(), band_share: [...BAND_SHARE], knee_share_by_input: byInput(g), n: 24 + 2 * i };
+    const l = localSplit(knees, b || 1e-3);
+    out[cls] = {
+      knee_share: g, ablation_share: [...g].reverse(), band_share: [...BAND_SHARE], knee_share_by_input: byInput(g),
+      knee_share_local: l, band_share_local: [...LOCAL_BAND_SHARE], knee_share_by_input_local: byInput(l), n: 24 + 2 * i,
+    };
   });
   return out;
 }
@@ -72,20 +89,25 @@ export function aggregate(knees: readonly number[], set: "synthetic" | "real"): 
     byClass[String(b)] = classes(knees, bright, b === 0 && set === "synthetic" ? ["saturated"] : []);
     const shares: (number[] | null)[] = [];
     const inputs: (number[][] | null)[] = [];
+    const local: (number[] | null)[] = [];
+    const localInputs: (number[][] | null)[] = [];
     const n: number[] = [];
     for (let i = 0; i < 20; i++) {
       const centre = Math.sqrt(EDGES[i] * EDGES[i + 1]);
       const empty = i < 2 || i > 16;
       shares.push(empty ? null : peaked(knees, centre));
       inputs.push(empty ? null : byInput(peaked(knees, centre)));
+      local.push(empty ? null : localSplit(knees, centre));
+      localInputs.push(empty ? null : byInput(localSplit(knees, centre)));
       n.push(empty ? 0 : 10 + i);
     }
-    bands[String(b)] = { knee_share: shares, knee_share_by_input: inputs, n };
+    bands[String(b)] = { knee_share: shares, knee_share_by_input: inputs, knee_share_local: local, knee_share_by_input_local: localInputs, n };
   }
   return {
     by_class: byClass,
     by_brightness: { edges_e: EDGES, bands },
     cross_band: [[0.82, 0.06, 0.06, 0.06], [0.3, 0.5, 0.1, 0.1], [0.25, 0.1, 0.55, 0.1], [0.2, 0.1, 0.1, 0.6]],
+    cross_band_local: CROSS_LOCAL.map((row) => [...row]),
     n_samples: 400,
   };
 }
@@ -104,6 +126,7 @@ export function field(ref: string, kind: "synthetic" | "real", knees: readonly n
       band: rows.map((r) => r[0]), y: rows.map((r) => r[1]), x: rows.map((r) => r[2]), class: rows.map((r) => r[3]),
       value_e: rows.map((r) => r[4]), knee_share: g, ablation_share: g.map((s) => [...s].reverse()),
       band_share: rows.map(() => [0.7, 0.1, 0.1, 0.1]), sensitivity: rows.map((_, i) => 0.01 * (i + 1)),
+      knee_share_local: rows.map((r) => localSplit(knees, r[4])),
     },
   };
 }
@@ -124,7 +147,7 @@ function result(spec: string, knees: readonly number[], depth: number, withImage
 }
 
 export const record = (patch: Partial<KneeRunRecord> = {}): KneeRunRecord => ({
-  version: 2, id: RUN_ID, created: "2026-10-15T10:15:00Z", finished: "2026-10-15T10:21:00Z", status: "done",
+  version: 3, id: RUN_ID, created: "2026-10-15T10:15:00Z", finished: "2026-10-15T10:21:00Z", status: "done",
   params: { models: ["universal:member_222", "universal:member_221"], synthetic: 2, tiles: ["poster/target_181255"], per_class: 24, seed: 0 },
   knee_grid_note: null,
   models: {
@@ -135,15 +158,22 @@ export const record = (patch: Partial<KneeRunRecord> = {}): KneeRunRecord => ({
   ...patch,
 });
 
-/** The same run as a version-1 record (per-electron weights): no version,
- *  no per-input split, no noise σ. */
-export function v1Record(): KneeRunRecord {
-  const v2Only = ["version", "knee_share_by_input", "noise_sigma_e"];
+/** `rec` without the keys `drop`, at any depth. */
+function without(rec: KneeRunRecord, drop: readonly string[]): KneeRunRecord {
   const strip = (v: unknown): unknown => (Array.isArray(v) ? v.map(strip)
-    : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([k]) => !v2Only.includes(k)).map(([k, x]) => [k, strip(x)]))
+    : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([k]) => !drop.includes(k)).map(([k, x]) => [k, strip(x)]))
       : v);
-  return strip(record()) as KneeRunRecord;
+  return strip(rec) as KneeRunRecord;
 }
+
+const LOCAL_KEYS = ["knee_share_local", "band_share_local", "knee_share_by_input_local", "cross_band_local"];
+
+/** The same run as a version-2 record: no local (3×3) splits. */
+export const v2Record = (): KneeRunRecord => ({ ...without(record(), LOCAL_KEYS), version: 2 });
+
+/** The same run as a version-1 record (per-electron weights): no version,
+ *  no per-input or local split, no noise σ. */
+export const v1Record = (): KneeRunRecord => without(record(), ["version", "knee_share_by_input", "noise_sigma_e", ...LOCAL_KEYS]);
 
 export const runs = (): { runs: KneeRunSummary[] } => ({
   runs: [
@@ -155,7 +185,7 @@ export const runs = (): { runs: KneeRunSummary[] } => ({
 });
 
 export const failedRecord = (): KneeRunRecord => ({
-  version: 2, id: OLD_RUN_ID, created: "2026-10-14T09:00:00Z", finished: "2026-10-14T09:01:00Z", status: "failed",
+  version: 3, id: OLD_RUN_ID, created: "2026-10-14T09:00:00Z", finished: "2026-10-14T09:01:00Z", status: "failed",
   params: { models: ["universal:member_211"], synthetic: 5, tiles: [], per_class: 24, seed: 0 },
   models: {}, errors: { "universal:member_211": "OSError: no checkpoint for member_211" },
 });

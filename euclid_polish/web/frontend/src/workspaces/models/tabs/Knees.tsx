@@ -5,8 +5,13 @@
      synthetic test fields, real tiles, samples per class, seed; Run asks
      first with the cost, then the job's progress;
    - the toolbar (URL state): the run (?run=, newest by default), the models
-     overlaid (?km=, up to four), the output band (?band=) and the set
-     (?set= synthetic | real);
+     overlaid (?km=, up to four), the output band (?band=), the set
+     (?set= synthetic | real) and the split (?split=): the gradient summed
+     over the receptive field (`gradient`) or over the 3×3 LR pixels under
+     the sample (`local`: every gradient view below swaps to it; a record
+     before the local split notes it and draws the receptive field's), or
+     the ablation (the class bars only; the other views keep the
+     receptive-field gradient);
    - one summary line: which knee leads the faintest and the brightest pixels;
    - "Which knees matter for which pixels": knee share vs pixel brightness, a
      line per knee in a sequential ramp (faint knee → bright knee), a panel
@@ -14,8 +19,8 @@
      input band (?input= all | VIS | Y | J | H) draws that band's own knee
      split here and in the class bars (all: the σ-weighted split; disabled
      under the ablation split, which ablates every input band at once);
-   - by pixel class: stacked bars (the gradient or the ablation split, ?split=)
-     for the synthetic truth classes and the real brightness classes;
+   - by pixel class: stacked bars of the split for the synthetic truth
+     classes and the real brightness classes;
    - the cross-band matrix per model;
    - the field explorer (the field image with its sampled pixels).
    Shares are noise-weighted (record version 2); an older record gets a
@@ -38,10 +43,10 @@ import { LoadState } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
 import { useKneeRun, useKneeRuns, type KneeRunRecord } from "../kneesApi";
 import {
-  BAND_LABEL, FIELD_SETS, KNEE_BANDS, KNEE_INPUTS, KNEE_RAMP, MAX_OVERLAY, brightnessExtent, brightnessLines, brightnessSamples, edgeLeads,
-  effectiveInput, electronText, errorRows, isPerElectron, kneeLabel, kneeRamp, kneeUnion, modelShort, normaliseRecord, normaliseRuns,
-  overlayModels, parseBand, parseInput, parseSet, parseShare, runText, setsWithData, sharePct, slug, type FieldSet, type KneeBand,
-  type KneeInput, type ShareKind,
+  BAND_LABEL, FIELD_SETS, KNEE_BANDS, KNEE_INPUTS, KNEE_RAMP, MAX_OVERLAY, SHARE_KINDS, brightnessExtent, brightnessLines, brightnessSamples,
+  edgeLeads, effectiveInput, effectiveSplit, electronText, errorRows, isPerElectron, kneeLabel, kneeRamp, kneeUnion, modelShort,
+  normaliseRecord, normaliseRuns, overlayModels, parseBand, parseInput, parseSet, parseShare, runText, setsWithData, sharePct, slug,
+  type FieldSet, type KneeBand, type KneeInput, type ShareKind,
 } from "../knees";
 import { ClassBars, type DrawnModel } from "../attribution/ClassBars";
 import { CrossBand } from "../attribution/CrossBand";
@@ -57,23 +62,37 @@ const INPUT_TITLE: Record<KneeInput, string> = {
   Y: "The Y input's own split over the knees", J: "The J input's own split over the knees", H: "The H input's own split over the knees",
 };
 const ABLATION_HINT = "The ablation removes a knee in every input band at once";
+const SPLIT_LABEL: Record<ShareKind, string> = { gradient: "Gradient (receptive field)", local: "Gradient (local 3×3)", ablation: "Ablation" };
+const SPLIT_TITLE: Record<ShareKind, string> = {
+  gradient: "The chain-rule split summed over the receptive field (mostly the surrounding sky): what the prediction depends on overall",
+  local: "The chain-rule split summed over the 3×3 LR pixels under the sample: how the pixel's own neighbourhood is read",
+  ablation: "Each knee's share of the output change when its input channels are replaced by their window mean (the class bars)",
+};
+/** What each gradient split sums over, for the captions. */
+const SCOPE_TEXT = {
+  gradient: "Summed over the whole receptive field, mostly the surrounding sky, it says what the prediction depends on overall; the "
+    + "local 3×3 split says how the pixel's own neighbourhood is read.",
+  local: "Summed only over the 3×3 LR pixels under the sample, it says how the pixel's own neighbourhood is read; the receptive-field "
+    + "split says what the prediction depends on overall (mostly the surrounding sky).",
+};
 const POLL = 4000;
 const FULL_DOMAIN: [number, number] = [1e-3, 1e7];
 
 /* ── the main chart ────────────────────────────────────────────────────── */
 
-function BrightnessPanels({ models, set, band, input, color, union }: {
-  models: readonly DrawnModel[]; set: FieldSet; band: KneeBand; input: KneeInput; color: (q: number) => string; union: readonly number[];
+function BrightnessPanels({ models, set, band, input, kind, color, union }: {
+  models: readonly DrawnModel[]; set: FieldSet; band: KneeBand; input: KneeInput; kind: ShareKind; color: (q: number) => string;
+  union: readonly number[];
 }) {
   const lg = useLegend();
   const panels = useMemo(() => models.map((m) => {
     const agg = m.result.aggregate[set];
-    const lines = brightnessLines(agg, band, m.result.knees, input);
+    const lines = brightnessLines(agg, band, m.result.knees, input, kind);
     const series: Series[] = lines.filter((l) => l.x.length).map((l) => ({
       x: l.x, y: l.y, color: color(l.knee), width: 1.8, dots: true, name: kneeLabel(l.knee), key: `k:${+l.knee.toPrecision(6)}`,
     }));
     return { m, lines, series, n: brightnessSamples(agg, band) };
-  }), [models, set, band, input, color]);
+  }), [models, set, band, input, kind, color]);
   const ext = panels.map((p) => brightnessExtent(p.lines)).filter(Boolean) as [number, number][];
   const xDomain: [number, number] = ext.length
     ? [Math.min(...ext.map((e) => e[0])) / 1.6, Math.max(...ext.map((e) => e[1])) * 1.6] : FULL_DOMAIN;
@@ -87,7 +106,8 @@ function BrightnessPanels({ models, set, band, input, color, union }: {
     );
   }
   const many = drawn.length > 1;
-  const via = input === "all" ? "" : `, ${input} input`;
+  const local = kind === "local";
+  const via = `${local ? ", local 3×3" : ""}${input === "all" ? "" : `, ${input} input`}`;
   return (
     <>
       <Legend items={items} {...lg.legendProps} />
@@ -100,10 +120,10 @@ function BrightnessPanels({ models, set, band, input, color, union }: {
             </h3>
             <Plot {...lg.plotProps} xScale="log" xDomain={xDomain} xTicks={logTicks(xDomain, { maxTicks: 7 })} yDomain={[0, 1]}
               xLabel={`pixel brightness in ${BAND_LABEL[band]} [e⁻]`}
-              yLabel={input === "all" ? "knee share" : `knee share of the ${input} input`}
+              yLabel={`${local ? "local " : ""}knee share${input === "all" ? "" : ` of the ${input} input`}`}
               series={p.series} aspect={many ? 0.6 : 0.45} syncKey="knee-brightness"
               xFormat={(v) => electronText(v)} yFormat={(v) => sharePct(v)}
-              exportName={`knee-share-${slug(p.m.spec)}-${band}-${set}${input === "all" ? "" : `-in-${input}`}`}
+              exportName={`knee-share-${slug(p.m.spec)}-${band}-${set}${local ? "-local" : ""}${input === "all" ? "" : `-in-${input}`}`}
               aria-label={`Knee share vs pixel brightness, ${modelShort(p.m.spec)}, ${BAND_LABEL[band]}, ${set}${via}`} />
           </div>
         ))}
@@ -123,7 +143,7 @@ export default function Knees() {
   const [picked, setPicked] = useUrlState<string[]>("km", []);
   const [band, setBand] = useUrlState<KneeBand>("band", "VIS", { parse: parseBand });
   const [setParam, setSet] = useUrlState<FieldSet>("set", "synthetic", { parse: parseSet });
-  const [split, setSplit] = useUrlState<ShareKind>("split", "gradient", { parse: parseShare });
+  const [splitParam, setSplit] = useUrlState<ShareKind>("split", "gradient", { parse: parseShare });
   const [inputParam, setInput] = useUrlState<KneeInput>("input", "all", { parse: parseInput });
   const [panelOpen, setPanelOpen] = useState<boolean | null>(null);
   const [draft, setDraft] = useState<RunDraft>(EMPTY_DRAFT);
@@ -155,17 +175,19 @@ export default function Knees() {
   const union = useMemo(() => kneeUnion(drawn.map((d) => d.result.knees)), [drawn]);
   const theme = useResolvedTheme();
   const color = useMemo(() => kneeRamp(union, KNEE_RAMP[theme]), [union, theme]);
-  // the input split drawn (the URL's pick unless the ablation split or an
-  // older record rules it out), over every aggregate the page draws
-  const inputView = useMemo(
-    () => effectiveInput(inputParam, split, drawn.flatMap((d) => sets.map((s) => d.result.aggregate[s]))),
-    [inputParam, split, drawn, sets],
-  );
+  // the split and the input split drawn (the URL's picks unless an older
+  // record or the ablation split rules them out), over every aggregate the
+  // page draws
+  const aggs = useMemo(() => drawn.flatMap((d) => sets.map((s) => d.result.aggregate[s])), [drawn, sets]);
+  const splitView = useMemo(() => effectiveSplit(splitParam, aggs), [splitParam, aggs]);
+  const split = splitView.split;
+  const inputView = useMemo(() => effectiveInput(inputParam, split, aggs), [inputParam, split, aggs]);
   const input = inputView.input;
   const leads = useMemo(() => {
     const first = drawn[0];
-    return first ? edgeLeads(brightnessLines(first.result.aggregate[set], band, first.result.knees, input)) : null;
-  }, [drawn, set, band, input]);
+    return first ? edgeLeads(brightnessLines(first.result.aggregate[set], band, first.result.knees, input, split)) : null;
+  }, [drawn, set, band, input, split]);
+  const scope = split === "local" ? "local" : "gradient";
   const errors = rec ? errorRows(rec.errors) : [];
   const nFields = drawn[0]?.result.fields.filter((f) => f.kind === set).length ?? 0;
 
@@ -211,14 +233,23 @@ export default function Knees() {
                   options={FIELD_SETS.map((s) => ({ value: s, label: SET_LABEL[s], disabled: !!rec && !sets.includes(s),
                     title: rec && !sets.includes(s) ? `This run has no ${s} fields` : undefined }))} />
               </ToolbarGroup>
+              <ToolbarGroup label="Split">
+                <Segmented<ShareKind> size="sm" aria-label="Split" value={split} onChange={setSplit}
+                  options={SHARE_KINDS.map((k) => ({ value: k, label: SPLIT_LABEL[k], title: SPLIT_TITLE[k] }))} />
+              </ToolbarGroup>
             </Toolbar>
             <RunBody rec={rec} loading={recRes.loading} error={recRes.error} reload={recRes.reload} status={status} errors={errors}>
               {rec && drawn.length > 0 && (
                 <>
+                  {splitView.missing && (
+                    <p className="mdl-note mdl-warn">
+                      This run predates the local split; re-run to see it. Showing the receptive-field gradient.
+                    </p>
+                  )}
                   {leads?.faint && (
                     <SummaryLine>
                       For <Num>{modelShort(drawn[0].spec)}</Num> in {BAND_LABEL[band]} ({set} fields
-                      {input === "all" ? "" : `, ${input} input`}), the faintest pixels
+                      {split === "local" ? ", local 3×3" : ""}{input === "all" ? "" : `, ${input} input`}), the faintest pixels
                       (~{electronText(leads.faint.x)}) lean on the <Num>{kneeLabel(leads.faint.knee)}</Num> knee
                       ({sharePct(leads.faint.share)})
                       {leads.bright && <>, the brightest (~{electronText(leads.bright.x)}) on the <Num>{kneeLabel(leads.bright.knee)}</Num> knee
@@ -242,7 +273,7 @@ export default function Knees() {
                     {inputView.missing && (
                       <p className="mdl-note mdl-warn">This run predates the per-input split; re-run to see it. Showing all input bands.</p>
                     )}
-                    <BrightnessPanels models={drawn} set={set} band={band} input={input} color={color} union={union} />
+                    <BrightnessPanels models={drawn} set={set} band={band} input={input} kind={split} color={color} union={union} />
                     <Caption>
                       {input === "all" ? (
                         <>
@@ -256,17 +287,15 @@ export default function Knees() {
                           electrons, so the same knee sits at very different noise levels per band: 1 e⁻ ≈ 1σ in NISP but ≈ 0.06σ in VIS.
                         </>
                       )}{" "}
-                      Averaged over the sampled pixels of each brightness bin (half a decade); brightness is the{" "}
+                      {SCOPE_TEXT[scope]} Averaged over the sampled pixels of each brightness bin (half a decade); brightness is the{" "}
                       {set === "synthetic" ? "truth" : "model's SR"} in {BAND_LABEL[band]}. Over all {formatCount(nFields)} {set} fields of
-                      the run; empty bins are skipped.{rec.knee_grid_note ? ` ${rec.knee_grid_note}` : ""}
+                      the run; empty bins are skipped.
+                      {split === "ablation" && " The ablation has no brightness curves: this chart is the receptive-field gradient."}
+                      {rec.knee_grid_note ? ` ${rec.knee_grid_note}` : ""}
                     </Caption>
                   </section>
                   <section className="mdl-stack mdl-stack--tight" aria-labelledby="kn-class-title">
-                    <div className="mdl-row">
-                      <h2 id="kn-class-title" className="mdl-h2">By pixel class</h2>
-                      <Segmented<ShareKind> size="sm" aria-label="Split" value={split} onChange={setSplit}
-                        options={[{ value: "gradient", label: "Gradient" }, { value: "ablation", label: "Ablation" }]} />
-                    </div>
+                    <h2 id="kn-class-title" className="mdl-h2">By pixel class</h2>
                     <div className="kn-panels">
                       {FIELD_SETS.filter((s) => sets.includes(s)).map((s) => (
                         <ClassBars key={s} set={s} models={drawn} band={band} kind={split} input={input} color={color} />
@@ -276,17 +305,19 @@ export default function Knees() {
                   <section className="mdl-stack mdl-stack--tight" aria-labelledby="kn-cross-title">
                     <h2 id="kn-cross-title" className="mdl-h2">Cross-band</h2>
                     <div className="kn-crossgrid">
-                      {drawn.map((d) => <CrossBand key={d.spec} agg={d.result.aggregate[set]} title={modelShort(d.spec)} />)}
+                      {drawn.map((d) => <CrossBand key={d.spec} agg={d.result.aggregate[set]} title={modelShort(d.spec)} kind={split} />)}
                     </div>
                     <Caption>
                       Rows: the output band; columns: the input band. Each cell is the mean share of the output pixel's sensitivity that
                       flows through that input band ({set} fields, all knees), each band's terms weighted by its noise σ: the output's
-                      response to a 1σ change of that input.
+                      response to a 1σ change of that input. {split === "local"
+                        ? "Local 3×3: summed only over the LR pixels under the sample."
+                        : "Receptive field: summed over everything the prediction sees."}
                     </Caption>
                   </section>
                   <section className="mdl-stack mdl-stack--tight" aria-labelledby="kn-field-title">
                     <h2 id="kn-field-title" className="mdl-h2">Field explorer</h2>
-                    <FieldExplorer runId={rec.id} models={drawn} band={band} set={set} color={color} />
+                    <FieldExplorer runId={rec.id} models={drawn} band={band} set={set} kind={split} color={color} />
                   </section>
                 </>
               )}

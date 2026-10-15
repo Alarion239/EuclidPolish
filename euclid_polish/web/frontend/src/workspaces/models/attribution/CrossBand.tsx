@@ -1,17 +1,19 @@
 /* Models › Knees › Cross-band: a 4×4 heat table per model — the mean share
    of an output band's sensitivity (row) that flows through each input band
-   (column), over the sampled pixels of the chosen set. The cell tint grows
-   with the share (an accent mix, so the text stays readable in both themes). */
+   (column), over the sampled pixels of the chosen set; the receptive-field
+   gradient's band shares, or the local 3×3 ones (`kind` "local"). The cell
+   tint grows with the share (an accent mix, so the text stays readable in
+   both themes). */
 import type { KneeAggregate } from "../kneesApi";
-import { BAND_LABEL, KNEE_BANDS, crossBandMatrix, sharePct } from "../knees";
+import { BAND_LABEL, KNEE_BANDS, crossBandMatrix, sharePct, type ShareKind } from "../knees";
 
-export function CrossBand({ agg, title }: { agg: KneeAggregate | null | undefined; title: string }) {
-  const m = crossBandMatrix(agg);
+export function CrossBand({ agg, title, kind = "gradient" }: { agg: KneeAggregate | null | undefined; title: string; kind?: ShareKind }) {
+  const m = crossBandMatrix(agg, kind);
   if (!agg || m.every((row) => row.every((v) => v == null))) return null;
   return (
     <figure className="kn-crossfig">
       <figcaption className="mdl-chart__title">{title}</figcaption>
-      <table className="kn-cross" aria-label={`Cross-band shares, ${title}`}>
+      <table className="kn-cross" aria-label={`Cross-band shares, ${title}${kind === "local" ? ", local 3×3" : ""}`}>
         <thead>
           <tr>
             <th scope="col"><span className="mdl-faint">out ↓ in →</span></th>

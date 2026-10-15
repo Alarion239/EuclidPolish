@@ -1,6 +1,7 @@
 /* Models › Knees › Field explorer: one field of the run as its SR (or LR)
    asinh PNG with the sampled pixels of the chosen band drawn on it as dots,
-   each in the colour of its dominant knee (the largest gradient share). An
+   each in the colour of its dominant knee (the largest gradient share, over
+   the receptive field or, with `kind` "local", the local 3×3 block). An
    SVG overlay in the field's own HR coordinates (shape [H, W]) is stretched
    over the image, so the dots land on their pixels at any size and for the
    half-size LR image too. Hovering a dot names its class, brightness and
@@ -13,13 +14,14 @@ import { formatCount } from "../../../format";
 import { Caption, EmptyState, Segmented, Select, Toolbar, ToolbarGroup } from "../../../ui";
 import {
   dotTitle, electronText, fieldDots, fieldImageUrl, kneeLabel, modelShort, noiseText, parseLayer, sharePct, BAND_LABEL,
-  type FieldDot, type FieldSet, type ImageLayer, type KneeBand,
+  type FieldDot, type FieldSet, type ImageLayer, type KneeBand, type ShareKind,
 } from "../knees";
 import { ShareStack, type DrawnModel } from "./ClassBars";
 
-export function FieldExplorer({ runId, models, band, set, color }: {
-  runId: string; models: readonly DrawnModel[]; band: KneeBand; set: FieldSet; color: (q: number) => string;
+export function FieldExplorer({ runId, models, band, set, kind = "gradient", color }: {
+  runId: string; models: readonly DrawnModel[]; band: KneeBand; set: FieldSet; kind?: ShareKind; color: (q: number) => string;
 }) {
+  const local = kind === "local";
   const [fmRaw, setFm] = useUrlState("fm", "");
   const [fieldRaw, setField] = useUrlState("field", "");
   const [layer, setLayer] = useUrlState<ImageLayer>("layer", "sr", { parse: parseLayer });
@@ -30,7 +32,7 @@ export function FieldExplorer({ runId, models, band, set, color }: {
     return mine.length ? mine : all;
   }, [model, set]);
   const field = fields.find((f) => f.ref === fieldRaw) ?? fields[0] ?? null;
-  const dots = useMemo(() => fieldDots(field, band), [field, band]);
+  const dots = useMemo(() => fieldDots(field, band, local ? "local" : "gradient"), [field, band, local]);
   const [hover, setHover] = useState<FieldDot | null>(null);
   const [broken, setBroken] = useState<string | null>(null);
 
@@ -97,8 +99,8 @@ export function FieldExplorer({ runId, models, band, set, color }: {
       </div>
       <Caption>
         {field.kind === "synthetic" ? "A synthetic test field" : "A real tile"}, {layer === "sr" ? "the model's SR" : "the LR input"} in{" "}
-        {BAND_LABEL[band]} (asinh-scaled). Each dot is a sampled output pixel in its dominant knee's colour (the largest gradient share,
-        σ-weighted over all input bands).
+        {BAND_LABEL[band]} (asinh-scaled). Each dot is a sampled output pixel in its dominant knee's colour (the largest
+        {local ? " local 3×3" : " receptive-field"} gradient share, σ-weighted over all input bands).
       </Caption>
     </div>
   );

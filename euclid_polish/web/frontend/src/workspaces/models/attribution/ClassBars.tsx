@@ -1,8 +1,9 @@
 /* Models › Knees › By pixel class: one stacked bar per class (and per model
    overlaid), the segments the knees' shares in the knee colours, classes in
-   the spec's order with their sample count; the gradient split (σ-weighted
-   over every input band, or one input band's own split) or the ablation
-   split (the caller's toggles), and how far the all-input gradient and the
+   the spec's order with their sample count; the gradient split over the
+   receptive field or the local 3×3 one (σ-weighted over every input band,
+   or one input band's own split) or the ablation split (the caller's
+   toggles), and how far the receptive-field, all-input gradient and the
    ablation agree. Synthetic truth classes and real brightness classes are
    separate panels (the caller renders one per set). */
 import { formatCount } from "../../../format";
@@ -13,6 +14,8 @@ import {
 } from "../knees";
 
 export type DrawnModel = { spec: string; result: KneeModelResult };
+
+const GRADIENT_LABEL: Record<ShareKind, string> = { gradient: "Gradient (receptive field)", local: "Gradient (local 3×3)", ablation: "Ablation" };
 
 const SET_TITLE: Record<FieldSet, string> = {
   synthetic: "Synthetic fields · truth classes",
@@ -84,11 +87,13 @@ export function ClassBars({ set, models, band, kind, input = "all", color }: {
         {kind === "ablation"
           ? "Ablation: each knee's share of the output change when its input channels (in every input band) are replaced by their window mean, "
           : input === "all"
-            ? "Gradient: each knee's share of the summed |∂y/∂x| through its input channels (the exact chain-rule split, each input "
-              + "band's terms weighted by its noise σ), "
-            : `Gradient, ${input} input: each knee's share of that input band's own |∂y/∂x| (its chain-rule terms alone), `}
+            ? `${GRADIENT_LABEL[kind]}: each knee's share of the summed |∂y/∂x| through its input channels (the exact chain-rule split, `
+              + `each input band's terms weighted by its noise σ${kind === "local" ? ", over the 3×3 LR pixels under the sample" : ""}), `
+            : `${GRADIENT_LABEL[kind]}, ${input} input: each knee's share of that input band's own |∂y/∂x| (its chain-rule terms alone`
+              + `${kind === "local" ? ", over the 3×3 LR pixels under the sample" : ""}), `}
         averaged over the sampled pixels of each class{set === "synthetic" ? " (truth classes)" : " (by the model's own SR brightness)"}.
-        n: sampled pixels. Agree: 1 − ½ Σ|gradient − ablation|, both over all input bands (100% = the same split).
+        n: sampled pixels. Agree: 1 − ½ Σ|gradient − ablation|, the receptive-field gradient and the ablation, both over all input bands
+        (100% = the same split).
       </Caption>
     </section>
   );
