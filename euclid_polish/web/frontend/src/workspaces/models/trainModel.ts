@@ -11,7 +11,11 @@ import type { TrainingJob } from "./api";
 export type TrainMode = "add" | "continue" | "fork";
 export const LOSSES = ["l1", "l2", "l3", "mse"] as const;
 export const KNEE_LOSSES = ["plain", "balanced"] as const;
-export const DEFAULT_MULTI_KNEES = "0.1,1,10,100,1000,10000";
+/** A new multi-knee member's knees [e⁻]. 10⁻³ and 10⁻² joined the six decades
+ *  on 2026-10-14: a member with them scored +0.15 dB on the 0.1–10⁴ metric and
+ *  +2 dB at the faint end (members 222 vs 214/219/220); adding 10⁶ and 10⁷
+ *  instead cost 1.7 dB everywhere (221). */
+export const DEFAULT_MULTI_KNEES = "0.001,0.01,0.1,1,10,100,1000,10000";
 
 /** One NEW member's knobs. Blank fields fall back to the run-wide defaults. */
 export type SpecRow = {

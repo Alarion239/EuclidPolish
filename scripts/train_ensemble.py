@@ -203,7 +203,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "inherit the existing/source member's knee.")
     p.add_argument("--asinh-knees", default="",
                    help="Comma-separated asinh knees in ELECTRONS for a "
-                        "MULTI-KNEE member (e.g. 0.1,1,10,100,1000,10000): the "
+                        "MULTI-KNEE member (e.g. 0.001,0.01,0.1,1,10,100,1000,10000): the "
                         "LR input and the HR target are stretched at every "
                         "knee and stacked on the channel axis (4 bands x K "
                         "knees in and out), so the network sees and predicts "

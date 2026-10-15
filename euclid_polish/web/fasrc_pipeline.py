@@ -1549,7 +1549,7 @@ class EnsembleTrainStep(FASRCPipelineStep):
                   "Single asinh knee in e⁻ (blank = per-band 100 e⁻).", min=0),
         TaskParam("asinh_knees", "str", None,
                   "Comma-separated knees (e⁻) for a multi-knee member, "
-                  "e.g. 0.1,1,10,100,1000,10000."),
+                  "e.g. 0.001,0.01,0.1,1,10,100,1000,10000."),
         TaskParam("output_knee", "float", None,
                   "Multi-knee: output one image stretched at this knee (e⁻).",
                   min=0),

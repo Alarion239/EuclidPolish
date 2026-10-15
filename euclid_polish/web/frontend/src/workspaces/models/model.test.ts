@@ -8,7 +8,7 @@ import {
   inspectorVsMean, remoteCurveTag, restoreText,
 } from "./model";
 import {
-  RECIPE_RESOURCES, buildParams, buildSpec, continueTarget, defaultForm, defaultResources, formFromJob, lastBatch,
+  DEFAULT_MULTI_KNEES, RECIPE_RESOURCES, buildParams, buildSpec, continueTarget, defaultForm, defaultResources, formFromJob, lastBatch,
   newRow, recipeSummary, rowsFromSpec, validate,
 } from "./trainModel";
 
@@ -135,7 +135,7 @@ const JOB: TrainingJob = {
 describe("train form", () => {
   it("builds the multi-knee member spec the step consumes", () => {
     const spec = buildSpec([newRow({ kneeMode: "multi", outputKnee: "10" }), newRow({ knee: "100", boot: "" })], "add");
-    expect(spec[0]).toEqual({ loss: "l2", bootstrap: 0.7, asinh_knees: [0.1, 1, 10, 100, 1000, 10000],
+    expect(spec[0]).toEqual({ loss: "l2", bootstrap: 0.7, asinh_knees: [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000],
       output_knee: 10, knee_loss: "balanced", num_res_blocks: 32, icnr: true });
     expect(spec[1]).toEqual({ loss: "l2", num_res_blocks: 32, icnr: true });
     expect(buildSpec([newRow()], "fork")[0]).not.toHaveProperty("num_res_blocks");
@@ -358,6 +358,8 @@ describe("train resources and continue targets", () => {
       .toEqual({ ...RECIPE_RESOURCES, from: null });
     expect(defaultResources([])).toEqual({ ...RECIPE_RESOURCES, from: null });
     expect(RECIPE_RESOURCES).toEqual({ n_cpus: "16", memory: "32G", time_limit: "3:00:00" });
+    // the faint knees 10⁻³ and 10⁻² are part of every new multi-knee member
+    expect(DEFAULT_MULTI_KNEES).toBe("0.001,0.01,0.1,1,10,100,1000,10000");
   });
   it("seeds a new batch from the last finished NEW batch, never a newer short continue job", () => {
     const add = { ...JOB, jobid: "100", mode: "add", req_cpus: 16, req_memory: "32G", req_time_limit: "3:00:00" };
