@@ -714,8 +714,11 @@ class Config:
     # background copy of upcoming batches to the GPU (``device_prefetch``):
     # the per-step Python loop, dataset hand-off and host→device copy left
     # the GPU ~25 % idle on an A100 (live 13.95 vs GPU-only 10.44 ms/step).
-    TRAIN_STEPS_PER_CALL         = 1
-    TRAIN_DEVICE_PREFETCH        = False
+    # gpu_test (3g MIG slice, d16, 8 knees, XLA + bf16, 16 CPUs, job
+    # 53200646): 25.32 → 23.18 ms/step at K=16 (floor 22.01; GPU busy 87 →
+    # 95 %), 25.86 → 23.92 at K=8; 50 per call is no better than 25.
+    TRAIN_STEPS_PER_CALL         = 25
+    TRAIN_DEVICE_PREFETCH        = True
     DEFAULT_NUM_RES_BLOCKS       = 32
     # PATH ANCHOR ONLY since the ensemble-only refactor: nothing loads a
     # model from this dir anymore — THE model is the ensemble at
