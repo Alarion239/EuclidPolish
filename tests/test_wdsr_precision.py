@@ -15,7 +15,7 @@ from euclid_polish.training.models.wdsr import (
     wdsr,
 )
 from euclid_polish.training.trainer import seed_everything
-from scripts.benchmark_train_step import parse_feed, parse_variant
+from scripts.benchmark_train_step import isolated_order, parse_feed, parse_variant
 
 KNEES = (0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0)
 ARCH = {"scale": 2, "num_res_blocks": 2, "nchan_in": 24, "nchan_out": 4, "input_knees": 6,
@@ -133,3 +133,9 @@ def test_benchmark_feed_names():
                 "spc4+fused+fused", ""):
         with pytest.raises(ValueError):
             parse_feed(bad)
+
+
+def test_benchmark_isolated_order_is_abba():
+    assert isolated_order(["a", "b"], 2) == ["a", "b", "b", "a"]
+    assert isolated_order(["a", "b", "c"], 3) == ["a", "b", "c", "c", "b", "a", "a", "b", "c"]
+    assert isolated_order(["a"], 1) == ["a"]

@@ -506,7 +506,73 @@ def _forwards(args, ks):
     return clean, records_dir, forwards
 
 
+def isolated_order(feeds: list[str], repeats: int) -> list[str]:
+    """Feed variants in A B B A … order: each repeat reverses the last, so
+    a drift over the job (a warming node, a busier neighbour) cancels in
+    the means."""
+    order: list[str] = []
+    for r in range(int(repeats)):
+        order += feeds if r % 2 == 0 else feeds[::-1]
+    return order
+
+
+def _trainer_isolated(args: argparse.Namespace, meta: dict) -> int:
+    """Trainer mode with every (K, feed) run in its own process, ``--isolate``
+    times in A B B A order: a run's input pipeline cannot outlive it and slow
+    the next one (in one process, the second run of a K group was slower)."""
+    ks = [int(v) for v in args.crops_per_field.split(",") if v.strip()]
+    feeds = [v.strip() for v in args.feeds.split(",") if v.strip()]
+    t0 = time.perf_counter()
+    records_dir = (args.records_dir if args.no_stage
+                   else stage_records(args.records_dir, ["clean_train"]))
+    print(f"records staged once: {records_dir} ({time.perf_counter() - t0:.0f} s)", flush=True)
+    tmp = tempfile.mkdtemp(prefix="bench_isolated_")
+    rows = []
+    try:
+        for k in ks:
+            for i, feed in enumerate(isolated_order(feeds, args.isolate)):
+                out = os.path.join(tmp, f"k{k}_{i}.json")
+                cmd = [sys.executable, "-u", os.path.abspath(__file__), "--mode", "trainer",
+                       "--no-stage", "--records-dir", records_dir,
+                       "--crops-per-field", str(k), "--feeds", feed,
+                       "--depths", args.depths, "--batches", args.batches, "--knees", args.knees,
+                       "--trainer-steps", str(args.trainer_steps),
+                       "--trainer-warmup", str(args.trainer_warmup),
+                       "--gpu-steps", str(args.gpu_steps), "--hr-crop-size", str(args.hr_crop_size),
+                       "--learning-rate", str(args.learning_rate), "--seed", str(args.seed),
+                       "--out", out]
+                if args.star_prior_file:
+                    cmd += ["--star-prior-file", args.star_prior_file]
+                done = subprocess.run(cmd, check=False)
+                if done.returncode != 0 or not os.path.exists(out):
+                    rows.append({"crops_per_field": k, "feed": feed, "error": done.returncode})
+                    continue
+                with open(out) as fh:
+                    rows += [dict(r, run=i) for r in json.load(fh)["rows"]]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if records_dir != args.records_dir:
+            shutil.rmtree(records_dir, ignore_errors=True)
+    print("\n isolated runs (each its own process, A B B A order)")
+    print(" K    feed                          ms/step per run              mean")
+    for k in ks:
+        for feed in feeds:
+            ms = [r["live_ms"] for r in rows if r.get("crops_per_field") == k and r.get("feed") == feed
+                  and "live_ms" in r]
+            floors = [r["gpu_ms"] for r in rows if r.get("crops_per_field") == k
+                      and r.get("feed") == feed and "gpu_ms" in r]
+            mean = sum(ms) / len(ms) if ms else float("nan")
+            floor = f"   floor {sum(floors) / len(floors):.2f}" if floors else ""
+            print(f" {k:<4d} {feed:<28s} {', '.join(f'{x:.2f}' for x in ms):<28s} {mean:6.2f}{floor}")
+    if args.out:
+        with open(args.out, "w") as fh:
+            json.dump({"meta": meta, "rows": rows}, fh, indent=1)
+    return 0
+
+
 def _trainer_mode(args: argparse.Namespace, meta: dict) -> int:
+    if args.isolate:
+        return _trainer_isolated(args, meta)
     ks = [int(v) for v in args.crops_per_field.split(",") if v.strip()]
     feeds = [v.strip() for v in args.feeds.split(",") if v.strip()]
     knees = tuple(float(q) for q in args.knees.split(","))
@@ -670,6 +736,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--knees", default="0.001,0.01,0.1,1,10,100,1000,10000",
                    help="trainer mode: the member's asinh knees")
     p.add_argument("--trainer-steps", type=int, default=3000, help="trainer mode: steps per run")
+    p.add_argument("--isolate", type=int, default=0,
+                   help="trainer mode: run every (K, feed) in its own process this many times, "
+                        "in A B B A order (0: all in this process)")
     p.add_argument("--trainer-warmup", type=int, default=500,
                    help="trainer mode: steps left out of the timing (compile, pipeline fill)")
     p.add_argument("--learning-rate", type=float, default=5e-4)
