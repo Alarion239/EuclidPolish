@@ -10,12 +10,17 @@
    - one summary line: which knee leads the faintest and the brightest pixels;
    - "Which knees matter for which pixels": knee share vs pixel brightness, a
      line per knee in a sequential ramp (faint knee → bright knee), a panel
-     per model on shared axes, aggregated over all the run's fields;
+     per model on shared axes, aggregated over all the run's fields; the
+     input band (?input= all | VIS | Y | J | H) draws that band's own knee
+     split here and in the class bars (all: the σ-weighted split; disabled
+     under the ablation split, which ablates every input band at once);
    - by pixel class: stacked bars (the gradient or the ablation split, ?split=)
      for the synthetic truth classes and the real brightness classes;
    - the cross-band matrix per model;
    - the field explorer (the field image with its sampled pixels).
-   Opening the page reads only (GETs); the one job starts after a confirm. */
+   Shares are noise-weighted (record version 2); an older record gets a
+   warning. Opening the page reads only (GETs); the one job starts after a
+   confirm. */
 import { useMemo, useState, type ReactNode } from "react";
 import Plot, { Legend, useLegend, type LegendItem, type Series } from "../../../charts/Plot";
 import { useJob } from "../../../api/jobs";
@@ -33,9 +38,10 @@ import { LoadState } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
 import { useKneeRun, useKneeRuns, type KneeRunRecord } from "../kneesApi";
 import {
-  BAND_LABEL, FIELD_SETS, KNEE_BANDS, KNEE_RAMP, MAX_OVERLAY, brightnessExtent, brightnessLines, brightnessSamples, edgeLeads, electronText,
-  errorRows, kneeLabel, kneeRamp, kneeUnion, modelShort, normaliseRecord, normaliseRuns, overlayModels, parseBand, parseSet, parseShare,
-  runText, setsWithData, sharePct, slug, type FieldSet, type KneeBand, type ShareKind,
+  BAND_LABEL, FIELD_SETS, KNEE_BANDS, KNEE_INPUTS, KNEE_RAMP, MAX_OVERLAY, brightnessExtent, brightnessLines, brightnessSamples, edgeLeads,
+  effectiveInput, electronText, errorRows, isPerElectron, kneeLabel, kneeRamp, kneeUnion, modelShort, normaliseRecord, normaliseRuns,
+  overlayModels, parseBand, parseInput, parseSet, parseShare, runText, setsWithData, sharePct, slug, type FieldSet, type KneeBand,
+  type KneeInput, type ShareKind,
 } from "../knees";
 import { ClassBars, type DrawnModel } from "../attribution/ClassBars";
 import { CrossBand } from "../attribution/CrossBand";
@@ -45,23 +51,29 @@ import "../models.css";
 import "../attribution/knees.css";
 
 const SET_LABEL: Record<FieldSet, string> = { synthetic: "Synthetic", real: "Real" };
+const INPUT_LABEL: Record<KneeInput, string> = { all: "All (σ-weighted)", VIS: "VIS", Y: "Y", J: "J", H: "H" };
+const INPUT_TITLE: Record<KneeInput, string> = {
+  all: "Every input band, each band's terms weighted by its noise σ", VIS: "The VIS input's own split over the knees",
+  Y: "The Y input's own split over the knees", J: "The J input's own split over the knees", H: "The H input's own split over the knees",
+};
+const ABLATION_HINT = "The ablation removes a knee in every input band at once";
 const POLL = 4000;
 const FULL_DOMAIN: [number, number] = [1e-3, 1e7];
 
 /* ── the main chart ────────────────────────────────────────────────────── */
 
-function BrightnessPanels({ models, set, band, color, union }: {
-  models: readonly DrawnModel[]; set: FieldSet; band: KneeBand; color: (q: number) => string; union: readonly number[];
+function BrightnessPanels({ models, set, band, input, color, union }: {
+  models: readonly DrawnModel[]; set: FieldSet; band: KneeBand; input: KneeInput; color: (q: number) => string; union: readonly number[];
 }) {
   const lg = useLegend();
   const panels = useMemo(() => models.map((m) => {
     const agg = m.result.aggregate[set];
-    const lines = brightnessLines(agg, band, m.result.knees);
+    const lines = brightnessLines(agg, band, m.result.knees, input);
     const series: Series[] = lines.filter((l) => l.x.length).map((l) => ({
       x: l.x, y: l.y, color: color(l.knee), width: 1.8, dots: true, name: kneeLabel(l.knee), key: `k:${+l.knee.toPrecision(6)}`,
     }));
     return { m, lines, series, n: brightnessSamples(agg, band) };
-  }), [models, set, band, color]);
+  }), [models, set, band, input, color]);
   const ext = panels.map((p) => brightnessExtent(p.lines)).filter(Boolean) as [number, number][];
   const xDomain: [number, number] = ext.length
     ? [Math.min(...ext.map((e) => e[0])) / 1.6, Math.max(...ext.map((e) => e[1])) * 1.6] : FULL_DOMAIN;
@@ -75,6 +87,7 @@ function BrightnessPanels({ models, set, band, color, union }: {
     );
   }
   const many = drawn.length > 1;
+  const via = input === "all" ? "" : `, ${input} input`;
   return (
     <>
       <Legend items={items} {...lg.legendProps} />
@@ -86,11 +99,12 @@ function BrightnessPanels({ models, set, band, color, union }: {
               n = {formatCount(p.n)}
             </h3>
             <Plot {...lg.plotProps} xScale="log" xDomain={xDomain} xTicks={logTicks(xDomain, { maxTicks: 7 })} yDomain={[0, 1]}
-              xLabel={`pixel brightness in ${BAND_LABEL[band]} [e⁻]`} yLabel="knee share"
+              xLabel={`pixel brightness in ${BAND_LABEL[band]} [e⁻]`}
+              yLabel={input === "all" ? "knee share" : `knee share of the ${input} input`}
               series={p.series} aspect={many ? 0.6 : 0.45} syncKey="knee-brightness"
               xFormat={(v) => electronText(v)} yFormat={(v) => sharePct(v)}
-              exportName={`knee-share-${slug(p.m.spec)}-${band}-${set}`}
-              aria-label={`Knee share vs pixel brightness, ${modelShort(p.m.spec)}, ${BAND_LABEL[band]}, ${set}`} />
+              exportName={`knee-share-${slug(p.m.spec)}-${band}-${set}${input === "all" ? "" : `-in-${input}`}`}
+              aria-label={`Knee share vs pixel brightness, ${modelShort(p.m.spec)}, ${BAND_LABEL[band]}, ${set}${via}`} />
           </div>
         ))}
       </div>
@@ -110,6 +124,7 @@ export default function Knees() {
   const [band, setBand] = useUrlState<KneeBand>("band", "VIS", { parse: parseBand });
   const [setParam, setSet] = useUrlState<FieldSet>("set", "synthetic", { parse: parseSet });
   const [split, setSplit] = useUrlState<ShareKind>("split", "gradient", { parse: parseShare });
+  const [inputParam, setInput] = useUrlState<KneeInput>("input", "all", { parse: parseInput });
   const [panelOpen, setPanelOpen] = useState<boolean | null>(null);
   const [draft, setDraft] = useState<RunDraft>(EMPTY_DRAFT);
 
@@ -140,10 +155,17 @@ export default function Knees() {
   const union = useMemo(() => kneeUnion(drawn.map((d) => d.result.knees)), [drawn]);
   const theme = useResolvedTheme();
   const color = useMemo(() => kneeRamp(union, KNEE_RAMP[theme]), [union, theme]);
+  // the input split drawn (the URL's pick unless the ablation split or an
+  // older record rules it out), over every aggregate the page draws
+  const inputView = useMemo(
+    () => effectiveInput(inputParam, split, drawn.flatMap((d) => sets.map((s) => d.result.aggregate[s]))),
+    [inputParam, split, drawn, sets],
+  );
+  const input = inputView.input;
   const leads = useMemo(() => {
     const first = drawn[0];
-    return first ? edgeLeads(brightnessLines(first.result.aggregate[set], band, first.result.knees)) : null;
-  }, [drawn, set, band]);
+    return first ? edgeLeads(brightnessLines(first.result.aggregate[set], band, first.result.knees, input)) : null;
+  }, [drawn, set, band, input]);
   const errors = rec ? errorRows(rec.errors) : [];
   const nFields = drawn[0]?.result.fields.filter((f) => f.kind === set).length ?? 0;
 
@@ -161,7 +183,8 @@ export default function Knees() {
           <EmptyState icon="activity" title="No knee attribution runs yet"
             action={open ? undefined : <Button variant="primary" onClick={() => setPanelOpen(true)}>Set up a run</Button>}>
             A run splits each sampled output pixel's sensitivity over the model's input knees (the exact chain-rule split, plus an
-            ablation check), for multi-knee models on synthetic test fields and real tiles. Pick the models and fields in the run
+            ablation check), for multi-knee models on synthetic test fields and real tiles. Each input band's terms are weighted by
+            its noise σ, so a share is the output's response to a 1σ change of the input. Pick the models and fields in the run
             panel above; it runs locally, never on FASRC.
           </EmptyState>
         )}>
@@ -194,7 +217,8 @@ export default function Knees() {
                 <>
                   {leads?.faint && (
                     <SummaryLine>
-                      For <Num>{modelShort(drawn[0].spec)}</Num> in {BAND_LABEL[band]} ({set} fields), the faintest pixels
+                      For <Num>{modelShort(drawn[0].spec)}</Num> in {BAND_LABEL[band]} ({set} fields
+                      {input === "all" ? "" : `, ${input} input`}), the faintest pixels
                       (~{electronText(leads.faint.x)}) lean on the <Num>{kneeLabel(leads.faint.knee)}</Num> knee
                       ({sharePct(leads.faint.share)})
                       {leads.bright && <>, the brightest (~{electronText(leads.bright.x)}) on the <Num>{kneeLabel(leads.bright.knee)}</Num> knee
@@ -202,13 +226,39 @@ export default function Knees() {
                     </SummaryLine>
                   )}
                   <section className="mdl-stack mdl-stack--tight" aria-labelledby="kn-main-title">
-                    <h2 id="kn-main-title" className="mdl-h2">Which knees matter for which pixels</h2>
-                    <BrightnessPanels models={drawn} set={set} band={band} color={color} union={union} />
+                    <div className="mdl-row">
+                      <h2 id="kn-main-title" className="mdl-h2">Which knees matter for which pixels</h2>
+                      <ToolbarGroup label="Input band">
+                        <span className="kn-input" title={inputView.disabled ? ABLATION_HINT : undefined}>
+                          <Segmented<KneeInput> size="sm" aria-label="Input band" value={input} onChange={setInput}
+                            disabled={inputView.disabled}
+                            options={KNEE_INPUTS.map((v) => ({
+                              value: v, label: INPUT_LABEL[v], title: inputView.disabled ? ABLATION_HINT : INPUT_TITLE[v],
+                            }))} />
+                        </span>
+                        {inputView.disabled && <span className="mdl-faint">ablation: every input band at once</span>}
+                      </ToolbarGroup>
+                    </div>
+                    {inputView.missing && (
+                      <p className="mdl-note mdl-warn">This run predates the per-input split; re-run to see it. Showing all input bands.</p>
+                    )}
+                    <BrightnessPanels models={drawn} set={set} band={band} input={input} color={color} union={union} />
                     <Caption>
-                      The share of the model's sensitivity that flows through each input knee (the exact chain-rule split of ∂y/∂x over
-                      the knees' stretched channels), averaged over the sampled pixels of each brightness bin (half a decade); brightness is
-                      the {set === "synthetic" ? "truth" : "model's SR"} in {BAND_LABEL[band]}. Over all {formatCount(nFields)} {set} fields
-                      of the run; empty bins are skipped.{rec.knee_grid_note ? ` ${rec.knee_grid_note}` : ""}
+                      {input === "all" ? (
+                        <>
+                          The share of the model's sensitivity that flows through each input knee (the exact chain-rule split of ∂y/∂x
+                          over the knees' stretched channels). Each input band's terms are weighted by its noise σ, so a share is the
+                          output's response to a 1σ change of the input.
+                        </>
+                      ) : (
+                        <>
+                          The {input} input's own split over the knees (its chain-rule terms alone, so σ cancels). The knees are in
+                          electrons, so the same knee sits at very different noise levels per band: 1 e⁻ ≈ 1σ in NISP but ≈ 0.06σ in VIS.
+                        </>
+                      )}{" "}
+                      Averaged over the sampled pixels of each brightness bin (half a decade); brightness is the{" "}
+                      {set === "synthetic" ? "truth" : "model's SR"} in {BAND_LABEL[band]}. Over all {formatCount(nFields)} {set} fields of
+                      the run; empty bins are skipped.{rec.knee_grid_note ? ` ${rec.knee_grid_note}` : ""}
                     </Caption>
                   </section>
                   <section className="mdl-stack mdl-stack--tight" aria-labelledby="kn-class-title">
@@ -219,7 +269,7 @@ export default function Knees() {
                     </div>
                     <div className="kn-panels">
                       {FIELD_SETS.filter((s) => sets.includes(s)).map((s) => (
-                        <ClassBars key={s} set={s} models={drawn} band={band} kind={split} color={color} />
+                        <ClassBars key={s} set={s} models={drawn} band={band} kind={split} input={input} color={color} />
                       ))}
                     </div>
                   </section>
@@ -230,7 +280,8 @@ export default function Knees() {
                     </div>
                     <Caption>
                       Rows: the output band; columns: the input band. Each cell is the mean share of the output pixel's sensitivity that
-                      flows through that input band ({set} fields, all knees).
+                      flows through that input band ({set} fields, all knees), each band's terms weighted by its noise σ: the output's
+                      response to a 1σ change of that input.
                     </Caption>
                   </section>
                   <section className="mdl-stack mdl-stack--tight" aria-labelledby="kn-field-title">
@@ -277,6 +328,16 @@ function RunBody({ rec, loading, error, reload, status, errors, children }: {
           This run is still being written: {nModels} of {rec.params.models.length} models done so far; the figures fill in as each finishes.
         </Callout>
       )}
+      {status === "cancelled" && nModels > 0 && (
+        <Callout tone="info" dense>
+          This run was cancelled: it kept the {nModels} of {rec.params.models.length} models it finished.
+        </Callout>
+      )}
+      {nModels > 0 && isPerElectron(rec) && (
+        <Callout tone="warn" dense>
+          Per-electron weights (record v1): band and knee shares lean toward NISP; re-run for noise-weighted shares.
+        </Callout>
+      )}
       {status === "failed" && (
         <Callout tone="bad" title="This run failed">
           {errors.length ? errorList : "It recorded no model and no reason."}
@@ -294,7 +355,9 @@ function RunBody({ rec, loading, error, reload, status, errors, children }: {
         </Callout>
       )}
       {status !== "failed" && nModels === 0 && status !== "running" && (
-        <EmptyState compact icon="activity" title="No model results in this run">The run finished without a model result.</EmptyState>
+        <EmptyState compact icon="activity" title="No model results in this run">
+          {status === "cancelled" ? "The run was cancelled before a model finished." : "The run finished without a model result."}
+        </EmptyState>
       )}
       {children}
     </>

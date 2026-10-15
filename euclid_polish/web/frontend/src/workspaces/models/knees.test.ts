@@ -1,19 +1,24 @@
 /* The pure shaping behind Models › Knees (knee attribution): normalising the
- * payloads (a partial record never breaks), the brightness curves (geometric
- * bin centres, empty bins skipped), the class bars in the spec's order, the
- * gradient-vs-ablation agreement, the cross-band matrix, the explorer's dots
- * and their dominant knee, one colour per knee value, the run form (default
- * pick, validation, the POSTed fields, the confirm's estimate) and the field
- * image URL (the backend's slug rule). */
+ * payloads (a partial record never breaks; the version-2 fields read null in
+ * an older record), the brightness curves (geometric bin centres, empty bins
+ * skipped), the class bars in the spec's order, the gradient-vs-ablation
+ * agreement, the cross-band matrix, the input band (one input's own knee
+ * split, all under the ablation split or for an older record), the
+ * per-electron warning and the noise σ line, the explorer's dots and their
+ * dominant knee, one colour per knee value, the run form (default pick,
+ * validation, the POSTed fields, the confirm's estimate) and the field image
+ * URL (the backend's slug rule). */
 import { describe, expect, it } from "vitest";
 import { viridis } from "../../colors";
 import {
-  KNEE_RAMP, agreement, binCentres, brightnessExtent, brightnessLines, brightnessSamples, checkRunForm, classRows, crossBandMatrix, defaultModelPick,
-  dominantKnee, edgeLeads, electronText, errorRows, estimateText, fieldDots, fieldImageUrl, kneeLabel, kneeRamp, kneeUnion, modelShort,
-  normaliseModels, normaliseRecord, normaliseRuns, overlayModels, parseBand, parseLayer, parseSet, parseShare, runFormData, runText,
-  setsWithData, slug,
+  KNEE_INPUTS, KNEE_RAMP, agreement, binCentres, brightnessExtent, brightnessLines, brightnessSamples, checkRunForm, classRows, crossBandMatrix,
+  defaultModelPick, dominantKnee, edgeLeads, effectiveInput, electronText, errorRows, estimateText, fieldDots, fieldImageUrl, hasInputSplit,
+  inputIndex, isPerElectron, kneeLabel, kneeRamp, kneeUnion, modelShort, noiseText, normaliseAggregate, normaliseModels, normaliseRecord,
+  normaliseRuns, overlayModels, parseBand, parseInput, parseLayer, parseSet, parseShare, runFormData, runText, setsWithData, slug,
 } from "./knees";
-import { EDGES, KNEES_6, KNEES_8, RUN_ID, aggregate, catalogue, failedRecord, field, record, runs } from "./testing/kneesFixture";
+import {
+  BAND_SHARE, EDGES, KNEES_6, KNEES_8, RUN_ID, aggregate, catalogue, failedRecord, field, record, runs, v1Record,
+} from "./testing/kneesFixture";
 
 describe("normalising the payloads", () => {
   it("keeps a well-formed record as it is, models in params order", () => {
@@ -35,6 +40,32 @@ describe("normalising the payloads", () => {
     expect(m.fields[0].samples.band).toEqual([]);
     expect(normaliseRecord(null)).toBeNull();
     expect(normaliseRecord({ status: "done" })).toBeNull();
+  });
+
+  it("reads the version-2 fields (the by-input matrices, the noise σ, the version); an older record reads them null", () => {
+    const rec = normaliseRecord(record())!;
+    expect(rec.version).toBe(2);
+    const m = rec.models["universal:member_222"];
+    const agg = m.aggregate.synthetic!;
+    expect(agg.by_class["0"]["galaxy core"].knee_share_by_input).toHaveLength(4);
+    expect(agg.by_class["0"]["galaxy core"].knee_share_by_input![0]).toHaveLength(8);
+    expect(agg.by_brightness.bands["0"].knee_share_by_input).toHaveLength(20);
+    expect(agg.by_brightness.bands["0"].knee_share_by_input![0]).toBeNull();          // an empty bin
+    expect(agg.by_brightness.bands["0"].knee_share_by_input![2]).toHaveLength(4);
+    expect(m.fields[0].noise_sigma_e).toEqual([17.6, 0.87, 0.98, 0.9]);
+    const old = normaliseRecord(v1Record())!;
+    expect(old.version).toBeNull();
+    const oldAgg = old.models["universal:member_222"].aggregate.synthetic!;
+    expect(oldAgg.by_class["0"]["galaxy core"].knee_share_by_input).toBeNull();
+    expect(oldAgg.by_brightness.bands["0"].knee_share_by_input).toBeNull();
+    expect(old.models["universal:member_222"].fields[0].noise_sigma_e).toBeNull();
+    // a malformed matrix: a non-array row reads empty, a non-finite share 0; an empty matrix null
+    const odd = normaliseAggregate({ by_class: { 0: { sky: { knee_share_by_input: [[0.5, "x"], 3], n: 1 }, faint: { knee_share_by_input: [], n: 1 } } } });
+    expect(odd?.by_class["0"].sky.knee_share_by_input).toEqual([[0.5, 0], []]);
+    expect(odd?.by_class["0"].faint.knee_share_by_input).toBeNull();
+    // the fixture keeps the identity knee_share = Σ_c band_share_c · knee_share_by_input_c
+    const core = agg.by_class["0"]["galaxy core"];
+    core.knee_share.forEach((v, k) => expect(BAND_SHARE.reduce((s, w, c) => s + w * core.knee_share_by_input![c][k], 0)).toBeCloseTo(v, 3));
   });
 
   it("reads the runs and the model catalogue defensively", () => {
@@ -131,6 +162,66 @@ describe("the aggregates", () => {
   });
 });
 
+describe("the input band", () => {
+  const agg = aggregate(KNEES_8, "synthetic");
+  const old = normaliseRecord(v1Record())!.models["universal:member_222"].aggregate.synthetic;
+
+  it("draws one input band's own split over the same bins, the all-input split by default", () => {
+    const all = brightnessLines(agg, "VIS", KNEES_8);
+    expect(brightnessLines(agg, "VIS", KNEES_8, "all")).toEqual(all);
+    const vis = brightnessLines(agg, "VIS", KNEES_8, "VIS");
+    const y = brightnessLines(agg, "VIS", KNEES_8, "Y");
+    expect(vis.map((l) => l.x)).toEqual(all.map((l) => l.x));
+    expect(vis[7].y[5]).toBe(agg.by_brightness.bands["0"].knee_share_by_input![7]![0][7]);  // bins 2..16: the 6th is bin 7
+    expect(y[7].y[5]).toBe(agg.by_brightness.bands["0"].knee_share_by_input![7]![1][7]);
+    // VIS leans on the brightest knee more than the all-input split, Y less; J is the split itself
+    expect(vis[7].y.every((v, i) => v >= all[7].y[i])).toBe(true);
+    expect(y[7].y.every((v, i) => v <= all[7].y[i])).toBe(true);
+    expect(vis[7].y).not.toEqual(all[7].y);
+    expect(brightnessLines(agg, "VIS", KNEES_8, "J")).toEqual(all);
+  });
+
+  it("splits the class bars by one input band's gradient; the ablation and the agreement's gradient stay all-input", () => {
+    const all = classRows(agg, "VIS", "synthetic", "gradient");
+    const y = classRows(agg, "VIS", "synthetic", "gradient", "Y");
+    expect(y.map((r) => r.cls)).toEqual(all.map((r) => r.cls));
+    expect(y[2].cls).toBe("galaxy core");
+    expect(y[2].shares).toEqual(agg.by_class["0"]["galaxy core"].knee_share_by_input![1]);
+    expect(y[2].shares).not.toEqual(all[2].shares);
+    expect(y[2].gradient).toEqual(all[2].gradient);
+    expect(classRows(agg, "VIS", "synthetic", "ablation", "Y")).toEqual(classRows(agg, "VIS", "synthetic", "ablation"));
+  });
+
+  it("falls back to the all-input split for an aggregate without the per-input data (an older record)", () => {
+    expect(hasInputSplit(agg)).toBe(true);
+    expect(hasInputSplit(old)).toBe(false);
+    expect(hasInputSplit(null)).toBe(false);
+    expect(brightnessLines(old, "VIS", KNEES_8, "Y")).toEqual(brightnessLines(old, "VIS", KNEES_8));
+    expect(classRows(old, "VIS", "synthetic", "gradient", "Y")).toEqual(classRows(old, "VIS", "synthetic", "gradient"));
+  });
+
+  it("resolves the input drawn: the pick, else all under the ablation split or when an aggregate predates the split", () => {
+    expect(KNEE_INPUTS.map(inputIndex)).toEqual([null, 0, 1, 2, 3]);
+    expect(effectiveInput("Y", "gradient", [agg])).toEqual({ input: "Y", disabled: false, missing: false });
+    expect(effectiveInput("Y", "ablation", [agg])).toEqual({ input: "all", disabled: true, missing: false });
+    expect(effectiveInput("Y", "ablation", [old])).toEqual({ input: "all", disabled: true, missing: false });
+    expect(effectiveInput("Y", "gradient", [agg, old])).toEqual({ input: "all", disabled: false, missing: true });
+    expect(effectiveInput("all", "gradient", [old])).toEqual({ input: "all", disabled: false, missing: false });
+    expect(effectiveInput("H", "gradient", [null, undefined])).toEqual({ input: "H", disabled: false, missing: false });
+  });
+
+  it("flags the per-electron records (version 1) and writes the field's noise σ line", () => {
+    expect(isPerElectron(normaliseRecord(record()))).toBe(false);
+    expect(isPerElectron(normaliseRecord(v1Record()))).toBe(true);
+    expect(isPerElectron(normaliseRecord({ ...record(), version: 1 }))).toBe(true);
+    expect(isPerElectron(null)).toBe(false);
+    expect(noiseText([17.6, 0.87, 0.98, 0.9])).toBe("noise σ: VIS 17.6 · Y 0.87 · J 0.98 · H 0.90 e⁻");
+    expect(noiseText([18.04, NaN, 1.234])).toBe("noise σ: VIS 18.0 · Y — · J 1.23 · H — e⁻");
+    expect(noiseText(null)).toBeNull();
+    expect(noiseText([NaN, NaN])).toBeNull();
+  });
+});
+
 describe("the field explorer", () => {
   const f = field("test/0", "synthetic", KNEES_8, null);
 
@@ -188,6 +279,7 @@ describe("runs and the URL", () => {
   it("describes a run in one line and lists errors", () => {
     expect(runText(runs().runs[0], "2026-10-15 10:15")).toBe("2026-10-15 10:15 · #222, #221 · 2 synthetic + 1 real");
     expect(runText(runs().runs[1], "d")).toBe("d · #211 · 5 synthetic · failed");
+    expect(runText(normaliseRuns({ runs: [{ ...runs().runs[0], status: "cancelled" }] })[0], "d")).toBe("d · #222, #221 · 2 synthetic + 1 real · cancelled");
     expect(errorRows({ "universal:member_211": "boom", "universal:member_222|test/3": "bad field" })).toEqual([
       { where: "#211", reason: "boom" }, { where: "#222 › test/3", reason: "bad field" }]);
   });
@@ -206,5 +298,6 @@ describe("runs and the URL", () => {
     expect([parseSet("real"), parseSet("x")]).toEqual(["real", "synthetic"]);
     expect([parseShare("ablation"), parseShare("")]).toEqual(["ablation", "gradient"]);
     expect([parseLayer("lr"), parseLayer("hr")]).toEqual(["lr", "sr"]);
+    expect([parseInput("Y"), parseInput("VIS"), parseInput("Y_E"), parseInput("")]).toEqual(["Y", "VIS", "all", "all"]);
   });
 });

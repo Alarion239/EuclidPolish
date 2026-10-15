@@ -4,14 +4,15 @@
    SVG overlay in the field's own HR coordinates (shape [H, W]) is stretched
    over the image, so the dots land on their pixels at any size and for the
    half-size LR image too. Hovering a dot names its class, brightness and
-   knee shares (also its `<title>`). Model, field and layer are URL state
+   knee shares (also its `<title>`); one line gives the field's noise σ per
+   input band (the shares' weights). Model, field and layer are URL state
    (`fm`, `field`, `layer`). */
 import { useMemo, useState } from "react";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { formatCount } from "../../../format";
 import { Caption, EmptyState, Segmented, Select, Toolbar, ToolbarGroup } from "../../../ui";
 import {
-  dotTitle, electronText, fieldDots, fieldImageUrl, kneeLabel, modelShort, parseLayer, sharePct, BAND_LABEL,
+  dotTitle, electronText, fieldDots, fieldImageUrl, kneeLabel, modelShort, noiseText, parseLayer, sharePct, BAND_LABEL,
   type FieldDot, type FieldSet, type ImageLayer, type KneeBand,
 } from "../knees";
 import { ShareStack, type DrawnModel } from "./ClassBars";
@@ -41,6 +42,7 @@ export function FieldExplorer({ runId, models, band, set, color }: {
   const src = fieldImageUrl(runId, model.spec, field, band, layer);
   const r = Math.max(W, H) / 85;
   const shown = hover && dots.includes(hover) ? hover : null;
+  const noise = noiseText(field.noise_sigma_e);
   return (
     <div className="kn-explorer">
       <Toolbar label="Field explorer" plain>
@@ -78,21 +80,25 @@ export function FieldExplorer({ runId, models, band, set, color }: {
             </svg>
           )}
         </div>
-        <div className="kn-explorer__side" aria-live="polite">
-          {shown ? (
-            <>
-              <p className="mdl-note"><strong>{shown.cls}</strong> · {electronText(shown.value)} · pixel ({shown.x}, {shown.y})</p>
-              <ShareStack shares={shown.shares} knees={knees} color={color} label={`Pixel (${shown.x}, ${shown.y})`} />
-              <p className="mdl-note">
-                Leads: {shown.dominant >= 0 ? `${kneeLabel(knees[shown.dominant])} (${sharePct(shown.shares[shown.dominant])})` : "—"}
-              </p>
-            </>
-          ) : <p className="mdl-note">{formatCount(dots.length)} sampled pixels in {BAND_LABEL[band]}. Hover a dot for its class and knee shares.</p>}
+        <div className="kn-explorer__side">
+          {noise && <p className="mdl-note kn-noise" title="The field's noise σ per input band: the weights of its shares">{noise}</p>}
+          <div className="kn-explorer__live" aria-live="polite">
+            {shown ? (
+              <>
+                <p className="mdl-note"><strong>{shown.cls}</strong> · {electronText(shown.value)} · pixel ({shown.x}, {shown.y})</p>
+                <ShareStack shares={shown.shares} knees={knees} color={color} label={`Pixel (${shown.x}, ${shown.y})`} />
+                <p className="mdl-note">
+                  Leads: {shown.dominant >= 0 ? `${kneeLabel(knees[shown.dominant])} (${sharePct(shown.shares[shown.dominant])})` : "—"}
+                </p>
+              </>
+            ) : <p className="mdl-note">{formatCount(dots.length)} sampled pixels in {BAND_LABEL[band]}. Hover a dot for its class and knee shares.</p>}
+          </div>
         </div>
       </div>
       <Caption>
         {field.kind === "synthetic" ? "A synthetic test field" : "A real tile"}, {layer === "sr" ? "the model's SR" : "the LR input"} in{" "}
-        {BAND_LABEL[band]} (asinh-scaled). Each dot is a sampled output pixel in its dominant knee's colour (the largest gradient share).
+        {BAND_LABEL[band]} (asinh-scaled). Each dot is a sampled output pixel in its dominant knee's colour (the largest gradient share,
+        σ-weighted over all input bands).
       </Caption>
     </div>
   );

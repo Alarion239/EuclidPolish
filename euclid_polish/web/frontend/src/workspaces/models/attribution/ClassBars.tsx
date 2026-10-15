@@ -1,13 +1,16 @@
 /* Models › Knees › By pixel class: one stacked bar per class (and per model
    overlaid), the segments the knees' shares in the knee colours, classes in
-   the spec's order with their sample count; the gradient split or the
-   ablation split (the caller's toggle), and how far the two agree. Synthetic
-   truth classes and real brightness classes are separate panels (the caller
-   renders one per set). */
+   the spec's order with their sample count; the gradient split (σ-weighted
+   over every input band, or one input band's own split) or the ablation
+   split (the caller's toggles), and how far the all-input gradient and the
+   ablation agree. Synthetic truth classes and real brightness classes are
+   separate panels (the caller renders one per set). */
 import { formatCount } from "../../../format";
 import { Caption } from "../../../ui";
 import type { KneeModelResult } from "../kneesApi";
-import { agreement, classOrder, classRows, kneeLabel, modelShort, sharePct, type ClassRow, type FieldSet, type ShareKind } from "../knees";
+import {
+  agreement, classOrder, classRows, kneeLabel, modelShort, sharePct, type ClassRow, type FieldSet, type KneeInput, type ShareKind,
+} from "../knees";
 
 export type DrawnModel = { spec: string; result: KneeModelResult };
 
@@ -32,10 +35,10 @@ export function ShareStack({ shares, knees, color, label }: {
   );
 }
 
-export function ClassBars({ set, models, band, kind, color }: {
-  set: FieldSet; models: readonly DrawnModel[]; band: string; kind: ShareKind; color: (q: number) => string;
+export function ClassBars({ set, models, band, kind, input = "all", color }: {
+  set: FieldSet; models: readonly DrawnModel[]; band: string; kind: ShareKind; input?: KneeInput; color: (q: number) => string;
 }) {
-  const perModel = models.map((m) => ({ ...m, rows: classRows(m.result.aggregate[set], band, set, kind) }));
+  const perModel = models.map((m) => ({ ...m, rows: classRows(m.result.aggregate[set], band, set, kind, input) }));
   const known = classOrder(set);
   const present = new Set(perModel.flatMap((m) => m.rows.map((r) => r.cls)));
   const classes = [...known.filter((c) => present.has(c)), ...[...present].filter((c) => !known.includes(c)).sort()];
@@ -78,11 +81,14 @@ export function ClassBars({ set, models, band, kind, color }: {
         ))}
       </div>
       <Caption>
-        {kind === "gradient"
-          ? "Gradient: each knee's share of the summed |∂y/∂x| through its input channels (the exact chain-rule split), "
-          : "Ablation: each knee's share of the output change when its input channels are replaced by their window mean, "}
+        {kind === "ablation"
+          ? "Ablation: each knee's share of the output change when its input channels (in every input band) are replaced by their window mean, "
+          : input === "all"
+            ? "Gradient: each knee's share of the summed |∂y/∂x| through its input channels (the exact chain-rule split, each input "
+              + "band's terms weighted by its noise σ), "
+            : `Gradient, ${input} input: each knee's share of that input band's own |∂y/∂x| (its chain-rule terms alone), `}
         averaged over the sampled pixels of each class{set === "synthetic" ? " (truth classes)" : " (by the model's own SR brightness)"}.
-        n: sampled pixels. Agree: 1 − ½ Σ|gradient − ablation| (100% = the same split).
+        n: sampled pixels. Agree: 1 − ½ Σ|gradient − ablation|, both over all input bands (100% = the same split).
       </Caption>
     </section>
   );

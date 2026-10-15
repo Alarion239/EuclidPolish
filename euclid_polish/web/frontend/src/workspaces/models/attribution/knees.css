@@ -60,14 +60,17 @@
 }
 .kn-cross td[data-diag] { font-weight: var(--fw-semibold); }
 
-/* the main chart's small multiples */
+/* the main chart's small multiples; the input-band picker (a wrapper that
+   carries the ablation hint's tooltip over the disabled toggle) */
 .kn-chart { margin: 0; }
+.kn-input { display: inline-flex; }
 
 /* the field explorer */
 .kn-explorer { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
 .kn-explorer__main { display: grid; gap: var(--s3); grid-template-columns: minmax(0, 560px) minmax(180px, 1fr); align-items: start; }
 @container (max-width: 760px) { .kn-explorer__main { grid-template-columns: minmax(0, 1fr); } }
-.kn-explorer__side { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.kn-explorer__side, .kn-explorer__live { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.kn-noise { font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 .kn-field { position: relative; width: 100%; max-width: 560px; background: var(--image-ink); border-radius: var(--r-sm); overflow: hidden; }
 .kn-field__img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; image-rendering: pixelated; }
 .kn-field__dots { position: absolute; inset: 0; width: 100%; height: 100%; }

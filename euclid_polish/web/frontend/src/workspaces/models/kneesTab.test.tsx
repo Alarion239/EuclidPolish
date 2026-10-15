@@ -3,11 +3,14 @@
  * GETs (no POST, and no catalogue read while the run panel is closed); the
  * main chart draws one line per knee in each model's panel with the knee
  * legend; the class bars list the classes in order with their n, and the
- * gradient / ablation toggle changes the values; the cross-band tables; the
- * field explorer draws a dot per sample of the band on the record's image;
- * the run panel preselects the newest universal models, asks with the
- * estimate and POSTs the right form; no runs → the explanation and an open
- * run panel; a failed run → its errors. */
+ * gradient / ablation toggle changes the values; the input band switches
+ * the chart and the bars to that band's own knee split (disabled under the
+ * ablation split; an older record → the per-electron warning and a note);
+ * the cross-band tables; the field explorer draws a dot per sample of the
+ * band on the record's image, with the field's noise σ; the run panel
+ * preselects the newest universal models, asks with the estimate and POSTs
+ * the right form; no runs → the explanation and an open run panel; a failed
+ * run → its errors; a cancelled run → what it kept. */
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -15,9 +18,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useJobsStore } from "../../api/jobs";
 import { queryClient } from "../../api/query";
 import { resetConfirm } from "../../ui";
+import { kneeLabel, sharePct } from "./knees";
 import Knees from "./tabs/Knees";
 import {
-  NEXUS_TILES, OLD_RUN_ID, POSTER_TILES, RUN_ID, SOURCES, catalogue, failedRecord, record, runs,
+  KNEES_8, NEXUS_TILES, OLD_RUN_ID, POSTER_TILES, RUN_ID, SOURCES, byInput, catalogue, failedRecord, peaked, record, runs, v1Record,
 } from "./testing/kneesFixture";
 
 type Reply = { status?: number; body: unknown };
@@ -101,6 +105,7 @@ describe("knees tab", () => {
     expect(gets(`/api/knee-attribution/${RUN_ID}`)).toHaveLength(1);
     expect(gets("/api/knee-attribution/models")).toHaveLength(0);       // the run panel is closed
     expect(screen.getByRole("button", { name: "New run" }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(/Per-electron weights/)).toBeNull();          // a version-2 record
   });
 
   it("overlays only the models picked in the URL, and follows the band", async () => {
@@ -133,6 +138,72 @@ describe("knees tab", () => {
     await waitFor(() => expect(bar()).toBe(gradient));
   });
 
+  it("the input band draws that band's own knee split in the chart and the class bars; the agreement stays all-input", async () => {
+    show("/models/knees?km=universal:member_222");
+    const syn = await screen.findByRole("region", { name: "Synthetic fields · truth classes" });
+    const core = syn.querySelector<HTMLElement>(".kn-class[data-class='galaxy core']")!;
+    const bar = () => within(core).getByRole("img").getAttribute("aria-label");
+    const agree = () => core.querySelector(".kn-barrow__agree")?.textContent;
+    const summary = () => document.querySelector(".ui-summary")?.textContent ?? "";
+    const label = (shares: number[]) => `galaxy core: ${KNEES_8.map((q, k) => `${kneeLabel(q)} ${sharePct(shares[k])}`).join(", ")}`;
+    const g = peaked(KNEES_8, 300);
+    expect(bar()).toBe(label(g));
+    const agreeAll = agree();
+    const summaryAll = summary();
+    expect(document.body.textContent).not.toContain("≈ 0.06σ in VIS");
+    const picker = screen.getByRole("radiogroup", { name: "Input band" });
+    expect(within(picker).getAllByRole("radio").map((r) => r.textContent)).toEqual(["All (σ-weighted)", "VIS", "Y", "J", "H"]);
+
+    fireEvent.click(within(picker).getByRole("radio", { name: "VIS" }));
+    await waitFor(() => expect(bar()).toBe(label(byInput(g)[0])));
+    expect(bar()).not.toBe(label(g));
+    expect(agree()).toBe(agreeAll);
+    expect(screen.getByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic, VIS input" })).toBeTruthy();
+    expect(summary()).toMatch(/^For #222 in VIS \(synthetic fields, VIS input\), the faintest pixels/);
+    expect(summary()).not.toBe(summaryAll);
+    expect(document.body.textContent).toContain("1 e⁻ ≈ 1σ in NISP but ≈ 0.06σ in VIS");
+    expect(lastLocation).toContain("input=VIS");
+
+    fireEvent.click(within(picker).getByRole("radio", { name: "Y" }));
+    await waitFor(() => expect(bar()).toBe(label(byInput(g)[1])));
+    expect(screen.getByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic, Y input" })).toBeTruthy();
+
+    fireEvent.click(within(picker).getByRole("radio", { name: "All (σ-weighted)" }));
+    await waitFor(() => expect(bar()).toBe(label(g)));
+    expect(summary()).toBe(summaryAll);
+    expect(lastLocation).not.toContain("input=");
+  });
+
+  it("disables the input band under the ablation split (it ablates every input band at once)", async () => {
+    show("/models/knees?km=universal:member_222&input=Y&split=ablation");
+    const picker = await screen.findByRole("radiogroup", { name: "Input band" });
+    const radios = () => within(picker).getAllByRole("radio") as HTMLButtonElement[];
+    expect(radios().every((r) => r.disabled)).toBe(true);
+    expect(radios()[2].title).toBe("The ablation removes a knee in every input band at once");
+    expect(screen.getByText("ablation: every input band at once")).toBeTruthy();
+    expect(screen.getByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic" })).toBeTruthy();   // all inputs
+    // back to the gradient: the URL's Y input returns
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Split" })).getByRole("radio", { name: "Gradient" }));
+    expect(await screen.findByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic, Y input" })).toBeTruthy();
+    expect(radios().some((r) => r.disabled)).toBe(false);
+    expect(screen.queryByText("ablation: every input band at once")).toBeNull();
+  });
+
+  it("warns on a per-electron (version 1) record and notes it predates the per-input split, drawing all inputs", async () => {
+    routes[`GET /api/knee-attribution/${RUN_ID}`] = () => ({ body: v1Record() });
+    show("/models/knees?km=universal:member_222");
+    expect(await screen.findByText(/^Per-electron weights \(record v1\): band and knee shares lean toward NISP; re-run for noise-weighted shares\.$/))
+      .toBeTruthy();
+    expect(screen.queryByText(/predates the per-input split/)).toBeNull();
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Input band" })).getByRole("radio", { name: "Y" }));
+    expect(await screen.findByText(/This run predates the per-input split; re-run to see it/)).toBeTruthy();
+    expect(lastLocation).toContain("input=Y");
+    expect(screen.getByRole("figure", { name: "Knee share vs pixel brightness, #222, VIS, synthetic" })).toBeTruthy();
+    expect(within(screen.getByRole("radiogroup", { name: "Input band" })).getByRole("radio", { name: "All (σ-weighted)" }).getAttribute("aria-checked"))
+      .toBe("true");
+    expect(document.querySelector(".kn-noise")).toBeNull();                  // no noise σ before version 2
+  });
+
   it("shows a bar per model when several are overlaid, and the cross-band table per model", async () => {
     show();
     const syn = await screen.findByRole("region", { name: "Synthetic fields · truth classes" });
@@ -149,6 +220,7 @@ describe("knees tab", () => {
     show("/models/knees?km=universal:member_222");
     const svg = await screen.findByRole("group", { name: "4 sampled pixels in VIS" });
     const img = screen.getByRole("img", { name: "test/0, SR VIS" });
+    expect(screen.getByText("noise σ: VIS 17.6 · Y 0.87 · J 0.98 · H 0.90 e⁻")).toBeTruthy();
     expect(img.getAttribute("src")).toBe(`/api/knee-attribution/${RUN_ID}/field/universal__member_222/test__0.png?band=VIS&layer=sr`);
     const dots = [...svg.querySelectorAll<SVGCircleElement>("circle")];
     expect(dots).toHaveLength(4);
@@ -246,6 +318,17 @@ describe("knees tab", () => {
     expect(callout.textContent).toContain("OSError: no checkpoint for member_211");
     expect(panels()).toHaveLength(0);
     expect(gets(`/api/knee-attribution/${OLD_RUN_ID}`)).toHaveLength(1);
+  });
+
+  it("says what a cancelled run kept", async () => {
+    routes["GET /api/knee-attribution"] = () => ({ body: { runs: [{ ...runs().runs[0], status: "cancelled" }] } });
+    const rec = record({ status: "cancelled" });
+    delete rec.models["universal:member_221"];
+    routes[`GET /api/knee-attribution/${RUN_ID}`] = () => ({ body: rec });
+    show();
+    expect(await screen.findByText("This run was cancelled: it kept the 1 of 2 models it finished.")).toBeTruthy();
+    await waitFor(() => expect(panels()).toHaveLength(1));
+    expect(screen.queryByText("No model results in this run")).toBeNull();
   });
 
   it("names partial errors of a finished run above its figures", async () => {

@@ -10,7 +10,7 @@ import { URLS as SKY_URLS, type SourcesPayload, type TileList } from "../sky/res
 
 /* ── the contract (what the server sends) ──────────────────────────────── */
 
-export type KneeRunStatus = "done" | "failed" | "running";
+export type KneeRunStatus = "done" | "failed" | "running" | "cancelled";
 
 /** One row of GET /api/knee-attribution (newest first). */
 export type KneeRunSummary = {
@@ -24,8 +24,18 @@ export type KneeModelChoice = {
   kind: "universal" | "member" | string; available: boolean; reason?: string | null;
 };
 
-/** One class's mean shares over the run's fields (one output band). */
-export type ClassShares = { knee_share: number[]; ablation_share: number[]; band_share: number[]; n: number };
+/** One class's mean shares over the run's fields (one output band). The
+ *  gradient shares are noise-weighted (record version 2): each input band's
+ *  chain-rule terms times its noise σ, so a share is the output's response to
+ *  a 1σ change of the input. */
+export type ClassShares = {
+  knee_share: number[]; ablation_share: number[]; band_share: number[];
+  /** C × K (rows: input bands VIS, Y, J, H; columns: the knees): each input
+   *  band's own split over the knees, each row summing to 1 (σ cancels);
+   *  knee_share = Σ_c band_share_c · row_c. Null before version 2. */
+  knee_share_by_input?: number[][] | null;
+  n: number;
+};
 
 /** The run's aggregate over all fields of one set (synthetic or real). */
 export type KneeAggregate = {
@@ -34,8 +44,10 @@ export type KneeAggregate = {
   by_brightness: {
     /** Half-decade bin edges in e⁻ (21 edges, 1e-3 … 1e7). */
     edges_e: number[];
-    /** band index → per bin the mean knee share (null: no sample) and n. */
-    bands: Record<string, { knee_share: (number[] | null)[]; n: number[] }>;
+    /** band index → per bin the mean knee share (null: no sample), the mean
+     *  C × K by-input split (null: no sample; the whole list null before
+     *  version 2) and n. */
+    bands: Record<string, { knee_share: (number[] | null)[]; knee_share_by_input?: (number[][] | null)[] | null; n: number[] }>;
   };
   /** Mean band share: rows = output band, cols = input band. */
   cross_band: (number | null)[][];
@@ -55,6 +67,9 @@ export type KneeField = {
   shape: [number, number];
   /** The field PNG's URL (`?band=` and `?layer=` are appended here). */
   image?: string | null;
+  /** The field's noise σ per input band [VIS, Y, J, H] in e⁻: the weights of
+   *  its shares (null before version 2). */
+  noise_sigma_e?: number[] | null;
   samples: KneeSamples;
 };
 
@@ -68,6 +83,9 @@ export type KneeRunParams = { models: string[]; synthetic: number; tiles: string
 
 /** GET /api/knee-attribution/<id>. */
 export type KneeRunRecord = {
+  /** 2: noise-weighted shares with the per-input split; absent (or 1): per
+   *  input electron, which leans every share toward NISP. */
+  version?: number | null;
   id: string; created?: string | null; finished?: string | null; status: KneeRunStatus | string;
   params: KneeRunParams;
   knee_grid_note?: string | null;
