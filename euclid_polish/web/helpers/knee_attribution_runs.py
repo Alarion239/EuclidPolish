@@ -6,10 +6,11 @@ A run is a local job over models × fields. Per field it predicts the model's
 SR, classes every HR pixel (truth classes on synthetic fields — star/galaxy
 cores, wings, outskirts, saturated, sky — and predicted-brightness bins on real
 tiles), samples pixels per class and band, and splits each sampled pixel's
-sensitivity over the knees (:mod:`euclid_polish.eval.knee_attribution`). The
-record (``<root>/<id>.json``) keeps every sample and the per-model aggregates
-over all fields; each field's SR and LR go to ``<root>/fields/<id>/`` for the
-console's field explorer.
+sensitivity over the knees (:mod:`euclid_polish.eval.knee_attribution`),
+each input band weighted by its noise σ. The record (``<root>/<id>.json``)
+keeps every sample and the per-model aggregates over all fields (the
+per-input-band knee split only in the aggregates); each field's SR and LR go
+to ``<root>/fields/<id>/`` for the console's field explorer.
 """
 
 from __future__ import annotations
@@ -37,8 +38,10 @@ from euclid_polish.training.inference import infer_checkpoint_asinh_knees
 from euclid_polish.training.target_blur import blur_target_array
 from euclid_polish.web.helpers import atomic_files, model_catalog, real_tiles
 from euclid_polish.web.helpers import ensemble_viz as ev
+from euclid_polish.web.jobs import JobCancelled
 
-RECORD_VERSION = 1
+#: 2: shares weighted by each input band's noise σ (1 weighted per electron).
+RECORD_VERSION = 2
 _RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 #: Most synthetic test fields a run takes (the universal scores' 100).
@@ -254,14 +257,18 @@ def _round(values: np.ndarray, digits: int) -> list:
 
 def _field_samples(net, lr_e: np.ndarray, codes: np.ndarray, values: np.ndarray,
                    class_names: Sequence[str], *, per_class: int, rng: np.random.Generator,
-                   ablation: bool) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
-    """One field's samples: ``(JSON row samples, numpy part for aggregate)``."""
+                   ablation: bool, sigma_e: np.ndarray
+                   ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+    """One field's samples: ``(JSON row samples, numpy part for aggregate)``.
+    The per-input knee split (C × K per sample) only goes to the part: it
+    would multiply the record's size."""
     picked = ka.sample_pixels(codes, per_class, rng)
-    shares = ka.attribute(net, lr_e, picked, ablation=ablation)
+    shares = ka.attribute(net, lr_e, picked, ablation=ablation, sigma_e=sigma_e)
     band, y, x = picked["band"], picked["y"], picked["x"]
     value_e = values[y, x, band].astype(np.float64)
     part = {"band": band, "code": picked["code"], "value_e": value_e,
             "knee_share": shares["knee_share"], "band_share": shares["band_share"],
+            "knee_share_by_input": shares["knee_share_by_input"],
             "ablation_share": shares.get("ablation_share",
                                          np.zeros_like(shares["knee_share"]))}
     row = {"band": band.astype(int).tolist(), "y": y.astype(int).tolist(),
@@ -304,18 +311,20 @@ def _one_field(run_id: str, spec: str, net, member, ref: str, kind: str, lr_e: n
     else:
         codes, values = ka.real_classes(sr_e, lr_e)
         names = ka.REAL_CLASSES
+    sigma_e = ka.noise_sigma(lr_e)
     row, part = _field_samples(net, lr_e, codes, values, names, per_class=per_class,
-                               rng=rng, ablation=ablation)
+                               rng=rng, ablation=ablation, sigma_e=sigma_e)
     image = _save_field(run_id, spec, ref, sr_e, lr_e)
     return ({"ref": ref, "kind": kind, "shape": list(sr_e.shape[:2]), "image": image,
-             "samples": row}, part)
+             "noise_sigma_e": _round(sigma_e, 4), "samples": row}, part)
 
 
 def job_knee_attribution(cap, *, run_id: str, models: Sequence[str], synthetic: int,
                          tiles: Sequence[str], per_class: int, seed: int,
                          ablation: bool = True) -> dict[str, Any]:
     """The job: every model over every field, the record rewritten after each
-    model; ``{run_id, status, errors}``."""
+    model; ``{run_id, status, errors}``. A cancelled run keeps the models it
+    finished, status ``cancelled``."""
     record: dict[str, Any] = {
         "version": RECORD_VERSION, "id": run_id,
         "created": datetime.now(UTC).isoformat(), "finished": None, "status": "running",
@@ -323,7 +332,24 @@ def job_knee_attribution(cap, *, run_id: str, models: Sequence[str], synthetic: 
                    "per_class": int(per_class), "seed": int(seed), "ablation": bool(ablation)},
         "models": {}, "errors": {}}
     _write(record)
-    indices = synthetic_indices(synthetic)
+    try:
+        _run_models(cap, record, run_id, models, synthetic_indices(synthetic), tiles,
+                    per_class=per_class, seed=seed, ablation=ablation)
+    except (JobCancelled, KeyboardInterrupt):
+        record["status"] = "cancelled"
+        raise
+    else:
+        record["status"] = "done" if record["models"] else "failed"
+    finally:
+        record["finished"] = datetime.now(UTC).isoformat()
+        _write(record)
+    return {"run_id": run_id, "status": record["status"], "errors": record["errors"]}
+
+
+def _run_models(cap, record: dict[str, Any], run_id: str, models: Sequence[str],
+                indices: Sequence[int], tiles: Sequence[str], *, per_class: int, seed: int,
+                ablation: bool) -> None:
+    """Every model over every field into ``record`` (rewritten after each model)."""
     n_fields = len(indices) + len(tiles)
     total = max(1, len(models) * n_fields)
     done = 0
@@ -371,10 +397,6 @@ def job_knee_attribution(cap, *, run_id: str, models: Sequence[str], synthetic: 
         record["models"][spec] = entry
         _write(record)
     cap.tick(total, total, "done")
-    record["finished"] = datetime.now(UTC).isoformat()
-    record["status"] = "done" if record["models"] else "failed"
-    _write(record)
-    return {"run_id": run_id, "status": record["status"], "errors": record["errors"]}
 
 
 # --------------------------------------------------------------------------- #

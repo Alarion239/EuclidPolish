@@ -9,9 +9,15 @@ splits the sensitivity to the LR electrons exactly into knee terms::
 
     ∂y/∂x_c(u) = Σ_k t_{k,c}(u),    t_{k,c}(u) = g_{k,c}(u) / √(q_k² + x_c(u)²)
 
-:func:`attribute` reports, per sampled pixel, the share of ``Σ|t|`` each knee
-carries (``knee_share``) and each input band carries (``band_share``), the
-total (``sensitivity``), and an ablation check (``ablation_share``: each
+A term is per input electron, and the bands' electrons differ in scale (the
+VIS sky noise is ~18 e⁻, NISP's ~0.8 e⁻), so each band's terms are weighted
+by the band's noise σ_c (:func:`noise_sigma`): ``σ_c·|t_{k,c}|`` is the change
+of ``y`` for a 1σ change of band ``c`` through knee ``k``, comparable across
+bands. :func:`attribute` reports, per sampled pixel, the share of
+``Σ σ|t|`` each knee carries (``knee_share``) and each input band carries
+(``band_share``), each input band's own split over the knees
+(``knee_share_by_input``, independent of σ), the total (``sensitivity``, in
+output electrons per input σ), and an ablation check (``ablation_share``: each
 knee's channels replaced by their window mean, the change of ``y`` per knee).
 
 Pixels are classed per HR pixel and band (:func:`predicted_classes` on any
@@ -165,6 +171,29 @@ def stretch(x_e: np.ndarray, knees: Sequence[float]) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # pixel classes
 # --------------------------------------------------------------------------- #
+
+def noise_sigma(lr_e: np.ndarray) -> np.ndarray:
+    """Per-band noise σ (electrons) of an ``(h, w, C)`` LR field: the robust
+    spread of neighbouring-pixel differences, ``1.4826·MAD(Δ)/√2`` over both
+    axes, leaving out pairs touching a zero (a blanked hole) or a non-finite
+    pixel. Structure barely moves it (most neighbours are sky). A band without
+    a usable σ takes the median of the others (1 when none has one)."""
+    lr = np.asarray(lr_e, np.float64)
+    if lr.ndim != 3:
+        raise ValueError(f"the LR field must be (h, w, C), got {lr.shape}")
+    sigma = np.full(lr.shape[2], np.nan)
+    for c in range(lr.shape[2]):
+        plane = lr[..., c]
+        good = np.isfinite(plane) & (plane != 0)
+        diffs = [(plane[:, 1:] - plane[:, :-1])[good[:, 1:] & good[:, :-1]],
+                 (plane[1:, :] - plane[:-1, :])[good[1:, :] & good[:-1, :]]]
+        d = np.concatenate(diffs)
+        if d.size >= 16:
+            sigma[c] = 1.4826 * np.median(np.abs(d - np.median(d))) / math.sqrt(2.0)
+    ok = np.isfinite(sigma) & (sigma > 0)
+    fallback = float(np.median(sigma[ok])) if ok.any() else 1.0
+    return np.where(ok, sigma, fallback).astype(np.float32)
+
 
 def _lr_under(lr_e: np.ndarray, shape: tuple[int, ...], scale: int) -> np.ndarray:
     """The LR value under every HR pixel of an ``(H, W, C)`` image."""
@@ -349,15 +378,19 @@ def _shares(parts: np.ndarray, total: np.ndarray) -> np.ndarray:
 
 
 def attribute(net: KneeNet, lr_e: np.ndarray, samples: Mapping[str, np.ndarray], *,
-              batch: int = 64, ablation: bool = True) -> dict[str, np.ndarray]:
+              batch: int = 64, ablation: bool = True,
+              sigma_e: Sequence[float] | None = None) -> dict[str, np.ndarray]:
     """Knee and band shares of every sampled pixel of one field.
 
     ``lr_e`` is the LR field ``(h, w, C)`` in electrons (non-finite pixels
     are read as 0); ``samples`` holds HR ``y``, ``x`` and the output
-    ``band`` (as :func:`sample_pixels` returns). Returns float32
-    ``knee_share (N, K)``, ``band_share (N, C)``, ``sensitivity (N,)`` and,
-    with ``ablation``, ``ablation_share (N, K)``; shares sum to 1 (all 0 when
-    the gradient, or every ablation change, is 0).
+    ``band`` (as :func:`sample_pixels` returns); ``sigma_e`` is each input
+    band's noise σ, the weight of its terms (default: the field's own,
+    :func:`noise_sigma`). Returns float32 ``knee_share (N, K)``,
+    ``band_share (N, C)``, ``knee_share_by_input (N, C, K)`` (each input
+    band's own knee split), ``sensitivity (N,)`` (output electrons per input
+    σ) and, with ``ablation``, ``ablation_share (N, K)``; shares sum to 1
+    (all 0 when the gradient, or every ablation change, is 0).
 
     Each sample is computed on LR crops around its LR pixel, kept inside the
     field: a crop edge on the field edge is the full field's own ``same``
@@ -370,10 +403,14 @@ def attribute(net: KneeNet, lr_e: np.ndarray, samples: Mapping[str, np.ndarray],
     if lr.ndim != 3 or lr.shape[2] != net.n_bands:
         raise ValueError(f"the LR field must be (h, w, {net.n_bands}) bands, got {lr.shape}")
     lr = np.where(np.isfinite(lr), lr, np.float32(0.0))
+    sigma = np.asarray(noise_sigma(lr) if sigma_e is None else sigma_e, np.float64).reshape(-1)
+    if sigma.size != net.n_bands:
+        raise ValueError(f"sigma_e needs one σ per input band ({net.n_bands}), got {sigma.size}")
     band, y, x = (np.asarray(samples[key], np.int64).reshape(-1) for key in ("band", "y", "x"))
     n, n_knees = band.size, len(net.knees)
     out = {"knee_share": np.zeros((n, n_knees), np.float32),
            "band_share": np.zeros((n, net.n_bands), np.float32),
+           "knee_share_by_input": np.zeros((n, net.n_bands, n_knees), np.float32),
            "sensitivity": np.zeros(n, np.float32)}
     if ablation:
         out["ablation_share"] = np.zeros((n, n_knees), np.float32)
@@ -397,10 +434,14 @@ def attribute(net: KneeNet, lr_e: np.ndarray, samples: Mapping[str, np.ndarray],
         idx = tf.constant(_sample_index(y[rows] - scale * sy0[rows], x[rows] - scale * sx0[rows],
                                         band[rows]))
         values, sums = gradient_pass(x_e, idx)
-        sums = sums.numpy().astype(np.float64)                     # (B, K, C)
+        sums = sums.numpy().astype(np.float64) * sigma[None, None, :]   # (B, K, C), per input σ
         total = sums.sum(axis=(1, 2))
         out["knee_share"][rows] = _shares(sums.sum(axis=2), total)
         out["band_share"][rows] = _shares(sums.sum(axis=1), total)
+        per_input = sums.transpose(0, 2, 1)                              # (B, C, K)
+        out["knee_share_by_input"][rows] = _shares(
+            per_input.reshape(-1, n_knees), per_input.sum(axis=2).reshape(-1)
+        ).reshape(per_input.shape)
         out["sensitivity"][rows] = np.where(np.isfinite(total), total, 0.0)
         if not ablation:
             continue
@@ -435,20 +476,26 @@ def _mean(rows: np.ndarray) -> list[float]:
     return [float(v) for v in rows.mean(axis=0)]
 
 
+def _matrix(block: np.ndarray) -> list[list[float]]:
+    return [[float(v) for v in row] for row in block]
+
+
 def aggregate(parts: Sequence[Mapping[str, Any]], class_names: Sequence[str], n_bands: int,
               knees: Sequence[float]) -> dict[str, Any]:
     """Summarise per-field samples (each part: ``band``, ``code``,
-    ``value_e``, ``knee_share``, ``band_share``, ``ablation_share``, one row
-    per sample) into a JSON-able record, per output band ``"0"``…:
+    ``value_e``, ``knee_share``, ``band_share``, ``ablation_share`` and
+    optionally ``knee_share_by_input``, one row per sample) into a JSON-able
+    record, per output band ``"0"``…:
 
     * ``by_class[band][class]``: mean ``knee_share``, ``ablation_share``
-      (``None`` when no part carries it), ``band_share`` and ``n``; classes
-      without samples are left out;
+      (``None`` when no part carries it), ``band_share``,
+      ``knee_share_by_input`` (C × K, ``None`` when no part carries it) and
+      ``n``; classes without samples are left out;
     * ``by_brightness``: the :data:`LOG_EDGES_E` edges and, per band, the
-      mean ``knee_share`` and ``n`` per half-decade bin of ``value_e``
-      (``None`` and 0 for an empty bin; values below the first edge go to the
-      first bin, values from the last edge on to the last, non-finite values
-      nowhere);
+      mean ``knee_share`` (and ``knee_share_by_input``, C × K, when carried)
+      and ``n`` per half-decade bin of ``value_e`` (``None`` and 0 for an
+      empty bin; values below the first edge go to the first bin, values
+      from the last edge on to the last, non-finite values nowhere);
     * ``cross_band``: per output band the mean ``band_share`` over input
       bands (``None`` for a band without samples);
     * ``n_samples``.
@@ -462,6 +509,9 @@ def aggregate(parts: Sequence[Mapping[str, Any]], class_names: Sequence[str], n_
     cross = _column(parts, "band_share", n_bands)
     has_ablation = bool(parts) and all("ablation_share" in p for p in parts)
     abl = _column(parts, "ablation_share", n_knees) if has_ablation else None
+    has_by_input = bool(parts) and all("knee_share_by_input" in p for p in parts)
+    by_input = (_column(parts, "knee_share_by_input", n_bands * n_knees).reshape(-1, n_bands, n_knees)
+                if has_by_input else None)
 
     by_class: dict[str, dict[str, Any]] = {}
     for b in range(n_bands):
@@ -472,7 +522,10 @@ def aggregate(parts: Sequence[Mapping[str, Any]], class_names: Sequence[str], n_
                 continue
             entry[name] = {"knee_share": _mean(knee[sel]),
                            "ablation_share": _mean(abl[sel]) if abl is not None else None,
-                           "band_share": _mean(cross[sel]), "n": int(sel.sum())}
+                           "band_share": _mean(cross[sel]),
+                           "knee_share_by_input": (_matrix(by_input[sel].mean(axis=0))
+                                                   if by_input is not None else None),
+                           "n": int(sel.sum())}
         by_class[str(b)] = entry
 
     n_bins = len(LOG_EDGES_E) - 1
@@ -488,6 +541,11 @@ def aggregate(parts: Sequence[Mapping[str, Any]], class_names: Sequence[str], n_
         bands[str(b)] = {"knee_share": [[float(v) for v in sums[i] / counts[i]] if counts[i] else None
                                         for i in range(n_bins)],
                          "n": [int(v) for v in counts]}
+        if by_input is not None:
+            input_sums = np.zeros((n_bins, n_bands, n_knees))
+            np.add.at(input_sums, bins[sel], by_input[sel])
+            bands[str(b)]["knee_share_by_input"] = [
+                _matrix(input_sums[i] / counts[i]) if counts[i] else None for i in range(n_bins)]
 
     return {"by_class": by_class,
             "by_brightness": {"edges_e": [float(v) for v in LOG_EDGES_E], "bands": bands},

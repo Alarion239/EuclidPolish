@@ -43,13 +43,16 @@ def _full_field(net, lr, y, x, band):
     return g_s.numpy()[0], g_x.numpy()[0]
 
 
-def _reference_shares(net, lr, y, x, band):
+def _reference_shares(net, lr, y, x, band, sigma):
+    """``(knee_share, band_share, sensitivity, knee_share_by_input)`` on the
+    whole field, each input band's terms weighted by its ``sigma``."""
     g_s, _ = _full_field(net, lr, y, x, band)
     h, w, c = lr.shape
     q = np.asarray(net.knees, np.float64)[:, None]
     t = g_s.reshape(h, w, len(net.knees), c) / np.sqrt(q ** 2 + lr[:, :, None, :].astype(np.float64) ** 2)
-    a = np.abs(t).sum(axis=(0, 1))                      # (K, C)
-    return a.sum(axis=1) / a.sum(), a.sum(axis=0) / a.sum(), a.sum()
+    a = np.abs(t).sum(axis=(0, 1)) * np.asarray(sigma, np.float64)[None, :]   # (K, C)
+    by_input = a.T / a.T.sum(axis=1, keepdims=True)
+    return a.sum(axis=1) / a.sum(), a.sum(axis=0) / a.sum(), a.sum(), by_input
 
 
 def _samples(rows):
@@ -103,11 +106,51 @@ def test_a_window_reproduces_the_full_field_everywhere():
     rows = [(0, 100, 90), (3, 101, 91), (1, 1, 190), (2, 0, 0), (3, 191, 191), (0, 60, 2)]
     got = ka.attribute(net, lr, _samples(rows), ablation=False)
     assert "ablation_share" not in got
+    sigma = ka.noise_sigma(lr)                          # the default weights
     for i, (band, y, x) in enumerate(rows):
-        knee, bands, sens = _reference_shares(net, lr, y, x, band)
+        knee, bands, sens, by_input = _reference_shares(net, lr, y, x, band, sigma)
         np.testing.assert_allclose(got["knee_share"][i], knee, rtol=1e-4, atol=1e-6)
         np.testing.assert_allclose(got["band_share"][i], bands, rtol=1e-4, atol=1e-6)
         np.testing.assert_allclose(got["sensitivity"][i], sens, rtol=1e-4)
+        np.testing.assert_allclose(got["knee_share_by_input"][i], by_input, rtol=1e-4, atol=1e-6)
+
+
+def test_noise_sigma_is_each_bands_own_noise():
+    rng = np.random.default_rng(5)
+    n, truth = 200, np.array([18.0, 0.8, 1.0, 0.0])
+    yy, xx = np.mgrid[:n, :n]
+    galaxy = 500.0 * np.exp(-((yy - 100) ** 2 + (xx - 90) ** 2) / (2 * 6.0 ** 2))
+    lr = galaxy[..., None] + rng.normal(0.0, 1.0, (n, n, 4)) * truth + 3.0
+    lr[40:60, 40:60, :] = 0.0                           # a blanked hole is not noise
+    lr[0, :5, 1] = np.nan
+    lr[..., 3] = 0.0                                    # a dead band takes the others' median
+    sigma = ka.noise_sigma(lr)
+    assert sigma.dtype == np.float32 and sigma.shape == (4,)
+    np.testing.assert_allclose(sigma[:3], truth[:3], rtol=0.05)
+    assert sigma[3] == pytest.approx(float(np.median(sigma[:3])))
+    assert (ka.noise_sigma(np.zeros((8, 8, 2))) == 1.0).all()
+    with pytest.raises(ValueError, match="h, w, C"):
+        ka.noise_sigma(np.zeros((8, 8)))
+
+
+def test_bands_are_weighted_by_their_noise():
+    """σ weights each input band's terms: the band shares move with σ, each
+    input band's own knee split does not, and the knee share is the band-share
+    weighted mix of the per-input splits."""
+    net = _net()
+    lr = _field(48, seed=6)
+    samples = _samples([(0, 40, 41), (2, 10, 70), (3, 90, 5)])
+    flat = ka.attribute(net, lr, samples, ablation=False, sigma_e=[1, 1, 1, 1])
+    tilted = ka.attribute(net, lr, samples, ablation=False, sigma_e=[20, 1, 1, 1])
+    np.testing.assert_allclose(tilted["knee_share_by_input"], flat["knee_share_by_input"], rtol=1e-5, atol=1e-7)
+    b, b20 = flat["band_share"].astype(np.float64), tilted["band_share"].astype(np.float64)
+    np.testing.assert_allclose(b20[:, 0], 20 * b[:, 0] / (20 * b[:, 0] + 1 - b[:, 0]), rtol=1e-4)
+    for got in (flat, tilted):
+        mix = np.einsum("nc,nck->nk", got["band_share"], got["knee_share_by_input"])
+        np.testing.assert_allclose(mix, got["knee_share"], rtol=1e-4, atol=1e-6)
+        np.testing.assert_allclose(got["knee_share_by_input"].sum(axis=2), 1.0, rtol=1e-5)
+    with pytest.raises(ValueError, match="one σ per input band"):
+        ka.attribute(net, lr, samples, sigma_e=[1, 1])
 
 
 def test_shares_sum_to_one_and_are_non_negative():
@@ -120,10 +163,11 @@ def test_shares_sum_to_one_and_are_non_negative():
     got = ka.attribute(net, lr, samples, batch=8)
     assert got["knee_share"].shape == (n, len(KNEES)) and got["knee_share"].dtype == np.float32
     assert got["band_share"].shape == (n, 4) and got["ablation_share"].shape == (n, len(KNEES))
+    assert got["knee_share_by_input"].shape == (n, 4, len(KNEES))
     assert got["sensitivity"].shape == (n,)
-    for key in ("knee_share", "band_share", "ablation_share"):
+    for key in ("knee_share", "band_share", "ablation_share", "knee_share_by_input"):
         assert (got[key] >= 0).all()
-        np.testing.assert_allclose(got[key].sum(axis=1), 1.0, rtol=1e-5)
+        np.testing.assert_allclose(got[key].sum(axis=-1), 1.0, rtol=1e-5)
     assert (got["sensitivity"] > 0).all()
     once = ka.attribute(net, lr, samples, batch=64)    # batching does not change anything
     for key in got:
@@ -286,6 +330,26 @@ def test_aggregate_means_classes_and_brightness_bins():
     np.testing.assert_allclose(cross[0], [0.5, 1 / 6, 0.0, 1 / 3])
     np.testing.assert_allclose(cross[1], [0.0, 0.0, 1.0, 0.0])
     assert cross[2] is None and cross[3] is None
+
+
+def test_aggregate_means_the_per_input_knee_split():
+    split_a = np.array([[[1.0, 0, 0], [0, 1.0, 0]], [[0, 0, 1.0], [0.5, 0.5, 0]]], np.float32)
+    part = {"band": np.array([0, 0]), "code": np.array([0, 0]), "value_e": np.array([1.0, 1.2]),
+            "knee_share": np.full((2, 3), 1 / 3, np.float32),
+            "ablation_share": np.full((2, 3), 1 / 3, np.float32),
+            "band_share": np.full((2, 2), 0.5, np.float32), "knee_share_by_input": split_a}
+    agg = ka.aggregate([part], ("c0",), 2, KNEES)
+    json.dumps(agg, allow_nan=False)
+    np.testing.assert_allclose(agg["by_class"]["0"]["c0"]["knee_share_by_input"],
+                               [[0.5, 0, 0.5], [0.25, 0.75, 0]])
+    bins = agg["by_brightness"]["bands"]["0"]["knee_share_by_input"]
+    assert len(bins) == len(ka.LOG_EDGES_E) - 1 and bins[0] is None
+    np.testing.assert_allclose(bins[6], [[0.5, 0, 0.5], [0.25, 0.75, 0]])
+    # A part without the split (an older record's samples) leaves it out.
+    old = {key: value for key, value in part.items() if key != "knee_share_by_input"}
+    agg = ka.aggregate([part, old], ("c0",), 2, KNEES)
+    assert agg["by_class"]["0"]["c0"]["knee_share_by_input"] is None
+    assert "knee_share_by_input" not in agg["by_brightness"]["bands"]["0"]
 
 
 def test_aggregate_of_nothing_is_empty_but_well_formed():

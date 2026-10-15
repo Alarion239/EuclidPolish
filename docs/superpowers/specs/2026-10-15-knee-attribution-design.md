@@ -28,10 +28,18 @@ For a sampled output pixel `p` (HR position, output band `b`) the network input 
 
 `∂y/∂x_c(u) = Σ_k t_{k,c}(u)`, with `t_{k,c}(u) = g_{k,c}(u) / √(q_k² + x_c(u)²)`.
 
-Reported per sample:
-- `knee_share[k] = Σ_{u,c} |t_{k,c}| / Σ |t|`
-- `band_share[c] = Σ_{u,k} |t_{k,c}| / Σ |t|` (input band)
-- `sensitivity = Σ |t|`
+**Noise weighting (record version 2).**
+- A term is per input electron, and the bands' electrons differ in scale. On the test fields the VIS sky noise is about 18 e⁻ and NISP's about 0.8 e⁻.
+- Summed per electron, every output band looked about 58 % Y-driven, and the knee shares followed NISP's scale. That was a units artifact.
+- So each input band's terms are weighted by its noise σ_c. `σ_c·|t_{k,c}|` is the change of `y` for a 1σ change of band `c` through knee `k`, comparable across bands.
+- σ_c is the field's own robust spread of neighbouring-pixel differences, `1.4826·MAD(Δ)/√2` over both axes. Pairs touching a 0 (a blanked hole) or a non-finite pixel are left out. A band without a usable σ takes the median of the others.
+- Version-1 records (per-electron weights) were discarded.
+
+Reported per sample, with `a_{k,c} = σ_c Σ_u |t_{k,c}(u)|`:
+- `knee_share[k] = Σ_c a_{k,c} / Σ a`
+- `band_share[c] = Σ_k a_{k,c} / Σ a` (input band)
+- `knee_share_by_input[c][k] = a_{k,c} / Σ_k a_{k,c}`: each input band's own knee split. It does not depend on σ, and `knee_share = Σ_c band_share_c · knee_share_by_input_c`. It is only in the aggregates; per sample it would multiply the record's size.
+- `sensitivity = Σ a` (output e⁻ per input σ)
 - `ablation_share[k]`: replace knee `k`'s input channels with their window mean; `Δ_k = |y − y_k|`; `ablation_share = Δ / ΣΔ` (0s when ΣΔ = 0).
 
 **Windows.**
@@ -67,8 +75,8 @@ Per HR pixel and band, a class name and a brightness value (electrons) used for 
 
 ## Aggregates (over all fields of a run, per model and output band)
 
-- `by_class[band][class]`: mean `knee_share`, mean `ablation_share`, mean `band_share`, `n`.
-- `by_brightness[band]`: half-decade log bins from 1e-3 to 1e7 e⁻ (bin edges stored), mean `knee_share` per bin, and `n` per bin (bins with n = 0 are null).
+- `by_class[band][class]`: mean `knee_share`, mean `ablation_share`, mean `band_share`, mean `knee_share_by_input` (C × K), `n`.
+- `by_brightness[band]`: half-decade log bins from 1e-3 to 1e7 e⁻ (bin edges stored), mean `knee_share` and `knee_share_by_input` per bin, and `n` per bin (bins with n = 0 are null).
 - `cross_band`: a 4×4 matrix of mean `band_share`, rows = output band, cols = input band.
 
 ## Job and store
@@ -81,7 +89,7 @@ Per HR pixel and band, a class name and a brightness value (electrons) used for 
 - **Record:** written atomically to `data/euclid_inference/knee_attribution/<id>.json`, id `YYYYmmdd-HHMMSS-xxxxxx`:
 
 ```json
-{"id": "...", "created": "...", "finished": "...", "status": "done|failed|running",
+{"version": 2, "id": "...", "created": "...", "finished": "...", "status": "done|failed|running|cancelled",
  "params": {"models": [...], "synthetic": 20, "tiles": [...], "per_class": 24, "seed": 0},
  "knee_grid_note": "...",
  "models": {"universal:member_222": {
@@ -90,7 +98,8 @@ Per HR pixel and band, a class name and a brightness value (electrons) used for 
      "fields": [{"ref": "test/17" | "poster/target_181255", "kind": "synthetic|real",
                  "shape": [H2, W2], "samples": {"band": [...], "y": [...], "x": [...],
                  "class": [...], "value_e": [...], "knee_share": [[...K]...],
-                 "ablation_share": [[...]...], "band_share": [[...4]...], "sensitivity": [...]}}]
+                 "ablation_share": [[...]...], "band_share": [[...4]...], "sensitivity": [...]},
+                 "noise_sigma_e": [σ_VIS, σ_Y, σ_J, σ_H]}]
  }},
  "errors": {"<model>": "reason", "<model>|<field>": "reason"}}
 ```

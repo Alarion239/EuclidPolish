@@ -14,6 +14,7 @@ from euclid_polish.eval import knee_attribution as ka
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.web.helpers import knee_attribution_runs as runs
 from euclid_polish.web.helpers import real_tiles
+from euclid_polish.web.jobs import JobCancelled
 
 KNEES = (0.01, 1.0, 100.0)
 
@@ -98,6 +99,9 @@ def test_a_run_writes_samples_aggregates_and_field_images(tiny, monkeypatch):
     kinds = {f["ref"]: f["kind"] for f in entry["fields"]}
     assert kinds == {"test/7": "synthetic", "poster/t1": "real"}
     synth = next(f for f in entry["fields"] if f["ref"] == "test/7")
+    assert record["version"] == runs.RECORD_VERSION == 2
+    np.testing.assert_allclose(synth["noise_sigma_e"], ka.noise_sigma(lr), rtol=1e-3)
+    assert "knee_share_by_input" not in synth["samples"]       # aggregates only
     classes = set(synth["samples"]["class"])
     assert {"saturated", "galaxy core", "star wing"} <= classes
     for share in synth["samples"]["knee_share"]:
@@ -105,6 +109,9 @@ def test_a_run_writes_samples_aggregates_and_field_images(tiny, monkeypatch):
     agg = entry["aggregate"]
     assert set(agg) == {"synthetic", "real"}
     assert "galaxy core" in agg["synthetic"]["by_class"]["0"]
+    split = agg["synthetic"]["by_class"]["0"]["galaxy core"]["knee_share_by_input"]
+    assert np.asarray(split).shape == (4, len(KNEES))
+    np.testing.assert_allclose(np.asarray(split).sum(axis=1), 1.0, rtol=1e-3)
     assert set(agg["real"]["by_class"]["0"]) <= set(ka.REAL_CLASSES)
     assert len(agg["synthetic"]["by_brightness"]["edges_e"]) == len(ka.LOG_EDGES_E)
     # the field explorer's image
@@ -124,6 +131,27 @@ def test_a_failing_model_is_recorded_not_fatal(tiny, monkeypatch):
                       synthetic=0, tiles=[], per_class=2, seed=0)
     assert result["status"] == "failed"
     assert "boom" in result["errors"]["universal:member_9"]
+
+
+def test_a_cancelled_run_says_so_and_keeps_its_finished_models(tiny, monkeypatch):
+    lr, galaxy, star = _synthetic_field()
+    monkeypatch.setattr(runs, "synthetic_indices", lambda n: [7][:n])
+    monkeypatch.setattr(runs, "_synthetic_fields",
+                        lambda indices: iter([("test/7", lr, galaxy, star)]))
+
+    class _CancelOnSecondModel(_Cap):
+        def check_cancelled(self):
+            if self.ticks:                              # the first model's field is done
+                raise JobCancelled("job")
+
+    cap = _CancelOnSecondModel()
+    with pytest.raises(JobCancelled):
+        runs.job_knee_attribution(cap, run_id="20261015-000003-abcdef",
+                                  models=["universal:member_1", "universal:member_2"],
+                                  synthetic=1, tiles=[], per_class=2, seed=0)
+    record = runs.get_run("20261015-000003-abcdef")
+    assert record["status"] == "cancelled" and record["finished"]
+    assert list(record["models"]) == ["universal:member_1"]
 
 
 def test_routes_list_read_and_start_without_starting_on_get(tiny, monkeypatch):
