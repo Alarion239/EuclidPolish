@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import shutil
 from io import BytesIO
@@ -225,6 +226,26 @@ def test_mixed_resolution_crop_is_raw_hashed_and_atomic(saved_result_client):
     assert repeated.status_code == 201
     assert repeated.get_json()["id"] == result_id
     assert [path.name for path in root.iterdir()] == [result_id]
+
+
+def test_resubmission_after_the_clock_ticks_is_idempotent(saved_result_client, monkeypatch):
+    # astropy stamps the CHECKSUM/DATASUM comments with the wall-clock second
+    # by default. The ID hashes the FITS bytes, so a stamp would give the same
+    # selection a new ID whenever a second boundary passed between saves.
+    client, root, _cubes = saved_result_client
+    clock = itertools.count()
+    monkeypatch.setattr(
+        fits.hdu.base._ValidHDU, "_get_timestamp",
+        lambda _hdu: f"2026-01-01T00:00:{next(clock) % 60:02d}",
+    )
+
+    result_id = _post_result(client)["id"]
+    assert _post_result(client)["id"] == result_id
+    assert [path.name for path in root.iterdir()] == [result_id]
+    for path in sorted((root / result_id).glob("*.fits")):
+        with fits.open(path) as hdul:
+            assert hdul[0].verify_checksum() == 1
+            assert hdul[0].verify_datasum() == 1
 
 
 def test_submission_validation_and_path_safety(saved_result_client, monkeypatch):

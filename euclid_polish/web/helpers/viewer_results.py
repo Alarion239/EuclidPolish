@@ -623,7 +623,12 @@ def _write_fits(
     hdu.header["DSPAPPL"] = (False, "Display transfer has not been applied")
     for index, band in enumerate(bands):
         hdu.header[f"BAND{index}"] = (str(band), "Channel name")
-    hdu.writeto(path, overwrite=False, checksum=True)
+    # Fixed checksum comments: astropy's default stamps the wall-clock second
+    # into them, and the result ID hashes these bytes, so an identical save in
+    # a later second would get a new ID instead of being idempotent.
+    hdu.add_datasum(when="data unit checksum")
+    hdu.add_checksum(when="HDU checksum", override_datasum=True)
+    hdu.writeto(path, overwrite=False)
 
 
 def _sha256(path: Path) -> str:
