@@ -13,7 +13,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { safeJSONStorage } from "./storage";
 
-export type ColorMode = "VIS" | "Y_E" | "J_E" | "H_E" | "lupton" | "temp" | "rgb" | "native";
+export type ColorMode = "VIS" | "Y_E" | "J_E" | "H_E" | "lupton" | "temp" | "vivid" | "rgb" | "native";
 export type Stretch = "asinh-abs" | "linear" | "log" | "sqrt" | "asinh-auto" | "zscale";
 export type Colormap = "gray" | "viridis" | "magma" | "inferno" | "cividis" | "rdbu";
 export type TransferGroup = { knee: number; gain: number; black: number };
@@ -56,7 +56,7 @@ export type DisplayActions = {
 
 export type DisplayStore = DisplaySettings & DisplayActions;
 
-export const COLOR_MODES: readonly ColorMode[] = ["VIS", "Y_E", "J_E", "H_E", "lupton", "temp", "rgb", "native"];
+export const COLOR_MODES: readonly ColorMode[] = ["VIS", "Y_E", "J_E", "H_E", "lupton", "temp", "vivid", "rgb", "native"];
 export const STRETCHES: readonly Stretch[] = ["asinh-abs", "linear", "log", "sqrt", "asinh-auto", "zscale"];
 export const COLORMAPS: readonly Colormap[] = ["gray", "viridis", "magma", "inferno", "cividis", "rdbu"];
 export const WHEEL_MODES: readonly WheelMode[] = ["zoom-when-focused", "always-zoom", "scroll"];

@@ -10,6 +10,7 @@
  *             limits from the frame's own robust statistics (knee-free);
  *   black     subtracted before the transfer (knee units, e⁻ VIS-equivalent);
  *   colormap  single-band frames only (composites keep their colours);
+ *   vivid     each channel takes the stretch on its own;
  *   invert    flips the luminance (gray/colormap) or the RGB bytes.
  * `renderSigned` draws residual tiers with a diverging colormap about zero. */
 import type { Colormap, Stretch } from "../state/display";
@@ -30,7 +31,7 @@ export type DisplayParams = {
   nanColor: [number, number, number];
 };
 
-const COLOUR_MODES = new Set(["lupton", "direct-rgb", "temp"]);
+const COLOUR_MODES = new Set(["lupton", "direct-rgb", "temp", "vivid"]);
 
 /** true when the frame renders exactly as the locked default transfer. */
 export function isDefaultDisplay(p: DisplayParams, mode = "gray"): boolean {
@@ -129,6 +130,16 @@ export function renderPrepared(prep: Prepared, p: DisplayParams): ImageData {
       if (p.invert) k = 255 - k;
       const o = q * 4;
       out[o] = lut[k * 3]; out[o + 1] = lut[k * 3 + 1]; out[o + 2] = lut[k * 3 + 2]; out[o + 3] = 255;
+    }
+  } else if (prep.mode === "vivid") {
+    // Each channel through the stretch on its own (no shared intensity).
+    const R = prep.R as Float32Array, G = prep.G as Float32Array, B = prep.B as Float32Array;
+    for (let q = 0; q < npx; q++) {
+      const o = q * 4;
+      out[o] = lum(R[q]) * 255;
+      out[o + 1] = lum(G[q]) * 255;
+      out[o + 2] = lum(B[q]) * 255;
+      out[o + 3] = 255;
     }
   } else if (prep.mode === "temp") {
     const hueR = prep.hueR as Float32Array, hueG = prep.hueG as Float32Array, hueB = prep.hueB as Float32Array;

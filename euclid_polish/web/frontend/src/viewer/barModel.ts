@@ -6,11 +6,13 @@
  * "More display settings". */
 import type { TierMeta } from "./types";
 
-/** Colour keys of the old engine: Q W E R T Y → the bands, then Lupton, Temp. */
-export const COLOR_KEYS = ["q", "w", "e", "r", "t", "y"];
+/** Colour keys of the old engine: Q W E R T Y → the bands, then Lupton, Temp;
+ *  U → Vivid. */
+export const COLOR_KEYS = ["q", "w", "e", "r", "t", "y", "u"];
 export const COLOR_MODES_EXTRA = [
   { key: "lupton", label: "Lupton", title: "4-band solar-balanced Lupton RGB" },
   { key: "temp", label: "Temp", title: "Per-pixel blackbody-T colour (Planckian locus)" },
+  { key: "vivid", label: "Vivid", title: "H / (Y+J)/2 / VIS, each band stretched on its own (poster-galaxy balance)" },
 ];
 
 /** The knee slider spans the research knee grid (training and scoring knees). */
@@ -90,8 +92,8 @@ export function chipTiers(tiers: TierMeta[], selected: readonly string[], max = 
 
 export type ColourOption = { key: string; label: string; title: string; shortcut?: string };
 
-/** The band / colour choices: the collection's bands, then Lupton and Temp,
- *  each with its old key (Q–Y). None for a log-rendered collection (PSFs)
+/** The band / colour choices: the collection's bands, then Lupton, Temp and
+ *  Vivid, each with its key (Q–U). None for a log-rendered collection (PSFs)
  *  or when every shown tier is a single plane (a native one-filter image:
  *  there is no band to choose). */
 export function colourOptions(bandNames: readonly string[], o: { logMode: boolean; singlePlane: boolean }): ColourOption[] {

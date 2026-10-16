@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import golden from "./__fixtures__/color_golden.json";
 import {
   abFluxNorm, asinhTransfer, eyeTGrid, planckFnu, planckianXY, prepareCore, renderCubeImageData,
-  solarBalance, srgbGamma, transferCore, xyToLinearSrgb, type ColorMeta, type CubeLike,
+  solarBalance, srgbGamma, transferCore, VIVID_WHITE, xyToLinearSrgb, type ColorMeta, type CubeLike,
 } from "./color";
 
 type Special = number | string;
@@ -136,5 +136,44 @@ describe("renderCubeImageData (the back-trace stamps' entry point)", () => {
     const a = renderCubeImageData(recOf(c), G.color_meta, {});
     const b = transferCore(prepareCore(recOf(c), G.color_meta, "VIS"), 100, 1, 100);
     expect(Array.from(a.data)).toEqual(Array.from(b.data));
+  });
+});
+
+describe("vivid: H / (Y+J)/2 / VIS, each channel stretched on its own", () => {
+  // One pixel per column: VIS, Y_E, J_E, H_E (band-major per pixel).
+  const rec = (px: number[][]): CubeLike => ({
+    data: Float32Array.from(px.flat()), h: 1, w: px.length, c: 4, bands: ["VIS", "Y_E", "J_E", "H_E"],
+  });
+  it("balances the bands by the poster-galaxy white points", () => {
+    const prep = prepareCore(rec([[1000, 208.8, 292.9, 379.9]]), G.color_meta, "vivid");
+    expect(prep.mode).toBe("vivid");
+    expect(prep.factor).toBe(1);
+    // Each band at its white point maps to the same VIS-equivalent level.
+    expect(prep.R![0]).toBeCloseTo(1000, 1);
+    expect(prep.G![0]).toBeCloseTo(1000, 1);
+    expect(prep.B![0]).toBeCloseTo(1000, 3);
+    expect(VIVID_WHITE).toEqual({ VIS: 1.0, Y_E: 0.2088, J_E: 0.2929, H_E: 0.3799 });
+  });
+  it("stretches each channel separately with the locked asinh transfer", () => {
+    const px = [[3000, 20, 300, 1500], [0, 0, 0, 0]];
+    const prep = prepareCore(rec(px), G.color_meta, "vivid");
+    const img = transferCore(prep, 100, 1, 100).data;
+    const norm = Math.asinh((30 * 100) / 100);
+    // ImageData bytes round the float like a Uint8ClampedArray.
+    const t = (v: number) => Uint8ClampedArray.from([Math.min(Math.max(Math.asinh(v / 100) / norm, 0), 1) * 255])[0];
+    expect(img[0]).toBe(t(1500 / 0.3799));                         // R = H
+    expect(img[1]).toBe(t(0.5 * (20 / 0.2088 + 300 / 0.2929)));    // G = mean(Y, J)
+    expect(img[2]).toBe(t(3000));                                   // B = VIS
+    expect(Array.from(img.slice(4, 8))).toEqual([0, 0, 0, 255]);
+  });
+  it("is not luminance-preserving: a VIS-only pixel is pure blue", () => {
+    const img = transferCore(prepareCore(rec([[2000, 0, 0, 0]]), G.color_meta, "vivid"), 100, 1, 100).data;
+    expect(img[0]).toBe(0);
+    expect(img[1]).toBe(0);
+    expect(img[2]).toBeGreaterThan(200);
+  });
+  it("needs all four Euclid bands, else shows channel 0 like any unknown colour", () => {
+    const one: CubeLike = { data: Float32Array.from([50, 500]), h: 1, w: 2, c: 1, bands: ["F200W"] };
+    expect(prepareCore(one, G.color_meta, "vivid").mode).toBe("gray");
   });
 });

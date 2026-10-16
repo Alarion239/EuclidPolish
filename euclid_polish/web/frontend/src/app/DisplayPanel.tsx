@@ -29,6 +29,7 @@ import { useShellUi } from "./shellStore";
 /** Shared with System › Appearance. */
 export const COLOR_LABEL: Record<ColorMode, string> = {
   VIS: "VIS", Y_E: "Y", J_E: "J", H_E: "H", lupton: "Lupton RGB", temp: "Temperature",
+  vivid: "Vivid RGB (H / Y+J / VIS)",
   rgb: "Custom RGB", native: "Native (tier default)",
 };
 export const STRETCH_LABEL: Record<Stretch, string> = {

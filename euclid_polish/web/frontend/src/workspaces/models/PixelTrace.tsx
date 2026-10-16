@@ -35,7 +35,7 @@ type Trace = { diag: string; i: number; j: number; half: number; size: number; b
 
 /** Backing-store upscale before a stamp has been laid out (then: its exact device size). */
 const UPSCALE = 8;
-const RENDERABLE = new Set(["VIS", "Y_E", "J_E", "H_E", "lupton", "temp"]);
+const RENDERABLE = new Set(["VIS", "Y_E", "J_E", "H_E", "lupton", "temp", "vivid"]);
 
 function b64ToF32(b64: string): Float32Array {
   const bin = atob(b64);
@@ -173,7 +173,8 @@ export function PixelTrace({ pick, model, band = "VIS", cellLabel, onClose }: {
     box.current?.scrollIntoView?.({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
   }, [pick.diag, pick.i, pick.j, loaded]);
   const srLabel = (s: Stamp) => (s.model_kind === "spatial_gate" ? "SR · gate" : s.sr_is_combiner ? "SR · combiner" : "SR · mean");
-  const colourName = color === "lupton" ? "Lupton" : color === "temp" ? "Temp" : color.replace(/_E$/, "");
+  const colourName = color === "lupton" ? "Lupton" : color === "temp" ? "Temp" : color === "vivid" ? "Vivid"
+    : color.replace(/_E$/, "");
   return (
     <section ref={box} className="mdl-trace" aria-live="polite" aria-label="Pixels in the clicked cell">
       <header className="mdl-trace__head">

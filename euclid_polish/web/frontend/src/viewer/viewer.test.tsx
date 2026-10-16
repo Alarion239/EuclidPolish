@@ -676,7 +676,7 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     }
     // band chips use the short NISP names; Q–Y are their keys
     const bands = screen.getByRole("radiogroup", { name: "Band or colour" });
-    expect(Array.from(bands.querySelectorAll("button")).map((b) => b.textContent)).toEqual(["VIS", "Y", "J", "H", "Lupton", "Temp"]);
+    expect(Array.from(bands.querySelectorAll("button")).map((b) => b.textContent)).toEqual(["VIS", "Y", "J", "H", "Lupton", "Temp", "Vivid"]);
     expect(screen.getByRole("radiogroup", { name: "Compare" })).toBeTruthy();
     // the counter counts from 1 over the object count; a typed position jumps there
     const pos = screen.getByRole("textbox", { name: "Object number (1 to 3)" }) as HTMLInputElement;

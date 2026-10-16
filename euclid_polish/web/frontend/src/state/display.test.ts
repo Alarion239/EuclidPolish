@@ -35,7 +35,7 @@ describe("display store (C7)", () => {
   });
 
   it("lists every option of the contract", () => {
-    expect(COLOR_MODES).toEqual(["VIS", "Y_E", "J_E", "H_E", "lupton", "temp", "rgb", "native"]);
+    expect(COLOR_MODES).toEqual(["VIS", "Y_E", "J_E", "H_E", "lupton", "temp", "vivid", "rgb", "native"]);
     expect(STRETCHES).toEqual(["asinh-abs", "linear", "log", "sqrt", "asinh-auto", "zscale"]);
     expect(COLORMAPS).toEqual(["gray", "viridis", "magma", "inferno", "cividis", "rdbu"]);
   });

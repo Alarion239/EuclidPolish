@@ -59,7 +59,7 @@ the user's accent preset in its dark-theme value). The popovers the bar and
 the Display row open are portalled and follow the app theme.
 
 ```
-┌ what ─ LR HR BHR ▾ │ VIS Y J H Lupton Temp ┐ ┌ how ─ ⚙ Display │ ▭▭ ◉ ⇹ │ ⌖ ·· − + ▢ │ ◀ 12 / 100 ▶ ▷ │ ▦ ⬇ ⛶ ┐
+┌ what ─ LR HR BHR ▾ │ VIS Y J H Lupton Temp Vivid ┐ ┌ how ─ ⚙ Display │ ▭▭ ◉ ⇹ │ ⌖ ·· − + ▢ │ ◀ 12 / 100 ▶ ▷ │ ▦ ⬇ ⛶ ┐
 ├ Display row (when open) ─ Knee ──●── 100 e⁻   Brightness ──●── 1×   Stretch [Asinh ▾]   More display settings ▾  ✕ ┤
 ├─ LR ─────────────────────┬─ HR ─────────────────────┐   frames: the tier's name; on hover the cube label + magnitude
 │                          │                          │
@@ -104,7 +104,9 @@ the Display row open are portalled and follow the app theme.
   its extras on its entry: the BHR target FWHM slider on BHR, the JWST band
   on JWST, the movie amplitude / speed on the movie.
 - **Bands**: the collection's `band_names` (NISP shown as Y J H), then
-  Lupton and Temp, with their Q–Y keys; none for a log collection (PSFs) or
+  Lupton, Temp and Vivid (H / (Y+J)/2 / VIS, each band stretched on its own
+  with the poster-galaxy balance, `color.ts` `VIVID_WHITE`), with their Q–U
+  keys; none for a log collection (PSFs) or
   when every shown tier is a single plane (a native one-filter image). One
   select in a narrow bar.
 - **Display row** (`DisplayRow`; the bar's Display toggle, Esc or ✕ closes
@@ -334,7 +336,7 @@ unchanged). MJy/sr tiers and single-scale collections are untouched.
 | lens tool, `L`, or hold Alt | magnifier lens; click freezes the matched crop, click again unfreezes |
 | shift-drag | line profile |
 | click (profile panel open) or shift-click | radial profile |
-| `Q W E R T Y` | VIS, Y, J, H, Lupton, Temp (old keys) |
+| `Q W E R T Y U` | VIS, Y, J, H, Lupton, Temp (old keys), Vivid |
 | `←` `→`, Space | previous / next, run through |
 | `S` (or Shift+S) | save the frozen crop to results (kept while frozen) |
 | `B` | blink |

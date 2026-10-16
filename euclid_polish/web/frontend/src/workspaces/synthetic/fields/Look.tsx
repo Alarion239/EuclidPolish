@@ -42,6 +42,7 @@ const COLOURS = [
   { value: "J_E", label: "J", title: "NISP J (key E)" }, { value: "H_E", label: "H", title: "NISP H (key R)" },
   { value: "lupton", label: "Lupton", title: "Four-band Lupton RGB (key T): shows NISP-only blackouts" },
   { value: "temp", label: "Temp", title: "Per-pixel blackbody colour (key Y)" },
+  { value: "vivid", label: "Vivid", title: "H / (Y+J)/2 / VIS, each band stretched on its own (key U)" },
 ];
 export const ARCHIVE_SYNC_URL = "/api/archive-fields/sync";
 

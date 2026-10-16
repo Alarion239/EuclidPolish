@@ -51,7 +51,7 @@ describe("bands and colours", () => {
   });
   it("lists the bands, Lupton and Temp with the old Q–Y keys", () => {
     const o = colourOptions(["VIS", "Y_E", "J_E", "H_E"], { logMode: false, singlePlane: false });
-    expect(o.map((c) => `${c.label}:${c.shortcut}`)).toEqual(["VIS:Q", "Y:W", "J:E", "H:R", "Lupton:T", "Temp:Y"]);
+    expect(o.map((c) => `${c.label}:${c.shortcut}`)).toEqual(["VIS:Q", "Y:W", "J:E", "H:R", "Lupton:T", "Temp:Y", "Vivid:U"]);
     expect(o[1]).toMatchObject({ key: "Y_E", title: "Y_E" });
   });
   it("offers no band choice for a log collection or single-plane tiers", () => {

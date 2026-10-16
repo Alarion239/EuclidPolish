@@ -60,7 +60,18 @@ export type CubeLike = {
   directRgb?: boolean;
 };
 
-export type PreparedMode = "gray" | "gray-log" | "lupton" | "direct-rgb" | "temp";
+export type PreparedMode = "gray" | "gray-log" | "lupton" | "direct-rgb" | "temp" | "vivid";
+
+/** "vivid": R = H_E, G = mean(Y_E, J_E), B = VIS, each channel stretched on
+ *  its own (white cores, saturated colour) instead of Lupton's shared
+ *  intensity. The bands are balanced by these white points, e⁻ relative to
+ *  VIS: the 99.8th-percentile levels of the poster galaxy's inner 25.6″
+ *  (target_181255), the figure this mode reproduces. A fixed balance, so
+ *  every frame and panel is coloured alike and colour differences are real. */
+export const VIVID_WHITE: Readonly<Record<string, number>> = Object.freeze({
+  VIS: 1.0, Y_E: 0.2088, J_E: 0.2929, H_E: 0.3799,
+});
+export const VIVID_BANDS = ["VIS", "Y_E", "J_E", "H_E"] as const;
 
 export type Prepared = {
   mode: PreparedMode;
@@ -164,7 +175,7 @@ export function cubeBandNames(rec: Pick<CubeLike, "bands" | "c">, colorMeta: Pic
 }
 
 /** Prepare a cube for display in colour mode `color` (a band name, "lupton",
- *  "temp"). `rgbScheme` overrides the Lupton R, G, B bands (the "rgb" custom
+ *  "temp", "vivid"). `rgbScheme` overrides the Lupton R, G, B bands (the "rgb" custom
  *  mapping); by default it is the served `rgb_scheme` ([H_E, J_E, VIS]). */
 export function prepareCore(rec: CubeLike, colorMeta: ColorMeta, color: string, rgbScheme?: string[]): Prepared {
   // A collection can mix cameras: e.g. Euclid's four calibrated channels
@@ -183,6 +194,7 @@ export function prepareCore(rec: CubeLike, colorMeta: ColorMeta, color: string, 
   const calibrated = names.every((n) => !!bandOf(n));
   const scheme = rgbScheme && rgbScheme.length === 3 ? rgbScheme : colorMeta.rgb_scheme;
   const canLupton = calibrated && scheme.every((n) => names.includes(n));
+  const canVivid = VIVID_BANDS.every((n) => names.includes(n));
   const canTemp = calibrated && names.length >= 2;
 
   let prepared: Omit<Prepared, "h" | "w" | "npx">;
@@ -194,6 +206,19 @@ export function prepareCore(rec: CubeLike, colorMeta: ColorMeta, color: string, 
       I[p] = (R[p] + G[p] + B[p]) / 3.0;
     }
     prepared = { mode: "direct-rgb", R, G, B, I, factor: 1.0 };
+  } else if (color === "vivid" && canVivid) {
+    const [iv, iy, ij, ih] = VIVID_BANDS.map((n) => names.indexOf(n));
+    const wy = 1 / VIVID_WHITE.Y_E, wj = 1 / VIVID_WHITE.J_E, wh = 1 / VIVID_WHITE.H_E;
+    const R = new Float32Array(npx), G = new Float32Array(npx), B = new Float32Array(npx);
+    const I = new Float32Array(npx);
+    for (let p = 0; p < npx; p++) {
+      const r = at(p, ih) * wh;
+      const g = 0.5 * (at(p, iy) * wy + at(p, ij) * wj);
+      const b = at(p, iv);
+      R[p] = r; G[p] = g; B[p] = b; I[p] = (r + g + b) / 3.0;
+    }
+    // Channels are VIS-equivalent e⁻: the knee and white apply as in VIS.
+    prepared = { mode: "vivid", R, G, B, I, factor: 1.0 };
   } else if ((color === "lupton" && canLupton) || (color === "temp" && canTemp)) {
     const useSolar = color === "lupton";
     const calib = names.map((n) => {
@@ -288,6 +313,15 @@ export function transferCore(prep: Prepared, knee: number, gain: number, K0: num
     for (let p = 0; p < npx; p++) {
       const v = (asinhTransfer(I[p], G, Kc, norm) * 255) | 0;
       const o = p * 4; out[o] = v; out[o + 1] = v; out[o + 2] = v; out[o + 3] = 255;
+    }
+  } else if (prep.mode === "vivid") {
+    const R = prep.R as Float32Array, GG = prep.G as Float32Array, B = prep.B as Float32Array;
+    for (let p = 0; p < npx; p++) {
+      const o = p * 4;
+      out[o] = asinhTransfer(R[p], G, Kc, norm) * 255;
+      out[o + 1] = asinhTransfer(GG[p], G, Kc, norm) * 255;
+      out[o + 2] = asinhTransfer(B[p], G, Kc, norm) * 255;
+      out[o + 3] = 255;
     }
   } else if (prep.mode === "lupton" || prep.mode === "direct-rgb") {
     const R = prep.R as Float32Array, GG = prep.G as Float32Array, B = prep.B as Float32Array;

@@ -17,7 +17,7 @@ const base: DisplayParams = {
 
 describe("the default display is the locked transfer, bit for bit", () => {
   it("renderPrepared = transferCore when nothing is changed", () => {
-    for (const color of ["VIS", "lupton", "temp"]) {
+    for (const color of ["VIS", "lupton", "temp", "vivid"]) {
       const rec = cube([10, 100, 1000, 5, 20, 200, 2000, 4, 30, 300, 3000, 1, 40, 400, 4000, 0], 4);
       const prep = prepareCore(rec, meta, color);
       expect(isDefaultDisplay(base)).toBe(true);
@@ -113,5 +113,23 @@ describe("colormaps", () => {
     expect(parseCssColor("#ff00ff")).toEqual([255, 0, 255]);
     expect(parseCssColor("#0a0")).toEqual([0, 170, 0]);
     expect(parseCssColor("nonsense")).toEqual([255, 0, 255]);
+  });
+});
+
+describe("vivid under the opt-in stretches", () => {
+  const rec = cube([3000, 0, 0, 0, 0, 0, 0, 1500], 4);   // pixel 1: VIS only, pixel 2: H only
+  const prep = prepareCore(rec, meta, "vivid");
+  it("keeps its colours whatever the colormap", () => {
+    expect(isDefaultDisplay({ ...base, colormap: "viridis" }, "vivid")).toBe(true);
+  });
+  it("takes each channel through the stretch on its own", () => {
+    const img = Array.from(renderPrepared(prep, { ...base, stretch: "linear" }).data);
+    const W = 30 * 100;
+    expect(img.slice(0, 4)).toEqual([0, 0, Math.floor((3000 / W) * 255), 255]);          // VIS → blue
+    expect(img.slice(4, 8)).toEqual([255, 0, 0, 255]);                                    // H/0.38 > white → red
+  });
+  it("paints NaN pixels with the NaN colour", () => {
+    const nan = prepareCore(cube([NaN, 1, 1, 1], 4), meta, "vivid");
+    expect(Array.from(renderPrepared(nan, { ...base, stretch: "sqrt" }).data)).toEqual([255, 0, 255, 255]);
   });
 });
