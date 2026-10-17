@@ -26,7 +26,7 @@ from tf_keras.layers import Add, Concatenate, Conv2D, Input, Lambda
 from tf_keras.models import Model
 
 from euclid_polish.training.models.common import ICNR, pixel_shuffle
-from euclid_polish.training.models.output_knee import LearnedOutputKnee
+from euclid_polish.training.models.output_knee import KNEE_MAX_E, KNEE_MIN_E, LearnedOutputKnee
 
 #: Keras dtype policy of the residual blocks' convolutions under mixed
 #: precision: bfloat16 arithmetic, float32 variables.
@@ -122,8 +122,8 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
          res_block_scaling=None, nchan_in=1, nchan_out=None,
          entry_kernel_size=3, skip_kernel_size=5,
          per_band_skip=None, icnr=False, input_knees=1,
-         learned_output_knee=None, mixed_precision=False,
-         eager_weight_norm_init=False):
+         learned_output_knee=None, learned_knee_bounds=(KNEE_MIN_E, KNEE_MAX_E),
+         mixed_precision=False, eager_weight_norm_init=False):
     """WDSR-A model with potentially asymmetric input/output channels.
 
     Parameters
@@ -166,6 +166,8 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
                    model then ends in ``LearnedOutputKnee`` and outputs
                    electrons, one trainable knee per output band. ``None``
                    (default) keeps the stretched output.
+    learned_knee_bounds : ``(min, max)`` electrons of that knee; a loader
+                   passes the checkpoint's own (older heads used a 0.1 e⁻ floor).
     mixed_precision : run the residual blocks' convolutions in bfloat16
                    (``MIXED_POLICY``), about 95% of the arithmetic. The
                    residual stream between blocks, the entry and tail convs,
@@ -254,5 +256,6 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
     if learned_output_knee is not None:
         # A learned output knee: one trainable asinh knee per band turns the
         # stretched output into electrons, so the model outputs electrons.
-        x = LearnedOutputKnee(init_knee_e=learned_output_knee)(x)
+        lo, hi = learned_knee_bounds
+        x = LearnedOutputKnee(init_knee_e=learned_output_knee, min_e=lo, max_e=hi)(x)
     return Model(x_in, x, name="wdsr")

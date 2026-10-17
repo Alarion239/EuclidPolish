@@ -25,9 +25,13 @@ from euclid_polish.training.augmentation import (
 )
 from euclid_polish.training.models.common import resolve_single
 from euclid_polish.training.models.output_knee import (
-    DEFAULT_INIT_KNEE_E,
+    KNEE_BOUNDS_NAME,
+    KNEE_MAX_E,
     KNEE_WEIGHT_NAME,
+    LEGACY_KNEE_MIN_E,
     knees_from_logits,
+    middle_knee,
+    stored_bounds,
 )
 from euclid_polish.training.models.wdsr import wdsr
 
@@ -166,24 +170,46 @@ def infer_checkpoint_num_res_blocks(checkpoint_dir: str,
     return trunk // 3
 
 
+def _learned_head(checkpoint_dir: str) -> tuple[np.ndarray, tuple[float, float]] | None:
+    """``(logits, (min_e, max_e))`` of a checkpoint's learned output head, or
+    ``None`` without one. A head saved before its bounds were stored in it
+    has the legacy 0.1…10⁴ e⁻ bounds."""
+    latest = tf.train.latest_checkpoint(checkpoint_dir)
+    if latest is None:
+        return None
+    suffix = "/.ATTRIBUTES/VARIABLE_VALUE"
+    try:
+        reader = tf.train.load_checkpoint(latest)
+        keys = [key for key in reader.get_variable_to_shape_map()
+                if key.startswith("model/") and key.endswith(suffix)]
+        logits = [k for k in keys if k.endswith(f"/{KNEE_WEIGHT_NAME}{suffix}")]
+        if not logits:
+            return None
+        stored = [k for k in keys if k.endswith(f"/{KNEE_BOUNDS_NAME}{suffix}")]
+        bounds = ((LEGACY_KNEE_MIN_E, KNEE_MAX_E) if not stored else
+                  stored_bounds(reader.get_tensor(stored[0])))
+        return reader.get_tensor(logits[0]), bounds
+    except Exception:    # pragma: no cover — unreadable ckpt → no head
+        return None
+
+
 def infer_checkpoint_learned_output_knee(checkpoint_dir: str) -> tuple[float, ...] | None:
     """The per-band learned output knees (e⁻) a checkpoint's model carries,
     or ``None`` for a model without the learned head. Like depth, this is
     read from the checkpoint itself: the head changes the layer graph and the
     meaning of the output (electrons instead of asinh)."""
-    latest = tf.train.latest_checkpoint(checkpoint_dir)
-    if latest is None:
+    head = _learned_head(checkpoint_dir)
+    if head is None:
         return None
-    suffix = f"/{KNEE_WEIGHT_NAME}/.ATTRIBUTES/VARIABLE_VALUE"
-    try:
-        reader = tf.train.load_checkpoint(latest)
-        keys = [key for key in reader.get_variable_to_shape_map()
-                if key.startswith("model/") and key.endswith(suffix)]
-        if not keys:
-            return None
-        return tuple(float(q) for q in knees_from_logits(reader.get_tensor(keys[0])))
-    except Exception:    # pragma: no cover — unreadable ckpt → no head
-        return None
+    logits, bounds = head
+    return tuple(float(q) for q in knees_from_logits(logits, *bounds))
+
+
+def infer_checkpoint_learned_knee_bounds(checkpoint_dir: str) -> tuple[float, float] | None:
+    """The ``(min, max)`` electrons a checkpoint's learned output knee is
+    bounded to, or ``None`` for a model without the learned head."""
+    head = _learned_head(checkpoint_dir)
+    return None if head is None else head[1]
 
 
 def infer_checkpoint_asinh_knee(checkpoint_dir: str) -> float | None:
@@ -363,11 +389,14 @@ def load_model_from_checkpoint(
                    if 1 < nchan_out < nchan_in and nchan_in % nchan_out == 0 else 1)
     # A learned output head is part of the layer graph: build it when the
     # checkpoint carries one (the restore below sets its learned knees).
+    # Its bounds come from the checkpoint too (older heads: a 0.1 e⁻ floor).
     learned = infer_checkpoint_learned_output_knee(checkpoint_dir)
+    bounds = infer_checkpoint_learned_knee_bounds(checkpoint_dir)
     model = wdsr(
         scale=scale, num_res_blocks=num_res_blocks,
         nchan_in=nchan_in, nchan_out=nchan_out, input_knees=input_knees,
-        learned_output_knee=(DEFAULT_INIT_KNEE_E if learned is not None else None),
+        **({} if bounds is None else
+           {"learned_output_knee": middle_knee(*bounds), "learned_knee_bounds": bounds}),
     )
     checkpoint = tf.train.Checkpoint(model=model)
     latest = tf.train.latest_checkpoint(checkpoint_dir)

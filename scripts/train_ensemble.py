@@ -55,7 +55,11 @@ from euclid_polish.training.forward_onthefly import (  # noqa: E402
 )
 from euclid_polish.training.inference import checkpoint_step  # noqa: E402
 from euclid_polish.training.loss_names import KNEE_LOSS_MODES, LOSS_NAMES  # noqa: E402
-from euclid_polish.training.models.output_knee import KNEE_MAX_E, KNEE_MIN_E  # noqa: E402
+from euclid_polish.training.models.output_knee import (  # noqa: E402
+    DEFAULT_INIT_KNEE_E,
+    KNEE_MAX_E,
+    KNEE_MIN_E,
+)
 from euclid_polish.training.staging import stage_records  # noqa: E402
 from euclid_polish.training.target_blur import (  # noqa: E402
     validate_target_fwhm_arcsec,
@@ -214,10 +218,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "this knee (e⁻), scored at every knee against the "
                         "multi-knee target, instead of one image per knee.")
     p.add_argument("--learn-output-knee", action="store_true",
-                   help="With --asinh-knees and --output-knee: learn the "
-                        "output knee during training, one value per band, "
-                        "starting at --output-knee (inside 0.1–10⁴ e⁻); the "
-                        "member then outputs electrons. ADD members only; "
+                   help="With --asinh-knees: learn the output knee during "
+                        "training, one value per band, bounded to 0.01–10⁴ e⁻ "
+                        "and starting at --output-knee (default "
+                        f"{DEFAULT_INIT_KNEE_E:g} e⁻); the member then outputs "
+                        "electrons. ADD members only; "
                         "continue/fork read it from the checkpoint. Member-"
                         "spec key: learn_output_knee (true/false).")
     p.add_argument("--knee-loss", choices=KNEE_LOSS_MODES, default="plain",
@@ -475,10 +480,11 @@ def _diversity_kwargs(args, over: dict) -> dict:
         print(f"✗ learn_output_knee must be true or false, got {learn!r}")
         raise SystemExit(2)
     if learn:
-        if output_knee is None:
-            print("✗ learn_output_knee needs asinh_knees and output_knee "
-                  "(its starting value)")
+        if not knees:
+            print("✗ learn_output_knee needs asinh_knees (a multi-knee member)")
             raise SystemExit(2)
+        if output_knee is None:
+            output_knee = DEFAULT_INIT_KNEE_E      # its starting value
         if not KNEE_MIN_E < output_knee < KNEE_MAX_E:
             print(f"✗ a learned output knee must start inside "
                   f"({KNEE_MIN_E:g}, {KNEE_MAX_E:g}) e⁻, got {output_knee:g}")

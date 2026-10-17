@@ -16,6 +16,12 @@ export const KNEE_LOSSES = ["plain", "balanced"] as const;
  *  +2 dB at the faint end (members 222 vs 214/219/220); adding 10⁶ and 10⁷
  *  instead cost 1.7 dB everywhere (221). */
 export const DEFAULT_MULTI_KNEES = "0.001,0.01,0.1,1,10,100,1000,10000";
+/** A learned output knee's bounds [e⁻] (output_knee.py KNEE_MIN_E/MAX_E; the
+ *  floor was 0.1 until 2026-10-17) and a new member's starting knee: the knee
+ *  only ever fell (member_227: 0.2 e⁻ after 6.5M steps from a 10 e⁻ start). */
+export const LEARNED_KNEE_MIN = 0.01;
+export const LEARNED_KNEE_MAX = 1e4;
+export const DEFAULT_LEARNED_KNEE = "0.1";
 
 /** One NEW member's knobs. Blank fields fall back to the run-wide defaults. */
 export type SpecRow = {
@@ -25,6 +31,7 @@ export type SpecRow = {
   knee: string;          // single knee (e⁻); "" or 100 = the per-band default
   knees: string;         // multi: comma list (e⁻)
   outputKnee: string;    // multi: "" = one image per knee (option 1)
+  learnKnee: boolean;    // multi with an output knee: learn it per band, from outputKnee
   kneeLoss: "plain" | "balanced";
   noise: string;
   boot: string;
@@ -58,7 +65,7 @@ export type TrainForm = {
 
 export const newRow = (from?: Partial<SpecRow>): SpecRow => ({
   loss: "l2", blocks: "32", kneeMode: "single", knee: "100", knees: DEFAULT_MULTI_KNEES,
-  outputKnee: "10", kneeLoss: "balanced", noise: "0", boot: "0.7", icnr: true,
+  outputKnee: DEFAULT_LEARNED_KNEE, learnKnee: true, kneeLoss: "balanced", noise: "0", boot: "0.7", icnr: true,
   ...from,
   seed: "",               // never cloned — two members with one seed are one model
 });
@@ -132,7 +139,11 @@ export function buildSpec(rows: readonly SpecRow[], mode: TrainMode): Record<str
     if (r.kneeMode === "multi") {
       const knees = parseKnees(r.knees);
       if (knees) o.asinh_knees = knees;
-      const out = num(r.outputKnee); if (out > 0) o.output_knee = out;
+      const out = num(r.outputKnee);
+      if (out > 0) {
+        o.output_knee = out;
+        if (r.learnKnee) o.learn_output_knee = true;
+      }
       if (r.kneeLoss !== "plain") o.knee_loss = r.kneeLoss;
     } else {
       const knee = num(r.knee); if (knee > 0 && knee !== 100) o.asinh_knee = knee;
@@ -158,6 +169,7 @@ export function rowsFromSpec(spec: unknown): SpecRow[] {
       knee: o.asinh_knee != null ? String(o.asinh_knee) : "100",
       knees: knees.length ? knees.join(",") : DEFAULT_MULTI_KNEES,
       outputKnee: o.output_knee != null ? String(o.output_knee) : "",
+      learnKnee: o.learn_output_knee === true,
       kneeLoss: o.knee_loss === "balanced" ? "balanced" : "plain",
       noise: o.noise_aug != null ? String(o.noise_aug) : "0",
       boot: o.bootstrap != null ? String(o.bootstrap) : "",
@@ -225,7 +237,11 @@ export function validate(f: TrainForm): string[] {
   f.rows.forEach((r, i) => {
     if (r.kneeMode === "multi") {
       if (!parseKnees(r.knees)) errs.push(`member ${i + 1}: knees must be positive e⁻, e.g. ${DEFAULT_MULTI_KNEES}`);
-      if (r.outputKnee.trim() && !(num(r.outputKnee) > 0)) errs.push(`member ${i + 1}: output knee must be positive`);
+      const out = num(r.outputKnee);
+      if (r.outputKnee.trim() && !(out > 0)) errs.push(`member ${i + 1}: output knee must be positive`);
+      else if (r.outputKnee.trim() && r.learnKnee && !(out > LEARNED_KNEE_MIN && out < LEARNED_KNEE_MAX)) {
+        errs.push(`member ${i + 1}: a learned output knee must start inside (${LEARNED_KNEE_MIN}, ${LEARNED_KNEE_MAX}) e⁻`);
+      }
     } else if (r.knee.trim() && !(num(r.knee) > 0)) errs.push(`member ${i + 1}: knee must be positive`);
     const b = num(r.boot); if (r.boot.trim() && !(b >= 0 && b < 1)) errs.push(`member ${i + 1}: bootstrap must be in [0, 1)`);
     if (f.mode === "add" && !posInt(r.blocks)) errs.push(`member ${i + 1}: depth must be a positive whole number`);

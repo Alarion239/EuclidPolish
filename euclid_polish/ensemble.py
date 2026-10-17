@@ -49,7 +49,7 @@ from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
 )
-from euclid_polish.training.models.output_knee import KNEE_MAX_E, KNEE_MIN_E
+from euclid_polish.training.models.output_knee import KNEE_MAX_E, KNEE_MIN_E, learned_knee_bounds
 from euclid_polish.training.target_blur import (
     blur_target_array,
     validate_target_fwhm_arcsec,
@@ -481,10 +481,14 @@ class EnsembleModel:
                         # No ``output_knee`` key: code unaware of the learned
                         # head would apply k·sinh to electrons; without the
                         # key it fails loudly instead.
+                        # The head's ACTUAL bounds: a fork keeps its
+                        # source's (older heads: a 0.1 e⁻ floor).
+                        lo, hi = (learned_knee_bounds(getattr(m, "_tf_model", None))
+                                  or (KNEE_MIN_E, KNEE_MAX_E))
                         origin["learned_output_knee"] = {
                             "init_e": (float(spec.output_knee)
                                        if spec.output_knee is not None else None),
-                            "min_e": KNEE_MIN_E, "max_e": KNEE_MAX_E}
+                            "min_e": lo, "max_e": hi}
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval

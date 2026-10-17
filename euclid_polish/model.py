@@ -68,7 +68,7 @@ from euclid_polish.training.losses import (
     knee_stretched_loss,
 )
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
-from euclid_polish.training.models.output_knee import DEFAULT_INIT_KNEE_E
+from euclid_polish.training.models.output_knee import learned_knee_bounds, middle_knee
 from euclid_polish.training.models.wdsr import initialize_weight_norms
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
 from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
@@ -722,10 +722,13 @@ class Model:
         # (the loader's rule, see load_model_from_checkpoint).
         input_knees = (nchan_in // nchan_out
                        if 1 < nchan_out < nchan_in and nchan_in % nchan_out == 0 else 1)
+        # A learned head keeps its own bounds (set_weights copies its knees).
+        bounds = learned_knee_bounds(src)
         net = _wdsr_build(
             scale=self._scale, num_res_blocks=self._num_res_blocks,
             nchan_in=nchan_in, nchan_out=nchan_out, input_knees=input_knees,
-            learned_output_knee=(DEFAULT_INIT_KNEE_E if self._learn_output_knee else None),
+            **({} if bounds is None else
+               {"learned_output_knee": middle_knee(*bounds), "learned_knee_bounds": bounds}),
             mixed_precision=mixed_precision, eager_weight_norm_init=True)
         net.set_weights(src.get_weights())
         return net

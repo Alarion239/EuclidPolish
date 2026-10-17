@@ -2,12 +2,14 @@
 learns one asinh output knee per band and outputs electrons."""
 from __future__ import annotations
 
+import importlib
 import json
 
 import numpy as np
 import pytest
 import tensorflow as tf
-from tf_keras.layers import Input, Lambda, UpSampling2D
+from tf_keras.initializers import Constant
+from tf_keras.layers import Input, Lambda, Layer, UpSampling2D
 from tf_keras.models import Model as KerasModel
 
 from euclid_polish import ensemble as ens_mod
@@ -15,6 +17,7 @@ from euclid_polish.ensemble import EnsembleModel, MemberTrainSpec
 from euclid_polish.model import Model
 from euclid_polish.training.augmentation import asinh_stretch_multi_knee, stretch_pair
 from euclid_polish.training.inference import (
+    infer_checkpoint_learned_knee_bounds,
     infer_checkpoint_learned_output_knee,
     infer_checkpoint_nchan_in,
     infer_checkpoint_nchan_out,
@@ -31,11 +34,15 @@ from euclid_polish.training.losses import (
 )
 from euclid_polish.training.models.common import evaluate
 from euclid_polish.training.models.output_knee import (
+    DEFAULT_INIT_KNEE_E,
     KNEE_MAX_E,
     KNEE_MIN_E,
+    KNEE_WEIGHT_NAME,
+    LEGACY_KNEE_MIN_E,
     LearnedOutputKnee,
     knee_logit_for,
     knees_from_logits,
+    learned_knee_bounds,
     learned_output_knees,
 )
 from euclid_polish.training.models.wdsr import wdsr
@@ -43,6 +50,8 @@ from euclid_polish.training.trainer import Trainer
 from scripts.train_ensemble import build_specs, parse_args
 
 KNEES = (0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0)
+#: The wdsr MODULE (the package re-exports its ``wdsr`` function under that name).
+WDSR_MODULE = importlib.import_module("euclid_polish.training.models.wdsr")
 
 
 def test_head_starts_at_its_initial_knee_in_every_band():
@@ -77,11 +86,26 @@ def test_head_knee_gets_a_gradient():
 
 
 def test_knee_logit_round_trips_and_rejects_knees_outside_the_bounds():
-    for knee in (0.5, 10.0, 3000.0):
-        assert knees_from_logits([knee_logit_for(knee)])[0] == pytest.approx(knee, rel=1e-6)
+    for knee in (0.05, 0.5, 10.0, 3000.0):
+        logit = knee_logit_for(knee)
+        assert knees_from_logits([logit], KNEE_MIN_E, KNEE_MAX_E)[0] == pytest.approx(knee, rel=1e-6)
     for knee in (KNEE_MIN_E, KNEE_MAX_E, 0.0, -1.0):
         with pytest.raises(ValueError):
             knee_logit_for(knee)
+    legacy = knee_logit_for(0.5, LEGACY_KNEE_MIN_E, KNEE_MAX_E)
+    assert knees_from_logits([legacy], LEGACY_KNEE_MIN_E, KNEE_MAX_E)[0] == pytest.approx(0.5, rel=1e-6)
+    with pytest.raises(ValueError):
+        knee_logit_for(0.05, LEGACY_KNEE_MIN_E, KNEE_MAX_E)
+
+
+def test_a_new_head_starts_at_a_tenth_of_an_electron_above_a_hundredth():
+    head = LearnedOutputKnee()
+    head.build((None, None, None, 4))
+    assert (DEFAULT_INIT_KNEE_E, KNEE_MIN_E, KNEE_MAX_E) == (0.1, 0.01, 1.0e4)
+    np.testing.assert_allclose(head.knees().numpy(), [0.1] * 4, rtol=1e-5)
+    inp = Input(shape=(None, None, 4))
+    assert learned_knee_bounds(KerasModel(inp, head(inp))) == (0.01, 1.0e4)      # exactly
+    assert learned_knee_bounds(KerasModel(inp, Lambda(lambda t: t)(inp))) is None
 
 
 def test_learned_output_knees_finds_the_head_of_a_model():
@@ -134,6 +158,82 @@ def test_checkpoint_without_the_head_reports_no_learned_knee(tmp_path):
     assert infer_checkpoint_learned_output_knee(d) is None
     assert infer_checkpoint_num_res_blocks(d) == 1
     assert learned_output_knees(load_model_from_checkpoint(d, scale=2, num_res_blocks=1)) is None
+
+
+class _LegacyHead(LearnedOutputKnee):
+    """The head as every checkpoint before 2026-10-17 saved it: a 0.1 e⁻
+    floor and no stored bounds (member_227 is one)."""
+
+    def __init__(self, init_knee_e=10.0, min_e=LEGACY_KNEE_MIN_E, max_e=KNEE_MAX_E, **kwargs):
+        super().__init__(init_knee_e=init_knee_e, min_e=LEGACY_KNEE_MIN_E, max_e=KNEE_MAX_E, **kwargs)
+
+    def build(self, input_shape):
+        self.output_knee_logit = self.add_weight(
+            name=KNEE_WEIGHT_NAME, shape=(int(input_shape[-1]),),
+            initializer=Constant(self._init_logit), trainable=True)
+        Layer.build(self, input_shape)
+
+    def knees(self):
+        span = np.log(KNEE_MAX_E) - np.log(LEGACY_KNEE_MIN_E)
+        return tf.exp(np.log(LEGACY_KNEE_MIN_E) + span * tf.sigmoid(0.1 * self.output_knee_logit))
+
+
+def _legacy_checkpoint(d, monkeypatch, learned=(0.78, 0.26, 0.32, 0.32)):
+    """A checkpoint of a 0.1-floor head (no stored bounds) with knees ``learned``."""
+    with monkeypatch.context() as patch:
+        patch.setattr(WDSR_MODULE, "LearnedOutputKnee", _LegacyHead)
+        model = _learned_wdsr()
+    assert isinstance(model.layers[-1], _LegacyHead)
+    model.layers[-1].output_knee_logit.assign(
+        [knee_logit_for(q, LEGACY_KNEE_MIN_E, KNEE_MAX_E) for q in learned])
+    tf.train.Checkpoint(model=model).save(str(d) + "/ckpt")
+    return model
+
+
+def test_an_old_checkpoint_keeps_its_tenth_of_an_electron_floor(tmp_path, monkeypatch):
+    learned = (0.78, 0.26, 0.32, 0.32)
+    d = tmp_path / "member_227"
+    old = _legacy_checkpoint(d, monkeypatch, learned)
+    assert infer_checkpoint_learned_knee_bounds(str(d)) == (LEGACY_KNEE_MIN_E, KNEE_MAX_E)
+    assert infer_checkpoint_learned_output_knee(str(d)) == pytest.approx(learned, rel=1e-5)
+    loaded = load_model_from_checkpoint(str(d), scale=2, num_res_blocks=32)
+    assert learned_knee_bounds(loaded) == pytest.approx((LEGACY_KNEE_MIN_E, KNEE_MAX_E))
+    np.testing.assert_allclose(learned_output_knees(loaded), learned, rtol=1e-5)
+    x = _x24(4)
+    np.testing.assert_allclose(loaded(x).numpy(), old(x).numpy(), rtol=1e-5, atol=1e-5)
+    # Saved again (a resumed run), it now carries the 0.1 floor itself.
+    again = tmp_path / "again"
+    tf.train.Checkpoint(model=loaded).save(str(again / "ckpt"))
+    assert infer_checkpoint_learned_knee_bounds(str(again)) == pytest.approx((LEGACY_KNEE_MIN_E, KNEE_MAX_E))
+    assert infer_checkpoint_learned_output_knee(str(again)) == pytest.approx(learned, rel=1e-5)
+
+
+def test_the_fast_training_network_keeps_an_old_heads_floor(tmp_path, monkeypatch):
+    d = tmp_path / "member"
+    _legacy_checkpoint(d, monkeypatch, (2.0, 0.3, 0.5, 0.5))
+    (d / "origin.json").write_text(json.dumps({
+        "asinh_knees": list(KNEES), "knee_loss": "balanced",
+        "learned_output_knee": {"init_e": 10.0, "min_e": 0.1, "max_e": 10000.0}}))
+    m = Model(str(d), scale=2, num_res_blocks=32)
+    net = m._training_network(mixed_precision=False)
+    assert learned_knee_bounds(net) == pytest.approx((LEGACY_KNEE_MIN_E, KNEE_MAX_E))
+    np.testing.assert_allclose(learned_output_knees(net), (2.0, 0.3, 0.5, 0.5), rtol=1e-5)
+    fresh = Model(str(tmp_path / "fresh"), scale=2, num_res_blocks=1, asinh_knees=KNEES,
+                  output_knee=0.1, learn_output_knee=True)
+    assert learned_knee_bounds(fresh._training_network(mixed_precision=False)) == pytest.approx(
+        (KNEE_MIN_E, KNEE_MAX_E))
+
+
+def test_a_new_checkpoint_reloads_bit_identical_with_its_exact_bounds(tmp_path):
+    model = _learned_wdsr(knee=0.1)
+    model.layers[-1].output_knee_logit.assign([knee_logit_for(q) for q in (0.05, 0.02, 0.3, 0.4)])
+    d = str(tmp_path / "ckpt")
+    tf.train.Checkpoint(model=model).save(d + "/ckpt")
+    assert infer_checkpoint_learned_knee_bounds(d) == (0.01, 1.0e4)
+    loaded = load_model_from_checkpoint(d, scale=2, num_res_blocks=1)
+    assert learned_knee_bounds(loaded) == (0.01, 1.0e4)
+    x = _x24(5)
+    np.testing.assert_array_equal(loaded(x).numpy(), model(x).numpy())
 
 
 def test_learned_knee_loss_and_validation_equal_option_2_at_the_initial_knee():
@@ -267,9 +367,29 @@ def test_train_members_records_a_learned_knee_without_an_output_knee(tmp_path, m
                            output_knee=10.0, learn_output_knee=True)
     EnsembleModel(str(base), _models=[]).train_members("lr", "hr", [spec])
     origin = json.loads((base / "member_206" / "origin.json").read_text())
-    assert origin["learned_output_knee"] == {"init_e": 10.0, "min_e": 0.1, "max_e": 10000.0}
+    assert origin["learned_output_knee"] == {"init_e": 10.0, "min_e": 0.01, "max_e": 10000.0}
     assert "output_knee" not in origin
     assert infer_checkpoint_output_knee(str(base / "member_206")) is None
+
+
+class _ForkOfAnOldMember(_LearnedKneeModel):
+    """A fork of a 0.1-floor member: its head keeps the source's bounds."""
+
+    def __init__(self, checkpoint_dir, **kwargs):
+        super().__init__(checkpoint_dir, **kwargs)
+        inp = Input(shape=(None, None, 4))
+        self._tf_model = KerasModel(inp, LearnedOutputKnee(init_knee_e=1.0, min_e=0.1)(inp))
+
+
+def test_train_members_records_the_heads_actual_bounds(tmp_path, monkeypatch):
+    monkeypatch.setattr(ens_mod, "Model", _ForkOfAnOldMember)
+    base = tmp_path / "ensemble"
+    spec = MemberTrainSpec(name="member_230", seed=1, target_steps=10, run_steps=10,
+                           loss_norm="l2", asinh_knees=KNEES, knee_loss="balanced",
+                           output_knee=0.1, learn_output_knee=True)
+    EnsembleModel(str(base), _models=[]).train_members("lr", "hr", [spec])
+    origin = json.loads((base / "member_230" / "origin.json").read_text())
+    assert origin["learned_output_knee"] == pytest.approx({"init_e": 0.1, "min_e": 0.1, "max_e": 1.0e4})
 
 
 def test_member_spec_makes_a_learned_knee_member(tmp_path):
@@ -285,9 +405,20 @@ def test_member_spec_makes_a_learned_knee_member(tmp_path):
     assert not build_specs(plain, str(tmp_path / "ens3"))[0].learn_output_knee
 
 
+def test_a_learned_knee_without_a_starting_value_starts_at_a_tenth(tmp_path):
+    member = {"asinh_knees": list(KNEES), "learn_output_knee": True}
+    args = parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([member])])
+    spec = build_specs(args, str(tmp_path / "ens"))[0]
+    assert spec.learn_output_knee and spec.output_knee == 0.1
+    low = {**member, "output_knee": 0.02}                 # inside the new 0.01 floor
+    args = parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([low])])
+    assert build_specs(args, str(tmp_path / "ens2"))[0].output_knee == 0.02
+
+
 @pytest.mark.parametrize("member", [
-    {"asinh_knees": list(KNEES), "learn_output_knee": True},                      # no starting knee
     {"output_knee": 10, "learn_output_knee": True},                               # not multi-knee
+    {"learn_output_knee": True},                                                  # not multi-knee
+    {"asinh_knees": list(KNEES), "output_knee": 0.01, "learn_output_knee": True}, # on the floor
     {"asinh_knees": list(KNEES), "output_knee": 1e5, "learn_output_knee": True},  # outside the bounds
     {"asinh_knees": list(KNEES), "output_knee": 10, "learn_output_knee": 1},      # not a bool
 ])

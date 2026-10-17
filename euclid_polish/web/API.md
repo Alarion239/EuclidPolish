@@ -274,6 +274,10 @@ schedule, `vis_pixels` …) are not task params.
   `num_stars=10000, magnitude_min=18, magnitude_limit=19, snr_min=50`.
 - `ensemble_train` also takes the multi-knee knobs `asinh_knees` (CSV of
   e⁻), `output_knee`, `knee_loss` (`plain|balanced`) and `evaluate_every`.
+  A `member_spec` entry with `learn_output_knee: true` learns its output
+  knee per band, starting at `output_knee` (default 0.1 e⁻) and bounded to
+  0.01–10⁴ e⁻. A head saved before 2026-10-17 keeps its 0.1 e⁻ floor:
+  checkpoints with no stored bounds are read with it.
 
 ### Viewer collections (contract C6)
 

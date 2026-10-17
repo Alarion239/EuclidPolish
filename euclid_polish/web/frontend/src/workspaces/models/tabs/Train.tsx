@@ -68,9 +68,10 @@ function SpecRowEditor({ row, i, mode, onChange, onRemove, onDuplicate, canRemov
       </Field>
       {multi ? <>
         <Field label="Knees [e⁻]" className="mdl-spec__wide"><Input value={row.knees} onChange={(v) => onChange({ knees: v })} placeholder={DEFAULT_MULTI_KNEES} /></Field>
-        <Field label="Output knee" hint="One output image stretched at this knee and scored at every knee (option 2, best so far). Blank: one image per knee (option 1).">
+        <Field label="Output knee" hint="One output image stretched at this knee and scored at every knee (option 2, best so far). Learned: one knee per band trained from this starting value (bounded to 0.01–10⁴ e⁻; 0.1 recommended, the knee only ever falls). Blank: one image per knee (option 1).">
           <Input value={row.outputKnee} onChange={(v) => onChange({ outputKnee: v })} placeholder="per-knee heads" />
         </Field>
+        <Checkbox checked={row.learnKnee} disabled={!row.outputKnee.trim()} onChange={(v) => onChange({ learnKnee: v })}>learned</Checkbox>
         <Field label="Knee loss" hint="balanced: every knee's channel weighs the same; plain: raw sum.">
           <Select value={row.kneeLoss} onChange={(v) => onChange({ kneeLoss: v as SpecRow["kneeLoss"] })} options={KNEE_LOSSES.map((v) => ({ value: v, label: v }))} />
         </Field>

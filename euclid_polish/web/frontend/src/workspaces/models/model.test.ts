@@ -134,11 +134,26 @@ const JOB: TrainingJob = {
 
 describe("train form", () => {
   it("builds the multi-knee member spec the step consumes", () => {
-    const spec = buildSpec([newRow({ kneeMode: "multi", outputKnee: "10" }), newRow({ knee: "100", boot: "" })], "add");
+    const spec = buildSpec([newRow({ kneeMode: "multi", outputKnee: "10", learnKnee: false }), newRow({ knee: "100", boot: "" })], "add");
     expect(spec[0]).toEqual({ loss: "l2", bootstrap: 0.7, asinh_knees: [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000],
       output_knee: 10, knee_loss: "balanced", num_res_blocks: 32, icnr: true });
     expect(spec[1]).toEqual({ loss: "l2", num_res_blocks: 32, icnr: true });
     expect(buildSpec([newRow()], "fork")[0]).not.toHaveProperty("num_res_blocks");
+  });
+
+  it("makes a new multi-knee member learn its output knee from 0.1 e⁻", () => {
+    const [learned] = buildSpec([newRow({ kneeMode: "multi" })], "add");
+    expect(learned).toMatchObject({ output_knee: 0.1, learn_output_knee: true });
+    const [heads] = buildSpec([newRow({ kneeMode: "multi", outputKnee: "" })], "add");
+    expect(heads).not.toHaveProperty("output_knee");
+    expect(heads).not.toHaveProperty("learn_output_knee");
+    const rows = rowsFromSpec([{ loss: "l2", asinh_knees: [0.1, 10], output_knee: 0.1, learn_output_knee: true }]);
+    expect(rows[0]).toMatchObject({ kneeMode: "multi", outputKnee: "0.1", learnKnee: true });
+    expect(buildSpec(rows, "add")[0]).toMatchObject({ output_knee: 0.1, learn_output_knee: true });
+    const form = (outputKnee: string, learnKnee = true) => ({ ...defaultForm(), rows: [newRow({ kneeMode: "multi", outputKnee, learnKnee })] });
+    expect(validate(form("0.1"))).toEqual([]);
+    expect(validate(form("0.01")).join()).toMatch(/must start inside \(0.01, 10000\)/);
+    expect(validate(form("0.01", false))).toEqual([]);           // a fixed knee has no bounds
   });
 
   it("round-trips a past job (clone) without seeds or names", () => {
