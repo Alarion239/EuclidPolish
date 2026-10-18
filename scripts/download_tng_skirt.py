@@ -32,6 +32,7 @@ import argparse
 import os
 import re
 import sys
+import time
 from urllib.parse import urljoin
 
 import requests
@@ -48,12 +49,32 @@ def _key(args) -> str:
     return k
 
 
-def _request(url: str, key: str, *, stream: bool = False) -> requests.Response:
-    r = requests.get(url, headers={"api-key": key}, stream=stream, timeout=120)
-    if r.status_code in (401, 403):
-        sys.exit(f"HTTP {r.status_code} — API key rejected/forbidden for {url}")
-    r.raise_for_status()
-    return r
+# The data servers answer 503 when overloaded (2026-10-18: a third of the
+# atlas requests): wait and retry instead of failing the galaxy.
+RETRY_STATUSES = (429, 500, 502, 503, 504)
+RETRY_DELAYS_S = (15.0, 30.0, 60.0, 120.0, 240.0)
+
+
+def _request(url: str, key: str, *, stream: bool = False,
+             delays: tuple[float, ...] = RETRY_DELAYS_S) -> requests.Response:
+    for attempt in range(len(delays) + 1):
+        last = attempt == len(delays)
+        try:
+            r = requests.get(url, headers={"api-key": key}, stream=stream, timeout=120)
+        except (requests.ConnectionError, requests.Timeout):
+            if last:
+                raise
+            time.sleep(delays[attempt])
+            continue
+        if r.status_code in (401, 403):
+            sys.exit(f"HTTP {r.status_code} — API key rejected/forbidden for {url}")
+        if r.status_code in RETRY_STATUSES and not last:
+            r.close()
+            time.sleep(delays[attempt])
+            continue
+        r.raise_for_status()
+        return r
+    raise AssertionError("unreachable")
 
 
 def _candidate_files(listing):
