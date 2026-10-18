@@ -180,6 +180,13 @@ class MemberTrainSpec:
     #: the knees it reads (``None`` = all of them). Recorded in origin.json;
     #: continue keeps it.
     loss_knees: tuple[float, ...] | None = None
+    #: Learned-knee member: floor inside the loss stretch, as a fraction of
+    #: each band's per-pixel sky scatter (``model.loss_floor_e``); ``None`` =
+    #: none. Recorded in origin.json; continue keeps it.
+    loss_floor: float | None = None
+    #: Live training draws a randomised noise texture (exposure count + white
+    #: share per scene and band). Recorded in origin.json; continue keeps it.
+    noise_texture_jitter: bool = False
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
     #: Faster training steps (see ``Model.train``): XLA-compile the gradient
@@ -480,6 +487,8 @@ class EnsembleModel:
                     origin["knee_loss"] = spec.knee_loss
                     if spec.loss_knees:
                         origin["loss_knees"] = [float(q) for q in spec.loss_knees]
+                    if spec.loss_floor:
+                        origin["loss_floor"] = float(spec.loss_floor)
                     output_knee = getattr(m, "_output_knee", spec.output_knee)
                     if output_knee is not None:
                         origin["output_knee"] = float(output_knee)
@@ -495,6 +504,8 @@ class EnsembleModel:
                             "init_e": (float(spec.output_knee)
                                        if spec.output_knee is not None else None),
                             "min_e": lo, "max_e": hi}
+                if spec.noise_texture_jitter:
+                    origin["noise_texture_jitter"] = True
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval
@@ -505,6 +516,10 @@ class EnsembleModel:
                 member_train_kwargs["knee_loss"] = spec.knee_loss
                 if spec.loss_knees:
                     member_train_kwargs["loss_knees"] = spec.loss_knees
+                if spec.loss_floor:
+                    member_train_kwargs["loss_floor"] = spec.loss_floor
+            if spec.noise_texture_jitter:
+                member_train_kwargs["noise_texture_jitter"] = True
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"

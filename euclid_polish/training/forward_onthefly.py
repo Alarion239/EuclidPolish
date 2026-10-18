@@ -126,8 +126,13 @@ class OnTheFlyForward:
         psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
         saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
         target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
+        noise_texture_jitter: bool = False,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
+        # Randomised noise texture (exposure count + white share per scene and
+        # band, Config.NOISE_TEXTURE_JITTER_*): a member cannot fit one
+        # texture, so real Euclid noise is not out of distribution.
+        self.noise_texture_jitter = bool(noise_texture_jitter)
         self.hr_crop_size = int(hr_crop_size)
         self.scale = int(scale)
         # Stars-as-artifacts: a FRESH star realization is drawn and deposited
@@ -187,6 +192,12 @@ class OnTheFlyForward:
                 psf_warp_alpha_max=float(psf_warp_alpha_max),
                 psf_warp_sigma=float(psf_warp_sigma),
                 saturation_mask_prob=float(saturation_mask_prob),
+                noise_texture_exposures=(
+                    tuple(Config.NOISE_TEXTURE_JITTER_EXPOSURES)
+                    if self.noise_texture_jitter else None),
+                noise_texture_white_max=(
+                    float(Config.NOISE_TEXTURE_JITTER_WHITE_MAX)
+                    if self.noise_texture_jitter else 0.0),
             ))
         # tf.data calls from several threads → per-call child RNGs, spawned
         # under a lock (SeedSequence.spawn is not thread-safe), used lock-free.

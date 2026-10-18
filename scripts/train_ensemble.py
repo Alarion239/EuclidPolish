@@ -225,6 +225,18 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "electrons. ADD members only; "
                         "continue/fork read it from the checkpoint. Member-"
                         "spec key: learn_output_knee (true/false).")
+    p.add_argument("--loss-floor", type=float, default=None,
+                   help="Learned-knee member: floor inside the loss stretch, "
+                        "asinh((x + f)/k) on prediction and target, as a "
+                        "fraction of each band's per-pixel sky scatter (1 = "
+                        "the noise). Unbiased, unlike noise on the targets; "
+                        "below f the loss stops rewarding sub-noise detail. "
+                        "Member-spec key: loss_floor.")
+    p.add_argument("--noise-texture-jitter", action="store_true",
+                   help="Live training: randomise the noise texture per scene "
+                        "and band (dithered exposure count and a white share, "
+                        "Config.NOISE_TEXTURE_JITTER_*), so the member cannot "
+                        "fit one texture. Member-spec key: noise_texture_jitter.")
     p.add_argument("--loss-knees", default=None,
                    help="Comma-separated knees (e⁻) a single-image multi-knee "
                         "member is SCORED at — a subset of the knees it reads "
@@ -425,7 +437,8 @@ def _member_overrides(args, k: int) -> list[dict]:
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "saturation_mask_prob",
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
-               "loss_knees", "output_knee", "learn_output_knee", "xla", "bf16"}
+               "loss_knees", "loss_floor", "noise_texture_jitter",
+               "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -441,6 +454,29 @@ def _member_overrides(args, k: int) -> list[dict]:
                   f"{list(KNEE_LOSS_MODES)}, got {o['knee_loss']!r}")
             raise SystemExit(2)
     return [dict(spec[i]) if i < len(spec) else {} for i in range(k)]
+
+
+def _loss_floor(value) -> float | None:
+    """``loss_floor`` → a non-negative float, or ``None`` when unset/zero."""
+    if value in (None, ""):
+        return None
+    try:
+        floor = float(value)
+    except (TypeError, ValueError) as exc:
+        print(f"✗ loss_floor must be a number, got {value!r}")
+        raise SystemExit(2) from exc
+    if not floor >= 0.0:
+        print(f"✗ loss_floor must be non-negative, got {value!r}")
+        raise SystemExit(2)
+    return floor or None
+
+
+def _flag(value, name: str) -> bool:
+    """A true/false member knob (JSON bool or the CLI's store_true)."""
+    if not isinstance(value, bool):
+        print(f"✗ {name} must be true or false, got {value!r}")
+        raise SystemExit(2)
+    return value
 
 
 def _loss_knees(value, knees: tuple[float, ...] | None) -> tuple[float, ...] | None:
@@ -533,6 +569,9 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "learn_output_knee": learn,
             "knee_loss": str(over.get("knee_loss", args.knee_loss)),
             "loss_knees": _loss_knees(over.get("loss_knees", args.loss_knees), knees),
+            "loss_floor": _loss_floor(over.get("loss_floor", args.loss_floor)),
+            "noise_texture_jitter": _flag(over.get("noise_texture_jitter", args.noise_texture_jitter),
+                                          "noise_texture_jitter"),
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
             "forward_onthefly": bool(over.get("forward_onthefly",
@@ -601,6 +640,10 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
         identity["knee_loss"] = str(origin.get("knee_loss") or "plain")
     if origin.get("loss_knees") and "loss_knees" not in override:
         identity["loss_knees"] = tuple(float(q) for q in origin["loss_knees"])
+    if origin.get("loss_floor") and "loss_floor" not in override:
+        identity["loss_floor"] = float(origin["loss_floor"])
+    if origin.get("noise_texture_jitter") is True and "noise_texture_jitter" not in override:
+        identity["noise_texture_jitter"] = True
     # A member created with faster steps keeps them (a member-spec xla/bf16
     # false turns one off).
     for key, field in (("xla", "jit_compile"), ("bf16", "mixed_precision")):
@@ -864,12 +907,16 @@ def main() -> int:
                       + f"e knee_loss={s.knee_loss}")
             if s.loss_knees:
                 knobs += " loss_knees=" + ",".join(f"{q:g}" for q in s.loss_knees) + "e"
+            if s.loss_floor:
+                knobs += f" loss_floor={s.loss_floor:g}σ"
             if s.output_knee is not None:
                 knobs += f" output_knee={s.output_knee:g}e"
                 if s.learn_output_knee:
                     knobs += " (learned)"
         if s.noise_aug:
             knobs += f" noise_aug={s.noise_aug:g}"
+        if s.noise_texture_jitter:
+            knobs += " noise_texture=jittered"
         if s.bootstrap:
             knobs += f" bootstrap={s.bootstrap:g}"
         if s.forward_onthefly:

@@ -10,11 +10,12 @@ in the repository calls it any more (``Image.with_band_noise`` was removed).
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from functools import lru_cache
 
 import numpy as np
 
-from euclid_polish.config import BandConfig
+from euclid_polish.config import BandConfig, Config
 from euclid_polish.sky.observation.artifacts import (
     ArtifactConfig,
     inject_artifacts,
@@ -153,6 +154,7 @@ def dithered_unit_noise(
     shape: tuple[int, int],
     band: BandConfig,
     rng: np.random.Generator,
+    n_exposures: int | None = None,
 ) -> np.ndarray:
     """Noise with unit variance on large scales and the texture of a MER stack.
 
@@ -171,7 +173,7 @@ def dithered_unit_noise(
     height, width = int(shape[0]), int(shape[1])
     if height < 1 or width < 1:
         raise ValueError(f"shape must be positive, got {shape}")
-    n_exposures = int(band.n_exposures)
+    n_exposures = int(band.n_exposures if n_exposures is None else n_exposures)
     if n_exposures < 1:
         raise ValueError(f"{band.name} needs at least one exposure")
     factor = _detector_factor(band)
@@ -192,6 +194,51 @@ def dithered_unit_noise(
     return total / (factor * math.sqrt(n_exposures))
 
 
+@dataclass(frozen=True)
+class NoiseTextureJitter:
+    """Ranges for :func:`jittered_unit_noise`: the number of dithered
+    exposures and the white share (of the stack's per-pixel variance)."""
+
+    exposures: tuple[int, int] = Config.NOISE_TEXTURE_JITTER_EXPOSURES
+    white_max: float = Config.NOISE_TEXTURE_JITTER_WHITE_MAX
+
+    def __post_init__(self) -> None:
+        lo, hi = (int(v) for v in self.exposures)
+        if not 1 <= lo <= hi:
+            raise ValueError(f"exposures must be 1 <= lo <= hi, got {self.exposures}")
+        if not 0.0 <= float(self.white_max) <= 1.0:
+            raise ValueError(f"white_max must be in [0, 1], got {self.white_max}")
+
+
+def jittered_unit_noise(
+    shape: tuple[int, int],
+    band: BandConfig,
+    rng: np.random.Generator,
+    jitter: NoiseTextureJitter,
+) -> np.ndarray:
+    """:func:`dithered_unit_noise` with a randomised texture: a random number
+    of exposures (which sets the strength of the dithering's variance plaid)
+    plus a random white share (which lowers the pixel correlation). Large-
+    scale variance stays one, as for the fixed texture."""
+    lo, hi = (int(v) for v in jitter.exposures)
+    n_exposures = int(rng.integers(lo, hi + 1))
+    white = float(rng.uniform(0.0, float(jitter.white_max)))
+    unit = dithered_unit_noise(shape, band, rng, n_exposures=n_exposures)
+    if white <= 0.0:
+        return unit
+    extra = white * float(np.var(unit))          # per-pixel variance of the white part
+    unit = unit + rng.standard_normal(unit.shape) * math.sqrt(extra)
+    return unit / math.sqrt(1.0 + extra)
+
+
+@lru_cache(maxsize=8)
+def pixel_scatter_factor(band: BandConfig) -> float:
+    """Single-pixel standard deviation of the band's unit (dithered) noise:
+    ~2/3 in VIS, ~2/9 in NISP. ``band.mer_rms_e`` times this is the band's
+    per-pixel sky scatter on the 0.10" archive grid."""
+    return float(np.std(dithered_unit_noise((256, 256), band, np.random.default_rng(0))))
+
+
 def apply_archive_noise(
     signal_e: np.ndarray,
     band: BandConfig,
@@ -201,6 +248,7 @@ def apply_archive_noise(
     artifact_config: ArtifactConfig | None = None,
     noise_scale_map: np.ndarray | None = None,
     sky_rms_e: float | None = None,
+    noise_texture: NoiseTextureJitter | None = None,
 ) -> np.ndarray:
     """Add noise as it appears in the delivered 0.10" MER mosaic.
 
@@ -214,7 +262,8 @@ def apply_archive_noise(
 
     ``sky_rms_e`` is the sky level for this scene, normally one draw from the
     measured Q1 distribution; ``None`` uses the band's median,
-    ``band.mer_rms_e``.
+    ``band.mer_rms_e``. ``noise_texture`` randomises the stack's texture
+    (:func:`jittered_unit_noise`); ``None`` keeps the fixed texture.
 
     Sparse artifacts are survivors of the pipeline's rejection, so they are
     injected last on the archive grid and are never rescaled.
@@ -239,7 +288,9 @@ def apply_archive_noise(
         if not np.all(np.isfinite(noise_scale)) or np.any(noise_scale <= 0.0):
             raise ValueError("noise_scale_map must contain finite positive values")
 
-    unit = dithered_unit_noise(signal.shape, band, rng)
+    unit = (jittered_unit_noise(signal.shape, band, rng, noise_texture)
+            if noise_texture is not None
+            else dithered_unit_noise(signal.shape, band, rng))
     level = np.sqrt(
         sky_rms * sky_rms + np.clip(signal.astype(np.float64), 0.0, None)
     )

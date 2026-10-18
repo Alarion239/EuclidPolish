@@ -65,9 +65,11 @@ from euclid_polish.training.losses import (
     build_loss,
     channel_balanced_loss,
     knee_expanded_loss,
+    knee_floored_loss,
     knee_stretched_loss,
     knee_subset_loss,
 )
+from euclid_polish.sky.observation.noise import pixel_scatter_factor
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.output_knee import learned_knee_bounds, middle_knee
 from euclid_polish.training.models.wdsr import initialize_weight_norms
@@ -76,6 +78,19 @@ from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
 from euclid_polish.training.trainer import Trainer, seed_everything
 
 _HR_SCALE = Config.DEFAULT_PIXEL_SCALE   # 0.05 arcsec/pix
+
+
+def loss_floor_e(fraction: float, scale: int = 2) -> tuple[float, ...]:
+    """Per-band loss-stretch floor (e⁻ per HR pixel) for a ``loss_floor``
+    fraction: that fraction of the band's per-pixel sky scatter on the 0.10"
+    archive grid (``mer_rms_e`` times the dithered stack's single-pixel
+    factor), referred to one HR pixel (``/ scale**2``)."""
+    if not fraction >= 0.0:
+        raise ValueError(f"loss_floor must be non-negative, got {fraction!r}")
+    return tuple(
+        float(fraction) * band.mer_rms_e * pixel_scatter_factor(band) / scale ** 2
+        for band in (Config.get_band(name) for name in Config.LR_INPUT_BAND_NAMES)
+    )
 
 
 def _checkpoint_exists(checkpoint_dir: str) -> bool:
@@ -477,14 +492,18 @@ class Model:
         return stretch
 
     def _member_loss(self, loss_norm: str, knee_loss: str = "plain",
-                     loss_knees: Sequence[float] | None = None):
+                     loss_knees: Sequence[float] | None = None,
+                     loss_floor: float | None = None):
         """The reconstruction loss this member trains under. A multi-knee
         member's ``knee_loss``: ``plain`` = the loss over all channels at
         once; ``balanced`` = every channel (band x knee) weighted equally. A
         single-image member's one output is re-stretched at every knee: from
         its fixed output knee, or (learned knee) from electrons.
         ``loss_knees``: score a single-image member at these of its knees
-        only (it still reads every knee); ``None`` = all of them."""
+        only (it still reads every knee); ``None`` = all of them.
+        ``loss_floor``: a learned-knee member's stretch floor, as a fraction
+        of each band's per-pixel sky scatter (HR-equivalent, see
+        :func:`loss_floor_e`); ``None``/0 = no floor."""
         if knee_loss not in KNEE_LOSS_MODES:
             raise ValueError(f"knee_loss must be one of {KNEE_LOSS_MODES}, got {knee_loss!r}")
         loss = (channel_balanced_loss(loss_norm)
@@ -498,7 +517,13 @@ class Model:
             raise ValueError("loss_knees needs a single-image multi-knee member "
                              "(a fixed or learned output knee)")
         scored = subset or self._asinh_knees
-        if self._learn_output_knee:
+        if loss_floor and not self._learn_output_knee:
+            raise ValueError("loss_floor needs a learned-output-knee member "
+                             "(one that outputs electrons)")
+        if self._learn_output_knee and loss_floor:
+            member_loss = knee_floored_loss(loss, scored, loss_floor_e(float(loss_floor), self._scale),
+                                            Config.NUM_HR_CHANNELS)
+        elif self._learn_output_knee:
             member_loss = knee_stretched_loss(loss, scored)
         elif self._output_knee is not None:
             member_loss = knee_expanded_loss(loss, self._output_knee, scored)
@@ -545,6 +570,8 @@ class Model:
         starless: bool = False,
         knee_loss: str = "plain",
         loss_knees: Sequence[float] | None = None,
+        loss_floor: float | None = None,
+        noise_texture_jitter: bool = False,
         jit_compile: bool = False,
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
@@ -637,7 +664,12 @@ class Model:
                                   saturation_mask_prob=float(
                                       saturation_mask_prob),
                                   target_fwhm_arcsec=target_fwhm,
-                                  star_prior_payload=star_prior_payload)
+                                  star_prior_payload=star_prior_payload,
+                                  noise_texture_jitter=bool(noise_texture_jitter))
+            if fwd.noise_texture_jitter:
+                lo, hi = Config.NOISE_TEXTURE_JITTER_EXPOSURES
+                print(f"  noise texture: randomised ({lo}-{hi} dithered exposures, "
+                      f"white share up to {Config.NOISE_TEXTURE_JITTER_WHITE_MAX:g})")
             if fwd.inject_stars:
                 print(f"  on-the-fly stars: {fwd.star_density_arcmin2:.3f} "
                       "per arcmin²")
@@ -687,7 +719,14 @@ class Model:
             # Live training draws noise from the code's noise model; record it
             # the same way generated records do.
             provenance_fields["noise_model"] = Config.NOISE_MODEL
-        loss = self._member_loss(loss_norm, knee_loss, loss_knees)
+        if noise_texture_jitter and not forward_onthefly:
+            raise ValueError("noise_texture_jitter needs the live (on-the-fly) "
+                             "forward model; record noise is fixed")
+        loss = self._member_loss(loss_norm, knee_loss, loss_knees, loss_floor)
+        if loss_floor:
+            print("  loss floor (e⁻/HR px): " + ", ".join(
+                f"{b} {f:.3g}" for b, f in zip(Config.LR_INPUT_BAND_NAMES,
+                                              loss_floor_e(float(loss_floor), self._scale))))
         if loss_knees:
             print("  loss knees (e⁻): " + ",".join(f"{q:g}" for q in loss_knees)
                   + " of the input knees " + ",".join(f"{q:g}" for q in self._asinh_knees))

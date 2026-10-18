@@ -149,6 +149,34 @@ def knee_subset_loss(loss, knees, subset, n_bands: int):
     return _loss
 
 
+def knee_floored_loss(loss, knees, floor_e, n_bands: int):
+    """``loss`` on ``asinh((x + f_b) / k)`` at every knee for a member that
+    outputs ELECTRONS, with a per-band floor ``f_b`` (e⁻) inside the stretch,
+    applied identically to prediction and target — so it is exactly unbiased
+    (a noisy target is not: averaging it in this log-like stretch drags faint
+    light toward zero). Below ``f_b`` the stretch is linear, so the loss stops
+    rewarding sub-noise structure that tiny knees amplify. The target arrives
+    stretched at every knee (``asinh(hr / k)``, knee-major); each knee block's
+    electrons are recovered exactly before the floored stretch."""
+    floor = [float(v) for v in floor_e]
+    if len(floor) != int(n_bands):
+        raise ValueError(f"floor_e needs one value per band ({n_bands}), got {floor}")
+    if min(floor) < 0.0:
+        raise ValueError(f"floor_e must be non-negative, got {floor}")
+    floor_t = tf.constant(floor, tf.float32)
+
+    def _loss(sr, hr):
+        f = tf.cast(floor_t, sr.dtype)
+        pred, target = [], []
+        for j, q in enumerate(knees):
+            k = tf.cast(float(q), sr.dtype)
+            hr_e = k * tf.sinh(hr[..., j * n_bands:(j + 1) * n_bands])
+            target.append(tf.asinh((hr_e + f) / k))
+            pred.append(tf.asinh((sr + f) / k))
+        return loss(tf.concat(pred, axis=-1), tf.concat(target, axis=-1))
+    return _loss
+
+
 def knee_stretched_loss(loss, knees):
     """Loss of a member that outputs ELECTRONS (a learned output knee): its
     output is stretched at every knee and compared, channel for channel, with

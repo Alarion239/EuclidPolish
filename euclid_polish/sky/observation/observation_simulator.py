@@ -51,7 +51,7 @@ from euclid_polish.sky.observation.field_variations import (
     draw_noise_scale_map,
 )
 from euclid_polish.sky.observation.mer_noise_levels import load_mer_noise_levels
-from euclid_polish.sky.observation.noise import apply_archive_noise
+from euclid_polish.sky.observation.noise import NoiseTextureJitter, apply_archive_noise
 from euclid_polish.sky.observation.resample import upsample as resample_upsample
 from euclid_polish.sky.observation.saturation import (
     StarSaturationModel,
@@ -83,6 +83,12 @@ class ObservationSimulatorConfig:
     # distribution (one real sky position per scene). Off uses every band's
     # median level.
     draw_mer_noise_levels: bool = True
+    # Randomise the noise texture per scene and band (live training only):
+    # the exposure-count range of the dithered stack, and the largest white
+    # share of its per-pixel variance. ``None`` keeps the fixed texture
+    # every record was generated with.
+    noise_texture_exposures: tuple[int, int] | None = None
+    noise_texture_white_max: float = 0.0
     # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws one
     # PSF — a star-count-weighted cluster pick, then with probability
     # (1 - psf_unrotated_prob) a random roll rotation (per-pointing telescope
@@ -457,12 +463,20 @@ class ObservationSimulator:
         # 3. Apply delivered-MER noise: Euclid's noise level with the pixel
         #    correlation of a dithered bilinear stack, identical for all bands.
         if self.config.add_noise:
+            texture = (
+                NoiseTextureJitter(
+                    exposures=tuple(self.config.noise_texture_exposures),
+                    white_max=float(self.config.noise_texture_white_max),
+                )
+                if self.config.noise_texture_exposures is not None else None
+            )
             lr_e = apply_archive_noise(
                 lr_signal_e, band, rng,
                 add_artifacts=self.config.add_artifacts,
                 artifact_config=self.config.artifact_config,
                 noise_scale_map=noise_scale_map,
                 sky_rms_e=sky_rms_e,
+                noise_texture=texture,
             )
         else:
             lr_e = lr_signal_e.astype(np.float32, copy=False)

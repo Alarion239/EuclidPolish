@@ -855,6 +855,20 @@ class Config:
     # (hard isophotes and square edges taught low-knee members to draw
     # faint straight lines). ≤ 0 disables.
     TNG_SB_TRUNCATE_MAG_ARCSEC2 = 28.0
+    # Noise-texture randomisation for live training (a per-member opt-in,
+    # ``noise_texture_jitter``). Every scene and band draws its dithered-stack
+    # noise from a random number of exposures in this range, plus a white
+    # component of up to WHITE_MAX of the stack noise's per-pixel variance.
+    # Measured 2026-10-18 on empty sky: real Euclid (NEXUS, EDF-N) NISP has
+    # lag-1 correlation 0.77-0.79 and a 7-8.5 % variance plaid, our fixed
+    # 4-exposure model 0.84-0.85 and 14-18 %; at equal strength an unfamiliar
+    # (white) texture doubled member_227's faint-light dropouts and cost
+    # 3.8 dB. With 4-8 exposures and white up to 0.15 the drawn textures span
+    # lag-1 0.755-0.855 (median 0.80) and plaid 3.6-14.3 % (median 7.0 %):
+    # centred on real Euclid, our old texture at the top end, so a member
+    # cannot fit one texture.
+    NOISE_TEXTURE_JITTER_EXPOSURES = (4, 8)
+    NOISE_TEXTURE_JITTER_WHITE_MAX = 0.15
     # Stochastic spectral-drift tilt ε ~ N(0, σ0 + σ1·ln(1+z)), applied as
     # exp(ε·ln(λ_b/λ_H)): σ0 is the z=0 colour jitter, σ1 grows the spread
     # with redshift (the rest-UV extrapolation uncertainty). The parametric-k
