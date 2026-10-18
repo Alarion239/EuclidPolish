@@ -225,6 +225,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "electrons. ADD members only; "
                         "continue/fork read it from the checkpoint. Member-"
                         "spec key: learn_output_knee (true/false).")
+    p.add_argument("--loss-knees", default=None,
+                   help="Comma-separated knees (e⁻) a single-image multi-knee "
+                        "member is SCORED at — a subset of the knees it reads "
+                        "(default: all of them). E.g. 0.1,1,10,100,1000,10000 "
+                        "keeps the 1e-3/1e-2 inputs but drops them from the "
+                        "loss. Recorded in origin.json; continue keeps it. "
+                        "Member-spec key: loss_knees (list).")
     p.add_argument("--knee-loss", choices=KNEE_LOSS_MODES, default="plain",
                    help="How a multi-knee member combines its channels' "
                         "errors: 'plain' = the --loss over all channels at "
@@ -418,7 +425,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "saturation_mask_prob",
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
-               "output_knee", "learn_output_knee", "xla", "bf16"}
+               "loss_knees", "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -434,6 +441,19 @@ def _member_overrides(args, k: int) -> list[dict]:
                   f"{list(KNEE_LOSS_MODES)}, got {o['knee_loss']!r}")
             raise SystemExit(2)
     return [dict(spec[i]) if i < len(spec) else {} for i in range(k)]
+
+
+def _loss_knees(value, knees: tuple[float, ...] | None) -> tuple[float, ...] | None:
+    """``loss_knees`` (comma string or list) → a tuple, checked against the
+    member's knees when it names them (a fork's come from its source and are
+    checked when the model is built)."""
+    if value in (None, "", []):
+        return None
+    subset = _parse_knees(value)
+    if knees and not set(subset) <= set(knees):
+        print(f"✗ loss_knees {subset} must be among the member's knees {knees}")
+        raise SystemExit(2)
+    return subset
 
 
 def _parse_knees(value) -> tuple[float, ...] | None:
@@ -512,6 +532,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "output_knee": output_knee,
             "learn_output_knee": learn,
             "knee_loss": str(over.get("knee_loss", args.knee_loss)),
+            "loss_knees": _loss_knees(over.get("loss_knees", args.loss_knees), knees),
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
             "forward_onthefly": bool(over.get("forward_onthefly",
@@ -578,6 +599,8 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
             origin["target_psf_fwhm_arcsec"])
     if origin.get("asinh_knees") and "knee_loss" not in override:
         identity["knee_loss"] = str(origin.get("knee_loss") or "plain")
+    if origin.get("loss_knees") and "loss_knees" not in override:
+        identity["loss_knees"] = tuple(float(q) for q in origin["loss_knees"])
     # A member created with faster steps keeps them (a member-spec xla/bf16
     # false turns one off).
     for key, field in (("xla", "jit_compile"), ("bf16", "mixed_precision")):
@@ -839,6 +862,8 @@ def main() -> int:
         if s.asinh_knees:
             knobs += (" asinh_knees=" + ",".join(f"{q:g}" for q in s.asinh_knees)
                       + f"e knee_loss={s.knee_loss}")
+            if s.loss_knees:
+                knobs += " loss_knees=" + ",".join(f"{q:g}" for q in s.loss_knees) + "e"
             if s.output_knee is not None:
                 knobs += f" output_knee={s.output_knee:g}e"
                 if s.learn_output_knee:

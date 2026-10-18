@@ -66,6 +66,7 @@ from euclid_polish.training.losses import (
     channel_balanced_loss,
     knee_expanded_loss,
     knee_stretched_loss,
+    knee_subset_loss,
 )
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.output_knee import learned_knee_bounds, middle_knee
@@ -475,22 +476,38 @@ class Model:
             return stretch_pair(lr, hr, knee=knee, knees=knees)
         return stretch
 
-    def _member_loss(self, loss_norm: str, knee_loss: str = "plain"):
+    def _member_loss(self, loss_norm: str, knee_loss: str = "plain",
+                     loss_knees: Sequence[float] | None = None):
         """The reconstruction loss this member trains under. A multi-knee
         member's ``knee_loss``: ``plain`` = the loss over all channels at
         once; ``balanced`` = every channel (band x knee) weighted equally. A
         single-image member's one output is re-stretched at every knee: from
-        its fixed output knee, or (learned knee) from electrons."""
+        its fixed output knee, or (learned knee) from electrons.
+        ``loss_knees``: score a single-image member at these of its knees
+        only (it still reads every knee); ``None`` = all of them."""
         if knee_loss not in KNEE_LOSS_MODES:
             raise ValueError(f"knee_loss must be one of {KNEE_LOSS_MODES}, got {knee_loss!r}")
         loss = (channel_balanced_loss(loss_norm)
                 if self._asinh_knees and knee_loss == "balanced"
                 else build_loss(loss_norm))
+        subset = tuple(float(q) for q in loss_knees) if loss_knees else None
+        if subset is not None and subset == tuple(self._asinh_knees or ()):
+            subset = None
+        if subset is not None and not (self._learn_output_knee
+                                       or self._output_knee is not None):
+            raise ValueError("loss_knees needs a single-image multi-knee member "
+                             "(a fixed or learned output knee)")
+        scored = subset or self._asinh_knees
         if self._learn_output_knee:
-            return knee_stretched_loss(loss, self._asinh_knees)
-        if self._output_knee is not None:
-            return knee_expanded_loss(loss, self._output_knee, self._asinh_knees)
-        return loss
+            member_loss = knee_stretched_loss(loss, scored)
+        elif self._output_knee is not None:
+            member_loss = knee_expanded_loss(loss, self._output_knee, scored)
+        else:
+            return loss
+        if subset is None:
+            return member_loss
+        return knee_subset_loss(member_loss, self._asinh_knees, subset,
+                                Config.NUM_HR_CHANNELS)
 
     def train(
         self,
@@ -527,6 +544,7 @@ class Model:
         star_prior_payload: dict | None = None,
         starless: bool = False,
         knee_loss: str = "plain",
+        loss_knees: Sequence[float] | None = None,
         jit_compile: bool = False,
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
@@ -669,7 +687,10 @@ class Model:
             # Live training draws noise from the code's noise model; record it
             # the same way generated records do.
             provenance_fields["noise_model"] = Config.NOISE_MODEL
-        loss = self._member_loss(loss_norm, knee_loss)
+        loss = self._member_loss(loss_norm, knee_loss, loss_knees)
+        if loss_knees:
+            print("  loss knees (e⁻): " + ",".join(f"{q:g}" for q in loss_knees)
+                  + " of the input knees " + ",".join(f"{q:g}" for q in self._asinh_knees))
         net = (self._training_network(mixed_precision=bool(mixed_precision))
                if jit_compile or mixed_precision else self._tf_model)
         if jit_compile or mixed_precision:

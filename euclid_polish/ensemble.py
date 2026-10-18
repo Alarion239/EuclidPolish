@@ -176,6 +176,10 @@ class MemberTrainSpec:
     #: How a multi-knee member combines its channels' errors ("plain" |
     #: "balanced", see ``training.losses.channel_balanced_loss``).
     knee_loss: str = "plain"
+    #: Knees (e⁻) a single-image multi-knee member is SCORED at, a subset of
+    #: the knees it reads (``None`` = all of them). Recorded in origin.json;
+    #: continue keeps it.
+    loss_knees: tuple[float, ...] | None = None
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
     #: Faster training steps (see ``Model.train``): XLA-compile the gradient
@@ -474,6 +478,8 @@ class EnsembleModel:
                     # stretch (and the channel count) at train + inference.
                     origin["asinh_knees"] = [float(q) for q in knees]
                     origin["knee_loss"] = spec.knee_loss
+                    if spec.loss_knees:
+                        origin["loss_knees"] = [float(q) for q in spec.loss_knees]
                     output_knee = getattr(m, "_output_knee", spec.output_knee)
                     if output_knee is not None:
                         origin["output_knee"] = float(output_knee)
@@ -497,6 +503,8 @@ class EnsembleModel:
             member_train_kwargs = dict(train_kwargs)
             if getattr(m, "_asinh_knees", None):
                 member_train_kwargs["knee_loss"] = spec.knee_loss
+                if spec.loss_knees:
+                    member_train_kwargs["loss_knees"] = spec.loss_knees
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"

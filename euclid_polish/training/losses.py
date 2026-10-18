@@ -128,6 +128,27 @@ def knee_expanded_loss(loss, output_knee: float, knees):
     return _loss
 
 
+def knee_channel_indices(knees, subset, n_bands: int) -> list[int]:
+    """Channels of a knee-major multi-knee tensor (channel ``k·n_bands + c``
+    = band ``c`` at knee ``k``) that hold the knees in ``subset``."""
+    knees = [float(q) for q in knees]
+    missing = [float(q) for q in subset if float(q) not in knees]
+    if missing:
+        raise ValueError(f"loss knees {missing} are not among the input knees {knees}")
+    return [knees.index(float(q)) * n_bands + c for q in subset for c in range(n_bands)]
+
+
+def knee_subset_loss(loss, knees, subset, n_bands: int):
+    """``loss(sr, hr)`` on the ``subset`` knees only of a knee-major target
+    stretched at every knee in ``knees``: a member can READ all its knees
+    and be SCORED at fewer (e.g. 8 input knees, loss at 0.1–10⁴ e⁻)."""
+    index = tf.constant(knee_channel_indices(knees, subset, n_bands), tf.int32)
+
+    def _loss(sr, hr):
+        return loss(sr, tf.gather(hr, index, axis=-1))
+    return _loss
+
+
 def knee_stretched_loss(loss, knees):
     """Loss of a member that outputs ELECTRONS (a learned output knee): its
     output is stretched at every knee and compared, channel for channel, with
