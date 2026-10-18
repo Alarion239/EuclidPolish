@@ -707,6 +707,7 @@ def render_sbatch_body(
 
         export EUCLID_POLISH_DATA_DIR={shlex.quote(cfg.data_dir)}
         export EUCLID_POLISH_CKPT_DIR={shlex.quote(cfg.ckpt_dir)}
+        export EUCLID_POLISH_TNG_STORE_DIR={shlex.quote(cfg.resolved_tng_store_dir())}
         # ``Reporter.from_env()`` reads this to open the per-job
         # structured events stream.
         export EUCLID_POLISH_EVENTS_PATH={events_runtime_rel}

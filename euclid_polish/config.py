@@ -1132,6 +1132,11 @@ class Config:
         EuclidSky.ARCHIVE_FIELDS_MANIFEST_FILENAME,
     )
     TNG_SKIRT_DIR          = os.path.join(DATA_DIR, Tng.SKIRT_SUBDIR)
+    # Persistent home of the SKIRT atlas (lab storage, never purged; FASRC
+    # jobs export it). Blank → the atlas lives only in TNG_SKIRT_DIR.
+    # Generation first copies what the scratch copy lacks from here
+    # (euclid_polish/tng/atlas_store.py); the downloader writes here.
+    TNG_SKIRT_STORE_DIR    = os.environ.get("EUCLID_POLISH_TNG_STORE_DIR", "")
     FASRC_CACHE_DIR        = os.path.join(DATA_DIR, WebFetch.CACHE_SUBDIR)
 
     @classmethod

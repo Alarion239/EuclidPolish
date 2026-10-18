@@ -93,6 +93,7 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
+from euclid_polish.tng.atlas_store import sync_working_copy
 from euclid_polish.tng.radius_manifest import ensure_manifest
 
 # ---------------------------------------------------------------------------
@@ -615,6 +616,7 @@ def step_generate(args: argparse.Namespace) -> None:
         require_empirical=args.require_empirical_psf,
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
     )
+    _sync_tng_atlas_from_store(args, workers=8)
     sim = SkySimulator(cat, cfg, vis_psf_set=generation_psf_sets["VIS"])
     os.makedirs(args.records_dir, exist_ok=True)
 
@@ -1430,6 +1432,25 @@ def _gen_convolve_shard(task) -> tuple[str, int, int]:
     )
 
 
+def _uses_tng(args: argparse.Namespace) -> bool:
+    return (
+        float(getattr(args, "galaxy_density_arcmin2", None) or 0.0) > 0.0
+        or float(getattr(args, "lens_density_arcmin2", None) or 0.0) > 0.0
+    )
+
+
+def _sync_tng_atlas_from_store(args: argparse.Namespace, *, workers: int) -> None:
+    """Copy the galaxies the scratch atlas lacks from the persistent store
+    (``EUCLID_POLISH_TNG_STORE_DIR``, lab storage) before the atlas is read."""
+    store = Config.TNG_SKIRT_STORE_DIR
+    if not store or not _uses_tng(args):
+        return
+    work = getattr(args, "tng_dir", None) or Config.TNG_SKIRT_DIR
+    result = sync_working_copy(store, work, workers=workers)
+    _log(f"  TNG atlas: {result['copied']} galaxies copied from {store} "
+         f"({int(result['bytes']) / 1e9:.1f} GB), {result['in_sync']} already on scratch")
+
+
 def _ensure_generation_radius_manifest(
     args: argparse.Namespace,
     *,
@@ -1437,10 +1458,7 @@ def _ensure_generation_radius_manifest(
     reporter: Reporter,
 ) -> dict | None:
     """Validate or repair the TNG radius prerequisite in the parent process."""
-    if (
-        float(getattr(args, "galaxy_density_arcmin2", None) or 0.0) <= 0.0
-        and float(getattr(args, "lens_density_arcmin2", None) or 0.0) <= 0.0
-    ):
+    if not _uses_tng(args):
         return None
     config = _generator_config_from_args(args)
     reporter.set_stage("prepare TNG radius manifest")
@@ -1471,6 +1489,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     # Fail or repair once in the parent, before destructive --force cleanup
     # and before launching a process pool. This prevents every worker from
     # discovering the same stale atlas prerequisite independently.
+    _sync_tng_atlas_from_store(args, workers=workers)
     _ensure_generation_radius_manifest(
         args, workers=workers, reporter=reporter,
     )

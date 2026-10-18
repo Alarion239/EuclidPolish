@@ -245,8 +245,10 @@ def _download_one(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--out-dir", default=Config.TNG_SKIRT_DIR,
-                   help=f"Root for the per-galaxy folders. Default: "
+    default_out = Config.TNG_SKIRT_STORE_DIR or Config.TNG_SKIRT_DIR
+    p.add_argument("--out-dir", default=default_out,
+                   help="Root for the per-galaxy folders. Default: the persistent "
+                        "atlas store (EUCLID_POLISH_TNG_STORE_DIR) if set, else "
                         f"{Config.TNG_SKIRT_DIR}")
     p.add_argument("--workers", type=int, default=16,
                    help="Concurrent galaxy downloads in flight. Default 16. "
