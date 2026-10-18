@@ -848,8 +848,12 @@ class Config:
     # the noiseless clean target even though the outskirts are far below
     # anything Euclid can detect. 28.0 ≈ the VIS stack's 1σ per arcsec²
     # (per-pixel 1σ ≈ 25.5; deep-stacking LSB limit ~29.5, Borlaff+ 2022),
-    # so everything plausibly recoverable survives. The stamp is cropped to
-    # the surviving footprint. ≤ 0 disables.
+    # so everything plausibly recoverable survives. Since 2026-10-18 the cut
+    # is one VIS-driven weight for every band that rolls off smoothly over
+    # ±0.2 dex (renderer.SB_CUT_ROLLOFF_DEX), and the stamp ends in a soft
+    # circular window around r(99.5%)+4 px instead of a bare crop square
+    # (hard isophotes and square edges taught low-knee members to draw
+    # faint straight lines). ≤ 0 disables.
     TNG_SB_TRUNCATE_MAG_ARCSEC2 = 28.0
     # Stochastic spectral-drift tilt ε ~ N(0, σ0 + σ1·ln(1+z)), applied as
     # exp(ε·ln(λ_b/λ_H)): σ0 is the z=0 colour jitter, σ1 grows the spread

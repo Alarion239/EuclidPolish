@@ -27,10 +27,14 @@ from euclid_polish.photometry import (
     mjy_per_sr_to_electrons_factor,
 )
 from euclid_polish.tng._image import (
+    SOFT_WINDOW_INNER_FRACTION,
+    SOFT_WINDOW_RIM_MARGIN_PX,
     _block_mean,
     _centered_rotation_crop_slices,
     _downsample_surface_brightness,
     _radius_int_grid,
+    _soft_circular_window,
+    _soft_circular_window_array,
     _stochastic_round_factor,
 )
 from euclid_polish.tng.image import TNGSurfaceBrightnessImage
@@ -61,15 +65,19 @@ TNG_ROTATION_CROP_ENCLOSED_FRACTION = 0.99
 TNG_ROTATION_CROP_PADDING = 1.05
 TNG_MAX_REBIN_FACTOR = 64
 
-TNG_RADIUS_RENDERING = "euclid_sersic_shrink_only_v2"
+TNG_RADIUS_RENDERING = "euclid_sersic_shrink_only_v3"
 TNG_RADIUS_RENDERER_FINGERPRINT = hashlib.sha256(
     (
         f"{TNG_RADIUS_RENDERING}|"
         "typed_cube_boundary|shrink_only|eligible_orientation|"
         "one_area_resample|no_output_remeasurement|bounded_support|"
-        "mer_photometric_fwhm_adjoint_2fwhm"
+        "mer_photometric_fwhm_adjoint_2fwhm|"
+        "soft_circular_window|vis_log_sb_rolloff"
     ).encode("ascii")
 ).hexdigest()
+#: Half-width (dex) of the smooth roll-off that replaced the hard surface-
+#: brightness cut of lensed sources: weight 0 at cut − this, 1 at cut + this.
+SB_CUT_ROLLOFF_DEX = 0.2
 
 _SOURCE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 _APERTURE_CACHE_MAX_BYTES = 16 * 1024 * 1024
@@ -309,11 +317,17 @@ class TNGRenderer:
                 enclosed_fraction=TNG_ROTATION_CROP_ENCLOSED_FRACTION,
                 padding=TNG_ROTATION_CROP_PADDING,
             )
-            source = native.cropped(rows, columns)
+            # Soft circular window first: no light reaches a straight edge,
+            # its rim clear of the cubic kernel and of one rebin block.
+            margin = SOFT_WINDOW_RIM_MARGIN_PX + rebin
+            source = _soft_circular_window(native.cropped(rows, columns), margin)
             source = rotation.apply(source)
             surface_brightness = _block_mean(source, rebin)
         else:
-            surface_brightness = _block_mean(source, rebin)
+            surface_brightness = _block_mean(
+                _soft_circular_window(source, SOFT_WINDOW_RIM_MARGIN_PX + rebin),
+                rebin,
+            )
             surface_brightness = rotation.apply(surface_brightness)
 
         electron_image = self._surface_brightness_to_electrons(surface_brightness)
@@ -591,7 +605,13 @@ class TNGRenderer:
             enclosed_fraction=0.999,
             padding=TNG_ROTATION_CROP_PADDING,
         )
-        source = native.cropped(rows, columns)
+        # Soft circular window first: no light reaches a straight edge of the
+        # frame or the crop square (which rotation would turn into an octagon).
+        # Its rim clears the cubic kernel and the 1/scale native pixels the
+        # area shrink averages into each output pixel.
+        source = _soft_circular_window(
+            native.cropped(rows, columns), SOFT_WINDOW_RIM_MARGIN_PX + 1.0 / scale
+        )
         source = rotation.apply(source)
         surface_brightness = _downsample_surface_brightness(source, scale)
         support_clipped = False
@@ -605,6 +625,8 @@ class TNGRenderer:
             surface_brightness = surface_brightness.cropped(
                 crop_rows, crop_columns
             )
+            # The clip is a straight cut through light: end it softly too.
+            surface_brightness = _soft_circular_window(surface_brightness)
             support_clipped = True
         geometry = NominalRadiusGeometry(
             target_re_arcsec=target,
@@ -727,18 +749,21 @@ class TNGRenderer:
         if cutoff_mag_arcsec2 <= 0.0:
             return rendered
         data = rendered.as_array(copy=True)
-        keep = np.zeros(data.shape[:2], dtype=bool)
-        pixel_area = self.pixel_scale_arcsec**2
-        for index, band_name in enumerate(rendered.bands):
-            threshold = (
-                ab_mag_to_electrons(
-                    cutoff_mag_arcsec2, Config.get_band(band_name)
-                )
-                * pixel_area
-            )
-            channel = data[..., index]
-            channel[channel < threshold] = 0.0
-            keep |= channel > 0.0
+        # One VIS-driven weight for every band, rolling off smoothly in log
+        # surface brightness around the cut. A hard per-band cut left a hard
+        # isophote edge and band-dependent supports (2026-10-18 audit).
+        vis = data[..., rendered.bands.index("VIS")]
+        threshold = (
+            ab_mag_to_electrons(cutoff_mag_arcsec2, Config.get_band("VIS"))
+            * self.pixel_scale_arcsec**2
+        )
+        log_ratio = np.log10(np.maximum(vis, 1e-30) / threshold)
+        position = np.clip(
+            (log_ratio + SB_CUT_ROLLOFF_DEX) / (2.0 * SB_CUT_ROLLOFF_DEX), 0.0, 1.0
+        )
+        weight = (np.sin(0.5 * np.pi * position) ** 2).astype(np.float32)
+        data *= weight[..., None]
+        keep = weight > 0.0
         if not keep.any():
             return RenderedTNG(
                 image=replace(rendered.image, data=data),
@@ -748,7 +773,11 @@ class TNGRenderer:
         radii = _radius_int_grid(total.shape)
         profile = np.bincount(radii.ravel(), weights=total.ravel())
         cumulative = np.cumsum(profile)
-        radius = int(np.searchsorted(cumulative, 0.995 * cumulative[-1])) + 4
+        # The stamp keeps r(99.5%) + 4 px untouched, inside a soft circular
+        # window that ends before the crop square (a bare crop there cut
+        # through light at full weight — a hard square edge).
+        kept = int(np.searchsorted(cumulative, 0.995 * cumulative[-1])) + 4
+        radius = int(np.ceil(kept / SOFT_WINDOW_INNER_FRACTION + SOFT_WINDOW_RIM_MARGIN_PX))
         height, width = total.shape
         centre_y = int(round((height - 1) / 2.0))
         centre_x = int(round((width - 1) / 2.0))
@@ -760,7 +789,7 @@ class TNGRenderer:
         )
         image = replace(
             rendered.image,
-            data=data[row0:row1, col0:col1, :],
+            data=_soft_circular_window_array(data[row0:row1, col0:col1, :]),
         )
         return RenderedTNG(image=image, trace=rendered.trace)
 

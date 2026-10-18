@@ -276,8 +276,17 @@ def test_surface_brightness_truncation_crops_faint_outskirts(tmp_path):
         view, 0.5, surface_brightness_cut_mag_arcsec2=0.0
     )
 
-    assert cropped.shape[0] < full.shape[0]
+    # The faint outskirts go and the stamp ends empty (its closing soft
+    # window needs room, so a stamp this small keeps its size).
+    assert cropped.shape[0] <= full.shape[0]
     assert cropped.flux_e("VIS") > 0.0
+    assert np.all(cropped.as_array()[[0, -1]] == 0.0)
+    lit = lambda r: int((r.as_array()[..., 0] > 0.0).sum())  # noqa: E731
+    assert lit(cropped) < lit(full)
+    large = _write_fake_tng_galaxy(tmp_path, "778", size=480, faint_outskirts=True)
+    assert renderer.render_physical_at_redshift(large, 0.5).shape[0] < (
+        renderer.render_physical_at_redshift(
+            large, 0.5, surface_brightness_cut_mag_arcsec2=0.0).shape[0])
 
 
 def test_analytic_showability_predictors_track_render(tmp_path):

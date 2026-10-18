@@ -10,6 +10,7 @@ or convert into detector-specific units.
 from __future__ import annotations
 
 from collections import OrderedDict
+from functools import lru_cache
 from os import PathLike
 from typing import cast
 
@@ -204,6 +205,69 @@ def _downsample_surface_brightness_array(
         out = out[..., None]
     np.maximum(out, 0.0, out=out)
     return np.asarray(out, dtype=np.float32)
+
+
+#: The soft circular window every TNG source is multiplied by before it is
+#: rotated: weight 1 inside SOFT_WINDOW_INNER_FRACTION of the rim radius,
+#: a cos² taper to 0 at the rim, which sits a margin inside the frame's
+#: inscribed circle — at least SOFT_WINDOW_RIM_MARGIN_PX (the cubic kernel's
+#: reach), more when a later shrink averages many native pixels into one.
+#: Light that runs into the edge of the SKIRT frame or a crop square
+#: otherwise ends on a hard straight step (square, or octagonal once
+#: rotated), the one faint truth feature with a preferred axis (2026-10-18
+#: audit). A disc inside the inscribed circle is unchanged by rotation about
+#: the frame centre.
+SOFT_WINDOW_INNER_FRACTION = 0.7
+SOFT_WINDOW_RIM_MARGIN_PX = 2.0
+#: The margin never takes more than this fraction of the frame's half-width,
+#: so a frame shrunk to a few output pixels still keeps a window.
+SOFT_WINDOW_MAX_MARGIN_FRACTION = 0.3
+
+
+def _soft_circular_window(
+    image: TNGSurfaceBrightnessImage,
+    margin_px: float = SOFT_WINDOW_RIM_MARGIN_PX,
+) -> TNGSurfaceBrightnessImage:
+    """``image`` times :func:`_soft_circular_window_array`'s weight."""
+    _require_tng_image(image)
+    return image.with_data(
+        _soft_circular_window_array(image.as_array(), margin_px)
+    )
+
+
+def _soft_circular_window_array(
+    arr: np.ndarray,
+    margin_px: float = SOFT_WINDOW_RIM_MARGIN_PX,
+) -> np.ndarray:
+    """Every band of an HWC cube times the soft circular window (centred on
+    the frame centre the rotation uses, ``((h-1)/2, (w-1)/2)``), its rim
+    ``margin_px`` inside the inscribed circle."""
+    a = np.asarray(arr, dtype=np.float32)
+    if a.ndim != 3:
+        raise ValueError(f"expected an HWC channel cube, got shape {a.shape}")
+    height, width = a.shape[:2]
+    half = min(height, width) / 2.0
+    margin = min(max(float(margin_px), SOFT_WINDOW_RIM_MARGIN_PX),
+                 SOFT_WINDOW_MAX_MARGIN_FRACTION * half)
+    if half - margin <= 1.0:
+        return a                        # a degenerate frame: nothing to taper
+    return a * _soft_window_weight(height, width, round(margin, 3))[..., None]
+
+
+@lru_cache(maxsize=8)
+def _soft_window_weight(height: int, width: int, margin: float) -> np.ndarray:
+    """The (read-only, cached) window weight of one frame shape and margin;
+    full-frame crops of large donors repeat the same shape."""
+    rim = min(height, width) / 2.0 - margin
+    inner = SOFT_WINDOW_INNER_FRACTION * rim
+    rows, columns = np.ogrid[:height, :width]
+    radius = np.hypot(np.float32(rows - (height - 1) / 2.0),
+                      np.float32(columns - (width - 1) / 2.0))
+    taper = np.clip((radius - inner) / (rim - inner), 0.0, 1.0)
+    weight = (np.cos(0.5 * np.pi * taper) ** 2).astype(np.float32)
+    weight[taper >= 1.0] = 0.0          # cos(π/2)² is ~4e-33 in floating point
+    weight.setflags(write=False)
+    return weight
 
 
 def _rotate_surface_brightness(
