@@ -411,6 +411,15 @@ class Trainer:
             directory=os.path.join(checkpoint_dir, "loss_best"),
             max_to_keep=3,
         )
+        # The state at the end of ``train`` whatever validation said, in a
+        # ``final/`` subdir: both save-best tracks stop updating once
+        # validation plateaus (a fine-tune can stall at 55k of 300k steps),
+        # and without this the rest of the run is lost.
+        self.final_checkpoint_manager = tf.train.CheckpointManager(
+            checkpoint=self.checkpoint,
+            directory=os.path.join(checkpoint_dir, "final"),
+            max_to_keep=1,
+        )
 
         # Per-validation-window training statistics, accumulated INSIDE the
         # compiled step so the loop never waits on the GPU between steps. The
@@ -1100,6 +1109,8 @@ class Trainer:
             self.now = time.perf_counter()
 
         pbar.close()
+        self.final_checkpoint_manager.save()
+        tqdm.write(f"  ✓ Checkpoint saved [final] → final/ (step {int(self.checkpoint.step.numpy())})")
 
     @tf.function
     def train_step(self, lr, hr):

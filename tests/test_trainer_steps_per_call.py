@@ -122,3 +122,18 @@ def test_device_prefetch_without_a_gpu_is_the_plain_feed(tmp_path):
 def test_steps_per_call_must_be_positive(tmp_path):
     with pytest.raises(ValueError, match="steps_per_call"):
         Trainer(_model(), checkpoint_dir=str(tmp_path / "bad"), steps_per_call=0)
+
+
+def test_the_final_state_is_saved_even_when_validation_never_improves_again(tmp_path):
+    """Save-best tracks stop at the last improvement; final/ keeps the end."""
+    d = tmp_path / "final_run"
+    trainer = Trainer(_model(), checkpoint_dir=str(d), steps_per_call=4)
+    trainer.train(_pairs(), _pairs(n=2, seed=10, batch=1, repeat=False),
+                  steps=12, evaluate_every=4, save_best_only=True, validate_images=2)
+    final = tf.train.latest_checkpoint(str(d / "final"))
+    assert final is not None
+    assert int(tf.train.load_checkpoint(final).get_tensor("step/.ATTRIBUTES/VARIABLE_VALUE")) == 12
+    last = trainer.model.trainable_variables[0].numpy()
+    restored = Trainer(_model(seed=99), checkpoint_dir=str(tmp_path / "other"))
+    tf.train.Checkpoint(model=restored.model).restore(final).expect_partial()
+    np.testing.assert_array_equal(restored.model.trainable_variables[0].numpy(), last)
