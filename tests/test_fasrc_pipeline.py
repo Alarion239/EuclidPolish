@@ -197,6 +197,17 @@ class TestRegistry:
         assert argv[argv.index("--crops-per-field") + 1] == "1"
         assert argv[argv.index("--hr-crop-size") + 1] == "510"
 
+    def test_ensemble_train_passes_a_lower_peak_learning_rate(self, monkeypatch):
+        """A fork fine-tune restarts the schedule; a form lr_peak (the
+        /config pass-through) lowers its peak, once."""
+        monkeypatch.setattr(
+            "euclid_polish.web.fasrc_pipeline.next_member_names",
+            lambda base, k: ["member_09"])
+        step = REGISTRY.get("ensemble_train")
+        argv = step.build_command({"mode": "add", "count": 1, "steps": 1000, "lr_peak": "1e-4"})
+        assert argv[argv.index("--lr-peak") + 1] == "1e-4"
+        assert argv.count("--lr-peak") == 1
+
     def test_ensemble_onthefly_requires_active_stellar_prior(
             self, monkeypatch):
         monkeypatch.setattr(
