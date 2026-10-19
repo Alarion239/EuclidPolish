@@ -131,8 +131,8 @@ def test_paths_route_through_user_config():
             or "export EUCLID_POLISH_DATA_DIR='/n/somewhere/data'" in body)
     assert ("export EUCLID_POLISH_CKPT_DIR=/n/somewhere/ckpt" in body
             or "export EUCLID_POLISH_CKPT_DIR='/n/somewhere/ckpt'" in body)
-    # The TNG atlas store defaults to lab storage beside the repo.
-    store = f"{cfg.repo_path}/data/tng_skirt"
+    # The TNG atlas store defaults to the netscratch atlas (the working copy).
+    store = f"{cfg.data_dir}/tng_skirt"
     assert (f"export EUCLID_POLISH_TNG_STORE_DIR={store}" in body
             or f"export EUCLID_POLISH_TNG_STORE_DIR='{store}'" in body)
     custom = _build(cfg=FasrcConfig(tng_store_dir="/n/lab/atlas"))["body"]
