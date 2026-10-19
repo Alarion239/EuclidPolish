@@ -49,10 +49,19 @@ def _key(args) -> str:
     return k
 
 
-# The data servers answer 503 when overloaded (2026-10-18: a third of the
-# atlas requests): wait and retry instead of failing the galaxy.
+# The data servers answer 503 when overloaded and sometimes stop answering
+# altogether (2026-10-18: data-eu.tng-project.org hung for hours): wait
+# and retry — up to ~1.5 h per request — instead of failing the galaxy.
 RETRY_STATUSES = (429, 500, 502, 503, 504)
-RETRY_DELAYS_S = (15.0, 30.0, 60.0, 120.0, 240.0)
+RETRY_DELAYS_S = (15.0, 30.0, 60.0, 120.0, 240.0, 480.0) + (600.0,) * 7
+
+
+def _note_retry(url: str, reason: str, attempt: int, delays: tuple[float, ...]) -> None:
+    """Log the retry (host only — the redirect URLs carry a token) and wait."""
+    host = re.sub(r"^https?://([^/]+).*$", r"\1", url)
+    print(f"WARN: {reason} from {host}; retry {attempt + 1}/{len(delays)} in {delays[attempt]:.0f} s",
+          file=sys.stderr, flush=True)
+    time.sleep(delays[attempt])
 
 
 def _request(url: str, key: str, *, stream: bool = False,
@@ -61,16 +70,16 @@ def _request(url: str, key: str, *, stream: bool = False,
         last = attempt == len(delays)
         try:
             r = requests.get(url, headers={"api-key": key}, stream=stream, timeout=120)
-        except (requests.ConnectionError, requests.Timeout):
+        except (requests.ConnectionError, requests.Timeout) as exc:
             if last:
                 raise
-            time.sleep(delays[attempt])
+            _note_retry(url, type(exc).__name__, attempt, delays)
             continue
         if r.status_code in (401, 403):
             sys.exit(f"HTTP {r.status_code} — API key rejected/forbidden for {url}")
         if r.status_code in RETRY_STATUSES and not last:
             r.close()
-            time.sleep(delays[attempt])
+            _note_retry(getattr(r, "url", None) or url, f"HTTP {r.status_code}", attempt, delays)
             continue
         r.raise_for_status()
         return r
