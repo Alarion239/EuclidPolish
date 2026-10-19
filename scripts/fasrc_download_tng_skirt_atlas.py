@@ -6,9 +6,10 @@ This is the FASRC, all-galaxies counterpart of the single-galaxy
 ``files/skirt_atlas/`` endpoint and downloads them concurrently with a process
 pool (the default; ``--executor thread`` uses threads, which cap the gzip
 extraction at ~2 cores under the GIL). For each galaxy it keeps **only** the
-dusty Euclid frames — ``TNG<id>_O<k>_Euclid_<band>.fits`` for band ∈ {VIS, Y, J,
-H} and orientation k ∈ {1..5} → 20 FITS/galaxy — discarding the ``_nodust``
-twins and the 2MASS/SDSS/GALEX renders, exactly like the single-galaxy script.
+Euclid frames — dusty ``TNG<id>_O<k>_Euclid_<band>.fits`` and their dust-free
+``_nodust`` twins for band ∈ {VIS, Y, J, H} and orientation k ∈ {1..5} → 40
+FITS/galaxy — discarding the 2MASS/SDSS/GALEX renders, exactly like the
+single-galaxy script.
 
 Layout (under ``--out-dir``, default ``Config.TNG_SKIRT_DIR`` =
 ``$EUCLID_POLISH_DATA_DIR/tng_skirt`` → netscratch on FASRC)::
@@ -153,21 +154,50 @@ def _extract_euclid(archive: str, dest_dir: str) -> int:
     return n
 
 
-def _galaxy_complete(galaxy_dir: str) -> bool:
-    """True iff the ``.done`` sentinel exists AND the FITS it promises are on
-    disk. The sentinel alone is NOT proof: the 2026-07-06 netscratch sweep
-    deleted every FITS but spared the hidden marker, so a marker-only check
-    would treat all 1248 gutted galaxies as cached forever."""
+# Markers written since the dust-free frames are kept carry this tag; a galaxy
+# fetched before (dusty frames only) is re-fetched for its _nodust twins.
+NODUST_TAG = "with-nodust"
+
+
+def _marker_fields(galaxy_dir: str) -> list[str] | None:
     marker = os.path.join(galaxy_dir, Config.Tng.DONE_MARKER)
     if not os.path.isfile(marker):
-        return False
+        return None
     try:
         with open(marker, encoding="utf-8") as f:
-            expected = int(f.read().split()[0])
-    except (OSError, ValueError, IndexError):
-        expected = 1                       # legacy marker → any FITS counts
+            return f.read().split()
+    except OSError:
+        return None
+
+
+def _galaxy_complete(galaxy_dir: str) -> bool:
+    """True iff the ``.done`` sentinel exists, says the dust-free frames were
+    kept, AND the FITS it promises are on disk. The sentinel alone is NOT
+    proof: the 2026-07-06 netscratch sweep deleted every FITS but spared the
+    hidden marker, so a marker-only check would treat all 1248 gutted
+    galaxies as cached forever."""
+    fields = _marker_fields(galaxy_dir)
+    if fields is None or NODUST_TAG not in fields:
+        return False
+    try:
+        expected = int(fields[0])
+    except (ValueError, IndexError):
+        expected = 1
     have = len(glob.glob(os.path.join(galaxy_dir, "*.fits")))
     return have >= max(expected, 1)
+
+
+def _fetch_order(entries: list, out_dir: str, first: tuple[str, ...] = ()) -> list:
+    """The server is the bottleneck: ``first`` galaxies, then galaxies with no
+    frames on disk, then the ones that only lack their dust-free twins."""
+    def rank(entry) -> tuple[int, int]:
+        gid = _galaxy_id_from_name(entry[0])
+        short = gid.lstrip("0") or "0"
+        if short in first:
+            return (0, first.index(short))
+        has_frames = bool(glob.glob(os.path.join(out_dir, gid, "*.fits")))
+        return (2 if has_frames else 1, 0)
+    return sorted(entries, key=rank)
 
 
 def _download_one(
@@ -221,7 +251,7 @@ def _download_one(
             os.replace(archive, os.path.join(galaxy_dir, os.path.basename(archive)))
         # Sentinel last: its presence means the galaxy is fully materialised.
         with open(done_marker, "w", encoding="utf-8") as f:
-            f.write(f"{n_fits} fits\n")
+            f.write(f"{n_fits} fits {NODUST_TAG}\n")
         return {**base, **timings, "status": "written", "n_fits": n_fits}
     except SystemExit as e:            # _request aborts on 401/403 (bad key)
         return {**base, "status": "failed", "errors": [str(e)]}
@@ -250,6 +280,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Root for the per-galaxy folders. Default: the persistent "
                         "atlas store (EUCLID_POLISH_TNG_STORE_DIR) if set, else "
                         f"{Config.TNG_SKIRT_DIR}")
+    p.add_argument("--first", default="",
+                   help="Comma list of subhalo ids to fetch before all others.")
     p.add_argument("--workers", type=int, default=16,
                    help="Concurrent galaxy downloads in flight. Default 16. "
                         "May exceed the CPU count (downloads are I/O-bound).")
@@ -296,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 64)
     print(f"  out dir   = {out_dir}")
     print(f"  workers   = {args.workers}  ({args.executor})")
-    print("  bands     = VIS + NISP Y/J/H (dusty), 5 orientations / galaxy")
+    print("  bands     = VIS + NISP Y/J/H (dusty + dust-free), 5 orientations / galaxy")
 
     reporter.set_stage("listing atlas")
     entries: list[tuple[str, str | None, int | None]] = _list_atlas(key)
@@ -305,6 +337,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.limit and args.limit > 0:
         entries = entries[: args.limit]
+    first = tuple(t.strip().lstrip("0") for t in (args.first or "").split(",") if t.strip())
+    entries = _fetch_order(entries, out_dir, first)
     n_total = len(entries)
     print(f"  galaxies  = {n_total}")
     print()
@@ -317,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"  DRY RUN — {n_done} already complete (marker + FITS), "
               f"{n_total - n_done} would be downloaded "
-              f"(20 Euclid FITS each)"
+              f"(40 Euclid FITS each)"
               + (" [--force: everything re-downloads]" if args.force else "")
               + ".")
         return 0

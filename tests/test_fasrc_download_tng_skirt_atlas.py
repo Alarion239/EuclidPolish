@@ -44,7 +44,7 @@ def _make_atlas_tar(path: str) -> None:
         "TNG123_O5_Euclid_H.fits",
     ]
     drop = [
-        "TNG123_O1_Euclid_VIS_nodust.fits",   # band token has '_' → excluded
+        "TNG123_O1_Euclid_VIS_nodust.fits",   # dust-free twin → kept too
         "TNG123_O1_2MASS_J.fits",             # other survey
         "readme.txt",                          # junk
     ]
@@ -56,21 +56,21 @@ def _make_atlas_tar(path: str) -> None:
             tf.addfile(info, io.BytesIO(data))
 
 
-def test_extract_euclid_keeps_only_dusty_euclid(tmp_path):
+def test_extract_euclid_keeps_dusty_and_dust_free_euclid(tmp_path):
     archive = tmp_path / "123.tar.gz"
     _make_atlas_tar(str(archive))
     dest = tmp_path / "123"
     n = mod._extract_euclid(str(archive), str(dest))
-    assert n == 3
+    assert n == 4
     written = sorted(os.listdir(dest))
-    # Flattened to basenames, dusty Euclid frames only.
+    # Flattened to basenames: the dusty Euclid frames and their dust-free twin.
     assert written == [
         "TNG123_O1_Euclid_VIS.fits",
+        "TNG123_O1_Euclid_VIS_nodust.fits",
         "TNG123_O1_Euclid_Y.fits",
         "TNG123_O5_Euclid_H.fits",
     ]
-    # The _nodust twin, the 2MASS frame and the junk file are all dropped.
-    assert "TNG123_O1_Euclid_VIS_nodust.fits" not in written
+    # The 2MASS frame and the junk file are dropped.
     assert "TNG123_O1_2MASS_J.fits" not in written
     assert "readme.txt" not in written
 
@@ -87,7 +87,7 @@ def _complete_galaxy_dir(out_dir: str, gid: str, n_fits: int = 3) -> str:
         with open(os.path.join(gdir, f"frame_{i}.fits"), "w") as f:
             f.write("x")
     with open(os.path.join(gdir, Config.Tng.DONE_MARKER), "w") as f:
-        f.write(f"{n_fits} fits\n")
+        f.write(f"{n_fits} fits {mod.NODUST_TAG}\n")
     return gdir
 
 
@@ -127,7 +127,7 @@ def test_download_one_redownloads_gutted_galaxy(tmp_path, monkeypatch):
         name="777.tar.gz", url="http://example/777.tar.gz", key="k",
         out_dir=out_dir, keep_archive=False)
     assert res["status"] == "written"
-    assert res["n_fits"] == 3
+    assert res["n_fits"] == 4                    # 3 dusty + 1 dust-free frame
 
 
 def test_download_one_force_redownloads_complete_galaxy(tmp_path, monkeypatch):
@@ -149,16 +149,32 @@ def test_download_one_force_redownloads_complete_galaxy(tmp_path, monkeypatch):
     assert not os.path.exists(stale)            # old contents discarded
 
 
-def test_galaxy_complete_legacy_marker(tmp_path):
-    """A legacy marker without a parseable count needs at least one FITS."""
+def test_galaxy_complete_needs_the_dust_free_tag(tmp_path):
+    """A marker written before the dust-free twins were kept means re-fetch;
+    a tagged marker without a parseable count needs at least one FITS."""
     gdir = os.path.join(str(tmp_path), "9")
     os.makedirs(gdir)
-    with open(os.path.join(gdir, Config.Tng.DONE_MARKER), "w") as f:
-        f.write("done")
-    assert not mod._galaxy_complete(gdir)
     with open(os.path.join(gdir, "a.fits"), "w") as f:
         f.write("x")
+    with open(os.path.join(gdir, Config.Tng.DONE_MARKER), "w") as f:
+        f.write("20 fits\n")                   # dusty-only download
+    assert not mod._galaxy_complete(gdir)
+    with open(os.path.join(gdir, Config.Tng.DONE_MARKER), "w") as f:
+        f.write(f"done {mod.NODUST_TAG}")
     assert mod._galaxy_complete(gdir)
+    os.remove(os.path.join(gdir, "a.fits"))
+    assert not mod._galaxy_complete(gdir)
+
+
+def test_fetch_order_first_then_missing_then_backfill(tmp_path):
+    out_dir = str(tmp_path)
+    for gid in ("11", "22"):                     # already have dusty frames
+        os.makedirs(os.path.join(out_dir, gid))
+        with open(os.path.join(out_dir, gid, f"TNG{gid}_O1_Euclid_VIS.fits"), "w") as f:
+            f.write("x")
+    entries = [(f"{g}.tar.gz", None, None) for g in ("11", "22", "33", "44", "000055")]
+    order = [mod._galaxy_id_from_name(e[0]) for e in mod._fetch_order(entries, out_dir, ("22", "55"))]
+    assert order == ["22", "000055", "33", "44", "11"]
 
 
 def test_tng_step_forwards_force_flag():
@@ -184,12 +200,13 @@ def test_download_one_success_writes_marker(tmp_path, monkeypatch):
         out_dir=out_dir, keep_archive=False)
     assert res["status"] == "written"
     assert res["id"] == "777"
-    assert res["n_fits"] == 3
+    assert res["n_fits"] == 4
     gdir = os.path.join(out_dir, "777")
-    assert os.path.isfile(os.path.join(gdir, Config.Tng.DONE_MARKER))
-    # 3 FITS, no leftover archive, no stray temp dirs under out_dir.
+    assert mod.NODUST_TAG in open(os.path.join(gdir, Config.Tng.DONE_MARKER)).read()
+    assert mod._galaxy_complete(gdir)
+    # 4 FITS, no leftover archive, no stray temp dirs under out_dir.
     fits = [f for f in os.listdir(gdir) if f.endswith(".fits")]
-    assert len(fits) == 3
+    assert len(fits) == 4
     assert not any(f.endswith(".tar.gz") for f in os.listdir(gdir))
     assert list(os.listdir(out_dir)) == ["777"]
 

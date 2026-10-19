@@ -158,20 +158,22 @@ def _list_atlas(key: str):
 
 
 _TAR_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar")
-# Keep only the dusty Euclid-band renders: TNG<id>_O<orient>_Euclid_<band>.fits
-# (band = VIS/Y/J/H — no underscore, so the *_nodust twins are excluded).
-# Everything else in the atlas tarball — the _nodust files and the
-# 2MASS / SDSS / GALEX / dustmass FITS — is dropped.
-_KEEP_RE = re.compile(r"(?:^|/)TNG\d+_O\d+_Euclid_[^/_]+\.fits$", re.IGNORECASE)
+# Keep the Euclid-band renders, dusty and dust-free:
+# TNG<id>_O<orient>_Euclid_<band>.fits and TNG<id>_O<orient>_Euclid_<band>_nodust.fits
+# (band = VIS/Y/J/H). The dust-free twins let us tell dust-scattered light
+# from starlight (2026-10-19: flat boxes of faint light around massive
+# galaxies). Everything else in the atlas tarball — the 2MASS / SDSS /
+# GALEX / dustmass FITS — is dropped.
+_KEEP_RE = re.compile(r"(?:^|/)TNG\d+_O\d+_Euclid_[^/_]+(?:_nodust)?\.fits$", re.IGNORECASE)
 
 
 def _extract(archive: str, *, remove: bool, euclid_only: bool = True) -> None:
     """Unpack a tar archive into a sibling dir named after it; safe filter.
 
-    With ``euclid_only`` (default) only the dusty ``TNG*_O?_Euclid_<band>.fits``
-    members are written — the _nodust twins and the other-survey FITS are never
-    extracted, so a ~2 GB galaxy tarball lands as ~20 Euclid frames instead of
-    240 files."""
+    With ``euclid_only`` (default) only the Euclid frames — dusty
+    ``TNG*_O?_Euclid_<band>.fits`` and their ``_nodust`` twins — are written;
+    the other-survey FITS are never extracted, so a ~2 GB galaxy tarball lands
+    as 40 Euclid frames instead of 240 files."""
     import tarfile
     if not archive.endswith(_TAR_SUFFIXES):
         return
