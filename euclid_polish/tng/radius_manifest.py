@@ -25,13 +25,20 @@ from euclid_polish.config import Config
 from euclid_polish.tng._image import (
     _load_tng_plane,
     _measure_halflight_radius_px,
+    load_star_mask,
 )
 from euclid_polish.tng.atlas import TNGGalaxy, _scan_complete_galaxies
 from euclid_polish.tng.catalog import TNGPropertyCatalog
-from euclid_polish.tng.types import N_ORIENTATIONS, TNG_FITS_BANDS, TNG_NATIVE_PC_PER_PIXEL
+from euclid_polish.tng.image import TNGSurfaceBrightnessImage
+from euclid_polish.tng.types import (
+    N_ORIENTATIONS,
+    TNG_FITS_BANDS,
+    TNG_NATIVE_PC_PER_PIXEL,
+    dust_free_twin,
+)
 
 MANIFEST_VERSION = 1
-ALGORITHM_VERSION = "centered-vis-cog-v1"
+ALGORITHM_VERSION = "centered-vis-cog-v2-starmask"   # v2: on the star-masked frame
 DEFAULT_MANIFEST_NAME = "tng_radius_manifest.json"
 PARAMETER_SUMMARY_VERSION = 1
 PARAMETER_SUMMARY_FIELDS = (
@@ -224,6 +231,9 @@ def _inventory(
                 else:
                     entries.append({"path": os.path.abspath(path),
                                     "size": 0, "mtime_ns": 0})
+                twin = dust_free_twin(path)          # the star mask
+                if twin.is_file():
+                    entries.append(_file_identity(str(twin)))
     entries.sort(key=lambda row: str(row["path"]))
     return entries
 
@@ -301,6 +311,17 @@ def build_manifest(
                 previous["vis_path"] = os.path.abspath(vis_path)
                 return previous, None, True
             frame = _load_tng_plane(vis_path, "VIS")
+            # Measured on the frame the renderer uses: dust-scattered light
+            # outside the stars (the SKIRT box) inflated R_e by up to 1.7x.
+            mask = load_star_mask(
+                [galaxy.fits_path(orientation, band) for band in TNG_FITS_BANDS],
+                required=Config.Tng.REQUIRE_DUST_FREE,
+            )
+            if mask is not None:
+                frame = TNGSurfaceBrightnessImage(
+                    data=frame.data * mask[..., None], bands=frame.bands,
+                    pixel_scale_pc=frame.pixel_scale_pc,
+                )
             re_px = float(_measure_halflight_radius_px(frame, band="VIS"))
             if not has_properties:
                 raise ValueError("missing finite positive mass_stars property")

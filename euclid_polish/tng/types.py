@@ -63,6 +63,12 @@ def _four_positive(
     return result  # type: ignore[return-value]
 
 
+def dust_free_twin(path: str | Path) -> Path:
+    """The atlas's dust-free twin of a dusty frame: ``…_<band>_nodust.fits``."""
+    path = Path(path)
+    return path.with_name(f"{path.stem}_nodust{path.suffix}")
+
+
 @dataclass(frozen=True, slots=True)
 class TNGView:
     """One specific SKIRT atlas galaxy and viewing orientation.
@@ -121,19 +127,24 @@ class TNGView:
         return self.native_re_arcsec(pixel_scale_arcsec) >= target
 
     def file_identity(self) -> FileIdentity:
-        """Stable cache identity for the four contributing FITS files."""
+        """Stable cache identity for the contributing FITS files: the four
+        dusty frames and, when present, their dust-free twins (the mask)."""
         identities: list[tuple[str, int, int]] = []
         for fits_band in TNG_FITS_BANDS:
             path = self.fits_path(fits_band)
-            status = path.stat()
-            identities.append(
-                (str(path.resolve()), int(status.st_size), int(status.st_mtime_ns))
-            )
+            twin = dust_free_twin(path)
+            for member in (path, twin) if twin.is_file() else (path,):
+                status = member.stat()
+                identities.append(
+                    (str(member.resolve()), int(status.st_size), int(status.st_mtime_ns))
+                )
         return tuple(identities)
 
     def load_surface_brightness(self) -> TNGSurfaceBrightnessImage:
-        """Load and register the four native MJy/sr planes in model-band order."""
-        from euclid_polish.tng._image import _load_tng_plane
+        """Load and register the four native MJy/sr planes in model-band order,
+        masked to where the dust-free twins have light (see
+        :func:`euclid_polish.tng._image.load_star_mask`)."""
+        from euclid_polish.tng._image import _load_tng_plane, load_star_mask
 
         planes = tuple(
             _load_tng_plane(self.fits_path(fits_band), model_band)
@@ -154,7 +165,22 @@ class TNGView:
             )
         if image.bands != TNG_MODEL_BANDS:
             raise ValueError(f"unexpected TNG band order {image.bands!r}")
-        return image
+        mask = load_star_mask(
+            [self.fits_path(fits_band) for fits_band in TNG_FITS_BANDS],
+            required=Config.Tng.REQUIRE_DUST_FREE,
+        )
+        if mask is None:
+            return image
+        if mask.shape != image.data.shape[:2]:
+            raise ValueError(
+                f"dust-free twins of {self.subhalo_id} O{self.orientation} have "
+                f"shape {mask.shape}, frames {image.data.shape[:2]}"
+            )
+        return TNGSurfaceBrightnessImage(
+            data=image.data * mask[..., None],
+            bands=image.bands,
+            pixel_scale_pc=image.pixel_scale_pc,
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -1080,8 +1080,9 @@ class Config:
         """IllustrisTNG TNG50-1 SKIRT-atlas synthetic-galaxy download layout.
 
         The atlas renders each subhalo as Euclid VIS + NISP (Y/J/H) FITS
-        cutouts from 5 viewing orientations (``O1``…``O5``). We keep only the
-        dusty frames (``TNG<id>_O<k>_Euclid_<band>.fits``); each galaxy lands
+        cutouts from 5 viewing orientations (``O1``…``O5``). We keep the dusty
+        frames (``TNG<id>_O<k>_Euclid_<band>.fits``) and their dust-free
+        ``_nodust`` twins (the star mask); each galaxy lands
         in its own ``<SKIRT_SUBDIR>/<subhalo_id>/`` folder with a ``.done``
         marker so a re-run skips finished galaxies.
         """
@@ -1092,6 +1093,14 @@ class Config:
         API_KEY_FILE: str  = "~/.tng_api_key"
         # Per-galaxy completion sentinel written after a successful extract.
         DONE_MARKER: str   = ".done"
+        # The dusty frames carry dust-scattered light far beyond the stars (in
+        # massive galaxies a flat box filling the SKIRT volume); frames are
+        # masked to where their dust-free ``_nodust`` twins have light. With
+        # this on (FASRC generation sets it) a missing twin is an error and a
+        # galaxy without twins is not part of the atlas; off, a frame without
+        # twins is used unmasked (local atlases, tests).
+        REQUIRE_DUST_FREE: bool = os.environ.get(
+            "EUCLID_POLISH_TNG_REQUIRE_DUST_FREE", "").strip().lower() in ("1", "true", "yes")
 
     @dataclass(frozen=True)
     class Color:

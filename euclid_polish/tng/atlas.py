@@ -11,7 +11,7 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.tng.catalog import TNGPropertyCatalog
-from euclid_polish.tng.types import TNG_FITS_BANDS, TNGView
+from euclid_polish.tng.types import TNG_FITS_BANDS, TNGView, dust_free_twin
 
 if TYPE_CHECKING:
     from euclid_polish.tng.radius_manifest import TNGRadiusManifest
@@ -92,10 +92,14 @@ def _scan_complete_galaxies(root: Path) -> tuple[TNGGalaxy, ...]:
         if not (directory / Config.Tng.DONE_MARKER).is_file():
             continue
         galaxy = TNGGalaxy(directory=directory, subhalo_id=directory.name)
-        if all(
-            galaxy.fits_path(orientation, band).is_file()
+        frames = [
+            galaxy.fits_path(orientation, band)
             for orientation in _ORIENTATIONS
             for band in TNG_FITS_BANDS
+        ]
+        if all(path.is_file() for path in frames) and (
+            not Config.Tng.REQUIRE_DUST_FREE
+            or all(dust_free_twin(path).is_file() for path in frames)
         ):
             galaxies.append(galaxy)
     return tuple(sorted(galaxies, key=_galaxy_sort_key))

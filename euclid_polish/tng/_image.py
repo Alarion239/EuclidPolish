@@ -10,8 +10,10 @@ or convert into detector-specific units.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Sequence
 from functools import lru_cache
 from os import PathLike
+from pathlib import Path
 from typing import cast
 
 import cv2
@@ -20,11 +22,46 @@ from astropy import units as u
 from astropy.io import fits
 
 from euclid_polish.tng.image import TNGSurfaceBrightnessImage
+from euclid_polish.tng.types import dust_free_twin
 
 # Generation already parallelises over one process per allocated CPU.  OpenCV
 # otherwise creates a thread pool in every worker and oversubscribes the outer
 # process pool (for example, 10 x 10 runnable threads on a 10-CPU job).
 cv2.setNumThreads(1)
+
+
+def load_star_mask(
+    dusty_paths: Sequence[str | PathLike[str]],
+    *,
+    required: bool,
+) -> np.ndarray | None:
+    """Where any dust-free twin of one orientation's frames has light.
+
+    SKIRT's dusty frames carry dust-scattered light far beyond the stars: in
+    massive galaxies a flat box filling the simulation volume, with straight
+    edges, radial streaks and shadows (2026-10-19, subhalo 117266: 15-36 % of
+    the VIS light, absent from every dust-free view). Light where no dust-free
+    band has any is scattered light only, so a frame keeps its pixels where
+    the mask is true; one mask for all bands keeps the edges identical.
+    Returns ``None`` when a twin is missing, or raises if ``required``.
+    """
+    twins = [dust_free_twin(Path(path)) for path in dusty_paths]
+    missing = [twin for twin in twins if not twin.is_file()]
+    if missing:
+        if required:
+            raise FileNotFoundError(
+                f"dust-free twin missing: {missing[0]} (scripts/"
+                "fasrc_download_tng_skirt_atlas.py keeps them; re-fetch the galaxy)"
+            )
+        return None
+    mask: np.ndarray | None = None
+    for twin in twins:
+        with fits.open(twin) as hdul:
+            lit = np.nan_to_num(np.asarray(hdul[0].data, dtype=np.float64)) > 0.0
+        if mask is not None and lit.shape != mask.shape:
+            raise ValueError(f"dust-free twins differ in shape: {twin}")
+        mask = lit if mask is None else (mask | lit)
+    return mask
 
 
 def _load_tng_plane(
