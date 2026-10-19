@@ -93,6 +93,7 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
+from euclid_polish.tng import box_light
 from euclid_polish.tng.atlas_store import sync_working_copy
 from euclid_polish.tng.radius_manifest import ensure_manifest
 
@@ -617,6 +618,7 @@ def step_generate(args: argparse.Namespace) -> None:
         target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
     )
     _sync_tng_atlas_from_store(args, workers=8)
+    _refresh_box_light_table(args, workers=8)
     sim = SkySimulator(cat, cfg, vis_psf_set=generation_psf_sets["VIS"])
     os.makedirs(args.records_dir, exist_ok=True)
 
@@ -1454,6 +1456,20 @@ def _sync_tng_atlas_from_store(args: argparse.Namespace, *, workers: int) -> Non
          f"({int(result['bytes']) / 1e9:.1f} GB), {result['in_sync']} already on scratch")
 
 
+def _refresh_box_light_table(args: argparse.Namespace, *, workers: int) -> None:
+    """Measure which galaxies carry SKIRT's dust box before the atlas is
+    scanned: those are no donors (euclid_polish/tng/box_light.py)."""
+    if not _uses_tng(args):
+        return
+    work = getattr(args, "tng_dir", None) or Config.TNG_SKIRT_DIR
+    if not os.path.isdir(work):
+        return
+    result = box_light.refresh(work, workers=workers)
+    _log(f"  TNG box light: {result['measured']} galaxies measured, {result['reused']} reused; "
+         f"{len(result['left_out'])} left out as donors "
+         f"(> {100 * Config.Tng.MAX_OUTSIDE_STAR_FRACTION:g}% of their light where no star is)")
+
+
 def _ensure_generation_radius_manifest(
     args: argparse.Namespace,
     *,
@@ -1493,6 +1509,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     # and before launching a process pool. This prevents every worker from
     # discovering the same stale atlas prerequisite independently.
     _sync_tng_atlas_from_store(args, workers=workers)
+    _refresh_box_light_table(args, workers=workers)
     _ensure_generation_radius_manifest(
         args, workers=workers, reporter=reporter,
     )

@@ -1104,6 +1104,13 @@ class Config:
         # twins is used unmasked (local atlases, tests).
         REQUIRE_DUST_FREE: bool = os.environ.get(
             "EUCLID_POLISH_TNG_REQUIRE_DUST_FREE", "").strip().lower() in ("1", "true", "yes")
+        # A galaxy is no donor when, in any orientation, more than this share of
+        # its VIS light lies where no star is (SKIRT's octree dust box, which
+        # also sits on its faint outskirt stars): bimodal on 2026-10-19, 338 of
+        # 342 galaxies below 0.5 %, 4 at 3-36 % (euclid_polish/tng/box_light.py).
+        MAX_OUTSIDE_STAR_FRACTION: float = 0.01
+        # Per-galaxy table of those shares at the atlas root.
+        BOX_LIGHT_TABLE: str = "tng_box_light.json"
 
     @dataclass(frozen=True)
     class Color:

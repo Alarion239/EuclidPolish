@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,7 +72,8 @@ class TNGGalaxy:
 
     @classmethod
     def discover(cls, root: str | Path) -> tuple[TNGGalaxy, ...]:
-        """Return every complete galaxy stored under an atlas root."""
+        """Return every complete donor galaxy under an atlas root (galaxies
+        carrying the SKIRT dust box are left out, see ``_box_galaxies``)."""
         return _scan_complete_galaxies(Path(root))
 
 
@@ -82,7 +84,9 @@ def _galaxy_sort_key(galaxy: TNGGalaxy) -> tuple[int, int | str]:
         return (1, galaxy.subhalo_id)
 
 
-def _scan_complete_galaxies(root: Path) -> tuple[TNGGalaxy, ...]:
+def _scan_complete_galaxies(
+    root: Path, *, include_box_galaxies: bool = False,
+) -> tuple[TNGGalaxy, ...]:
     if not root.is_dir():
         return ()
     galaxies: list[TNGGalaxy] = []
@@ -102,7 +106,32 @@ def _scan_complete_galaxies(root: Path) -> tuple[TNGGalaxy, ...]:
             or all(dust_free_twin(path).is_file() for path in frames)
         ):
             galaxies.append(galaxy)
+    if not include_box_galaxies:
+        boxed = _box_galaxies(root, galaxies)
+        galaxies = [galaxy for galaxy in galaxies if galaxy.subhalo_id not in boxed]
     return tuple(sorted(galaxies, key=_galaxy_sort_key))
+
+
+def _box_galaxies(root: Path, galaxies: list[TNGGalaxy]) -> frozenset[str]:
+    """Galaxies whose SKIRT frames carry the octree dust box: more than
+    ``Config.Tng.MAX_OUTSIDE_STAR_FRACTION`` of their VIS light where no star
+    is, in any orientation (table written by euclid_polish/tng/box_light.py).
+    Generation on FASRC (``REQUIRE_DUST_FREE``) needs every galaxy measured;
+    elsewhere a missing table leaves the atlas as it is."""
+    table = root / Config.Tng.BOX_LIGHT_TABLE
+    if not table.is_file():
+        if Config.Tng.REQUIRE_DUST_FREE and galaxies:
+            raise FileNotFoundError(
+                f"{table} is missing: run python -m euclid_polish.tng.box_light --root {root}")
+        return frozenset()
+    measured = json.loads(table.read_text(encoding="utf-8")).get("galaxies", {})
+    unmeasured = [galaxy.subhalo_id for galaxy in galaxies if galaxy.subhalo_id not in measured]
+    if unmeasured and Config.Tng.REQUIRE_DUST_FREE:
+        raise ValueError(
+            f"{table} lacks {len(unmeasured)} galaxies (e.g. {unmeasured[0]}): run "
+            f"python -m euclid_polish.tng.box_light --root {root}")
+    limit = Config.Tng.MAX_OUTSIDE_STAR_FRACTION
+    return frozenset(gid for gid, entry in measured.items() if max(entry["fractions"]) > limit)
 
 
 def _positive_finite(value: float, name: str) -> float:
