@@ -32,6 +32,7 @@ import argparse
 import os
 import re
 import sys
+import tarfile
 import time
 from urllib.parse import urljoin
 
@@ -173,8 +174,9 @@ def _extract(archive: str, *, remove: bool, euclid_only: bool = True) -> None:
     With ``euclid_only`` (default) only the Euclid frames — dusty
     ``TNG*_O?_Euclid_<band>.fits`` and their ``_nodust`` twins — are written;
     the other-survey FITS are never extracted, so a ~2 GB galaxy tarball lands
-    as 40 Euclid frames instead of 240 files."""
-    import tarfile
+    as 40 Euclid frames instead of 240 files. Frames are dated to the
+    extraction, not the archive's 2023: netscratch purges by modification
+    time (FASRC allows dating new data on placement)."""
     if not archive.endswith(_TAR_SUFFIXES):
         return
     dest = archive
@@ -196,6 +198,9 @@ def _extract(archive: str, *, remove: bool, euclid_only: bool = True) -> None:
             tf.extractall(dest, members=members, filter="data")  # py3.12 safe
         except TypeError:
             tf.extractall(dest, members=members)                 # older pythons
+        for m in members if members is not None else tf.getmembers():
+            if m.isfile():
+                os.utime(os.path.join(dest, m.name))
     n = sum(len(fs) for _dp, _d, fs in os.walk(dest))
     kept = "Euclid FITS" if euclid_only else "files"
     print(f"  ✓ unpacked {n} {kept} → {dest}/")

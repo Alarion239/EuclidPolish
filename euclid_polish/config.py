@@ -1093,6 +1093,9 @@ class Config:
         API_KEY_FILE: str  = "~/.tng_api_key"
         # Per-galaxy completion sentinel written after a successful extract.
         DONE_MARKER: str   = ".done"
+        # Word in the marker of a galaxy whose download finished with its
+        # dust-free twins; only such galaxies go into the atlas store.
+        DUST_FREE_TAG: str = "with-nodust"
         # The dusty frames carry dust-scattered light far beyond the stars (in
         # massive galaxies a flat box filling the SKIRT volume); frames are
         # masked to where their dust-free ``_nodust`` twins have light. With
@@ -1141,10 +1144,11 @@ class Config:
         EuclidSky.ARCHIVE_FIELDS_MANIFEST_FILENAME,
     )
     TNG_SKIRT_DIR          = os.path.join(DATA_DIR, Tng.SKIRT_SUBDIR)
-    # Home of the SKIRT atlas store (FASRC jobs export it; see
-    # FasrcConfig.tng_store_dir). Blank → the atlas lives only in
-    # TNG_SKIRT_DIR. Generation first copies what the working copy lacks from
-    # here (euclid_polish/tng/atlas_store.py); the downloader writes here.
+    # Permanent, gzip-compressed copy of the SKIRT atlas in lab storage
+    # (FASRC jobs export it; see FasrcConfig.tng_store_dir). Blank → the atlas
+    # lives only in TNG_SKIRT_DIR. Generation first restores what the working
+    # copy lacks from here; `python -m euclid_polish.tng.atlas_store archive`
+    # fills it from finished downloads (euclid_polish/tng/atlas_store.py).
     TNG_SKIRT_STORE_DIR    = os.environ.get("EUCLID_POLISH_TNG_STORE_DIR", "")
     FASRC_CACHE_DIR        = os.path.join(DATA_DIR, WebFetch.CACHE_SUBDIR)
 

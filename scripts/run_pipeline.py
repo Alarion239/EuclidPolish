@@ -1440,14 +1440,17 @@ def _uses_tng(args: argparse.Namespace) -> bool:
 
 
 def _sync_tng_atlas_from_store(args: argparse.Namespace, *, workers: int) -> None:
-    """Copy the galaxies the scratch atlas lacks from the persistent store
+    """Restore the galaxies the scratch atlas lacks from the compressed store
     (``EUCLID_POLISH_TNG_STORE_DIR``, lab storage) before the atlas is read."""
     store = Config.TNG_SKIRT_STORE_DIR
     if not store or not _uses_tng(args):
         return
     work = getattr(args, "tng_dir", None) or Config.TNG_SKIRT_DIR
     result = sync_working_copy(store, work, workers=workers)
-    _log(f"  TNG atlas: {result['copied']} galaxies copied from {store} "
+    if "note" in result:
+        _log(f"  TNG atlas store: {result['note']}")
+        return
+    _log(f"  TNG atlas: {result['copied']} galaxies restored from {store} "
          f"({int(result['bytes']) / 1e9:.1f} GB), {result['in_sync']} already on scratch")
 
 

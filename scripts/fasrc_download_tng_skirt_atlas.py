@@ -25,6 +25,13 @@ Resumability: a galaxy whose folder holds a ``.done`` marker AND the FITS count
 it records is skipped, so the job can be re-submitted after a time-limit or a
 transient failure and only the unfinished galaxies are fetched.
 
+Frames are dated to their extraction (netscratch purges files whose
+modification time is over 90 days old; the archives' 2023 timestamps got
+freshly downloaded frames swept). At the end the finished galaxies are
+compressed into the permanent store in lab storage
+(``EUCLID_POLISH_TNG_STORE_DIR``; ``python -m euclid_polish.tng.atlas_store
+archive`` does the same by hand).
+
 API key — the IllustrisTNG public API needs your *personal* token
 (https://www.tng-project.org/users/profile/ → "API Token"). It is NEVER
 committed and never rides in the job's parameters (the console's System ›
@@ -67,6 +74,7 @@ import contextlib
 
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
+from euclid_polish.tng.atlas_store import archive_to_store
 
 # Reuse the single-galaxy script's battle-tested API helpers + filter so the
 # atlas-listing parsing and the Euclid-only member regex live in one place.
@@ -150,13 +158,16 @@ def _extract_euclid(archive: str, dest_dir: str) -> int:
                 tf.extract(m, dest_dir, filter="data")   # py3.12+
             except TypeError:
                 tf.extract(m, dest_dir)                   # older pythons
+            # Date the frame to now, not the archive's 2023: netscratch purges
+            # by modification time (FASRC allows dating new data on placement).
+            os.utime(os.path.join(dest_dir, m.name))
             n += 1
     return n
 
 
 # Markers written since the dust-free frames are kept carry this tag; a galaxy
 # fetched before (dusty frames only) is re-fetched for its _nodust twins.
-NODUST_TAG = "with-nodust"
+NODUST_TAG = Config.Tng.DUST_FREE_TAG
 
 
 def _marker_fields(galaxy_dir: str) -> list[str] | None:
@@ -268,6 +279,22 @@ def _download_one(
             os.rmdir(tmp_dir)
 
 
+def _archive_into_store(out_dir: str, workers: int) -> None:
+    """Compress the finished galaxies into the permanent store in lab storage
+    (``EUCLID_POLISH_TNG_STORE_DIR``) unless the store is this directory."""
+    store = Config.TNG_SKIRT_STORE_DIR
+    if not store or os.path.realpath(store) == os.path.realpath(out_dir):
+        return
+    try:
+        result = archive_to_store(out_dir, store, workers=workers)
+    except OSError as e:                  # e.g. the lab quota: the downloads stand
+        print(f"  ⚠ atlas store not updated ({type(e).__name__}: {e}); re-run "
+              "`python -m euclid_polish.tng.atlas_store archive`")
+        return
+    print(f"  atlas store      = {store}: {result['archived']} galaxies archived, "
+          f"{result['store_galaxies']} held in {int(result['store_bytes']) / 2**30:.1f} GiB")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -275,11 +302,11 @@ def _download_one(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    default_out = Config.TNG_SKIRT_STORE_DIR or Config.TNG_SKIRT_DIR
-    p.add_argument("--out-dir", default=default_out,
-                   help="Root for the per-galaxy folders. Default: the persistent "
-                        "atlas store (EUCLID_POLISH_TNG_STORE_DIR) if set, else "
-                        f"{Config.TNG_SKIRT_DIR}")
+    p.add_argument("--out-dir", default=Config.TNG_SKIRT_DIR,
+                   help="Root for the per-galaxy folders: the scratch working copy "
+                        f"(default {Config.TNG_SKIRT_DIR}). The compressed store in "
+                        "lab storage is filled from it afterwards with "
+                        "`python -m euclid_polish.tng.atlas_store archive`.")
     p.add_argument("--first", default="",
                    help="Comma list of subhalo ids to fetch before all others.")
     p.add_argument("--workers", type=int, default=16,
@@ -445,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  effective concurrency ≈ {eff:.1f}x  "
               f"(of {args.workers} {args.executor} workers)")
     print(f"  out dir          = {out_dir}")
+    reporter.set_stage("archiving into the atlas store")
+    _archive_into_store(out_dir, args.workers)
     print(f"\nRUNTIME_SECONDS={runtime:.1f}")
     # Non-zero exit only if *everything* failed (so a few flaky galaxies on a
     # 1153-way run don't fail the whole SLURM job — re-submit to fill the gaps).

@@ -12,10 +12,12 @@ from __future__ import annotations
 import io
 import os
 import tarfile
+import time
 
 import pytest
 
 from euclid_polish.config import Config
+from scripts import download_tng_skirt
 from scripts import fasrc_download_tng_skirt_atlas as mod
 
 # ---------------------------------------------------------------------------
@@ -73,6 +75,40 @@ def test_extract_euclid_keeps_dusty_and_dust_free_euclid(tmp_path):
     # The 2MASS frame and the junk file are dropped.
     assert "TNG123_O1_2MASS_J.fits" not in written
     assert "readme.txt" not in written
+
+
+def test_finished_downloads_are_archived_into_the_store(tmp_path, monkeypatch):
+    out = tmp_path / "work"
+    galaxy = out / "42"
+    galaxy.mkdir(parents=True)
+    for o in range(1, 6):
+        for band in ("VIS", "Y", "J", "H"):
+            for suffix in ("", "_nodust"):
+                (galaxy / f"TNG42_O{o}_Euclid_{band}{suffix}.fits").write_bytes(b"\0" * 2880)
+    (galaxy / Config.Tng.DONE_MARKER).write_text(f"40 fits {mod.NODUST_TAG}\n")
+    monkeypatch.setattr(Config, "TNG_SKIRT_STORE_DIR", str(tmp_path / "store"))
+    mod._archive_into_store(str(out), workers=2)
+    assert len(list((tmp_path / "store" / "42").glob("*.fits.gz"))) == 40
+    monkeypatch.setattr(Config, "TNG_SKIRT_STORE_DIR", str(out))     # store = out dir: nothing to do
+    mod._archive_into_store(str(out), workers=2)
+    assert not list(out.rglob("*.gz"))
+
+
+def test_extracted_frames_are_dated_now_not_to_the_archive(tmp_path):
+    """Netscratch purges by modification time: frames that kept the archive's
+    2023 dates were swept within weeks (2026-07-06, and before 2026-10-18)."""
+    archive = tmp_path / "123.tar.gz"
+    _make_atlas_tar(str(archive))                 # members dated 1970
+    t0 = time.time()
+    mod._extract_euclid(str(archive), str(tmp_path / "123"))
+    frames = list((tmp_path / "123").iterdir())
+    assert len(frames) == 4 and all(f.stat().st_mtime >= t0 - 1 for f in frames)
+    single = tmp_path / "single" / "123.tar.gz"
+    single.parent.mkdir()
+    _make_atlas_tar(str(single))
+    download_tng_skirt._extract(str(single), remove=False)
+    frames = [f for f in (tmp_path / "single" / "123").rglob("*.fits")]
+    assert len(frames) == 4 and all(f.stat().st_mtime >= t0 - 1 for f in frames)
 
 
 # ---------------------------------------------------------------------------

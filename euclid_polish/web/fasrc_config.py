@@ -41,16 +41,16 @@ class FasrcConfig:
     # → "<repo_path>/tracking" (holylabs, NOT netscratch — netscratch is
     # purged). The local ./tracking folder is rsync'd up to here.
     tracking_remote_dir: str = ""
-    # Home of the TNG SKIRT atlas that jobs export as
-    # EUCLID_POLISH_TNG_STORE_DIR: the downloader writes there and generation
-    # copies what the working copy lacks from it. Blank → the netscratch atlas
-    # itself ("<data_dir>/tng_skirt", store == working copy): the lab's
-    # holylabs quota filled up on 2026-10-19 and cannot hold the ~0.5 TB atlas.
-    # Point it at persistent storage once there is room.
+    # Permanent home of the TNG SKIRT atlas: a gzip-compressed store in lab
+    # storage (holylabs is never purged; the full atlas with its dust-free
+    # twins is ~0.1 TiB compressed instead of 0.45 TiB raw). Blank →
+    # "<repo_path>/data/tng_skirt_store". Jobs export it as
+    # EUCLID_POLISH_TNG_STORE_DIR; generation restores what the netscratch
+    # working copy lacks from it (euclid_polish/tng/atlas_store.py).
     tng_store_dir:      str = ""
 
     def resolved_tng_store_dir(self) -> str:
-        return self.tng_store_dir or f"{self.data_dir.rstrip('/')}/tng_skirt"
+        return self.tng_store_dir or f"{self.repo_path.rstrip('/')}/data/tng_skirt_store"
 
     # ── Local mirror for pulled ensemble checkpoints ───────────────────────
     local_ckpt_mirror:  str = ""         # blank → default_ensemble_dir()
