@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.tng import box_face
 from euclid_polish.tng.catalog import TNGPropertyCatalog
 from euclid_polish.tng.types import TNG_FITS_BANDS, TNGView, dust_free_twin
 
@@ -113,7 +114,8 @@ class TNGGalaxy:
     @classmethod
     def discover(cls, root: str | Path) -> tuple[TNGGalaxy, ...]:
         """Return every complete donor galaxy under an atlas root (galaxies
-        carrying the SKIRT dust box are left out, see ``_box_galaxies``)."""
+        carrying the SKIRT dust box or cut by the periodic box are left out,
+        see ``_box_galaxies`` and ``box_face``)."""
         return _scan_complete_galaxies(Path(root))
 
 
@@ -153,8 +155,15 @@ def _scan_complete_galaxies(
             galaxies.append(galaxy)
     if not include_box_galaxies:
         boxed = _box_galaxies(root, galaxies)
-        galaxies = [galaxy for galaxy in galaxies if galaxy.subhalo_id not in boxed]
+        cut = box_face.cut_galaxies()
+        galaxies = [galaxy for galaxy in galaxies
+                    if galaxy.subhalo_id not in boxed and _canonical_id(galaxy.subhalo_id) not in cut]
     return tuple(sorted(galaxies, key=_galaxy_sort_key))
+
+
+def _canonical_id(subhalo_id: str) -> str:
+    """``"060123"`` and ``"60123"`` name one subhalo."""
+    return str(int(subhalo_id)) if subhalo_id.isdigit() else subhalo_id
 
 
 def _box_galaxies(root: Path, galaxies: list[TNGGalaxy]) -> frozenset[str]:

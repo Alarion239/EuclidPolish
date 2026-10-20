@@ -5,7 +5,8 @@ loader reads its eight FITS files concurrently, converts each pixel once,
 blurs the star body on its bounding box only and runs the glow's distance
 transform and per-band arithmetic in numba. Each test here pins one of those
 to the straightforward numpy/SciPy expression it replaced (the 2026-10-19
-recipe), on frames with negative, non-finite and edge-touching pixels.
+recipe, with the fade ending at zero since 2026-10-20), on frames with
+negative, non-finite and edge-touching pixels.
 """
 from __future__ import annotations
 
@@ -41,11 +42,11 @@ def _reference_glow(data, stars, *, pixel_scale_pc):
     if not body.any():
         return out
     rows, cols = np.nonzero(body)
-    margin = int(np.ceil(14.0 * fade_px + 3.0 * blur_px))
+    margin = int(np.ceil(tng_image.GLOW_FADE_REACH * fade_px + 3.0 * blur_px))
     ys = slice(max(rows.min() - margin, 0), min(rows.max() + margin + 1, data.shape[0]))
     xs = slice(max(cols.min() - margin, 0), min(cols.max() + margin + 1, data.shape[1]))
     sub_stars, sub_body = stars[ys, xs], body[ys, xs]
-    fade = np.exp(-distance_transform_edt(~sub_body) / fade_px).astype(np.float32)
+    fade = tng_image._glow_fade(distance_transform_edt(~sub_body), fade_px)
     off = (~sub_stars).astype(np.float32)
     factor = max(1, int(blur_px // 10.0))
     coverage = _reference_coarse_blur(off, blur_px, factor)

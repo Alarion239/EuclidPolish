@@ -94,7 +94,7 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
-from euclid_polish.tng import box_light
+from euclid_polish.tng import box_face, box_light
 from euclid_polish.tng.atlas_store import sync_working_copy
 from euclid_polish.tng.radius_manifest import ensure_manifest
 
@@ -1492,6 +1492,10 @@ def _refresh_box_light_table(args: argparse.Namespace, *, workers: int) -> None:
     _log(f"  TNG box light: {result['measured']} galaxies measured, {result['reused']} reused; "
          f"{len(result['left_out'])} left out as donors "
          f"(> {100 * Config.Tng.MAX_OUTSIDE_STAR_FRACTION:g}% of their light where no star is)")
+    cut = sorted(box_face.cut_galaxies() & set(os.listdir(work)), key=int)
+    _log(f"  TNG periodic box: {len(cut)} galaxies left out as donors (within "
+         f"{Config.Tng.MIN_BOX_FACE_DISTANCE_KPC:g} kpc of a TNG50 box face, which cuts their stars): "
+         f"{', '.join(cut)}")
 
 
 def _ensure_generation_radius_manifest(

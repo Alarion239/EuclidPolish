@@ -1111,6 +1111,14 @@ class Config:
         MAX_OUTSIDE_STAR_FRACTION: float = 0.01
         # Per-galaxy table of those shares at the atlas root.
         BOX_LIGHT_TABLE: str = "tng_box_light.json"
+        # The atlas did not unwrap particles across TNG50-1's periodic box: a
+        # galaxy near a box face lost every star beyond it, a straight edge
+        # through its light (229934, 16 kpc from x = 0: through its halo;
+        # 580250, 0.7 kpc: through its disc; 2026-10-20). Galaxies closer to a
+        # face than this - the 160 kpc frame's half-diagonal, as far as a face
+        # can cut into the frame - are no donors (21 of 1154; distances in
+        # euclid_polish/tng/box_face_galaxies.json).
+        MIN_BOX_FACE_DISTANCE_KPC: float = 113.0
         # Off the stars only a smooth glow of SKIRT's scattered light is kept,
         # close to the galaxy (tng/_image.py star_light_with_glow): the off-star
         # light blurred by this Gaussian sigma, faded as exp(-d / FADE), d the

@@ -181,6 +181,22 @@ def _zero_non_finite(values: np.ndarray) -> None:
         values[bad] = 0.0
 
 
+#: The glow's fade reaches exactly zero this many fade lengths from the
+#: outline. A plain exp(-d / FADE), computed only that far out (exp(-14) ~
+#: 1e-6 of the glow), stopped on the straight edges of the computed region: a
+#: faint rectangle around bright galaxies at knee 1e-3 (434357 in validate 18,
+#: 2026-10-20).
+GLOW_FADE_REACH = 14.0
+
+
+def _glow_fade(distance_px: np.ndarray, fade_px: float) -> np.ndarray:
+    """exp(-d / fade), lowered to reach zero at ``GLOW_FADE_REACH`` fade
+    lengths and rescaled to stay one on the outline."""
+    floor = np.exp(-GLOW_FADE_REACH)
+    fade = (np.exp(-np.asarray(distance_px, dtype=np.float64) / fade_px) - floor) / (1.0 - floor)
+    return np.maximum(fade, 0.0).astype(np.float32)
+
+
 def star_light_with_glow(
     data: np.ndarray,
     stars: np.ndarray,
@@ -195,8 +211,9 @@ def star_light_with_glow(
     (flat facets, straight edges, shadow rays; Baes et al. 2024), so only a
     smooth version of it is kept, close to the galaxy: the off-star light
     blurred by ``Config.Tng.SCATTER_GLOW_BLUR_PC`` (normalised over the
-    off-star pixels, so no starlight leaks into it), times exp(-d / FADE) with
-    d the distance from the galaxy's outline (the star mask smoothed by
+    off-star pixels, so no starlight leaks into it), times exp(-d / FADE)
+    (reaching zero at ``GLOW_FADE_REACH`` fade lengths) with d the distance
+    from the galaxy's outline (the star mask smoothed by
     ``STAR_BODY_SMOOTH_PC``, cut at one half). Measured from the outline, not
     from each star, so lone halo stars grow no glow of their own, while gaps
     between the stars inside the outline get the full glow.
@@ -212,13 +229,13 @@ def star_light_with_glow(
     if rows.size == 0:
         return out
     cols = np.flatnonzero(body.any(axis=0))
-    # Only where the fade still matters (exp(-14) ~ 1e-6 of the glow) plus the
-    # blur's reach: generation loads a donor for nearly every galaxy it draws.
-    margin = int(np.ceil(14.0 * fade_px + 3.0 * blur_px))
+    # Only where the fade is not zero plus the blur's reach: generation loads
+    # a donor for nearly every galaxy it draws.
+    margin = int(np.ceil(GLOW_FADE_REACH * fade_px + 3.0 * blur_px))
     ys = slice(max(rows[0] - margin, 0), min(rows[-1] + margin + 1, data.shape[0]))
     xs = slice(max(cols[0] - margin, 0), min(cols[-1] + margin + 1, data.shape[1]))
     sub_stars, sub_body = stars[ys, xs], body[ys, xs]
-    fade = np.exp(-distance_to_mask(sub_body) / fade_px).astype(np.float32)
+    fade = _glow_fade(distance_to_mask(sub_body), fade_px)
     off = (~sub_stars).astype(np.float32)
     # The 3 kpc blur is smooth: computed on a coarser grid, then interpolated.
     factor = max(1, int(blur_px // 10.0))
@@ -594,15 +611,20 @@ def _downsample_surface_brightness_array(
 
 #: The soft circular window every TNG source is multiplied by before it is
 #: rotated: weight 1 inside SOFT_WINDOW_INNER_FRACTION of the rim radius,
-#: a cos² taper to 0 at the rim, which sits a margin inside the frame's
-#: inscribed circle — at least SOFT_WINDOW_RIM_MARGIN_PX (the cubic kernel's
-#: reach), more when a later shrink averages many native pixels into one.
-#: Light that runs into the edge of the SKIRT frame or a crop square
-#: otherwise ends on a hard straight step (square, or octagonal once
-#: rotated), the one faint truth feature with a preferred axis (2026-10-18
-#: audit). A disc inside the inscribed circle is unchanged by rotation about
-#: the frame centre.
-SOFT_WINDOW_INNER_FRACTION = 0.7
+#: then an exponential taper - a straight line in log surface brightness,
+#: SOFT_WINDOW_DECADES down at the rim, lowered to end there at exactly 0 -
+#: and 0 beyond. The rim sits a margin inside the frame's inscribed circle —
+#: at least SOFT_WINDOW_RIM_MARGIN_PX (the cubic kernel's reach), more when a
+#: later shrink averages many native pixels into one. Light that runs into
+#: the edge of the SKIRT frame or a crop square otherwise ends on a hard
+#: straight step (square, or octagonal once rotated), the one faint truth
+#: feature with a preferred axis (2026-10-18 audit). A disc inside the
+#: inscribed circle is unchanged by rotation about the frame centre. Until
+#: 2026-10-20 the taper was a cos² from 0.7 of the rim: the stellar halos
+#: that reach the frame's edge (45 % of the views) kept ~0.1-1 e-/px there and
+#: dropped to 0 within half an R_e, a crisp circle at knees <= 0.01 e-.
+SOFT_WINDOW_INNER_FRACTION = 0.5
+SOFT_WINDOW_DECADES = 6.0
 SOFT_WINDOW_RIM_MARGIN_PX = 2.0
 #: The margin never takes more than this fraction of the frame's half-width,
 #: so a frame shrunk to a few output pixels still keeps a window.
@@ -648,9 +670,11 @@ def _soft_window_weight(height: int, width: int, margin: float) -> np.ndarray:
     rows, columns = np.ogrid[:height, :width]
     radius = np.hypot(np.float32(rows - (height - 1) / 2.0),
                       np.float32(columns - (width - 1) / 2.0))
-    taper = np.clip((radius - inner) / (rim - inner), 0.0, 1.0)
-    weight = (np.cos(0.5 * np.pi * taper) ** 2).astype(np.float32)
-    weight[taper >= 1.0] = 0.0          # cos(π/2)² is ~4e-33 in floating point
+    taper = np.clip((radius - inner) / (rim - inner), 0.0, 1.0).astype(np.float64)
+    floor = 10.0 ** -SOFT_WINDOW_DECADES
+    weight = ((floor ** taper - floor) / (1.0 - floor)).astype(np.float32)
+    weight[taper <= 0.0] = 1.0
+    weight[taper >= 1.0] = 0.0
     weight.setflags(write=False)
     return weight
 
