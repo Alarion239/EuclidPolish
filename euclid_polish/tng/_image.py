@@ -112,10 +112,11 @@ def start_view_read(
     Generation loads a donor view for nearly every galaxy it draws; read
     serially, its ~80 MB left the CPU idle on network storage. The files are
     read concurrently, and a renderer can start them before it needs them.
+    The twins are read only for the star mask (``Config.Tng.STAR_MASK``).
     """
     paths = tuple(Path(path) for path in dusty_paths)
     twins = tuple(dust_free_twin(path) for path in paths)
-    have_twins = all(twin.is_file() for twin in twins)
+    have_twins = Config.Tng.STAR_MASK and all(twin.is_file() for twin in twins)
     return ViewRead(
         paths=paths,
         twins=twins,
@@ -131,7 +132,7 @@ def finish_view_read(
 ) -> tuple[TNGSurfaceBrightnessImage, np.ndarray | None]:
     """One orientation's dusty planes, stacked in ``band_names`` order, and
     its star mask, ``None`` when a dust-free twin is missing (the caller
-    decides, as :func:`load_star_mask` does).
+    decides, as :func:`load_star_mask` does) or the mask is off.
 
     Exactly what loading each plane with :func:`_load_tng_plane`, stacking
     them and calling :func:`load_star_mask` gives, checked in the same order,

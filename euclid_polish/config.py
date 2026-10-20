@@ -1096,18 +1096,28 @@ class Config:
         # Word in the marker of a galaxy whose download finished with its
         # dust-free twins; only such galaxies go into the atlas store.
         DUST_FREE_TAG: str = "with-nodust"
-        # The dusty frames carry dust-scattered light far beyond the stars (in
-        # massive galaxies a flat box filling the SKIRT volume); frames are
-        # masked to where their dust-free ``_nodust`` twins have light. With
-        # this on (FASRC generation sets it) a missing twin is an error and a
-        # galaxy without twins is not part of the atlas; off, a frame without
-        # twins is used unmasked (local atlases, tests).
+        # Galaxies need their dust-free ``_nodust`` twins: they measure the
+        # SKIRT dust box (MAX_OUTSIDE_STAR_FRACTION) and, with STAR_MASK, mask
+        # the frames. With this on (FASRC generation sets it) a missing twin is
+        # an error and a galaxy without twins is not part of the atlas; off, a
+        # frame without twins is used unmasked (local atlases, tests).
         REQUIRE_DUST_FREE: bool = os.environ.get(
             "EUCLID_POLISH_TNG_REQUIRE_DUST_FREE", "").strip().lower() in ("1", "true", "yes")
+        # The star mask (2026-10-19): the dusty frames keep their light only
+        # where a dust-free twin has light, plus a smooth glow of the scattered
+        # light just around it (SCATTER_GLOW_*). OFF since 2026-10-20 (user):
+        # the dusty frames are used whole, as before; the galaxies with a
+        # strong dust box stay no donors. EUCLID_POLISH_TNG_STAR_MASK=1 brings
+        # the mask back (the renderer fingerprint and the radius manifest's
+        # version follow, read at import).
+        STAR_MASK: bool = os.environ.get(
+            "EUCLID_POLISH_TNG_STAR_MASK", "").strip().lower() in ("1", "true", "yes")
         # A galaxy is no donor when, in any orientation, more than this share of
         # its VIS light lies where no star is (SKIRT's octree dust box, which
         # also sits on its faint outskirt stars): bimodal on 2026-10-19, 338 of
         # 342 galaxies below 0.5 %, 4 at 3-36 % (euclid_polish/tng/box_light.py).
+        # On 2026-10-20 53 of 1054 galaxies: as massive, star-forming and large
+        # as the rest, but mostly stripped satellites (subhalo mass < 10 M*).
         MAX_OUTSIDE_STAR_FRACTION: float = 0.01
         # Per-galaxy table of those shares at the atlas root.
         BOX_LIGHT_TABLE: str = "tng_box_light.json"
@@ -1119,8 +1129,8 @@ class Config:
         # can cut into the frame - are no donors (21 of 1154; distances in
         # euclid_polish/tng/box_face_galaxies.json).
         MIN_BOX_FACE_DISTANCE_KPC: float = 113.0
-        # Off the stars only a smooth glow of SKIRT's scattered light is kept,
-        # close to the galaxy (tng/_image.py star_light_with_glow): the off-star
+        # With STAR_MASK, off the stars only a smooth glow of SKIRT's scattered
+        # light is kept, close to the galaxy (tng/_image.py star_light_with_glow): the off-star
         # light blurred by this Gaussian sigma, faded as exp(-d / FADE), d the
         # distance from the galaxy's outline (the star mask smoothed by
         # STAR_BODY_SMOOTH_PC and cut at one half). Chosen by eye 2026-10-19.

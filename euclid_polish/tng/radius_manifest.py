@@ -45,11 +45,21 @@ from euclid_polish.tng.types import (
 )
 
 MANIFEST_VERSION = 1
-# v3: on the frame the renderer uses (stars + a smooth scattered-light glow)
-ALGORITHM_VERSION = (
-    "centered-vis-cog-v3-starglow-"
-    f"{Config.Tng.SCATTER_GLOW_BLUR_PC:g}-{Config.Tng.SCATTER_GLOW_FADE_PC:g}-{Config.Tng.STAR_BODY_SMOOTH_PC:g}"
-)
+
+
+def algorithm_version(star_mask: bool | None = None) -> str:
+    """The radius measurement's version: measured on the frame the renderer
+    uses - v3 with the star mask (stars + a smooth scattered-light glow), v4
+    on the whole dusty frame. ``None`` -> ``Config.Tng.STAR_MASK``."""
+    if star_mask is None:
+        star_mask = Config.Tng.STAR_MASK
+    if not star_mask:
+        return "centered-vis-cog-v4-whole-dusty-frame"
+    return ("centered-vis-cog-v3-starglow-"
+            f"{Config.Tng.SCATTER_GLOW_BLUR_PC:g}-{Config.Tng.SCATTER_GLOW_FADE_PC:g}-"
+            f"{Config.Tng.STAR_BODY_SMOOTH_PC:g}")
+
+
 DEFAULT_MANIFEST_NAME = "tng_radius_manifest.json"
 #: Concurrent stat calls while taking the atlas inventory.
 _INVENTORY_THREADS = 16
@@ -108,7 +118,7 @@ class TNGRadiusManifest(Mapping[tuple[str, int], float]):
         """Validate and materialize the live radius-manifest JSON schema."""
         if payload.get("version") != MANIFEST_VERSION:
             raise ValueError("unsupported TNG radius-manifest version")
-        if payload.get("algorithm_version") != ALGORITHM_VERSION:
+        if payload.get("algorithm_version") != algorithm_version():
             raise ValueError("unsupported TNG radius-measurement algorithm")
         if not payload.get("valid"):
             raise ValueError("cannot load an invalid TNG radius manifest")
@@ -298,7 +308,7 @@ def build_manifest(
         if (
             previous
             and previous.get("version") == MANIFEST_VERSION
-            and previous.get("algorithm_version") == ALGORITHM_VERSION
+            and previous.get("algorithm_version") == algorithm_version()
             and previous.get("manifest_fingerprint")
             == _manifest_fingerprint(previous)
         ):
@@ -347,12 +357,13 @@ def build_manifest(
                 previous["vis_path"] = os.path.abspath(vis_path)
                 return previous, None, True
             frame = _load_tng_plane(vis_path, "VIS")
-            # Measured on the frame the renderer uses: dust-scattered light
-            # outside the stars (the SKIRT box) inflated R_e by up to 1.7x.
-            mask = load_star_mask(
+            # Measured on the frame the renderer uses: with the star mask, not
+            # on the dust-scattered light outside the stars (the SKIRT box
+            # inflated R_e by up to 1.7x).
+            mask = (load_star_mask(
                 [galaxy.fits_path(orientation, band) for band in TNG_FITS_BANDS],
                 required=Config.Tng.REQUIRE_DUST_FREE,
-            )
+            ) if Config.Tng.STAR_MASK else None)
             if mask is not None:
                 frame = TNGSurfaceBrightnessImage(
                     data=star_light_with_glow(frame.data, mask, pixel_scale_pc=frame.pixel_scale_pc),
@@ -393,7 +404,7 @@ def build_manifest(
 
     inventory = _inventory(galaxies)
     inventory_fingerprint = _fingerprint({
-        "algorithm_version": ALGORITHM_VERSION,
+        "algorithm_version": algorithm_version(),
         "inventory": inventory,
         "properties": _property_identity(properties_path),
     })
@@ -401,7 +412,7 @@ def build_manifest(
     expected_count = len(galaxies) * N_ORIENTATIONS
     report: dict[str, Any] = {
         "version": MANIFEST_VERSION,
-        "algorithm_version": ALGORITHM_VERSION,
+        "algorithm_version": algorithm_version(),
         "tng_dir": os.path.abspath(tng_dir),
         "properties_file": _property_identity(properties_path),
         "atlas_inventory_fingerprint": inventory_fingerprint,
@@ -621,7 +632,7 @@ def validate_manifest(
         galaxies = _scan_complete_galaxies(Path(tng_dir))
     inventory = _inventory(galaxies)
     current_fp = _fingerprint({
-        "algorithm_version": ALGORITHM_VERSION,
+        "algorithm_version": algorithm_version(),
         "inventory": inventory,
         "properties": _property_identity(properties_path),
     })
@@ -638,7 +649,7 @@ def validate_manifest(
         )
     if payload.get("version") != MANIFEST_VERSION:
         reasons.append("unsupported radius-manifest version")
-    if payload.get("algorithm_version") != ALGORITHM_VERSION:
+    if payload.get("algorithm_version") != algorithm_version():
         reasons.append("radius algorithm version changed")
     if galaxies and not payload.get("valid"):
         reasons.append("manifest contains invalid or incomplete measurements")

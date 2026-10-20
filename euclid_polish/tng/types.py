@@ -146,7 +146,8 @@ class TNGView:
 
     def load_surface_brightness(self, read: Any = None) -> TNGSurfaceBrightnessImage:
         """Load and register the four native MJy/sr planes in model-band order:
-        dusty light where the dust-free twins have light, a smooth glow of the
+        the whole dusty frames, or with ``Config.Tng.STAR_MASK`` the dusty
+        light where the dust-free twins have light and a smooth glow of the
         scattered light just around it (see
         :func:`euclid_polish.tng._image.star_light_with_glow`).
 
@@ -178,6 +179,8 @@ class TNGView:
             )
         if image.bands != TNG_MODEL_BANDS:
             raise ValueError(f"unexpected TNG band order {image.bands!r}")
+        if not Config.Tng.STAR_MASK:
+            return image
         if mask is None:     # a twin is missing: an error if they are required
             mask = load_star_mask(paths, required=Config.Tng.REQUIRE_DUST_FREE)
         if mask is None:

@@ -1,9 +1,12 @@
 """The star mask: SKIRT's dusty frames carry dust-scattered light far beyond
 the stars (a flat box filling the simulation volume around massive galaxies);
-frames keep their dusty light where a dust-free ``_nodust`` twin has light,
-and only a smooth glow of the scattered light just around it."""
+with ``Config.Tng.STAR_MASK`` frames keep their dusty light where a dust-free
+``_nodust`` twin has light, and only a smooth glow of the scattered light just
+around it. Off (the default since 2026-10-20) the dusty frames are used whole,
+and the masked renderer identity is unchanged when it is switched back on."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -13,13 +16,20 @@ from astropy.io import fits
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 
 from euclid_polish.config import Config
-from euclid_polish.tng._image import GLOW_FADE_REACH, star_light_with_glow
+from euclid_polish.tng import renderer
+from euclid_polish.tng._image import GLOW_FADE_REACH, start_view_read, star_light_with_glow
 from euclid_polish.tng.atlas import _scan_complete_galaxies
-from euclid_polish.tng.radius_manifest import ALGORITHM_VERSION, build_manifest
+from euclid_polish.tng.radius_manifest import algorithm_version, build_manifest
 from euclid_polish.tng.types import TNGView, dust_free_twin
 
 SIZE = 96
 BANDS = ("VIS", "Y", "J", "H")
+
+
+@pytest.fixture(autouse=True)
+def _star_mask_on(monkeypatch):
+    """These tests are about the mask; the ones about whole frames switch it off."""
+    monkeypatch.setattr(Config.Tng, "STAR_MASK", True)
 
 
 def _write_frame(path: Path, data: np.ndarray) -> None:
@@ -157,7 +167,40 @@ def test_the_radius_is_measured_on_the_frame_the_renderer_uses(tmp_path):
     _galaxy(tmp_path / "atlas", "43", twins=False, box=4e-3)
     report = build_manifest(str(tmp_path / "atlas"), properties_path=str(properties),
                             output_path=str(tmp_path / "manifest.json"))
-    assert report["algorithm_version"] == ALGORITHM_VERSION
+    assert report["algorithm_version"] == algorithm_version(True)
     radius = {(e["subhalo_id"], e["orientation"]): e["native_re_px"] for e in report["entries"]}
     # The box fills the frame: unmasked, it drags the half-light radius far out.
     assert radius[("42", 1)] < 0.8 * radius[("43", 1)]
+
+
+def test_without_the_mask_the_dusty_frames_are_used_whole(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config.Tng, "STAR_MASK", False)
+    folder = _galaxy(tmp_path)
+    image = _view(folder).load_surface_brightness().data
+    for b in range(4):
+        np.testing.assert_allclose(image[..., b], 0.8 * _stars() * (b + 1) + 1e-3, rtol=1e-6)
+    paths = [folder / f"TNG42_O1_Euclid_{band}.fits" for band in BANDS]
+    with ThreadPoolExecutor(2) as pool:
+        assert start_view_read(paths, pool).lit is None            # the twins are not even read
+
+
+def test_without_the_mask_the_radius_is_measured_on_the_whole_frame(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config.Tng, "STAR_MASK", False)
+    properties = tmp_path / "properties.csv"
+    properties.write_text("id,sfr,mass_stars,m_halo,reff\n42,1,1e10,1e12,2\n43,1,1e10,1e12,2\n")
+    _galaxy(tmp_path / "atlas", "42", twins=True, box=4e-3)
+    _galaxy(tmp_path / "atlas", "43", twins=False, box=4e-3)
+    report = build_manifest(str(tmp_path / "atlas"), properties_path=str(properties),
+                            output_path=str(tmp_path / "manifest.json"))
+    assert report["algorithm_version"] == algorithm_version(False) != algorithm_version(True)
+    radius = {(e["subhalo_id"], e["orientation"]): e["native_re_px"] for e in report["entries"]}
+    assert radius[("42", 1)] == pytest.approx(radius[("43", 1)])
+
+
+def test_the_masked_renderer_identity_is_unchanged_and_the_whole_frame_one_differs():
+    assert renderer.rendering_name(True) == "euclid_sersic_shrink_only_v6"
+    assert renderer.renderer_fingerprint(True) == (
+        "c902961f8ef2c51ef9fb8d02b689fd14e0ed7e8a50a94cb34a8852edfaeff18a")
+    assert algorithm_version(True) == "centered-vis-cog-v3-starglow-3000-500-1000"
+    assert renderer.rendering_name(False) == "euclid_sersic_shrink_only_v7"
+    assert renderer.renderer_fingerprint(False) != renderer.renderer_fingerprint(True)

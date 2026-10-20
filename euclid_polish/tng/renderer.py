@@ -72,19 +72,34 @@ TNG_ROTATION_CROP_ENCLOSED_FRACTION = 0.99
 TNG_ROTATION_CROP_PADDING = 1.05
 TNG_MAX_REBIN_FACTOR = 64
 
-TNG_RADIUS_RENDERING = "euclid_sersic_shrink_only_v6"   # v6: exponential stamp edge, periodic-box donors out, glow ends at zero
-TNG_RADIUS_RENDERER_FINGERPRINT = hashlib.sha256(
-    (
-        f"{TNG_RADIUS_RENDERING}|"
-        "typed_cube_boundary|shrink_only|eligible_orientation|dust_free_star_mask|"
-        f"scatter_glow_{Config.Tng.SCATTER_GLOW_BLUR_PC:g}_{Config.Tng.SCATTER_GLOW_FADE_PC:g}_"
-        f"{Config.Tng.STAR_BODY_SMOOTH_PC:g}|box_galaxies_out_{Config.Tng.MAX_OUTSIDE_STAR_FRACTION:g}|"
-        f"box_face_galaxies_out_{Config.Tng.MIN_BOX_FACE_DISTANCE_KPC:g}kpc|glow_fade_reach_{GLOW_FADE_REACH:g}|"
-        "one_area_resample|no_output_remeasurement|bounded_support|"
-        "mer_photometric_fwhm_adjoint_2fwhm|"
-        f"exponential_circular_window_{SOFT_WINDOW_INNER_FRACTION:g}_{SOFT_WINDOW_DECADES:g}|vis_log_sb_rolloff"
-    ).encode("ascii")
-).hexdigest()
+def rendering_name(star_mask: bool) -> str:
+    """v6: exponential stamp edge, periodic-box donors out, glow ends at
+    zero (the star mask); v7: the same on whole dusty frames."""
+    return "euclid_sersic_shrink_only_v6" if star_mask else "euclid_sersic_shrink_only_v7"
+
+
+def renderer_fingerprint(star_mask: bool) -> str:
+    """The renderer's cache identity, with or without the star mask (with
+    it, the v6 identity unchanged)."""
+    frames = (f"dust_free_star_mask|scatter_glow_{Config.Tng.SCATTER_GLOW_BLUR_PC:g}_"
+              f"{Config.Tng.SCATTER_GLOW_FADE_PC:g}_{Config.Tng.STAR_BODY_SMOOTH_PC:g}|"
+              if star_mask else "whole_dusty_frames|")
+    glow = f"glow_fade_reach_{GLOW_FADE_REACH:g}|" if star_mask else ""
+    return hashlib.sha256(
+        (
+            f"{rendering_name(star_mask)}|"
+            f"typed_cube_boundary|shrink_only|eligible_orientation|{frames}"
+            f"box_galaxies_out_{Config.Tng.MAX_OUTSIDE_STAR_FRACTION:g}|"
+            f"box_face_galaxies_out_{Config.Tng.MIN_BOX_FACE_DISTANCE_KPC:g}kpc|{glow}"
+            "one_area_resample|no_output_remeasurement|bounded_support|"
+            "mer_photometric_fwhm_adjoint_2fwhm|"
+            f"exponential_circular_window_{SOFT_WINDOW_INNER_FRACTION:g}_{SOFT_WINDOW_DECADES:g}|vis_log_sb_rolloff"
+        ).encode("ascii")
+    ).hexdigest()
+
+
+TNG_RADIUS_RENDERING = rendering_name(Config.Tng.STAR_MASK)
+TNG_RADIUS_RENDERER_FINGERPRINT = renderer_fingerprint(Config.Tng.STAR_MASK)
 #: Half-width (dex) of the smooth roll-off that replaced the hard surface-
 #: brightness cut of lensed sources: weight 0 at cut − this, 1 at cut + this.
 SB_CUT_ROLLOFF_DEX = 0.2

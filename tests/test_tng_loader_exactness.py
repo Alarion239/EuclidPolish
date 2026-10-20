@@ -203,7 +203,8 @@ def _view_files(folder: Path, rng, *, twins: bool = True) -> list[Path]:
     return paths
 
 
-def test_concurrent_view_load_is_bitwise_the_per_plane_load(tmp_path):
+def test_concurrent_view_load_is_bitwise_the_per_plane_load(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config.Tng, "STAR_MASK", True)           # the twins are read for the mask
     paths = _view_files(tmp_path / "7", np.random.default_rng(3))
     image, mask = tng_image.load_view_frames(paths, TNG_MODEL_BANDS)
     planes, reference_mask = _reference_load(paths)
