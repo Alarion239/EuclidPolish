@@ -49,6 +49,7 @@ from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
 )
+from euclid_polish.training.isotropy import DEFAULT_KNEE_E as DEFAULT_ISOTROPY_KNEE_E
 from euclid_polish.training.models.output_knee import KNEE_MAX_E, KNEE_MIN_E, learned_knee_bounds
 from euclid_polish.training.target_blur import (
     blur_target_array,
@@ -187,6 +188,12 @@ class MemberTrainSpec:
     #: Live training draws a randomised noise texture (exposure count + white
     #: share per scene and band). Recorded in origin.json; continue keeps it.
     noise_texture_jitter: bool = False
+    #: Weight λ of the residual-isotropy penalty (``training.isotropy``): on
+    #: average, the error stretched at ``isotropy_knee`` e⁻ (``None`` = the
+    #: module default, 0.01) must not prefer a direction. 0 = off. Recorded
+    #: in origin.json; continue keeps both.
+    isotropy_penalty: float = 0.0
+    isotropy_knee: float | None = None
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
     #: Faster training steps (see ``Model.train``): XLA-compile the gradient
@@ -506,6 +513,9 @@ class EnsembleModel:
                             "min_e": lo, "max_e": hi}
                 if spec.noise_texture_jitter:
                     origin["noise_texture_jitter"] = True
+                if spec.isotropy_penalty:
+                    origin["isotropy_penalty"] = float(spec.isotropy_penalty)
+                    origin["isotropy_knee"] = float(spec.isotropy_knee or DEFAULT_ISOTROPY_KNEE_E)
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval
@@ -520,6 +530,9 @@ class EnsembleModel:
                     member_train_kwargs["loss_floor"] = spec.loss_floor
             if spec.noise_texture_jitter:
                 member_train_kwargs["noise_texture_jitter"] = True
+            if spec.isotropy_penalty:
+                member_train_kwargs["isotropy_penalty"] = float(spec.isotropy_penalty)
+                member_train_kwargs["isotropy_knee"] = spec.isotropy_knee
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"

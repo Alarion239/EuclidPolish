@@ -59,6 +59,8 @@ from euclid_polish.training.inference import (
     reconstruct as _default_reconstruct,
 )
 from euclid_polish.training.inference import reconstruct_heads
+from euclid_polish.training.isotropy import DEFAULT_KNEE_E as DEFAULT_ISOTROPY_KNEE_E
+from euclid_polish.training.isotropy import ResidualIsotropy
 from euclid_polish.training.loss_names import plateau_guard_applies
 from euclid_polish.training.losses import (
     KNEE_LOSS_MODES,
@@ -572,6 +574,8 @@ class Model:
         loss_knees: Sequence[float] | None = None,
         loss_floor: float | None = None,
         noise_texture_jitter: bool = False,
+        isotropy_penalty: float = 0.0,
+        isotropy_knee: float | None = None,
         jit_compile: bool = False,
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
@@ -629,6 +633,13 @@ class Model:
         ``steps_per_call`` and ``device_prefetch`` feed the GPU faster (see
         :class:`~euclid_polish.training.trainer.Trainer`); the steps are the
         same.
+
+        ``isotropy_penalty`` λ > 0 adds λ × the residual-isotropy penalty
+        (:mod:`~euclid_polish.training.isotropy`) to the objective: on
+        average over recent batches, the error stretched at
+        ``isotropy_knee`` (e⁻, default 0.01) must not prefer a direction,
+        which the pixel-axis grid does. It needs a learned output knee
+        (electrons out) and live training (electrons in).
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
@@ -636,6 +647,11 @@ class Model:
         if self._seed is not None:
             seed_everything(self._seed, deterministic=self._deterministic)
         target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
+        if not float(isotropy_penalty) >= 0.0:
+            raise ValueError(f"isotropy_penalty must be non-negative, got {isotropy_penalty!r}")
+        if isotropy_penalty and not (self._learn_output_knee and forward_onthefly):
+            raise ValueError("isotropy_penalty needs a learned-output-knee member (electrons "
+                             "out) trained on the live (on-the-fly) forward model (electrons in)")
         train_hr_path, valid_lr_path, valid_hr_path = member_record_paths(
             lr_path, hr_path,
             starless=bool(starless), forward_onthefly=bool(forward_onthefly),
@@ -722,6 +738,12 @@ class Model:
         if noise_texture_jitter and not forward_onthefly:
             raise ValueError("noise_texture_jitter needs the live (on-the-fly) "
                              "forward model; record noise is fixed")
+        isotropy = None
+        if isotropy_penalty:
+            knee = float(isotropy_knee) if isotropy_knee else DEFAULT_ISOTROPY_KNEE_E
+            isotropy = ResidualIsotropy(knee_e=knee, n_bands=Config.NUM_HR_CHANNELS)
+            provenance_fields["isotropy_penalty"] = float(isotropy_penalty)
+            provenance_fields["isotropy_knee"] = knee
         loss = self._member_loss(loss_norm, knee_loss, loss_knees, loss_floor)
         if loss_floor:
             print("  loss floor (e⁻/HR px): " + ", ".join(
@@ -760,7 +782,9 @@ class Model:
                           # The live pipeline yields raw electrons; the record
                           # pipeline stretches on the CPU as before.
                           batch_stretch=(self.batch_stretch() if forward_onthefly
-                                         else None))
+                                         else None),
+                          isotropy=isotropy,
+                          isotropy_weight=float(isotropy_penalty))
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):

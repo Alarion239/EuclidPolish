@@ -27,6 +27,7 @@ from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ConfigSnapshot, Process, Stamp
 from euclid_polish.training.inference import infer_checkpoint_asinh_knee
+from euclid_polish.training.isotropy import ResidualIsotropy
 from euclid_polish.training.models.common import evaluate
 from euclid_polish.training.models.output_knee import learned_output_knees
 from euclid_polish.training.plateau import PlateauLRReducer
@@ -248,6 +249,8 @@ class Trainer:
         batch_stretch: Callable[[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor]] | None = None,
         steps_per_call: int = 1,
         device_prefetch: bool = False,
+        isotropy: ResidualIsotropy | None = None,
+        isotropy_weight: float = 0.0,
     ):
         """
         Initialize the trainer.
@@ -316,9 +319,23 @@ class Trainer:
             (``copy_to_device`` + a device-side ``prefetch``), so the
             host→device copy overlaps the previous step instead of opening
             each one. No effect without a GPU.
+        isotropy : ResidualIsotropy, optional
+            Adds ``isotropy_weight`` × its penalty to every step's objective:
+            the error must not prefer a direction (see
+            :mod:`euclid_polish.training.isotropy`). It compares electrons, so
+            it needs raw batches (``batch_stretch``) and a model that outputs
+            electrons (``output_electrons``). Its moving average is saved with
+            the checkpoint. The logged ``loss`` stays the reconstruction loss.
+        isotropy_weight : float
+            The penalty's weight λ.
         """
         self.now = None
         self._batch_stretch = batch_stretch
+        if isotropy is not None and (batch_stretch is None or not output_electrons):
+            raise ValueError("the isotropy penalty compares electrons: it needs raw batches "
+                             "(batch_stretch) and a model that outputs electrons")
+        self._isotropy = isotropy
+        self._isotropy_weight = float(isotropy_weight)
         if int(steps_per_call) < 1:
             raise ValueError(f"steps_per_call must be at least 1, got {steps_per_call!r}")
         self._steps_per_call = int(steps_per_call)
@@ -393,6 +410,8 @@ class Trainer:
             best_loss=tf.Variable(tf.constant(float("inf"))),
             optimizer=Adam(self._initial_lr),
             model=model,
+            # The penalty's moving average resumes and rolls back with the model.
+            **({} if isotropy is None else {"isotropy": isotropy}),
         )
         self.checkpoint_manager = tf.train.CheckpointManager(
             checkpoint=self.checkpoint,
@@ -429,6 +448,7 @@ class Trainer:
         self._win_gnorm_sum = tf.Variable(0.0, trainable=False)
         self._win_gnorm_max = tf.Variable(0.0, trainable=False)
         self._win_spike_norm = tf.Variable(0.0, trainable=False)
+        self._win_isotropy_sum = tf.Variable(0.0, trainable=False)
         self._win_steps = tf.Variable(0.0, trainable=False)
 
         # Provenance: this checkpoint dir's identity. Resolved lazily on the
@@ -557,19 +577,21 @@ class Trainer:
 
     def _reset_window(self) -> None:
         for var in (self._win_loss_sum, self._win_gnorm_sum, self._win_gnorm_max,
-                    self._win_spike_norm, self._win_steps):
+                    self._win_spike_norm, self._win_isotropy_sum, self._win_steps):
             var.assign(0.0)
 
     def _read_window(self) -> dict:
         """The one host sync per validation window: mean loss, mean / max
-        pre-clip |g|, and the spike norm (largest post-warmup |g|, non-finite
-        counted as infinite). Resets the accumulators."""
+        pre-clip |g|, the spike norm (largest post-warmup |g|, non-finite
+        counted as infinite) and the mean isotropy penalty. Resets the
+        accumulators."""
         n = max(float(self._win_steps.numpy()), 1.0)
         window = {
             "loss": float(self._win_loss_sum.numpy()) / n,
             "gnorm_avg": float(self._win_gnorm_sum.numpy()) / n,
             "gnorm_max": float(self._win_gnorm_max.numpy()),
             "spike_norm": float(self._win_spike_norm.numpy()),
+            "isotropy": float(self._win_isotropy_sum.numpy()) / n,
         }
         self._reset_window()
         return window
@@ -780,6 +802,12 @@ class Trainer:
             ncols=120,
         )
 
+        if self._isotropy is not None:
+            iso = self._isotropy
+            tqdm.write(f"  residual isotropy penalty: λ={self._isotropy_weight:g}, knee "
+                       f"{iso.knee_e:g} e⁻, {iso.window}-px windows, moving average "
+                       f"{iso.decay:g}, tolerance {iso.tolerance:g}")
+
         self.now = time.perf_counter()
         n_rollbacks = 0   # rollbacks since the last LR halving
         n_halvings  = 0   # LR halvings this run (divergence guard)
@@ -940,6 +968,11 @@ class Trainer:
             rss_mb = read_process_rss_mb()
             if rss_mb is not None:
                 status += f", host RSS {rss_mb / 1024:.1f} GB"
+            if self._isotropy is not None:
+                status += (f", isotropy penalty {window['isotropy']:.4f} (moving average "
+                           + " ".join(f"{band} {float(e):.4f}" for band, e in
+                                      zip(Config.HR_TARGET_BAND_NAMES, self._isotropy.excess(),
+                                          strict=False)) + ")")
             tqdm.write(status)
 
             # Persist for later plotting. Append-only CSV so each row
@@ -1143,7 +1176,7 @@ class Trainer:
     def _train_step_impl(self, lr, hr):
         """One step's graph: the gradient step, the step counter and the
         window statistics → ``(loss, pre-clip gradient norm)``."""
-        loss_value, gnorm = self._gradient_step(lr, hr)
+        loss_value, gnorm, isotropy = self._gradient_step(lr, hr)
 
         # Step counter and window statistics stay on the device; the training
         # loop reads them once per validation window. The counter waits for
@@ -1151,12 +1184,13 @@ class Trainer:
         # inside a multi-step call) never counts.
         with tf.control_dependencies([loss_value, gnorm]):
             step = self.checkpoint.step.assign_add(1)
-        self._update_window(loss_value, gnorm, step)
+        self._update_window(loss_value, gnorm, step, isotropy)
         return loss_value, gnorm
 
-    def _update_window(self, loss_value, gnorm, step):
+    def _update_window(self, loss_value, gnorm, step, isotropy=0.0):
         """Fold one step into the window statistics."""
         self._win_loss_sum.assign_add(loss_value)
+        self._win_isotropy_sum.assign_add(isotropy)
         self._win_gnorm_sum.assign_add(gnorm)
         self._win_gnorm_max.assign(tf.maximum(self._win_gnorm_max, gnorm))
         self._win_steps.assign_add(1.0)
@@ -1168,21 +1202,28 @@ class Trainer:
 
     def _gradient_step_impl(self, lr, hr):
         """Forward, loss, backward, global-norm clip and the Adam update →
-        ``(loss, pre-clip gradient norm)``."""
+        ``(loss, pre-clip gradient norm, isotropy penalty)``; the loss
+        excludes the isotropy penalty, the gradient includes it."""
+        hr_electrons = hr
         if self._batch_stretch is not None:
             lr, hr = self._batch_stretch(lr, hr)
         with tf.GradientTape() as tape:
             sr = self.checkpoint.model(lr, training=True)
             loss_value = self.loss(sr, hr)
             loss_value = self._add_nonneg_penalty(loss_value, sr)
+            objective = loss_value
+            isotropy = tf.constant(0.0)
+            if self._isotropy is not None:
+                isotropy = self._isotropy.penalty(sr, hr_electrons)
+                objective = loss_value + self._isotropy_weight * isotropy
 
-        gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)
+        gradients = tape.gradient(objective, self.checkpoint.model.trainable_variables)
         gradients, gnorm = tf.clip_by_global_norm(
             gradients, clip_norm=GRAD_CLIP_NORM)
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables, strict=False)
         )
-        return loss_value, gnorm
+        return loss_value, gnorm, isotropy
 
     def _add_nonneg_penalty(self, loss_value, sr):
         """Add ``λ · mean(relu(-SR))`` to ``loss_value`` (no-op when λ=0).

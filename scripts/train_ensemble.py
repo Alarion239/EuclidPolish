@@ -54,6 +54,7 @@ from euclid_polish.training.forward_onthefly import (  # noqa: E402
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
 )
 from euclid_polish.training.inference import checkpoint_step  # noqa: E402
+from euclid_polish.training.isotropy import DEFAULT_KNEE_E as DEFAULT_ISOTROPY_KNEE_E  # noqa: E402
 from euclid_polish.training.loss_names import KNEE_LOSS_MODES, LOSS_NAMES  # noqa: E402
 from euclid_polish.training.models.output_knee import (  # noqa: E402
     DEFAULT_INIT_KNEE_E,
@@ -237,6 +238,18 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "and band (dithered exposure count and a white share, "
                         "Config.NOISE_TEXTURE_JITTER_*), so the member cannot "
                         "fit one texture. Member-spec key: noise_texture_jitter.")
+    p.add_argument("--isotropy-penalty", type=float, default=0.0,
+                   help="Learned-knee live member: weight λ of the residual-"
+                        "isotropy penalty (euclid_polish.training.isotropy). "
+                        "On average over recent batches the error must not "
+                        "prefer a direction, which a pixel-axis grid does. 0 "
+                        "= off. Member-spec key: isotropy_penalty.")
+    p.add_argument("--isotropy-knee", type=float, default=None,
+                   help="The asinh knee (e⁻) the isotropy penalty stretches "
+                        "the error at (default "
+                        f"{DEFAULT_ISOTROPY_KNEE_E:g}: nearly logarithmic, faint "
+                        "light counts as much as bright). Member-spec key: "
+                        "isotropy_knee.")
     p.add_argument("--loss-knees", default=None,
                    help="Comma-separated knees (e⁻) a single-image multi-knee "
                         "member is SCORED at — a subset of the knees it reads "
@@ -438,6 +451,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "saturation_mask_prob",
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
                "loss_knees", "loss_floor", "noise_texture_jitter",
+               "isotropy_penalty", "isotropy_knee",
                "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
@@ -469,6 +483,27 @@ def _loss_floor(value) -> float | None:
         print(f"✗ loss_floor must be non-negative, got {value!r}")
         raise SystemExit(2)
     return floor or None
+
+
+def _isotropy(penalty, knee) -> tuple[float, float | None]:
+    """``isotropy_penalty`` / ``isotropy_knee`` → a non-negative weight and
+    a positive knee (``None`` = the default); the knee only with a weight."""
+    try:
+        weight = float(penalty or 0.0)
+        knee = None if knee in (None, "") else float(knee)
+    except (TypeError, ValueError) as exc:
+        print(f"✗ isotropy_penalty / isotropy_knee must be numbers, got {penalty!r}, {knee!r}")
+        raise SystemExit(2) from exc
+    if not weight >= 0.0:
+        print(f"✗ isotropy_penalty must be non-negative, got {penalty!r}")
+        raise SystemExit(2)
+    if knee is not None and not knee > 0.0:
+        print(f"✗ isotropy_knee must be positive, got {knee!r}")
+        raise SystemExit(2)
+    if knee is not None and not weight:
+        print("✗ isotropy_knee needs an isotropy_penalty")
+        raise SystemExit(2)
+    return weight, knee
 
 
 def _flag(value, name: str) -> bool:
@@ -557,6 +592,9 @@ def _diversity_kwargs(args, over: dict) -> dict:
     ))
     target_fwhm_arcsec = validate_target_fwhm_arcsec(
         args.target_psf_fwhm_arcsec)
+    isotropy_penalty, isotropy_knee = _isotropy(
+        over.get("isotropy_penalty", args.isotropy_penalty),
+        over.get("isotropy_knee", args.isotropy_knee))
     if not 0.0 <= saturation_mask_prob <= \
             Config.TRAIN_SATURATION_MASK_PROB_MAX:
         print("✗ saturation_mask_prob must be in [0, "
@@ -572,6 +610,8 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "loss_floor": _loss_floor(over.get("loss_floor", args.loss_floor)),
             "noise_texture_jitter": _flag(over.get("noise_texture_jitter", args.noise_texture_jitter),
                                           "noise_texture_jitter"),
+            "isotropy_penalty": isotropy_penalty,
+            "isotropy_knee": isotropy_knee,
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
             "forward_onthefly": bool(over.get("forward_onthefly",
@@ -644,6 +684,10 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
         identity["loss_floor"] = float(origin["loss_floor"])
     if origin.get("noise_texture_jitter") is True and "noise_texture_jitter" not in override:
         identity["noise_texture_jitter"] = True
+    if origin.get("isotropy_penalty") and "isotropy_penalty" not in override:
+        identity["isotropy_penalty"] = float(origin["isotropy_penalty"])
+        if "isotropy_knee" not in override and origin.get("isotropy_knee"):
+            identity["isotropy_knee"] = float(origin["isotropy_knee"])
     # A member created with faster steps keeps them (a member-spec xla/bf16
     # false turns one off).
     for key, field in (("xla", "jit_compile"), ("bf16", "mixed_precision")):
@@ -917,6 +961,9 @@ def main() -> int:
             knobs += f" noise_aug={s.noise_aug:g}"
         if s.noise_texture_jitter:
             knobs += " noise_texture=jittered"
+        if s.isotropy_penalty:
+            knobs += (f" isotropy={s.isotropy_penalty:g}"
+                      f"@{s.isotropy_knee or DEFAULT_ISOTROPY_KNEE_E:g}e")
         if s.bootstrap:
             knobs += f" bootstrap={s.bootstrap:g}"
         if s.forward_onthefly:
