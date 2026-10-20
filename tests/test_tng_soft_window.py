@@ -12,6 +12,7 @@ from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.tng._image import (
+    SOFT_WINDOW_DECADES,
     SOFT_WINDOW_INNER_FRACTION,
     SOFT_WINDOW_RIM_MARGIN_PX,
     _rotate_arbitrary_array,
@@ -70,6 +71,24 @@ def test_window_is_one_inside_zero_beyond_the_rim_and_the_same_in_every_band():
         np.testing.assert_array_equal(w[..., b], w[..., 0])
     inside = (r > SOFT_WINDOW_INNER_FRACTION * rim) & (r < rim)
     assert np.all((w[..., 0][inside] > 0.0) & (w[..., 0][inside] < 1.0))
+
+
+def test_the_taper_is_a_straight_line_in_log_brightness_with_no_cliff_at_the_rim():
+    """Equal steps in radius lower the light by equal factors: halos that
+    reach the frame's edge fade out instead of ending on a crisp circle at
+    low knees (the cos² window did, 2026-10-20)."""
+    size = 401
+    w = _soft_circular_window_array(np.ones((size, size, 1), np.float32))[..., 0]
+    rim = size / 2.0 - SOFT_WINDOW_RIM_MARGIN_PX
+    inner = SOFT_WINDOW_INNER_FRACTION * rim
+    c = (size - 1) // 2
+    profile = w[c, c:].astype(np.float64)                 # along a row: index = radius
+    r = np.arange(profile.size)
+    taper = (r > inner + 1) & (r < inner + 0.6 * (rim - inner))
+    np.testing.assert_allclose(np.diff(np.log10(profile[taper])),
+                               -SOFT_WINDOW_DECADES / (rim - inner), rtol=0.02)
+    assert 0.0 < profile[int(np.ceil(rim)) - 1] < 1e-4    # the last lit pixel is already faint
+    assert np.all(profile[r >= rim] == 0.0)
 
 
 @pytest.mark.parametrize("angle", [0.0, 17.0, 30.0, 45.0])

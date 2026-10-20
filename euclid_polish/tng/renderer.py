@@ -28,6 +28,7 @@ from euclid_polish.photometry import (
 )
 from euclid_polish.tng._image import (
     GLOW_FADE_REACH,
+    SOFT_WINDOW_DECADES,
     SOFT_WINDOW_INNER_FRACTION,
     SOFT_WINDOW_RIM_MARGIN_PX,
     _block_mean,
@@ -66,7 +67,7 @@ TNG_ROTATION_CROP_ENCLOSED_FRACTION = 0.99
 TNG_ROTATION_CROP_PADDING = 1.05
 TNG_MAX_REBIN_FACTOR = 64
 
-TNG_RADIUS_RENDERING = "euclid_sersic_shrink_only_v5"   # v5: dust-free stars + a smooth scattered glow
+TNG_RADIUS_RENDERING = "euclid_sersic_shrink_only_v6"   # v6: exponential stamp edge, periodic-box donors out, glow ends at zero
 TNG_RADIUS_RENDERER_FINGERPRINT = hashlib.sha256(
     (
         f"{TNG_RADIUS_RENDERING}|"
@@ -76,7 +77,7 @@ TNG_RADIUS_RENDERER_FINGERPRINT = hashlib.sha256(
         f"box_face_galaxies_out_{Config.Tng.MIN_BOX_FACE_DISTANCE_KPC:g}kpc|glow_fade_reach_{GLOW_FADE_REACH:g}|"
         "one_area_resample|no_output_remeasurement|bounded_support|"
         "mer_photometric_fwhm_adjoint_2fwhm|"
-        "soft_circular_window|vis_log_sb_rolloff"
+        f"exponential_circular_window_{SOFT_WINDOW_INNER_FRACTION:g}_{SOFT_WINDOW_DECADES:g}|vis_log_sb_rolloff"
     ).encode("ascii")
 ).hexdigest()
 #: Half-width (dex) of the smooth roll-off that replaced the hard surface-
