@@ -93,7 +93,16 @@ def _scan_complete_galaxies(
     for directory in root.iterdir():
         if not directory.is_dir():
             continue
-        if not (directory / Config.Tng.DONE_MARKER).is_file():
+        marker = directory / Config.Tng.DONE_MARKER
+        if not marker.is_file():
+            continue
+        # On FASRC a galaxy is complete once its download finished with the
+        # dust-free twins: the tagged marker is written after the last frame.
+        # Every folder still holds an untagged marker from the dusty-only
+        # download, so frames being written would otherwise pass as complete
+        # and change under a run (validate+test 54103254, 2026-10-20).
+        if Config.Tng.REQUIRE_DUST_FREE and Config.Tng.DUST_FREE_TAG not in marker.read_text(
+                encoding="utf-8", errors="replace").split():
             continue
         galaxy = TNGGalaxy(directory=directory, subhalo_id=directory.name)
         frames = [

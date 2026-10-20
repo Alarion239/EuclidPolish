@@ -98,3 +98,16 @@ def test_generation_refreshes_the_table_first(tmp_path, monkeypatch):
     args.galaxy_density_arcmin2 = 150.0
     run_pipeline._refresh_box_light_table(args, workers=1)
     assert _scan_complete_galaxies(tmp_path) == ()
+
+
+def test_on_fasrc_a_galaxy_counts_once_its_download_finished(tmp_path, monkeypatch):
+    """Every folder keeps an untagged marker from the dusty-only download; the
+    tagged one is written after the last frame of the new download."""
+    monkeypatch.setattr(Config.Tng, "REQUIRE_DUST_FREE", True)
+    folder = _galaxy(tmp_path, "1", box=0.0)
+    (folder / Config.Tng.DONE_MARKER).write_text("20 fits\n")             # frames still arriving
+    box_light.refresh(tmp_path)
+    assert _scan_complete_galaxies(tmp_path, include_box_galaxies=True) == ()
+    (folder / Config.Tng.DONE_MARKER).write_text("40 fits with-nodust\n")  # download finished
+    box_light.refresh(tmp_path)
+    assert [g.subhalo_id for g in _scan_complete_galaxies(tmp_path)] == ["1"]
