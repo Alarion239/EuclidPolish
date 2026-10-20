@@ -594,3 +594,84 @@ def test_tng_density_with_empty_atlas_is_fatal(tmp_path, monkeypatch):
             image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
             galaxy_density_arcmin2=60.0,
             tng_galaxy_dir=str(tmp_path / "empty_atlas")))
+
+
+class _InlinePool:
+    """ProcessPoolExecutor stand-in that runs tasks in this process and
+    records how it was configured (its initializer runs once, like one
+    worker)."""
+
+    instances: list[dict] = []
+
+    def __init__(self, max_workers=None, **options):
+        type(self).instances.append(options)
+        if options.get("initializer") is not None:
+            options["initializer"](*options.get("initargs", ()))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, *args):
+        from concurrent.futures import Future
+        future = Future()
+        future.set_result(fn(*args))
+        return future
+
+
+def _run_parallel_generation(tmp_path, monkeypatch, fork_context):
+    sim, fwd = _sim_fwd()
+    builds = []
+
+    def build(*initargs):
+        builds.append(initargs)
+        rp._W_SIM, rp._W_FWD, rp._W_RECORDS_DIR = sim, fwd, str(tmp_path)
+
+    _InlinePool.instances = []
+    for name in ("_W_SIM", "_W_FWD", "_W_RECORDS_DIR"):      # restored afterwards
+        monkeypatch.setattr(rp, name, getattr(rp, name))
+    monkeypatch.setattr(rp, "_gen_init_worker", build)
+    monkeypatch.setattr(rp, "_fork_context", lambda: fork_context)
+    monkeypatch.setattr(rp, "ProcessPoolExecutor", _InlinePool)
+    args = rp.parse_args([
+        "--records-dir", str(tmp_path), "--force", "--seed", "7",
+        "--ntrain", "2", "--nvalid", "2", "--ntest", "2", "--gen-workers", "2",
+        "--image-size", "96", "--galaxy-density-arcmin2", "0",
+        "--lens-density-arcmin2", "0", "--star-density-arcmin2", "0",
+    ])
+    rp.step_generate_and_convolve_parallel(args)
+    return builds
+
+
+def test_forked_generation_builds_the_worker_state_once_in_the_parent(
+    tmp_path, monkeypatch,
+):
+    """With fork, the simulator is built ONCE for all three splits in the
+    parent and the pools carry no initializer: workers inherit it."""
+    fork = object()
+    builds = _run_parallel_generation(tmp_path, monkeypatch, fork)
+    assert len(builds) == 1
+    assert [pool.get("mp_context") for pool in _InlinePool.instances] == [fork] * 3
+    assert all("initializer" not in pool for pool in _InlinePool.instances)
+    for subset in ("train", "validate", "test"):
+        assert _count(tfrecord_path(str(tmp_path), f"dirty_{subset}")) == 2
+
+
+def test_spawned_generation_builds_the_worker_state_in_each_worker(
+    tmp_path, monkeypatch,
+):
+    """Without fork (macOS), each pool's workers build their own state from
+    the same arguments; the parent builds nothing."""
+    builds = _run_parallel_generation(tmp_path, monkeypatch, None)
+    assert len(builds) == 3                    # one per pool (one inline worker)
+    assert len({tuple(map(id, b)) for b in builds}) == 1
+    assert all(pool["initializer"] is not None for pool in _InlinePool.instances)
+
+
+def test_fork_context_only_on_linux(monkeypatch):
+    monkeypatch.setattr(rp.sys, "platform", "darwin")
+    assert rp._fork_context() is None
+    monkeypatch.setattr(rp.sys, "platform", "linux")
+    assert rp._fork_context().get_start_method() == "fork"

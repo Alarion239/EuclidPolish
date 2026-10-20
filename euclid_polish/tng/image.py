@@ -36,7 +36,36 @@ class TNGSurfaceBrightnessImage:
     pixel_scale_pc: float
 
     def __post_init__(self) -> None:
-        values = np.array(self.data, dtype=np.float32, order="C", copy=True)
+        self._validate_and_freeze(
+            np.array(self.data, dtype=np.float32, order="C", copy=True)
+        )
+
+    @classmethod
+    def adopt(
+        cls,
+        data: np.ndarray,
+        bands: Sequence[str],
+        pixel_scale_pc: float,
+    ) -> TNGSurfaceBrightnessImage:
+        """Construct around a freshly computed array without copying it.
+
+        For pixels a caller has just produced and keeps no other reference to
+        (a loader's or an image operation's output): the array is validated
+        exactly as by the constructor and marked read-only in place, so the
+        image still owns its state. Anything not already C-contiguous
+        ``float32`` is copied as the constructor would.
+        """
+        values = np.asarray(data)
+        if values.dtype != np.float32 or not values.flags.c_contiguous:
+            values = np.array(values, dtype=np.float32, order="C", copy=True)
+        image = object.__new__(cls)
+        object.__setattr__(image, "data", values)
+        object.__setattr__(image, "bands", tuple(bands))
+        object.__setattr__(image, "pixel_scale_pc", pixel_scale_pc)
+        image._validate_and_freeze(values)
+        return image
+
+    def _validate_and_freeze(self, values: np.ndarray) -> None:
         if values.ndim != 3:
             raise ValueError(
                 "TNGSurfaceBrightnessImage.data must have shape (H, W, C), "
@@ -147,6 +176,19 @@ class TNGSurfaceBrightnessImage:
                 if pixel_scale_pc is None
                 else pixel_scale_pc
             ),
+        )
+
+    def adopting(
+        self,
+        data: np.ndarray,
+        *,
+        pixel_scale_pc: float | None = None,
+    ) -> TNGSurfaceBrightnessImage:
+        """:meth:`with_data` for a freshly computed array (see :meth:`adopt`)."""
+        return type(self).adopt(
+            data,
+            self.bands,
+            self.pixel_scale_pc if pixel_scale_pc is None else pixel_scale_pc,
         )
 
     @classmethod

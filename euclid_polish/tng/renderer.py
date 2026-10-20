@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 from collections import OrderedDict
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import cast
 
@@ -36,6 +38,9 @@ from euclid_polish.tng._image import (
     _soft_circular_window,
     _soft_circular_window_array,
     _stochastic_round_factor,
+    ViewRead,
+    compile_glow_kernels,
+    start_view_read,
 )
 from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 from euclid_polish.tng.redshift import (
@@ -84,6 +89,8 @@ SB_CUT_ROLLOFF_DEX = 0.2
 _SOURCE_CACHE_MAX_BYTES = 256 * 1024 * 1024
 _APERTURE_CACHE_MAX_BYTES = 16 * 1024 * 1024
 _CIRCULAR_PSF_CACHE_MAX_BYTES = 16 * 1024 * 1024
+#: Threads reading donor FITS files: one view's eight, plus a prefetched one's.
+_READ_THREADS = 16
 
 
 def _positive_finite(value: float, name: str) -> float:
@@ -195,6 +202,52 @@ class TNGRenderer:
         self._aperture_cache_bytes = 0
         self._circular_psf_cache: OrderedDict[tuple, np.ndarray] = OrderedDict()
         self._circular_psf_cache_bytes = 0
+        # Each donor view's rotation crop, a function of its pixels alone:
+        # kept after the (large) source itself is evicted.
+        self._observed_crop_cache: dict[tuple, tuple[slice, slice]] = {}
+        # FITS reads run on this process's own thread pool (made on first use
+        # in the process that renders: a forked worker gets a fresh one).
+        self._reader: ThreadPoolExecutor | None = None
+        self._reader_pid = 0
+        self._prefetched: dict[tuple, ViewRead] = {}
+        self._prefetch_hits = 0
+        self._prefetch_misses = 0
+
+    @staticmethod
+    def warm_up() -> None:
+        """Compile the donor loader's numba kernels (a generation parent does
+        this once, before forking its workers)."""
+        compile_glow_kernels()
+
+    def _read_pool(self) -> ThreadPoolExecutor:
+        if self._reader is None or self._reader_pid != os.getpid():
+            self._reader = ThreadPoolExecutor(
+                max_workers=_READ_THREADS, thread_name_prefix="tng-read",
+            )
+            self._reader_pid = os.getpid()
+            self._prefetched = {}
+        return self._reader
+
+    def prefetch(self, view: TNGView) -> None:
+        """Start reading ``view``'s files in the background, for a render
+        that will probably need them next.
+
+        Only a hint: the render that asks for this view takes the files
+        already read; any other render reads its own. A view's pixels are
+        the same either way, so a wrong guess costs one wasted read.
+        """
+        if any(key[1:3] == (view.subhalo_id, view.orientation)
+               for key in self._source_cache):
+            return                      # (almost surely) still loaded
+        paths = view.fits_paths()
+        if paths in self._prefetched:
+            return
+        pool = self._read_pool()
+        self._prefetched[paths] = start_view_read(paths, pool)
+        # The current galaxy's read (asked for one galaxy earlier) and the
+        # next one's; older guesses were wrong and are dropped.
+        while len(self._prefetched) > 2:
+            del self._prefetched[next(iter(self._prefetched))]
 
     def clear_caches(self) -> None:
         """Release every donor and PSF cache owned by this renderer."""
@@ -205,6 +258,8 @@ class TNGRenderer:
         self._aperture_cache_bytes = 0
         self._circular_psf_cache.clear()
         self._circular_psf_cache_bytes = 0
+        self._observed_crop_cache.clear()
+        self._prefetched = {}
 
     def cache_info(self) -> dict[str, int]:
         """Return compact cache counts and resident-byte totals."""
@@ -216,6 +271,8 @@ class TNGRenderer:
             "aperture_bytes": self._aperture_cache_bytes,
             "circular_psf_entries": len(self._circular_psf_cache),
             "circular_psf_bytes": self._circular_psf_cache_bytes,
+            "prefetch_hits": self._prefetch_hits,
+            "prefetch_misses": self._prefetch_misses,
         }
 
     def render_observed_radius(
@@ -599,21 +656,16 @@ class TNGRenderer:
             )
         scale = target / view.native_re_arcsec(self.pixel_scale_arcsec)
         rotation = self._draw_nominal_rotation(rng)
-        native = self._native_source(view)
-        rows, columns = _centered_rotation_crop_slices(
-            native,
-            1,
-            band="VIS",
-            enclosed_fraction=0.999,
-            padding=TNG_ROTATION_CROP_PADDING,
-        )
+        key, native = self._native_source_keyed(view)
+        rows, columns = self._observed_crop(key, native)
         # Soft circular window first: no light reaches a straight edge of the
         # frame or the crop square (which rotation would turn into an octagon).
         # Its rim clears the cubic kernel and the 1/scale native pixels the
-        # area shrink averages into each output pixel.
-        source = _soft_circular_window(
-            native.cropped(rows, columns), SOFT_WINDOW_RIM_MARGIN_PX + 1.0 / scale
-        )
+        # area shrink averages into each output pixel. Cropped and windowed in
+        # one pass: the window's product is the new array.
+        source = native.adopting(_soft_circular_window_array(
+            native.data[rows, columns], SOFT_WINDOW_RIM_MARGIN_PX + 1.0 / scale
+        ))
         source = rotation.apply(source)
         surface_brightness = _downsample_surface_brightness(source, scale)
         support_clipped = False
@@ -649,12 +701,41 @@ class TNGRenderer:
         )
 
     def _native_source(self, view: TNGView) -> TNGSurfaceBrightnessImage:
+        return self._native_source_keyed(view)[1]
+
+    def _observed_crop(
+        self, key: tuple, native: TNGSurfaceBrightnessImage,
+    ) -> tuple[slice, slice]:
+        """The centred square holding 99.9% of the donor's VIS light, which
+        the observed-radius render rotates (memoised per source key)."""
+        crop = self._observed_crop_cache.get(key)
+        if crop is None:
+            crop = _centered_rotation_crop_slices(
+                native,
+                1,
+                band="VIS",
+                enclosed_fraction=0.999,
+                padding=TNG_ROTATION_CROP_PADDING,
+            )
+            self._observed_crop_cache[key] = crop
+        return crop
+
+    def _native_source_keyed(
+        self, view: TNGView,
+    ) -> tuple[tuple, TNGSurfaceBrightnessImage]:
         key = self._source_key(view)
         cached = self._source_cache.pop(key, None)
         if cached is not None:
             self._source_cache[key] = cached
-            return cached
-        source = view.load_surface_brightness()
+            return key, cached
+        paths = view.fits_paths()
+        read = self._prefetched.pop(paths, None)
+        if read is None:
+            self._prefetch_misses += 1
+            read = start_view_read(paths, self._read_pool())
+        else:
+            self._prefetch_hits += 1
+        source = view.load_surface_brightness(read)
         if source.data.nbytes <= self._source_cache_max_bytes:
             logical_key = key[:3]
             for old_key in list(self._source_cache):
@@ -672,7 +753,7 @@ class TNGRenderer:
                 self._native_photometry_cache.pop(evicted_key, None)
             self._source_cache[key] = source
             self._source_cache_bytes += int(source.data.nbytes)
-        return source
+        return key, source
 
     @staticmethod
     def _source_key(view: TNGView) -> tuple:

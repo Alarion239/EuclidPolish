@@ -80,12 +80,21 @@ def refresh(root: str | Path, *, workers: int = 8) -> dict[str, Any]:
     root = Path(root)
     path = root / Config.Tng.BOX_LIGHT_TABLE
     previous = _read(path)
-    galaxies = [g for g in _scan_complete_galaxies(root, include_box_galaxies=True)
-                if all(twin.is_file() for _, twin in _frames(g))]
+
+    def twinned_identity(galaxy: TNGGalaxy) -> list[list[Any]] | None:
+        if not all(twin.is_file() for _, twin in _frames(galaxy)):
+            return None
+        return _identity(galaxy)
+
+    # ~20 stat calls per galaxy: concurrent, as each is a network round trip.
+    scanned = _scan_complete_galaxies(root, include_box_galaxies=True)
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        identities = list(pool.map(twinned_identity, scanned))
     entries: dict[str, Any] = {}
     todo = []
-    for galaxy in galaxies:
-        identity = _identity(galaxy)
+    for galaxy, identity in zip(scanned, identities, strict=True):
+        if identity is None:
+            continue
         old = previous.get(galaxy.subhalo_id)
         if old is not None and old.get("files") == identity:
             entries[galaxy.subhalo_id] = old

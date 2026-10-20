@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,45 @@ def _resolve_fits_path(
     return padded if padded.is_file() else unpadded
 
 
+def _regular_file_names(directory: Path) -> frozenset[str]:
+    """Names of the regular files (symlinks followed, as ``Path.is_file``) in
+    ``directory``: one directory read instead of a stat per file, which is
+    what an atlas scan costs on network storage."""
+    with os.scandir(directory) as entries:
+        return frozenset(entry.name for entry in entries if entry.is_file())
+
+
+def _resolve_fits_name(
+    names: frozenset[str],
+    subhalo_id: str,
+    orientation: int,
+    fits_band: str,
+) -> str:
+    """:func:`_resolve_fits_path`'s choice, among a directory's regular files."""
+    unpadded = f"TNG{subhalo_id}_O{orientation}_Euclid_{fits_band}.fits"
+    if unpadded in names:
+        return unpadded
+    try:
+        padded_id = f"{int(subhalo_id):06d}"
+    except ValueError:
+        return unpadded
+    padded = f"TNG{padded_id}_O{orientation}_Euclid_{fits_band}.fits"
+    return padded if padded in names else unpadded
+
+
+def _galaxy_frame_names(
+    galaxy: TNGGalaxy,
+    names: frozenset[str],
+) -> list[str]:
+    """The galaxy's dusty frame names, orientation-major, as ``fits_path``
+    resolves them."""
+    return [
+        _resolve_fits_name(names, galaxy.subhalo_id, orientation, band)
+        for orientation in _ORIENTATIONS
+        for band in TNG_FITS_BANDS
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class TNGGalaxy:
     """One completed galaxy directory in the local SKIRT atlas."""
@@ -90,29 +130,25 @@ def _scan_complete_galaxies(
     if not root.is_dir():
         return ()
     galaxies: list[TNGGalaxy] = []
-    for directory in root.iterdir():
-        if not directory.is_dir():
-            continue
-        marker = directory / Config.Tng.DONE_MARKER
-        if not marker.is_file():
+    with os.scandir(root) as entries:
+        directories = [root / entry.name for entry in entries if entry.is_dir()]
+    for directory in directories:
+        names = _regular_file_names(directory)
+        if Config.Tng.DONE_MARKER not in names:
             continue
         # On FASRC a galaxy is complete once its download finished with the
         # dust-free twins: the tagged marker is written after the last frame.
         # Every folder still holds an untagged marker from the dusty-only
         # download, so frames being written would otherwise pass as complete
         # and change under a run (validate+test 54103254, 2026-10-20).
-        if Config.Tng.REQUIRE_DUST_FREE and Config.Tng.DUST_FREE_TAG not in marker.read_text(
-                encoding="utf-8", errors="replace").split():
+        if Config.Tng.REQUIRE_DUST_FREE and Config.Tng.DUST_FREE_TAG not in (
+                directory / Config.Tng.DONE_MARKER).read_text(encoding="utf-8", errors="replace").split():
             continue
         galaxy = TNGGalaxy(directory=directory, subhalo_id=directory.name)
-        frames = [
-            galaxy.fits_path(orientation, band)
-            for orientation in _ORIENTATIONS
-            for band in TNG_FITS_BANDS
-        ]
-        if all(path.is_file() for path in frames) and (
+        frames = _galaxy_frame_names(galaxy, names)
+        if all(name in names for name in frames) and (
             not Config.Tng.REQUIRE_DUST_FREE
-            or all(dust_free_twin(path).is_file() for path in frames)
+            or all(dust_free_twin(name).name in names for name in frames)
         ):
             galaxies.append(galaxy)
     if not include_box_galaxies:
@@ -236,10 +272,12 @@ class TNGAtlas:
                 else None,
             )
         )
+        galaxies = _scan_complete_galaxies(atlas_root)
         status = validate_manifest(
             str(atlas_root),
             properties_path=str(properties_source),
             manifest_path_value=str(manifest_source),
+            galaxies=galaxies,
         )
         if not status.get("valid"):
             reasons = list(status.get("reasons") or [])
@@ -250,7 +288,6 @@ class TNGAtlas:
 
         radii = TNGRadiusManifest.read(manifest_source)
         properties = TNGPropertyCatalog.read(properties_source)
-        galaxies = _scan_complete_galaxies(atlas_root)
         expected_views = {
             (galaxy.subhalo_id, orientation)
             for galaxy in galaxies
