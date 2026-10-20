@@ -66,6 +66,22 @@ def load_star_mask(
     return mask
 
 
+#: The glow's fade reaches exactly zero this many fade lengths from the
+#: outline. A plain exp(-d / FADE), computed only that far out (exp(-14) ~
+#: 1e-6 of the glow), stopped on the straight edges of the computed region: a
+#: faint rectangle around bright galaxies at knee 1e-3 (434357 in validate 18,
+#: 2026-10-20).
+GLOW_FADE_REACH = 14.0
+
+
+def _glow_fade(distance_px: np.ndarray, fade_px: float) -> np.ndarray:
+    """exp(-d / fade), lowered to reach zero at ``GLOW_FADE_REACH`` fade
+    lengths and rescaled to stay one on the outline."""
+    floor = np.exp(-GLOW_FADE_REACH)
+    fade = (np.exp(-np.asarray(distance_px, dtype=np.float64) / fade_px) - floor) / (1.0 - floor)
+    return np.maximum(fade, 0.0).astype(np.float32)
+
+
 def star_light_with_glow(
     data: np.ndarray,
     stars: np.ndarray,
@@ -80,8 +96,9 @@ def star_light_with_glow(
     (flat facets, straight edges, shadow rays; Baes et al. 2024), so only a
     smooth version of it is kept, close to the galaxy: the off-star light
     blurred by ``Config.Tng.SCATTER_GLOW_BLUR_PC`` (normalised over the
-    off-star pixels, so no starlight leaks into it), times exp(-d / FADE) with
-    d the distance from the galaxy's outline (the star mask smoothed by
+    off-star pixels, so no starlight leaks into it), times exp(-d / FADE)
+    (reaching zero at ``GLOW_FADE_REACH`` fade lengths) with d the distance
+    from the galaxy's outline (the star mask smoothed by
     ``STAR_BODY_SMOOTH_PC``, cut at one half). Measured from the outline, not
     from each star, so lone halo stars grow no glow of their own, while gaps
     between the stars inside the outline get the full glow.
@@ -95,14 +112,14 @@ def star_light_with_glow(
     body = _gaussian_blur(stars.astype(np.float32), body_px) > 0.5
     if not body.any():
         return out
-    # Only where the fade still matters (exp(-14) ~ 1e-6 of the glow) plus the
-    # blur's reach: generation loads a donor for nearly every galaxy it draws.
+    # Only where the fade is not zero plus the blur's reach: generation loads
+    # a donor for nearly every galaxy it draws.
     rows, cols = np.nonzero(body)
-    margin = int(np.ceil(14.0 * fade_px + 3.0 * blur_px))
+    margin = int(np.ceil(GLOW_FADE_REACH * fade_px + 3.0 * blur_px))
     ys = slice(max(rows.min() - margin, 0), min(rows.max() + margin + 1, data.shape[0]))
     xs = slice(max(cols.min() - margin, 0), min(cols.max() + margin + 1, data.shape[1]))
     sub_stars, sub_body = stars[ys, xs], body[ys, xs]
-    fade = np.exp(-distance_transform_edt(~sub_body) / fade_px).astype(np.float32)
+    fade = _glow_fade(distance_transform_edt(~sub_body), fade_px)
     off = (~sub_stars).astype(np.float32)
     # The 3 kpc blur is smooth: computed on a coarser grid, then interpolated.
     factor = max(1, int(blur_px // 10.0))

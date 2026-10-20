@@ -13,7 +13,7 @@ from astropy.io import fits
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 
 from euclid_polish.config import Config
-from euclid_polish.tng._image import star_light_with_glow
+from euclid_polish.tng._image import GLOW_FADE_REACH, star_light_with_glow
 from euclid_polish.tng.atlas import _scan_complete_galaxies
 from euclid_polish.tng.radius_manifest import ALGORITHM_VERSION, build_manifest
 from euclid_polish.tng.types import TNGView, dust_free_twin
@@ -108,6 +108,23 @@ def test_the_glow_matches_a_plain_gaussian_blur():
     glow = gaussian_filter(sky * off, 30.0, mode="constant") / gaussian_filter(off, 30.0, mode="constant")
     near = ~stars & (fade > 1e-2)
     np.testing.assert_allclose(out[near], (glow * fade)[near], rtol=0.03)
+
+
+def test_the_glow_ends_at_zero_before_where_it_is_computed_stops():
+    """No faint rectangle: the fade reaches zero at GLOW_FADE_REACH fade
+    lengths, inside the region the glow is computed in (434357, 2026-10-20)."""
+    size = 400
+    yy, xx = np.mgrid[:size, :size]
+    stars = np.hypot(yy - size / 2, xx - size / 2) < 20
+    data = (np.where(stars, 1.0, 0.0) + 1e-3)[..., None].astype(np.float32)   # scattered light everywhere
+    out = star_light_with_glow(data, stars, pixel_scale_pc=100.0)[..., 0]
+    body = gaussian_filter(stars.astype(float), 10.0) > 0.5
+    d = distance_transform_edt(~body)
+    reach = GLOW_FADE_REACH * 5.0                                  # 0.5 kpc fade at 100 pc pixels
+    assert np.all(out[~stars & (d >= reach)] == 0.0)
+    inside = ~stars & (d < reach - 1)
+    assert np.all(out[inside] > 0.0)                               # ... and fades there continuously
+    assert out[~stars & (d > reach - 2) & (d < reach)].max() < 1e-3 * np.exp(-GLOW_FADE_REACH + 1)
 
 
 def test_one_mask_for_all_bands(tmp_path):
