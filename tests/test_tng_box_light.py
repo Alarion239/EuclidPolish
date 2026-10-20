@@ -76,16 +76,17 @@ def test_refresh_measures_only_new_or_changed_galaxies(tmp_path):
     assert (third["measured"], third["reused"]) == (2, 0)
 
 
-def test_generation_on_fasrc_needs_every_galaxy_measured(tmp_path, monkeypatch):
-    _galaxy(tmp_path, "1", box=1e-3)
+def test_generation_on_fasrc_needs_the_table_and_keeps_one_atlas_per_run(tmp_path, monkeypatch):
+    _galaxy(tmp_path, "1", box=0.0)
     assert [g.subhalo_id for g in _scan_complete_galaxies(tmp_path)] == ["1"]   # no table: atlas as it is
     monkeypatch.setattr(Config.Tng, "REQUIRE_DUST_FREE", True)
     with pytest.raises(FileNotFoundError, match="box_light"):
         _scan_complete_galaxies(tmp_path)
     box_light.refresh(tmp_path)
-    _galaxy(tmp_path, "2", box=0.0)                   # downloaded after the table was written
-    with pytest.raises(ValueError, match="lacks 1 galaxies"):
-        _scan_complete_galaxies(tmp_path)
+    _galaxy(tmp_path, "2", box=0.0)                   # finished downloading after the table was written
+    assert [g.subhalo_id for g in _scan_complete_galaxies(tmp_path)] == ["1"]   # joins at the next refresh
+    box_light.refresh(tmp_path)
+    assert [g.subhalo_id for g in _scan_complete_galaxies(tmp_path)] == ["1", "2"]
 
 
 def test_generation_refreshes_the_table_first(tmp_path, monkeypatch):

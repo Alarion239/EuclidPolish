@@ -113,11 +113,14 @@ def _scan_complete_galaxies(
 
 
 def _box_galaxies(root: Path, galaxies: list[TNGGalaxy]) -> frozenset[str]:
-    """Galaxies whose SKIRT frames carry the octree dust box: more than
-    ``Config.Tng.MAX_OUTSIDE_STAR_FRACTION`` of their VIS light where no star
-    is, in any orientation (table written by euclid_polish/tng/box_light.py).
-    Generation on FASRC (``REQUIRE_DUST_FREE``) needs every galaxy measured;
-    elsewhere a missing table leaves the atlas as it is."""
+    """Galaxies that are no donors: those whose SKIRT frames carry the octree
+    dust box - more than ``Config.Tng.MAX_OUTSIDE_STAR_FRACTION`` of their VIS
+    light where no star is, in any orientation (table written by
+    euclid_polish/tng/box_light.py) - and, on FASRC (``REQUIRE_DUST_FREE``),
+    galaxies the table does not list yet: they finished downloading after
+    generation measured the atlas, and join at the next refresh, so one run
+    keeps one atlas. Generation on FASRC needs the table; elsewhere a missing
+    table leaves the atlas as it is."""
     table = root / Config.Tng.BOX_LIGHT_TABLE
     if not table.is_file():
         if Config.Tng.REQUIRE_DUST_FREE and galaxies:
@@ -125,13 +128,11 @@ def _box_galaxies(root: Path, galaxies: list[TNGGalaxy]) -> frozenset[str]:
                 f"{table} is missing: run python -m euclid_polish.tng.box_light --root {root}")
         return frozenset()
     measured = json.loads(table.read_text(encoding="utf-8")).get("galaxies", {})
-    unmeasured = [galaxy.subhalo_id for galaxy in galaxies if galaxy.subhalo_id not in measured]
-    if unmeasured and Config.Tng.REQUIRE_DUST_FREE:
-        raise ValueError(
-            f"{table} lacks {len(unmeasured)} galaxies (e.g. {unmeasured[0]}): run "
-            f"python -m euclid_polish.tng.box_light --root {root}")
     limit = Config.Tng.MAX_OUTSIDE_STAR_FRACTION
-    return frozenset(gid for gid, entry in measured.items() if max(entry["fractions"]) > limit)
+    boxed = {gid for gid, entry in measured.items() if max(entry["fractions"]) > limit}
+    if Config.Tng.REQUIRE_DUST_FREE:
+        boxed |= {galaxy.subhalo_id for galaxy in galaxies if galaxy.subhalo_id not in measured}
+    return frozenset(boxed)
 
 
 def _positive_finite(value: float, name: str) -> float:
