@@ -31,7 +31,7 @@ import os
 import shutil
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 # Cap per-process BLAS threads BEFORE numpy import so the parallel
 # generate+forward workers map 1:1 onto their CPUs instead of each
@@ -1244,12 +1244,19 @@ def _merge_subset(records_dir: str, subset: str,
     merged — so a kill mid-merge leaves the parts intact for the next resume
     rather than a half-merged final file."""
     sids = _existing_part_sids(records_dir, subset)
-    for kind in kinds:
+
+    def merge(kind: str) -> None:
         parts = [tfrecord_path(records_dir, f"{kind}_{subset}.part{sid:04d}")
                  for sid in sids]
         out = tfrecord_path(records_dir, f"{kind}_{subset}")
         _concat_tfrecords(parts, out + ".tmp")
         os.replace(out + ".tmp", out)
+
+    # The kinds are independent files (a train split is ~60 GB to copy on
+    # network storage): merged concurrently.
+    with ThreadPoolExecutor(max_workers=len(kinds)) as pool:
+        for future in [pool.submit(merge, kind) for kind in kinds]:
+            future.result()
     src_parts = [tfrecord_path(records_dir, f"sources_{subset}.part{sid:04d}")
                  .replace(".tfrecord", ".csv") for sid in sids]
     concat_source_csvs(src_parts, tfrecord_path(

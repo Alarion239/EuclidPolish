@@ -23,8 +23,9 @@ from __future__ import annotations
 import hashlib
 import math
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import cast
 
 import numpy as np
@@ -67,7 +68,7 @@ from euclid_polish.tng.renderer import (
     TNG_RADIUS_RENDERER_FINGERPRINT,
     TNG_RADIUS_RENDERING,
 )
-from euclid_polish.tng.types import N_ORIENTATIONS, TNG_NATIVE_PC_PER_PIXEL
+from euclid_polish.tng.types import N_ORIENTATIONS, TNG_NATIVE_PC_PER_PIXEL, TNGView
 
 
 class _NoRenderableTNGDonorError(ValueError):
@@ -823,8 +824,12 @@ class SkySimulator:
         rng: np.random.Generator,
         target_sfr_rank: float,
         target_re_arcsec: float,
+        *,
+        commit: bool = True,
     ) -> tuple[TNGGalaxy, dict[str, float | int | str]]:
-        """Choose a TNG donor by a rank-space SFR kernel among eligibles."""
+        """Choose a TNG donor by a rank-space SFR kernel among eligibles.
+
+        ``commit=False`` leaves the donor balance as it was (a look-ahead)."""
         if (
             self._atlas_logm is None
             or self._atlas_activity_class is None
@@ -860,7 +865,8 @@ class SkySimulator:
         local_index = int(rng.choice(candidates.size, p=probabilities))
         selected = int(candidates[local_index])
         use_count = int(self._morphology_use_counts[selected]) + 1
-        self._morphology_use_counts[selected] = use_count
+        if commit:
+            self._morphology_use_counts[selected] = use_count
         donor_sfr_rank = float(self._atlas_sfr_rank[selected])
 
         atlas = self.tng_atlas
@@ -891,15 +897,77 @@ class SkySimulator:
             "worker_donor_use_count": use_count,
         }
 
+    def _peek_tng_view(
+        self,
+        rng: np.random.Generator,
+        *,
+        position: tuple[float, float] | None,
+        off_field: bool,
+    ) -> TNGView | None:
+        """The donor view :meth:`_add_tng_galaxy` would draw first with this
+        (galaxy's own, fresh) ``rng``, without changing the donor balance;
+        ``None`` when it renders nothing or the prior is not the staged one.
+
+        The galaxy's draws come from its own seeded stream and the balance
+        changes only when a donor is picked, so the view is exactly the one
+        the real draw takes unless a galaxy before it is redrawn (a rendered
+        stamp failing its photometry): a look-ahead, never a decision.
+        """
+        prior = self.population_prior
+        atlas = self.tng_atlas
+        if not isinstance(prior, JointGalaxyPopulationPrior) or atlas is None:
+            return None
+        color_rng = _derived_rng_from_state(rng, _GALAXY_COLOR_SEED_TAG)
+        for _attempt in range(32):
+            draw = prior.sample_geometry(rng)
+            if off_field and (position is None or not self._off_field_galaxy_reaches_canvas(
+                    position[0], position[1], draw.re_arcsec)):
+                return None
+            draw = prior.complete_draw(draw, rng, color_rng=color_rng)
+            try:
+                galaxy, _ = self._pick_sfr_matched_field_galaxy(
+                    rng, draw.sfr_rank, draw.re_arcsec, commit=False,
+                )
+            except _NoRenderableTNGDonorError:
+                continue
+            views = atlas.eligible_views(galaxy, draw.re_arcsec, self.config.pixel_scale)
+            return views[int(rng.integers(0, len(views)))] if views else None
+        return None
+
+    def _prefetch_next_donor(
+        self,
+        jobs: Sequence[tuple[int, bool]],
+        after: int,
+    ) -> None:
+        """Start reading the donor of the first galaxy after ``jobs[after]``
+        that will render one (``jobs``: ``(seed, off_field)`` in field order),
+        so its files arrive while the current galaxy renders."""
+        try:
+            for seed, off_field in jobs[after + 1:]:
+                rng = np.random.default_rng(seed)
+                position = self._random_off_field_pix(rng) if off_field else None
+                view = self._peek_tng_view(rng, position=position, off_field=off_field)
+                if view is not None:
+                    self.tng_renderer.prefetch(view)
+                    return
+                if not off_field:
+                    return
+        except Exception:        # a look-ahead must never stop the real draw
+            return
+
     # ------------------------------------------------------------------ #
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
         *, position: tuple[float, float] | None = None,
         off_field: bool = False,
         color_rng: np.random.Generator | None = None,
+        on_view_chosen: Callable[[], None] | None = None,
         _attempt: int = 0,
     ) -> dict | None:
-        """Draw geometry, brightness and colours, then an SFR-matched donor."""
+        """Draw geometry, brightness and colours, then an SFR-matched donor.
+
+        ``on_view_chosen`` is called once the donor view is drawn, before it
+        is rendered (the field looks ahead to its next galaxy there)."""
         if self.population_prior is None:
             return None
         prior = self.population_prior
@@ -946,7 +1014,7 @@ class SkySimulator:
             if _attempt < 31:
                 return self._add_tng_galaxy(
                     canvas_4ch, rng, position=position, off_field=off_field,
-                    color_rng=color_rng,
+                    color_rng=color_rng, on_view_chosen=on_view_chosen,
                     _attempt=_attempt + 1,
                 )
             raise RuntimeError(
@@ -964,6 +1032,8 @@ class SkySimulator:
         if not views:
             raise RuntimeError("selected TNG donor has no shrink-only view")
         view = views[int(rng.integers(0, len(views)))]
+        if on_view_chosen is not None:
+            on_view_chosen()
         if staged:
             rendered = self.tng_renderer.render_observed_radius(
                 view,
@@ -1017,7 +1087,7 @@ class SkySimulator:
                     return self._add_tng_galaxy(
                         canvas_4ch, rng, position=position,
                         off_field=off_field,
-                        color_rng=color_rng,
+                        color_rng=color_rng, on_view_chosen=on_view_chosen,
                         _attempt=_attempt + 1,
                     )
                 raise RuntimeError(
@@ -1565,15 +1635,21 @@ class SkySimulator:
         canvas = np.zeros((N, N, Config.NUM_LR_CHANNELS), dtype=np.float32)
         galaxies, off_field_galaxies, stars, lenses = [], [], [], []
 
-        for source_seed in galaxy_seeds:
+        # While one galaxy renders, the next donor's files are read (only a
+        # read-ahead: every draw below is exactly as without it).
+        jobs = ([(seed, False) for seed in galaxy_seeds]
+                + [(seed, True) for seed in off_field_galaxy_seeds])
+        self._prefetch_next_donor(jobs, -1)
+        for index, source_seed in enumerate(galaxy_seeds):
             rec = self._add_tng_galaxy(
                 canvas,
                 np.random.default_rng(source_seed),
+                on_view_chosen=partial(self._prefetch_next_donor, jobs, index),
             )
             if rec is not None:
                 galaxies.append(rec)
 
-        for source_seed in off_field_galaxy_seeds:
+        for index, source_seed in enumerate(off_field_galaxy_seeds, start=len(galaxy_seeds)):
             source_rng = np.random.default_rng(source_seed)
             position = self._random_off_field_pix(source_rng)
             rec = self._add_tng_galaxy(
@@ -1581,6 +1657,7 @@ class SkySimulator:
                 source_rng,
                 position=position,
                 off_field=True,
+                on_view_chosen=partial(self._prefetch_next_donor, jobs, index),
             )
             if rec is not None:
                 off_field_galaxies.append(rec)

@@ -48,10 +48,10 @@ def _reference_glow(data, stars, *, pixel_scale_pc):
     fade = np.exp(-distance_transform_edt(~sub_body) / fade_px).astype(np.float32)
     off = (~sub_stars).astype(np.float32)
     factor = max(1, int(blur_px // 10.0))
-    coverage = tng_image._coarse_blur(off, blur_px, factor)
+    coverage = _reference_coarse_blur(off, blur_px, factor)
     for band in range(data.shape[-1]):
         light = np.nan_to_num(data[ys, xs, band]) * off
-        glow = tng_image._coarse_blur(light, blur_px, factor) / np.maximum(coverage, 1e-6)
+        glow = _reference_coarse_blur(light, blur_px, factor) / np.maximum(coverage, 1e-6)
         out[ys, xs, band] = np.where(sub_stars, data[ys, xs, band], glow * fade)
     return out
 
@@ -300,3 +300,31 @@ def test_inventory_matches_per_file_stats(tmp_path):
     _atlas(tmp_path)
     galaxies = [TNGGalaxy(directory=tmp_path / gid, subhalo_id=gid) for gid in ("11", "12", "13", "14")]
     assert _inventory(galaxies) == _reference_inventory(galaxies)
+
+
+def _reference_coarse_blur(image, sigma_px, factor):
+    if factor <= 1:
+        return tng_image._gaussian_blur(image, sigma_px)
+    height, width = image.shape
+    padded = np.pad(image, ((0, -height % factor), (0, -width % factor)))
+    small = padded.reshape(padded.shape[0] // factor, factor,
+                           padded.shape[1] // factor, factor).mean(axis=(1, 3))
+    small = tng_image._gaussian_blur(small.astype(np.float32), sigma_px / factor)
+    big = cv2.resize(small, (padded.shape[1], padded.shape[0]), interpolation=cv2.INTER_LINEAR)
+    return big[:height, :width]
+
+
+def test_coarse_blur_is_bitwise_the_padded_numpy_mean():
+    """Including the shapes where numpy sums a block in another order (one
+    block across the width, 8+ terms) and so keeps the numpy path."""
+    rng = np.random.default_rng(2)
+    shapes = [(int(h), int(w)) for h, w in rng.integers(1, 260, size=(150, 2))]
+    shapes += [(30, 3), (31, 4), (7, 2), (90, 9), (64, 64)]
+    for index, (height, width) in enumerate(shapes):
+        factor = int(rng.integers(1, 10)) if index < 150 else 3
+        image = (rng.normal(0.0, 1.0, (height, width)) * 10 ** rng.uniform(-8, 3)).astype(np.float32)
+        if index % 4 == 0:
+            image[rng.random(image.shape) < 0.6] = 0.0
+        sigma = float(rng.uniform(1.0, 40.0))
+        assert _same(tng_image._coarse_blur(image, sigma, factor),
+                     _reference_coarse_blur(image, sigma, factor)), (height, width, factor)

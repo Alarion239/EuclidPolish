@@ -140,15 +140,32 @@ class TNGView:
                 )
         return tuple(identities)
 
-    def load_surface_brightness(self) -> TNGSurfaceBrightnessImage:
+    def fits_paths(self) -> tuple[Path, ...]:
+        """The four dusty frames, in ``TNG_FITS_BANDS`` order."""
+        return tuple(self.fits_path(fits_band) for fits_band in TNG_FITS_BANDS)
+
+    def load_surface_brightness(self, read: Any = None) -> TNGSurfaceBrightnessImage:
         """Load and register the four native MJy/sr planes in model-band order:
         dusty light where the dust-free twins have light, a smooth glow of the
         scattered light just around it (see
-        :func:`euclid_polish.tng._image.star_light_with_glow`)."""
-        from euclid_polish.tng._image import load_star_mask, load_view_frames, star_light_with_glow
+        :func:`euclid_polish.tng._image.star_light_with_glow`).
 
-        paths = [self.fits_path(fits_band) for fits_band in TNG_FITS_BANDS]
-        image, mask = load_view_frames(paths, TNG_MODEL_BANDS)
+        ``read`` is this view's :class:`euclid_polish.tng._image.ViewRead`
+        when the caller already started reading its files."""
+        from euclid_polish.tng._image import (
+            finish_view_read,
+            load_star_mask,
+            load_view_frames,
+            star_light_with_glow,
+        )
+
+        paths = list(self.fits_paths())
+        if read is None:
+            image, mask = load_view_frames(paths, TNG_MODEL_BANDS)
+        else:
+            if list(read.paths) != paths:
+                raise ValueError(f"the files read are not those of {self.subhalo_id} O{self.orientation}")
+            image, mask = finish_view_read(read, TNG_MODEL_BANDS)
         if not np.isclose(
             image.pixel_scale_pc,
             TNG_NATIVE_PC_PER_PIXEL,

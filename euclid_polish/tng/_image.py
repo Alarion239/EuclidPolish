@@ -9,9 +9,11 @@ or convert into detector-specific units.
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from functools import lru_cache
 from os import PathLike
 from pathlib import Path
@@ -90,8 +92,41 @@ def _union_mask(twins: Sequence[Path], lit: Sequence[np.ndarray]) -> np.ndarray:
     return mask
 
 
-def load_view_frames(
+@dataclass(frozen=True)
+class ViewRead:
+    """The eight FITS reads of one donor view, in flight on a thread pool
+    (:func:`start_view_read`); :func:`finish_view_read` assembles them."""
+
+    paths: tuple[Path, ...]
+    twins: tuple[Path, ...]
+    primaries: tuple[Future, ...]
+    lit: tuple[Future, ...] | None          # None: a dust-free twin is missing
+
+
+def start_view_read(
     dusty_paths: Sequence[str | PathLike[str]],
+    pool: Executor,
+) -> ViewRead:
+    """Submit one view's dusty frames and dust-free twins to ``pool``.
+
+    Generation loads a donor view for nearly every galaxy it draws; read
+    serially, its ~80 MB left the CPU idle on network storage. The files are
+    read concurrently, and a renderer can start them before it needs them.
+    """
+    paths = tuple(Path(path) for path in dusty_paths)
+    twins = tuple(dust_free_twin(path) for path in paths)
+    have_twins = all(twin.is_file() for twin in twins)
+    return ViewRead(
+        paths=paths,
+        twins=twins,
+        primaries=tuple(pool.submit(_read_primary, path) for path in paths),
+        lit=(tuple(pool.submit(_lit_pixels, twin) for twin in twins)
+             if have_twins else None),
+    )
+
+
+def finish_view_read(
+    read: ViewRead,
     band_names: Sequence[str],
 ) -> tuple[TNGSurfaceBrightnessImage, np.ndarray | None]:
     """One orientation's dusty planes, stacked in ``band_names`` order, and
@@ -100,42 +135,42 @@ def load_view_frames(
 
     Exactly what loading each plane with :func:`_load_tng_plane`, stacking
     them and calling :func:`load_star_mask` gives, checked in the same order,
-    but the eight FITS files are read concurrently (generation reads a donor
-    for nearly every galaxy it draws; a serial read of the ~80 MB left the CPU
-    idle on network storage) and each pixel is converted once.
+    with each pixel converted once.
     """
-    paths = [Path(path) for path in dusty_paths]
-    twins = [dust_free_twin(path) for path in paths]
-    have_twins = all(twin.is_file() for twin in twins)
-    with ThreadPoolExecutor(max_workers=2 * len(paths)) as pool:
-        primaries = [pool.submit(_read_primary, path) for path in paths]
-        lit = ([pool.submit(_lit_pixels, twin) for twin in twins]
-               if have_twins else [])
-        planes = [
-            _tng_plane_array(*future.result(), path)
-            for future, path in zip(primaries, paths, strict=True)
-        ]
-        # The planes' grids are checked as TNGSurfaceBrightnessImage.stack does.
-        first_shape, scale = planes[0][0].shape, planes[0][1]
-        for index, (array, plane_scale) in enumerate(planes):
-            if array.shape != first_shape:
-                raise ValueError(
-                    f"image {index} has spatial shape {array.shape}, "
-                    f"expected {first_shape}"
-                )
-            if plane_scale != scale:
-                raise ValueError(
-                    f"image {index} has pixel scale {plane_scale!r} pc, "
-                    f"expected {scale!r} pc"
-                )
-        stacked = np.empty((*first_shape, len(planes)), dtype=np.float32)
-        for index, (array, _) in enumerate(planes):
-            stacked[..., index] = array
-        _zero_non_finite(stacked)
-        image = TNGSurfaceBrightnessImage.adopt(stacked, band_names, scale)
-        if not have_twins:
-            return image, None
-        return image, _union_mask(twins, [future.result() for future in lit])
+    planes = [
+        _tng_plane_array(*future.result(), path)
+        for future, path in zip(read.primaries, read.paths, strict=True)
+    ]
+    # The planes' grids are checked as TNGSurfaceBrightnessImage.stack does.
+    first_shape, scale = planes[0][0].shape, planes[0][1]
+    for index, (array, plane_scale) in enumerate(planes):
+        if array.shape != first_shape:
+            raise ValueError(
+                f"image {index} has spatial shape {array.shape}, "
+                f"expected {first_shape}"
+            )
+        if plane_scale != scale:
+            raise ValueError(
+                f"image {index} has pixel scale {plane_scale!r} pc, "
+                f"expected {scale!r} pc"
+            )
+    stacked = np.empty((*first_shape, len(planes)), dtype=np.float32)
+    for index, (array, _) in enumerate(planes):
+        stacked[..., index] = array
+    _zero_non_finite(stacked)
+    image = TNGSurfaceBrightnessImage.adopt(stacked, band_names, scale)
+    if read.lit is None:
+        return image, None
+    return image, _union_mask(read.twins, [future.result() for future in read.lit])
+
+
+def load_view_frames(
+    dusty_paths: Sequence[str | PathLike[str]],
+    band_names: Sequence[str],
+) -> tuple[TNGSurfaceBrightnessImage, np.ndarray | None]:
+    """:func:`finish_view_read` of a :func:`start_view_read` on a pool of its own."""
+    with ThreadPoolExecutor(max_workers=2 * len(dusty_paths)) as pool:
+        return finish_view_read(start_view_read(dusty_paths, pool), band_names)
 
 
 def _zero_non_finite(values: np.ndarray) -> None:
@@ -252,11 +287,11 @@ def distance_to_mask(mask: np.ndarray) -> np.ndarray:
     mask = np.ascontiguousarray(mask, dtype=bool)
     if not mask.any():
         return np.full(mask.shape, np.inf)
-    return np.sqrt(_squared_distance_to_mask(mask).astype(np.float64))
+    return _distance_to_mask(mask)
 
 
 @njit(nogil=True, cache=False)
-def _squared_distance_to_mask(mask):
+def _distance_to_mask(mask):
     height, width = mask.shape
     infinity = height + width          # exceeds every in-image distance
     column = np.empty((height, width), np.int64)
@@ -270,7 +305,7 @@ def _squared_distance_to_mask(mask):
             d = 0 if mask[y, x] else min(d + 1, infinity)
             if d < column[y, x]:
                 column[y, x] = d
-    out = np.empty((height, width), np.int64)
+    out = np.empty((height, width), np.float64)
     s = np.empty(width, np.int64)       # phase 2: lower envelope along rows
     t = np.empty(width, np.int64)
     for y in range(height):
@@ -292,7 +327,9 @@ def _squared_distance_to_mask(mask):
                     s[q] = u
                     t[q] = w
         for u in range(width - 1, -1, -1):
-            out[y, u] = (u - s[q]) ** 2 + g[s[q]] ** 2
+            # The exact integer square distance; IEEE sqrt is correctly
+            # rounded, as SciPy's np.sqrt of the same float64 is.
+            out[y, u] = math.sqrt(float((u - s[q]) ** 2 + g[s[q]] ** 2))
             if u == t[q]:
                 q -= 1
     return out
@@ -326,11 +363,43 @@ def _coarse_blur(image: np.ndarray, sigma_px: float, factor: int) -> np.ndarray:
         return _gaussian_blur(image, sigma_px)
     height, width = image.shape
     pad = ((0, -height % factor), (0, -width % factor))
-    padded = np.pad(image, pad)
-    small = padded.reshape(padded.shape[0] // factor, factor, padded.shape[1] // factor, factor).mean(axis=(1, 3))
+    padded_shape = (height + pad[0][1], width + pad[1][1])
+    # numpy sums a block row by row when the blocks do not span the width
+    # (it merges the two block axes otherwise) and sums 8 or more terms
+    # pairwise: only that case is ours.
+    if factor < 8 and padded_shape[1] > factor and image.dtype == np.float32:
+        small = _block_mean_f32(np.ascontiguousarray(image), factor)
+    else:
+        padded = np.pad(image, pad)
+        small = padded.reshape(padded.shape[0] // factor, factor, padded.shape[1] // factor, factor).mean(axis=(1, 3))
     small = _gaussian_blur(small.astype(np.float32), sigma_px / factor)
-    big = cv2.resize(small, (padded.shape[1], padded.shape[0]), interpolation=cv2.INTER_LINEAR)
+    big = cv2.resize(small, (padded_shape[1], padded_shape[0]), interpolation=cv2.INTER_LINEAR)
     return big[:height, :width]
+
+
+@njit(nogil=True, cache=False)
+def _block_mean_f32(image, factor):
+    """``np.pad(image, to a multiple of factor).reshape(..).mean(axis=(1, 3))``
+    for float32, ``factor < 8`` and at least two blocks across, summed in
+    numpy's order: each block row from zero along the row, the rows into a
+    total from zero, then divided by the count."""
+    height, width = image.shape
+    rows = (height + factor - 1) // factor
+    cols = (width + factor - 1) // factor
+    count = np.float32(factor * factor)
+    out = np.empty((rows, cols), np.float32)
+    for a in range(rows):
+        for c in range(cols):
+            total = np.float32(0.0)
+            for b in range(factor):
+                y = a * factor + b
+                partial = np.float32(0.0)
+                for d in range(factor):
+                    x = c * factor + d
+                    partial += image[y, x] if y < height and x < width else np.float32(0.0)
+                total += partial
+            out[a, c] = total / count
+    return out
 
 
 def _load_tng_plane(
