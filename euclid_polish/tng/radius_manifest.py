@@ -26,6 +26,7 @@ from euclid_polish.tng._image import (
     _load_tng_plane,
     _measure_halflight_radius_px,
     load_star_mask,
+    star_light_with_glow,
 )
 from euclid_polish.tng.atlas import TNGGalaxy, _scan_complete_galaxies
 from euclid_polish.tng.catalog import TNGPropertyCatalog
@@ -38,7 +39,11 @@ from euclid_polish.tng.types import (
 )
 
 MANIFEST_VERSION = 1
-ALGORITHM_VERSION = "centered-vis-cog-v2-starmask"   # v2: on the star-masked frame
+# v3: on the frame the renderer uses (stars + a smooth scattered-light glow)
+ALGORITHM_VERSION = (
+    "centered-vis-cog-v3-starglow-"
+    f"{Config.Tng.SCATTER_GLOW_BLUR_PC:g}-{Config.Tng.SCATTER_GLOW_FADE_PC:g}-{Config.Tng.STAR_BODY_SMOOTH_PC:g}"
+)
 DEFAULT_MANIFEST_NAME = "tng_radius_manifest.json"
 PARAMETER_SUMMARY_VERSION = 1
 PARAMETER_SUMMARY_FIELDS = (
@@ -319,8 +324,8 @@ def build_manifest(
             )
             if mask is not None:
                 frame = TNGSurfaceBrightnessImage(
-                    data=frame.data * mask[..., None], bands=frame.bands,
-                    pixel_scale_pc=frame.pixel_scale_pc,
+                    data=star_light_with_glow(frame.data, mask, pixel_scale_pc=frame.pixel_scale_pc),
+                    bands=frame.bands, pixel_scale_pc=frame.pixel_scale_pc,
                 )
             re_px = float(_measure_halflight_radius_px(frame, band="VIS"))
             if not has_properties:

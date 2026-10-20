@@ -141,10 +141,11 @@ class TNGView:
         return tuple(identities)
 
     def load_surface_brightness(self) -> TNGSurfaceBrightnessImage:
-        """Load and register the four native MJy/sr planes in model-band order,
-        masked to where the dust-free twins have light (see
-        :func:`euclid_polish.tng._image.load_star_mask`)."""
-        from euclid_polish.tng._image import _load_tng_plane, load_star_mask
+        """Load and register the four native MJy/sr planes in model-band order:
+        dusty light where the dust-free twins have light, a smooth glow of the
+        scattered light just around it (see
+        :func:`euclid_polish.tng._image.star_light_with_glow`)."""
+        from euclid_polish.tng._image import _load_tng_plane, load_star_mask, star_light_with_glow
 
         planes = tuple(
             _load_tng_plane(self.fits_path(fits_band), model_band)
@@ -177,7 +178,7 @@ class TNGView:
                 f"shape {mask.shape}, frames {image.data.shape[:2]}"
             )
         return TNGSurfaceBrightnessImage(
-            data=image.data * mask[..., None],
+            data=star_light_with_glow(image.data, mask, pixel_scale_pc=image.pixel_scale_pc),
             bands=image.bands,
             pixel_scale_pc=image.pixel_scale_pc,
         )

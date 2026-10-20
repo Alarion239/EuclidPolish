@@ -1111,6 +1111,14 @@ class Config:
         MAX_OUTSIDE_STAR_FRACTION: float = 0.01
         # Per-galaxy table of those shares at the atlas root.
         BOX_LIGHT_TABLE: str = "tng_box_light.json"
+        # Off the stars only a smooth glow of SKIRT's scattered light is kept,
+        # close to the galaxy (tng/_image.py star_light_with_glow): the off-star
+        # light blurred by this Gaussian sigma, faded as exp(-d / FADE), d the
+        # distance from the galaxy's outline (the star mask smoothed by
+        # STAR_BODY_SMOOTH_PC and cut at one half). Chosen by eye 2026-10-19.
+        SCATTER_GLOW_BLUR_PC: float = 3000.0
+        SCATTER_GLOW_FADE_PC: float = 500.0
+        STAR_BODY_SMOOTH_PC: float = 1000.0
 
     @dataclass(frozen=True)
     class Color:

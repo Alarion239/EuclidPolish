@@ -1,6 +1,7 @@
 """The star mask: SKIRT's dusty frames carry dust-scattered light far beyond
 the stars (a flat box filling the simulation volume around massive galaxies);
-frames keep their pixels only where a dust-free ``_nodust`` twin has light."""
+frames keep their dusty light where a dust-free ``_nodust`` twin has light,
+and only a smooth glow of the scattered light just around it."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +10,10 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
+from scipy.ndimage import distance_transform_edt, gaussian_filter
+
 from euclid_polish.config import Config
+from euclid_polish.tng._image import star_light_with_glow
 from euclid_polish.tng.atlas import _scan_complete_galaxies
 from euclid_polish.tng.radius_manifest import ALGORITHM_VERSION, build_manifest
 from euclid_polish.tng.types import TNGView, dust_free_twin
@@ -63,12 +67,47 @@ def test_the_twin_of_a_dusty_frame():
     assert dust_free_twin(Path("/a/TNG42_O3_Euclid_VIS.fits")) == Path("/a/TNG42_O3_Euclid_VIS_nodust.fits")
 
 
-def test_frames_keep_their_light_only_where_the_dust_free_twins_have_stars(tmp_path):
+def _radius() -> np.ndarray:
+    yy, xx = np.mgrid[:SIZE, :SIZE]
+    return np.hypot(yy - SIZE / 2, xx - SIZE / 2)
+
+
+def test_stars_keep_their_dusty_light_and_the_box_becomes_a_thin_glow(tmp_path):
     image = _view(_galaxy(tmp_path)).load_surface_brightness().data
     stars = _stars() > 0
-    assert np.all(image[~stars] == 0.0)                      # the box is gone in every band
-    for b in range(4):
+    for b in range(4):                                        # the stars are untouched in every band
         np.testing.assert_allclose(image[..., b][stars], (0.8 * _stars() * (b + 1) + 1e-3)[stars], rtol=1e-6)
+    r = _radius()
+    rim, far = image[..., 0][(r > 21) & (r < 23)], image[..., 0][r > 40]
+    assert 0.0 < rim.mean() < 1e-3                            # a glow just outside the stars, below the box
+    assert far.max() < 1e-3 * np.exp(-3)                      # gone a few fade lengths (0.5 kpc) out
+
+
+def test_gaps_between_stars_get_the_full_glow_and_lone_stars_none():
+    r = _radius()
+    stars = (r < 20) & ~((r > 10) & (r < 11.5))              # a ring of gaps inside the galaxy
+    stars[88, 88] = True                                       # a lone halo star far outside
+    data = (np.where(stars, 1.0, 0.0) + 1e-3)[..., None].astype(np.float32)
+    out = star_light_with_glow(data, stars, pixel_scale_pc=100.0)[..., 0]
+    gap = ~stars & (r > 10) & (r < 11.5)
+    np.testing.assert_allclose(out[gap], 1e-3, rtol=0.05)    # inside the outline: the full (blurred) glow
+    assert out[88, 88] == pytest.approx(1.0 + 1e-3)           # the lone star keeps its light ...
+    assert out[86:91, 86:91][~stars[86:91, 86:91]].max() < 1e-3 * np.exp(-6)   # ... and grows no glow
+
+
+def test_the_glow_matches_a_plain_gaussian_blur():
+    rng = np.random.default_rng(0)
+    r = _radius()
+    stars = r < 15
+    sky = (1e-3 * (1 + np.linspace(0, 1, SIZE))[None, :] * (1 + 0.3 * rng.random((SIZE, SIZE)))).astype(np.float32)
+    data = np.where(stars, 1.0, 0.0)[..., None].astype(np.float32) + sky[..., None]
+    out = star_light_with_glow(data, stars, pixel_scale_pc=100.0)[..., 0]
+    off = (~stars).astype(float)
+    body = gaussian_filter(stars.astype(float), 10.0) > 0.5
+    fade = np.exp(-distance_transform_edt(~body) / 5.0)
+    glow = gaussian_filter(sky * off, 30.0, mode="constant") / gaussian_filter(off, 30.0, mode="constant")
+    near = ~stars & (fade > 1e-2)
+    np.testing.assert_allclose(out[near], (glow * fade)[near], rtol=0.03)
 
 
 def test_one_mask_for_all_bands(tmp_path):
@@ -93,7 +132,7 @@ def test_the_cache_identity_covers_the_twins(tmp_path):
     assert len(with_twins) == 8 and len(without) == 4
 
 
-def test_the_radius_is_measured_on_the_masked_frame(tmp_path):
+def test_the_radius_is_measured_on_the_frame_the_renderer_uses(tmp_path):
     properties = tmp_path / "properties.csv"
     properties.write_text("id,sfr,mass_stars,m_halo,reff\n42,1,1e10,1e12,2\n43,1,1e10,1e12,2\n")
     # A box holding ~30 % of the light, as around subhalo 117266.

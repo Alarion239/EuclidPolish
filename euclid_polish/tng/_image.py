@@ -20,7 +20,9 @@ import cv2
 import numpy as np
 from astropy import units as u
 from astropy.io import fits
+from scipy.ndimage import distance_transform_edt
 
+from euclid_polish.config import Config
 from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 from euclid_polish.tng.types import dust_free_twin
 
@@ -62,6 +64,72 @@ def load_star_mask(
             raise ValueError(f"dust-free twins differ in shape: {twin}")
         mask = lit if mask is None else (mask | lit)
     return mask
+
+
+def star_light_with_glow(
+    data: np.ndarray,
+    stars: np.ndarray,
+    *,
+    pixel_scale_pc: float,
+) -> np.ndarray:
+    """Dusty light on the stars, a smooth glow of scattered light around them.
+
+    Where a dust-free twin has light (``stars``) the dusty frame is kept as it
+    is: attenuation, dust lanes and the light scattered onto the galaxy. Off
+    the stars SKIRT's scattered light is drawn on an octree of dust cubes
+    (flat facets, straight edges, shadow rays; Baes et al. 2024), so only a
+    smooth version of it is kept, close to the galaxy: the off-star light
+    blurred by ``Config.Tng.SCATTER_GLOW_BLUR_PC`` (normalised over the
+    off-star pixels, so no starlight leaks into it), times exp(-d / FADE) with
+    d the distance from the galaxy's outline (the star mask smoothed by
+    ``STAR_BODY_SMOOTH_PC``, cut at one half). Measured from the outline, not
+    from each star, so lone halo stars grow no glow of their own, while gaps
+    between the stars inside the outline get the full glow.
+    """
+    data = np.asarray(data, dtype=np.float32)
+    stars = np.asarray(stars, dtype=bool)
+    blur_px = Config.Tng.SCATTER_GLOW_BLUR_PC / pixel_scale_pc
+    body_px = Config.Tng.STAR_BODY_SMOOTH_PC / pixel_scale_pc
+    fade_px = Config.Tng.SCATTER_GLOW_FADE_PC / pixel_scale_pc
+    out = data * stars[..., None]
+    body = _gaussian_blur(stars.astype(np.float32), body_px) > 0.5
+    if not body.any():
+        return out
+    # Only where the fade still matters (exp(-14) ~ 1e-6 of the glow) plus the
+    # blur's reach: generation loads a donor for nearly every galaxy it draws.
+    rows, cols = np.nonzero(body)
+    margin = int(np.ceil(14.0 * fade_px + 3.0 * blur_px))
+    ys = slice(max(rows.min() - margin, 0), min(rows.max() + margin + 1, data.shape[0]))
+    xs = slice(max(cols.min() - margin, 0), min(cols.max() + margin + 1, data.shape[1]))
+    sub_stars, sub_body = stars[ys, xs], body[ys, xs]
+    fade = np.exp(-distance_transform_edt(~sub_body) / fade_px).astype(np.float32)
+    off = (~sub_stars).astype(np.float32)
+    # The 3 kpc blur is smooth: computed on a coarser grid, then interpolated.
+    factor = max(1, int(blur_px // 10.0))
+    coverage = _coarse_blur(off, blur_px, factor)
+    for band in range(data.shape[-1]):
+        light = np.nan_to_num(data[ys, xs, band]) * off
+        glow = _coarse_blur(light, blur_px, factor) / np.maximum(coverage, 1e-6)
+        out[ys, xs, band] = np.where(sub_stars, data[ys, xs, band], glow * fade)
+    return out
+
+
+def _gaussian_blur(image: np.ndarray, sigma_px: float) -> np.ndarray:
+    return cv2.GaussianBlur(image, (0, 0), sigmaX=sigma_px, sigmaY=sigma_px, borderType=cv2.BORDER_CONSTANT)
+
+
+def _coarse_blur(image: np.ndarray, sigma_px: float, factor: int) -> np.ndarray:
+    """Gaussian blur on a grid ``factor`` times coarser (area-averaged), then
+    bilinearly back to full size; the image's total is kept."""
+    if factor <= 1:
+        return _gaussian_blur(image, sigma_px)
+    height, width = image.shape
+    pad = ((0, -height % factor), (0, -width % factor))
+    padded = np.pad(image, pad)
+    small = padded.reshape(padded.shape[0] // factor, factor, padded.shape[1] // factor, factor).mean(axis=(1, 3))
+    small = _gaussian_blur(small.astype(np.float32), sigma_px / factor)
+    big = cv2.resize(small, (padded.shape[1], padded.shape[0]), interpolation=cv2.INTER_LINEAR)
+    return big[:height, :width]
 
 
 def _load_tng_plane(
