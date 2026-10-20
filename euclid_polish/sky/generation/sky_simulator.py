@@ -462,6 +462,11 @@ class SkySimulator:
                         cross_validated_mass_bandwidth(class_ssfr_quantiles)
                     )
 
+    def warm_up(self) -> None:
+        """Compile the renderer's numba kernels; a generation parent calls
+        this once so the workers it forks inherit them compiled."""
+        self.tng_renderer.warm_up()
+
     def reset_donor_balance(self) -> None:
         """Forget every donor pick, so later draws balance from zero again.
 

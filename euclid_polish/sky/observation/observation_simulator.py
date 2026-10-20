@@ -313,6 +313,16 @@ class ObservationSimulator:
                         f"forward model expects HR pixel scale {self.config.hr_pixel_scale}"
                     )
 
+    def warm_up(self) -> None:
+        """Compile the elastic warp's numba kernel for these PSFs' dtype.
+
+        A generation parent calls this once before forking its workers, which
+        then inherit the compiled kernel instead of each compiling it on
+        their first field. Pure: the warped kernel is discarded.
+        """
+        psf = next(iter(self._psf_sets.values())).psfs[0]
+        psf.elastic_warp(1.0, 1.0, seed=0)
+
     # ------------------------------------------------------------------ #
     @staticmethod
     def sum_rebin(arr_2d: np.ndarray, factor: int) -> np.ndarray:

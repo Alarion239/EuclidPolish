@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from os import PathLike
 from pathlib import Path
@@ -20,7 +21,7 @@ import cv2
 import numpy as np
 from astropy import units as u
 from astropy.io import fits
-from scipy.ndimage import distance_transform_edt
+from numba import njit
 
 from euclid_polish.config import Config
 from euclid_polish.tng.image import TNGSurfaceBrightnessImage
@@ -47,6 +48,19 @@ def load_star_mask(
     the mask is true; one mask for all bands keeps the edges identical.
     Returns ``None`` when a twin is missing, or raises if ``required``.
     """
+    twins = _present_twins(dusty_paths, required=required)
+    if twins is None:
+        return None
+    return _union_mask(twins, [_lit_pixels(twin) for twin in twins])
+
+
+def _present_twins(
+    dusty_paths: Sequence[str | PathLike[str]],
+    *,
+    required: bool,
+) -> list[Path] | None:
+    """The dust-free twins of ``dusty_paths``, or ``None`` when one is missing
+    (an error if ``required``)."""
     twins = [dust_free_twin(Path(path)) for path in dusty_paths]
     missing = [twin for twin in twins if not twin.is_file()]
     if missing:
@@ -56,14 +70,80 @@ def load_star_mask(
                 "fasrc_download_tng_skirt_atlas.py keeps them; re-fetch the galaxy)"
             )
         return None
+    return twins
+
+
+def _lit_pixels(twin: str | PathLike[str]) -> np.ndarray:
+    """Where one dust-free frame is > 0. A direct comparison gives what
+    ``nan_to_num(float64(x)) > 0`` gives: NaN and -inf are dark, +inf lit."""
+    with fits.open(twin, memmap=False) as hdul:
+        return np.asarray(hdul[0].data) > 0.0
+
+
+def _union_mask(twins: Sequence[Path], lit: Sequence[np.ndarray]) -> np.ndarray:
     mask: np.ndarray | None = None
-    for twin in twins:
-        with fits.open(twin) as hdul:
-            lit = np.nan_to_num(np.asarray(hdul[0].data, dtype=np.float64)) > 0.0
-        if mask is not None and lit.shape != mask.shape:
+    for twin, frame in zip(twins, lit, strict=True):
+        if mask is not None and frame.shape != mask.shape:
             raise ValueError(f"dust-free twins differ in shape: {twin}")
-        mask = lit if mask is None else (mask | lit)
+        mask = frame if mask is None else (mask | frame)
+    assert mask is not None
     return mask
+
+
+def load_view_frames(
+    dusty_paths: Sequence[str | PathLike[str]],
+    band_names: Sequence[str],
+) -> tuple[TNGSurfaceBrightnessImage, np.ndarray | None]:
+    """One orientation's dusty planes, stacked in ``band_names`` order, and
+    its star mask, ``None`` when a dust-free twin is missing (the caller
+    decides, as :func:`load_star_mask` does).
+
+    Exactly what loading each plane with :func:`_load_tng_plane`, stacking
+    them and calling :func:`load_star_mask` gives, checked in the same order,
+    but the eight FITS files are read concurrently (generation reads a donor
+    for nearly every galaxy it draws; a serial read of the ~80 MB left the CPU
+    idle on network storage) and each pixel is converted once.
+    """
+    paths = [Path(path) for path in dusty_paths]
+    twins = [dust_free_twin(path) for path in paths]
+    have_twins = all(twin.is_file() for twin in twins)
+    with ThreadPoolExecutor(max_workers=2 * len(paths)) as pool:
+        primaries = [pool.submit(_read_primary, path) for path in paths]
+        lit = ([pool.submit(_lit_pixels, twin) for twin in twins]
+               if have_twins else [])
+        planes = [
+            _tng_plane_array(*future.result(), path)
+            for future, path in zip(primaries, paths, strict=True)
+        ]
+        # The planes' grids are checked as TNGSurfaceBrightnessImage.stack does.
+        first_shape, scale = planes[0][0].shape, planes[0][1]
+        for index, (array, plane_scale) in enumerate(planes):
+            if array.shape != first_shape:
+                raise ValueError(
+                    f"image {index} has spatial shape {array.shape}, "
+                    f"expected {first_shape}"
+                )
+            if plane_scale != scale:
+                raise ValueError(
+                    f"image {index} has pixel scale {plane_scale!r} pc, "
+                    f"expected {scale!r} pc"
+                )
+        stacked = np.empty((*first_shape, len(planes)), dtype=np.float32)
+        for index, (array, _) in enumerate(planes):
+            stacked[..., index] = array
+        _zero_non_finite(stacked)
+        image = TNGSurfaceBrightnessImage.adopt(stacked, band_names, scale)
+        if not have_twins:
+            return image, None
+        return image, _union_mask(twins, [future.result() for future in lit])
+
+
+def _zero_non_finite(values: np.ndarray) -> None:
+    """In place: what ``np.nan_to_num(values, nan=0, posinf=0, neginf=0)``
+    returns, without its three full passes when everything is finite."""
+    bad = ~np.isfinite(values)
+    if bad.any():
+        values[bad] = 0.0
 
 
 def star_light_with_glow(
@@ -92,30 +172,151 @@ def star_light_with_glow(
     body_px = Config.Tng.STAR_BODY_SMOOTH_PC / pixel_scale_pc
     fade_px = Config.Tng.SCATTER_GLOW_FADE_PC / pixel_scale_pc
     out = data * stars[..., None]
-    body = _gaussian_blur(stars.astype(np.float32), body_px) > 0.5
-    if not body.any():
+    body = _star_body(stars, body_px)
+    rows = np.flatnonzero(body.any(axis=1))
+    if rows.size == 0:
         return out
+    cols = np.flatnonzero(body.any(axis=0))
     # Only where the fade still matters (exp(-14) ~ 1e-6 of the glow) plus the
     # blur's reach: generation loads a donor for nearly every galaxy it draws.
-    rows, cols = np.nonzero(body)
     margin = int(np.ceil(14.0 * fade_px + 3.0 * blur_px))
-    ys = slice(max(rows.min() - margin, 0), min(rows.max() + margin + 1, data.shape[0]))
-    xs = slice(max(cols.min() - margin, 0), min(cols.max() + margin + 1, data.shape[1]))
+    ys = slice(max(rows[0] - margin, 0), min(rows[-1] + margin + 1, data.shape[0]))
+    xs = slice(max(cols[0] - margin, 0), min(cols[-1] + margin + 1, data.shape[1]))
     sub_stars, sub_body = stars[ys, xs], body[ys, xs]
-    fade = np.exp(-distance_transform_edt(~sub_body) / fade_px).astype(np.float32)
+    fade = np.exp(-distance_to_mask(sub_body) / fade_px).astype(np.float32)
     off = (~sub_stars).astype(np.float32)
     # The 3 kpc blur is smooth: computed on a coarser grid, then interpolated.
     factor = max(1, int(blur_px // 10.0))
-    coverage = _coarse_blur(off, blur_px, factor)
-    for band in range(data.shape[-1]):
-        light = np.nan_to_num(data[ys, xs, band]) * off
-        glow = _coarse_blur(light, blur_px, factor) / np.maximum(coverage, 1e-6)
-        out[ys, xs, band] = np.where(sub_stars, data[ys, xs, band], glow * fade)
+    coverage = np.maximum(_coarse_blur(off, blur_px, factor), 1e-6)
+    if not np.isfinite(data[ys, xs]).all():     # loaded frames never are
+        for band in range(data.shape[-1]):
+            plane = data[ys, xs, band]
+            glow = _coarse_blur(np.nan_to_num(plane) * off, blur_px, factor) / coverage
+            out[ys, xs, band] = np.where(sub_stars, plane, glow * fade)
+        return out
+    # The same float32 products and quotients as the numpy expressions above,
+    # fused into two passes over the four bands.
+    light = _off_star_light(data, ys.start, xs.start, off)
+    glows = np.stack([_coarse_blur(light[band], blur_px, factor)
+                      for band in range(data.shape[-1])])
+    _place_glow(out, ys.start, xs.start, np.ascontiguousarray(sub_stars), glows, coverage, fade)
+    return out
+
+
+@njit(nogil=True, cache=False)
+def _off_star_light(data, row0, col0, off):
+    """``data[rows, cols, band] * off`` per band (band-major, contiguous)."""
+    height, width = off.shape
+    light = np.empty((data.shape[2], height, width), np.float32)
+    for y in range(height):
+        for x in range(width):
+            for band in range(data.shape[2]):
+                light[band, y, x] = data[row0 + y, col0 + x, band] * off[y, x]
+    return light
+
+
+@njit(nogil=True, cache=False)
+def _place_glow(out, row0, col0, stars, glows, coverage, fade):
+    """Off the stars, ``out = glow / coverage * fade`` (on them ``out``
+    already holds the dusty light)."""
+    height, width = stars.shape
+    for y in range(height):
+        for x in range(width):
+            if not stars[y, x]:
+                for band in range(glows.shape[0]):
+                    out[row0 + y, col0 + x, band] = (
+                        glows[band, y, x] / coverage[y, x]) * fade[y, x]
+
+
+def compile_glow_kernels() -> None:
+    """Run :func:`star_light_with_glow` once on a small read-only frame, as a
+    loaded donor is, which compiles its numba kernels for the types every
+    donor uses (a generation parent does this before forking its workers)."""
+    frame = np.ones((400, 400, 4), np.float32)
+    frame.setflags(write=False)
+    stars = np.zeros((400, 400), dtype=bool)
+    stars[170:230, 170:230] = True     # a body survives the 1 kpc blur
+    star_light_with_glow(frame, stars, pixel_scale_pc=100.0)
+
+
+def distance_to_mask(mask: np.ndarray) -> np.ndarray:
+    """Euclidean distance (float64 pixels) from every pixel to the nearest
+    ``True`` pixel of ``mask``; ``inf`` everywhere when there is none.
+
+    Bit for bit ``scipy.ndimage.distance_transform_edt(~mask)``: both take the
+    square root of the exact integer squared distance to the nearest mask
+    pixel, which is unique even where the nearest pixel is not. Computed by
+    Meijster et al.'s linear-time algorithm in integers, ~5x faster than
+    SciPy's feature transform (which also builds the nearest-pixel indices).
+    """
+    mask = np.ascontiguousarray(mask, dtype=bool)
+    if not mask.any():
+        return np.full(mask.shape, np.inf)
+    return np.sqrt(_squared_distance_to_mask(mask).astype(np.float64))
+
+
+@njit(nogil=True, cache=False)
+def _squared_distance_to_mask(mask):
+    height, width = mask.shape
+    infinity = height + width          # exceeds every in-image distance
+    column = np.empty((height, width), np.int64)
+    for x in range(width):              # phase 1: distance down each column
+        d = infinity
+        for y in range(height):
+            d = 0 if mask[y, x] else min(d + 1, infinity)
+            column[y, x] = d
+        d = infinity
+        for y in range(height - 1, -1, -1):
+            d = 0 if mask[y, x] else min(d + 1, infinity)
+            if d < column[y, x]:
+                column[y, x] = d
+    out = np.empty((height, width), np.int64)
+    s = np.empty(width, np.int64)       # phase 2: lower envelope along rows
+    t = np.empty(width, np.int64)
+    for y in range(height):
+        g = column[y]
+        q = 0
+        s[0] = 0
+        t[0] = 0
+        for u in range(1, width):
+            while q >= 0 and ((t[q] - s[q]) ** 2 + g[s[q]] ** 2
+                              > (t[q] - u) ** 2 + g[u] ** 2):
+                q -= 1
+            if q < 0:
+                q = 0
+                s[0] = u
+            else:
+                w = 1 + (u * u - s[q] * s[q] + g[u] ** 2 - g[s[q]] ** 2) // (2 * (u - s[q]))
+                if w < width:
+                    q += 1
+                    s[q] = u
+                    t[q] = w
+        for u in range(width - 1, -1, -1):
+            out[y, u] = (u - s[q]) ** 2 + g[s[q]] ** 2
+            if u == t[q]:
+                q -= 1
     return out
 
 
 def _gaussian_blur(image: np.ndarray, sigma_px: float) -> np.ndarray:
     return cv2.GaussianBlur(image, (0, 0), sigmaX=sigma_px, sigmaY=sigma_px, borderType=cv2.BORDER_CONSTANT)
+
+
+def _star_body(stars: np.ndarray, sigma_px: float) -> np.ndarray:
+    """The galaxy's outline: the star mask blurred by ``sigma_px``, cut at one
+    half. The blur runs on the mask's bounding box padded past the kernel's
+    reach (OpenCV truncates a float Gaussian at 4 sigma), the same values a
+    full-frame blur gives there; everywhere else that blur is exactly zero."""
+    body = np.zeros(stars.shape, dtype=bool)
+    rows = np.flatnonzero(stars.any(axis=1))
+    if rows.size == 0:
+        return body
+    cols = np.flatnonzero(stars.any(axis=0))
+    pad = int(np.ceil(4.0 * sigma_px)) + 2
+    ys = slice(max(int(rows[0]) - pad, 0), min(int(rows[-1]) + pad + 1, stars.shape[0]))
+    xs = slice(max(int(cols[0]) - pad, 0), min(int(cols[-1]) + pad + 1, stars.shape[1]))
+    body[ys, xs] = _gaussian_blur(stars[ys, xs].astype(np.float32), sigma_px) > 0.5
+    return body
 
 
 def _coarse_blur(image: np.ndarray, sigma_px: float, factor: int) -> np.ndarray:
@@ -144,12 +345,29 @@ def _load_tng_plane(
     image is always native-endian float32 in ``(height, width, 1)`` layout.
     Non-finite input samples are replaced with zero before construction.
     """
-    with fits.open(path) as hdul:
+    array, pixel_scale_pc = _tng_plane_array(*_read_primary(path), path)
+    values = np.array(array, dtype=np.float32)[..., None]
+    _zero_non_finite(values)
+    return TNGSurfaceBrightnessImage.adopt(values, (band_name,), pixel_scale_pc)
+
+
+def _read_primary(path: str | PathLike[str]) -> tuple[np.ndarray | None, fits.Header]:
+    """A FITS file's primary image and header, read in one go (no memory map:
+    one large read is what network storage serves fastest)."""
+    with fits.open(path, memmap=False) as hdul:
         primary = hdul[0]
         if not isinstance(primary, fits.PrimaryHDU):
             raise ValueError(f"first FITS extension is not a primary HDU: {path}")
-        data = primary.data
-        header = primary.header.copy()
+        return primary.data, primary.header.copy()
+
+
+def _tng_plane_array(
+    data: np.ndarray | None,
+    header: fits.Header,
+    path: str | PathLike[str],
+) -> tuple[np.ndarray, float]:
+    """Check one SKIRT plane (see :func:`_load_tng_plane`); returns its pixels
+    as stored and its physical pixel scale in pc."""
     if data is None:
         raise ValueError(f"empty primary HDU: {path}")
     if np.ndim(data) != 2:
@@ -172,14 +390,7 @@ def _load_tng_plane(
             f"got {bunit!r}: {path}"
         )
 
-    pixel_scale_pc = _physical_pixel_scale_pc(header, path)
-    arr = np.asarray(data, dtype=np.float32)
-    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    return TNGSurfaceBrightnessImage(
-        data=arr[..., None],
-        bands=(band_name,),
-        pixel_scale_pc=pixel_scale_pc,
-    )
+    return data, _physical_pixel_scale_pc(header, path)
 
 
 def _physical_pixel_scale_pc(
@@ -230,7 +441,7 @@ def _block_mean(
     """
     _require_tng_image(image)
     rebinned = _block_mean_array(image.as_array(), factor)
-    return image.with_data(
+    return image.adopting(
         rebinned,
         pixel_scale_pc=image.pixel_scale_pc * int(factor),
     )
@@ -278,7 +489,7 @@ def _downsample_surface_brightness(
     """
     _require_tng_image(image)
     downsampled = _downsample_surface_brightness_array(image.as_array(), scale)
-    return image.with_data(
+    return image.adopting(
         downsampled,
         pixel_scale_pc=image.pixel_scale_pc / float(scale),
     )
@@ -335,7 +546,7 @@ def _soft_circular_window(
 ) -> TNGSurfaceBrightnessImage:
     """``image`` times :func:`_soft_circular_window_array`'s weight."""
     _require_tng_image(image)
-    return image.with_data(
+    return image.adopting(
         _soft_circular_window_array(image.as_array(), margin_px)
     )
 
@@ -387,7 +598,7 @@ def _rotate_surface_brightness(
     requested resolution is a policy decision for the caller.
     """
     _require_tng_image(image)
-    return image.with_data(
+    return image.adopting(
         _rotate_arbitrary_array(image.as_array(), angle_deg)
     )
 
@@ -415,7 +626,7 @@ def _rotate_arbitrary_array(
     if out.ndim == 2:
         out = out[..., None]
     np.maximum(out, 0.0, out=out)
-    return out.astype(np.float32)
+    return out.astype(np.float32, copy=False)
 
 
 def _require_tng_image(image: TNGSurfaceBrightnessImage) -> None:

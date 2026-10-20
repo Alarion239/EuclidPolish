@@ -36,6 +36,7 @@ from euclid_polish.tng._image import (
     _soft_circular_window,
     _soft_circular_window_array,
     _stochastic_round_factor,
+    compile_glow_kernels,
 )
 from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 from euclid_polish.tng.redshift import (
@@ -195,6 +196,15 @@ class TNGRenderer:
         self._aperture_cache_bytes = 0
         self._circular_psf_cache: OrderedDict[tuple, np.ndarray] = OrderedDict()
         self._circular_psf_cache_bytes = 0
+        # Each donor view's rotation crop, a function of its pixels alone:
+        # kept after the (large) source itself is evicted.
+        self._observed_crop_cache: dict[tuple, tuple[slice, slice]] = {}
+
+    @staticmethod
+    def warm_up() -> None:
+        """Compile the donor loader's numba kernels (a generation parent does
+        this once, before forking its workers)."""
+        compile_glow_kernels()
 
     def clear_caches(self) -> None:
         """Release every donor and PSF cache owned by this renderer."""
@@ -205,6 +215,7 @@ class TNGRenderer:
         self._aperture_cache_bytes = 0
         self._circular_psf_cache.clear()
         self._circular_psf_cache_bytes = 0
+        self._observed_crop_cache.clear()
 
     def cache_info(self) -> dict[str, int]:
         """Return compact cache counts and resident-byte totals."""
@@ -599,21 +610,16 @@ class TNGRenderer:
             )
         scale = target / view.native_re_arcsec(self.pixel_scale_arcsec)
         rotation = self._draw_nominal_rotation(rng)
-        native = self._native_source(view)
-        rows, columns = _centered_rotation_crop_slices(
-            native,
-            1,
-            band="VIS",
-            enclosed_fraction=0.999,
-            padding=TNG_ROTATION_CROP_PADDING,
-        )
+        key, native = self._native_source_keyed(view)
+        rows, columns = self._observed_crop(key, native)
         # Soft circular window first: no light reaches a straight edge of the
         # frame or the crop square (which rotation would turn into an octagon).
         # Its rim clears the cubic kernel and the 1/scale native pixels the
-        # area shrink averages into each output pixel.
-        source = _soft_circular_window(
-            native.cropped(rows, columns), SOFT_WINDOW_RIM_MARGIN_PX + 1.0 / scale
-        )
+        # area shrink averages into each output pixel. Cropped and windowed in
+        # one pass: the window's product is the new array.
+        source = native.adopting(_soft_circular_window_array(
+            native.data[rows, columns], SOFT_WINDOW_RIM_MARGIN_PX + 1.0 / scale
+        ))
         source = rotation.apply(source)
         surface_brightness = _downsample_surface_brightness(source, scale)
         support_clipped = False
@@ -649,11 +655,33 @@ class TNGRenderer:
         )
 
     def _native_source(self, view: TNGView) -> TNGSurfaceBrightnessImage:
+        return self._native_source_keyed(view)[1]
+
+    def _observed_crop(
+        self, key: tuple, native: TNGSurfaceBrightnessImage,
+    ) -> tuple[slice, slice]:
+        """The centred square holding 99.9% of the donor's VIS light, which
+        the observed-radius render rotates (memoised per source key)."""
+        crop = self._observed_crop_cache.get(key)
+        if crop is None:
+            crop = _centered_rotation_crop_slices(
+                native,
+                1,
+                band="VIS",
+                enclosed_fraction=0.999,
+                padding=TNG_ROTATION_CROP_PADDING,
+            )
+            self._observed_crop_cache[key] = crop
+        return crop
+
+    def _native_source_keyed(
+        self, view: TNGView,
+    ) -> tuple[tuple, TNGSurfaceBrightnessImage]:
         key = self._source_key(view)
         cached = self._source_cache.pop(key, None)
         if cached is not None:
             self._source_cache[key] = cached
-            return cached
+            return key, cached
         source = view.load_surface_brightness()
         if source.data.nbytes <= self._source_cache_max_bytes:
             logical_key = key[:3]
@@ -672,7 +700,7 @@ class TNGRenderer:
                 self._native_photometry_cache.pop(evicted_key, None)
             self._source_cache[key] = source
             self._source_cache_bytes += int(source.data.nbytes)
-        return source
+        return key, source
 
     @staticmethod
     def _source_key(view: TNGView) -> tuple:

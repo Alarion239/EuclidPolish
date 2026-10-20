@@ -145,15 +145,10 @@ class TNGView:
         dusty light where the dust-free twins have light, a smooth glow of the
         scattered light just around it (see
         :func:`euclid_polish.tng._image.star_light_with_glow`)."""
-        from euclid_polish.tng._image import _load_tng_plane, load_star_mask, star_light_with_glow
+        from euclid_polish.tng._image import load_star_mask, load_view_frames, star_light_with_glow
 
-        planes = tuple(
-            _load_tng_plane(self.fits_path(fits_band), model_band)
-            for fits_band, model_band in zip(
-                TNG_FITS_BANDS, TNG_MODEL_BANDS, strict=True
-            )
-        )
-        image = TNGSurfaceBrightnessImage.stack(planes)
+        paths = [self.fits_path(fits_band) for fits_band in TNG_FITS_BANDS]
+        image, mask = load_view_frames(paths, TNG_MODEL_BANDS)
         if not np.isclose(
             image.pixel_scale_pc,
             TNG_NATIVE_PC_PER_PIXEL,
@@ -166,10 +161,8 @@ class TNGView:
             )
         if image.bands != TNG_MODEL_BANDS:
             raise ValueError(f"unexpected TNG band order {image.bands!r}")
-        mask = load_star_mask(
-            [self.fits_path(fits_band) for fits_band in TNG_FITS_BANDS],
-            required=Config.Tng.REQUIRE_DUST_FREE,
-        )
+        if mask is None:     # a twin is missing: an error if they are required
+            mask = load_star_mask(paths, required=Config.Tng.REQUIRE_DUST_FREE)
         if mask is None:
             return image
         if mask.shape != image.data.shape[:2]:
@@ -177,10 +170,8 @@ class TNGView:
                 f"dust-free twins of {self.subhalo_id} O{self.orientation} have "
                 f"shape {mask.shape}, frames {image.data.shape[:2]}"
             )
-        return TNGSurfaceBrightnessImage(
-            data=star_light_with_glow(image.data, mask, pixel_scale_pc=image.pixel_scale_pc),
-            bands=image.bands,
-            pixel_scale_pc=image.pixel_scale_pc,
+        return image.adopting(
+            star_light_with_glow(image.data, mask, pixel_scale_pc=image.pixel_scale_pc)
         )
 
 

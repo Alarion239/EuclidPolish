@@ -12,6 +12,7 @@ import csv
 import hashlib
 import json
 import os
+import stat
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -28,7 +29,12 @@ from euclid_polish.tng._image import (
     load_star_mask,
     star_light_with_glow,
 )
-from euclid_polish.tng.atlas import TNGGalaxy, _scan_complete_galaxies
+from euclid_polish.tng.atlas import (
+    TNGGalaxy,
+    _galaxy_frame_names,
+    _regular_file_names,
+    _scan_complete_galaxies,
+)
 from euclid_polish.tng.catalog import TNGPropertyCatalog
 from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 from euclid_polish.tng.types import (
@@ -45,6 +51,8 @@ ALGORITHM_VERSION = (
     f"{Config.Tng.SCATTER_GLOW_BLUR_PC:g}-{Config.Tng.SCATTER_GLOW_FADE_PC:g}-{Config.Tng.STAR_BODY_SMOOTH_PC:g}"
 )
 DEFAULT_MANIFEST_NAME = "tng_radius_manifest.json"
+#: Concurrent stat calls while taking the atlas inventory.
+_INVENTORY_THREADS = 16
 PARAMETER_SUMMARY_VERSION = 1
 PARAMETER_SUMMARY_FIELDS = (
     "subhalo_id", "orientation", "native_re_px", "native_re_kpc",
@@ -223,22 +231,45 @@ def _file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _regular_file_identity(path: Path) -> dict[str, int | str] | None:
+    """``_file_identity`` of a regular file (symlinks followed), else ``None``:
+    ``Path.is_file`` and the identity from one stat call."""
+    try:
+        status = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if not stat.S_ISREG(status.st_mode):
+        return None
+    return {
+        "path": os.path.abspath(path),
+        "size": int(status.st_size),
+        "mtime_ns": int(status.st_mtime_ns),
+    }
+
+
+def _galaxy_inventory(galaxy: TNGGalaxy) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    names = _regular_file_names(galaxy.directory)
+    for name in _galaxy_frame_names(galaxy, names):
+        path = galaxy.directory / name
+        identity = _regular_file_identity(path)
+        entries.append(identity if identity is not None else
+                       {"path": os.path.abspath(path), "size": 0, "mtime_ns": 0})
+        twin = _regular_file_identity(dust_free_twin(path))   # the star mask
+        if twin is not None:
+            entries.append(twin)
+    return entries
+
+
 def _inventory(
     galaxies: Sequence[TNGGalaxy],
 ) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
-    for galaxy in galaxies:
-        for orientation in range(1, N_ORIENTATIONS + 1):
-            for band in TNG_FITS_BANDS:
-                path = galaxy.fits_path(orientation, band)
-                if path.is_file():
-                    entries.append(_file_identity(str(path)))
-                else:
-                    entries.append({"path": os.path.abspath(path),
-                                    "size": 0, "mtime_ns": 0})
-                twin = dust_free_twin(path)          # the star mask
-                if twin.is_file():
-                    entries.append(_file_identity(str(twin)))
+    """Every frame's identity (path, size, mtime) and its dust-free twin's.
+    The stat calls run concurrently: on network storage each is a round trip,
+    and an atlas has ~10^4 of them."""
+    with ThreadPoolExecutor(max_workers=_INVENTORY_THREADS) as pool:
+        per_galaxy = list(pool.map(_galaxy_inventory, galaxies))
+    entries = [entry for rows in per_galaxy for entry in rows]
     entries.sort(key=lambda row: str(row["path"]))
     return entries
 
@@ -572,8 +603,12 @@ def validate_manifest(
     properties_path: str | None = None,
     manifest: dict[str, Any] | None = None,
     manifest_path_value: str | None = None,
+    galaxies: Sequence[TNGGalaxy] | None = None,
 ) -> dict[str, Any]:
-    """Cheap submit-time validation against file inventory and manifest rows."""
+    """Cheap submit-time validation against file inventory and manifest rows.
+
+    ``galaxies`` is a caller's scan of ``tng_dir`` (``_scan_complete_galaxies``)
+    to validate against instead of scanning again."""
     properties_path = properties_path or os.path.join(
         Config.DATA_DIR, "_tng_infographics", "tng_properties.csv"
     )
@@ -582,7 +617,8 @@ def validate_manifest(
     if payload is None:
         return {"valid": False, "reason": f"missing radius manifest: {path}",
                 "path": path}
-    galaxies = _scan_complete_galaxies(Path(tng_dir))
+    if galaxies is None:
+        galaxies = _scan_complete_galaxies(Path(tng_dir))
     inventory = _inventory(galaxies)
     current_fp = _fingerprint({
         "algorithm_version": ALGORITHM_VERSION,

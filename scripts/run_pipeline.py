@@ -26,6 +26,7 @@ import argparse
 import glob
 import json
 import math
+import multiprocessing
 import os
 import shutil
 import sys
@@ -1424,6 +1425,22 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
     _W_RECORDS_DIR = records_dir
 
 
+def _fork_context():
+    """The ``fork`` start method on Linux, else ``None``.
+
+    With fork, generation builds the simulator and forward model ONCE in the
+    parent and every worker inherits them (copy-on-write), instead of each
+    worker of each split repeating the ~1 min build: the TNG atlas scan, the
+    radius-manifest validation (~180k stat calls on network storage) and the
+    PSF load. macOS forks unsafely once its frameworks are loaded, so spawned
+    workers there still build their own through ``_gen_init_worker``.
+    """
+    if (sys.platform.startswith("linux")
+            and "fork" in multiprocessing.get_all_start_methods()):
+        return multiprocessing.get_context("fork")
+    return None
+
+
 def _gen_convolve_shard(task) -> tuple[str, int, int]:
     """Top-level pool entry point → ``_generate_convolve_range`` with the
     worker-global sim/fwd."""
@@ -1557,6 +1574,33 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     )
     _log(f"  noise model: {observation_cfg.noise_model}")
 
+    # The workers' state, built once in the parent where it can be inherited
+    # (see _fork_context), else once per spawned worker.
+    fork_context = _fork_context()
+    parent_state_built = False
+    worker_initargs = (
+        prior_path, args.image_size, args.psf_dir,
+        args.require_empirical_psf, args.records_dir,
+        args.galaxy_density_arcmin2,
+        getattr(args, "galaxy_thinning_max_density_arcmin2", None),
+        args.star_density_arcmin2,
+        args.star_prior_json,
+        args.lens_density_arcmin2,
+        args.lens_sigma_v_min_kms, args.lens_sigma_v_max_kms,
+        getattr(args, "psf_warp_prob", Config.TRAIN_PSF_WARP_PROB),
+        getattr(args, "psf_warp_alpha_max", Config.TRAIN_PSF_WARP_ALPHA_MAX),
+        getattr(args, "psf_warp_sigma", Config.TRAIN_PSF_WARP_SIGMA),
+        getattr(args, "saturation_mask_prob",
+                Config.TRAIN_SATURATION_MASK_PROB),
+        getattr(args, "cosmos_vis_offset_mag", None),
+        getattr(args, "cosmos_vis_magnitude_slope", None),
+        getattr(args, "cosmos_vis_scatter_mag", None),
+        getattr(args, "cosmos_vis_transfer_source", ""),
+        getattr(args, "joint_galaxy_population_json", ""),
+        getattr(args, "tng_dir", Config.TNG_SKIRT_DIR),
+        getattr(args, "tng_properties", ""),
+        getattr(args, "tng_radius_manifest", ""),
+    )
     onthefly_train = bool(getattr(args, "onthefly_train", False))
     subsets = (("train", args.ntrain), ("validate", args.nvalid),
                ("test", _ntest(args)))
@@ -1636,6 +1680,18 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
 
         t0 = time.perf_counter()
         if tasks:
+            if fork_context is not None and not parent_state_built:
+                # Built once for every split; forked workers inherit it.
+                reporter.set_stage("build the simulator")
+                _gen_init_worker(*worker_initargs)
+                _W_SIM.warm_up()
+                _W_FWD.warm_up()
+                parent_state_built = True
+            pool_options = (
+                {"mp_context": fork_context} if fork_context is not None
+                else {"initializer": _gen_init_worker,
+                      "initargs": worker_initargs}
+            )
             reporter.set_stage(f"generate+forward {subset} (×{workers})")
             # Announce the parallel phase: total items + worker count. The
             # workers report their own progress; the consumer sums a cumulative
@@ -1645,35 +1701,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                  f"(≤{_TARGET_FIELDS_PER_SHARD} each), {workers} workers "
                  f"(run_seed={run_seed})")
             with ProcessPoolExecutor(
-                max_workers=workers, initializer=_gen_init_worker,
-                initargs=(prior_path, args.image_size, args.psf_dir,
-                          args.require_empirical_psf, args.records_dir,
-                          args.galaxy_density_arcmin2,
-                          getattr(
-                              args,
-                              "galaxy_thinning_max_density_arcmin2",
-                              None,
-                          ),
-                          args.star_density_arcmin2,
-                          args.star_prior_json,
-                          args.lens_density_arcmin2,
-                          args.lens_sigma_v_min_kms, args.lens_sigma_v_max_kms,
-                          getattr(args, "psf_warp_prob",
-                                  Config.TRAIN_PSF_WARP_PROB),
-                          getattr(args, "psf_warp_alpha_max",
-                                  Config.TRAIN_PSF_WARP_ALPHA_MAX),
-                          getattr(args, "psf_warp_sigma",
-                                  Config.TRAIN_PSF_WARP_SIGMA),
-                          getattr(args, "saturation_mask_prob",
-                                  Config.TRAIN_SATURATION_MASK_PROB),
-                          getattr(args, "cosmos_vis_offset_mag", None),
-                          getattr(args, "cosmos_vis_magnitude_slope", None),
-                          getattr(args, "cosmos_vis_scatter_mag", None),
-                          getattr(args, "cosmos_vis_transfer_source", ""),
-                          getattr(args, "joint_galaxy_population_json", ""),
-                          getattr(args, "tng_dir", Config.TNG_SKIRT_DIR),
-                          getattr(args, "tng_properties", ""),
-                          getattr(args, "tng_radius_manifest", "")),
+                max_workers=workers, **pool_options,
             ) as pool:
                 futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
                 for fut in as_completed(futs):
