@@ -518,6 +518,23 @@ class TestWindowedSpikeGuard:
         assert calls == [3, 6]
         assert int(trainer.checkpoint.step.numpy()) == 6
 
+    def test_warmup_windows_seed_the_spike_baseline(
+            self, tiny_model, tmp_path, monkeypatch):
+        """With a vanishing absolute bar, the first post-warmup window would
+        be a 'spike' — but the warmup window's own peak seeds the baseline,
+        so ordinary gradients at the member's warmup scale pass (member_242,
+        knee tilt -0.25, aborted on its ordinary |g| 70-130 right after
+        warmup when nothing seeded it)."""
+        monkeypatch.setattr(trainer_module, "GRAD_SPIKE_SKIP_WARMUP_STEPS", 3)
+        monkeypatch.setattr(trainer_module, "GRAD_SPIKE_SKIP_NORM", 1e-12)
+        trainer = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "ckpt"))
+        warnings = []
+        trainer.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                      steps=6, evaluate_every=3, save_best_only=False,
+                      validate_images=2, warn_callback=warnings.append)
+        assert not [w for w in warnings if "gradient spike" in w]
+        assert trainer._lr_scale == 1.0
+
     def test_spiked_window_rolls_back_before_validation_and_saving(
             self, tiny_model, tmp_path, monkeypatch):
         """Every post-warmup step 'spikes': each window is caught at its
