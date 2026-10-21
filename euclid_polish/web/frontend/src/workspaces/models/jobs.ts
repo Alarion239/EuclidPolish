@@ -1,10 +1,10 @@
 /* Job helpers of the Models workspace: the shared job keys (so the palette
    and these tabs never start the same job twice), the
    confirmed starters of the loop's local jobs (evaluate, PSNR vs knee,
-   member PSNR, the universal models' score and pull, a knee-attribution
-   run) and an end-of-job effect. Jobs start through `startJob`
-   (app/RunActions), which confirms, registers the job under its key and
-   toasts the start; the shell toasts the end. */
+   member PSNR, the universal models' score, spectra and pull, a
+   knee-attribution run) and an end-of-job effect. Jobs start through
+   `startJob` (app/RunActions), which confirms, registers the job under its
+   key and toasts the start; the shell toasts the end. */
 import { useEffect, useRef } from "react";
 import { isTerminal, type Job } from "../../api/jobs";
 import { invalidate } from "../../api/query";
@@ -12,6 +12,7 @@ import { startJob } from "../../app/RunActions";
 import { confirm } from "../../ui";
 import { REGIME, url } from "./api";
 import { kneeUrl } from "./kneesApi";
+import { numbersText } from "./universal";
 
 export const JOB = {
   evaluate: "run:evaluate",        // == app/RunActions (same url → same key)
@@ -32,6 +33,10 @@ export const JOB = {
   universalPull: "ensemble:universal-pull",
   kneeAttribution: "models:knee-attribution",
 } as const;
+
+/** The start of the universal score job's label (routes/ensemble.py), so a
+ *  page follows that job whoever started it (api/jobs useTrackedJob). */
+export const UNIVERSAL_SCORE_LABEL = "universal: score";
 
 /** Evaluate the ensemble on `n` test fields (confirmed; `asked`: the
  *  caller's own dialog already asked, so no second confirm). */
@@ -112,6 +117,22 @@ export function scoreUniversal(names: readonly string[], nFields: number, force 
       title: `${verb} ${what} on the ${nFields} test fields?`,
       message: `Loads ${names.length ? numbers(names) : "each model"} (TensorFlow) and scores its PSNR at every knee against the blurred HR truth: the Leaderboard's metric. It writes only the universal scores, never the ensemble's cubes. Minutes per model.`,
       confirmLabel: verb,
+    },
+  });
+}
+
+/** Compute the universal models' spectra (Models › Spectra; confirmed): the
+ *  universal score job with `spectra=1`, which runs every universal model
+ *  whose score or spectra are missing or stale. `missing`: the models the
+ *  confirm names; `estimate`: its cost line (spectra.ts spectraEstimate). */
+export function computeSpectra(missing: readonly string[], nFields: number, estimate: string) {
+  return startJob({
+    key: JOB.universalScore, url: url.universalScore(), label: "Compute spectra",
+    data: { spectra: "1" },
+    question: {
+      title: `Compute the spectra of ${plural(missing.length, "universal model")}?`,
+      message: `${estimate.charAt(0).toUpperCase()}${estimate.slice(1)}. The universal score job loads ${numbersText(missing)} on this machine (TensorFlow, never FASRC) and measures their power spectra and direction diagnostics on the ${nFields} test fields; a model without a current score is scored too (minutes per model). It writes only the universal scores and spectra.`,
+      confirmLabel: "Compute",
     },
   });
 }

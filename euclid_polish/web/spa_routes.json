@@ -4,7 +4,7 @@
   "workspaces": [
     { "id": "home", "label": "Home", "path": "/", "tabs": [] },
     { "id": "synthetic", "label": "Synthetic", "path": "/synthetic", "tabs": ["status", "records", "galaxies", "stars", "noise", "psf", "fields"], "defaultTab": "status" },
-    { "id": "models", "label": "Models", "path": "/models", "tabs": ["leaderboard", "universal", "knees", "members", "train", "combiner", "diagnostics", "images"], "defaultTab": "leaderboard" },
+    { "id": "models", "label": "Models", "path": "/models", "tabs": ["leaderboard", "universal", "knees", "spectra", "members", "train", "combiner", "diagnostics", "images"], "defaultTab": "leaderboard" },
     { "id": "sky", "label": "Sky", "path": "/sky", "tabs": ["atlas", "targets", "compare"], "defaultTab": "atlas" },
     { "id": "figures", "label": "Figures", "path": "/figures", "tabs": ["plates", "sheet", "studies"], "defaultTab": "plates" },
     { "id": "files", "label": "Files", "path": "/files", "tabs": [] },

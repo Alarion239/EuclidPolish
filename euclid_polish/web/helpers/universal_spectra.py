@@ -111,8 +111,8 @@ def spectra_payload() -> dict:
     stale = [m["name"] for m in models if m["status"] == "stale"]
     notes: list[str] = []
     if missing:
-        notes.append(f"{len(missing)} model(s) without spectra: {', '.join(missing)} — "
-                     "compute them (the score job with spectra)")
+        notes.append(f"{len(missing)} model(s) without spectra (listed in `missing`) — compute "
+                     "them (the score job with spectra)")
     if stale:
         notes.append(f"{len(stale)} spectra stale (checkpoint, test fields or records changed): "
                      + ", ".join(stale))

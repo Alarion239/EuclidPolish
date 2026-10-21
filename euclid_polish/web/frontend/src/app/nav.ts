@@ -57,6 +57,8 @@ export const WORKSPACE_META: Record<string, WorkspaceMeta> = {
         keywords: ["multi-knee", "learned knee", "scaling", "training time", "gpu hours", "depth", "steps"] },
       knees: { label: "Knees", description: "Which asinh knees a multi-knee model relies on, for which pixels",
         keywords: ["knee attribution", "attribution", "multi-knee", "gradient", "ablation", "sensitivity", "cross-band"] },
+      spectra: { label: "Spectra", description: "The universal models' power spectra, coherence and error direction against the truth",
+        keywords: ["power spectrum", "transfer", "coherence", "isotropy", "grid", "anisotropy", "direction"] },
       members: { label: "Members", description: "The roster, training curves and archived members", keywords: ["curves", "roster"] },
       train: { label: "Train", description: "Train, continue or fork members on FASRC" },
       combiner: { label: "Combiner", description: "Spatial-gate variants: fit, compare, promote", keywords: ["combiners", "gate", "spatial gate"] },
