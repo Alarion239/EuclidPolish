@@ -31,7 +31,7 @@ def test_the_table_lists_the_cut_galaxies():
     assert distances["229934"] == pytest.approx(16.24)       # straight edge through its halo
     assert distances["580250"] == pytest.approx(0.66)        # cut through its disc
     assert all(0.0 <= d < box_face.table_reach_kpc() for d in distances.values())
-    assert Config.Tng.MIN_BOX_FACE_DISTANCE_KPC <= box_face.table_reach_kpc()
+    assert box_face.table_reach_kpc() >= Config.Tng.MIN_BOX_FACE_DISTANCE_KPC
     assert len(box_face.cut_galaxies()) == 21
 
 

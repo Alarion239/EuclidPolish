@@ -331,24 +331,24 @@ def _distance_to_mask(mask):
         q = 0
         s[0] = 0
         t[0] = 0
-        for u in range(1, width):
+        for x in range(1, width):
             while q >= 0 and ((t[q] - s[q]) ** 2 + g[s[q]] ** 2
-                              > (t[q] - u) ** 2 + g[u] ** 2):
+                              > (t[q] - x) ** 2 + g[x] ** 2):
                 q -= 1
             if q < 0:
                 q = 0
-                s[0] = u
+                s[0] = x
             else:
-                w = 1 + (u * u - s[q] * s[q] + g[u] ** 2 - g[s[q]] ** 2) // (2 * (u - s[q]))
+                w = 1 + (x * x - s[q] * s[q] + g[x] ** 2 - g[s[q]] ** 2) // (2 * (x - s[q]))
                 if w < width:
                     q += 1
-                    s[q] = u
+                    s[q] = x
                     t[q] = w
-        for u in range(width - 1, -1, -1):
+        for x in range(width - 1, -1, -1):
             # The exact integer square distance; IEEE sqrt is correctly
             # rounded, as SciPy's np.sqrt of the same float64 is.
-            out[y, u] = math.sqrt(float((u - s[q]) ** 2 + g[s[q]] ** 2))
-            if u == t[q]:
+            out[y, x] = math.sqrt(float((x - s[q]) ** 2 + g[s[q]] ** 2))
+            if x == t[q]:
                 q -= 1
     return out
 
@@ -389,7 +389,8 @@ def _coarse_blur(image: np.ndarray, sigma_px: float, factor: int) -> np.ndarray:
         small = _block_mean_f32(np.ascontiguousarray(image), factor)
     else:
         padded = np.pad(image, pad)
-        small = padded.reshape(padded.shape[0] // factor, factor, padded.shape[1] // factor, factor).mean(axis=(1, 3))
+        small = padded.reshape(padded.shape[0] // factor, factor,
+                               padded.shape[1] // factor, factor).mean(axis=(1, 3))
     small = _gaussian_blur(small.astype(np.float32), sigma_px / factor)
     big = cv2.resize(small, (padded_shape[1], padded_shape[0]), interpolation=cv2.INTER_LINEAR)
     return big[:height, :width]

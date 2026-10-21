@@ -107,7 +107,7 @@ def test_extracted_frames_are_dated_now_not_to_the_archive(tmp_path):
     single.parent.mkdir()
     _make_atlas_tar(str(single))
     download_tng_skirt._extract(str(single), remove=False)
-    frames = [f for f in (tmp_path / "single" / "123").rglob("*.fits")]
+    frames = list((tmp_path / "single" / "123").rglob("*.fits"))
     assert len(frames) == 4 and all(f.stat().st_mtime >= t0 - 1 for f in frames)
 
 

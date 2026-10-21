@@ -83,3 +83,22 @@ def test_windows_without_full_coverage_or_with_a_saturated_star_are_left_out():
     acc = jr.RingCorrelation(lambda x: x)
     assert acc.add(sky, jwst) == 7
     assert acc.add(sky, np.full_like(sky, np.nan)) == 0 and acc.windows == 7
+
+
+def test_thin_coverage_gaps_share_one_apodized_mask():
+    """A window with a thin gap (the early-release detector gaps) counts
+    when ``min_coverage`` allows it; identical images still agree at every
+    period, and a fully covered window comes out exactly as before."""
+    sky = _sky(4, n=510)
+    gapped = sky.copy()
+    gapped[:, 100:104] = np.nan                                     # a 4-px gap through 3 windows
+    strict = jr.RingCorrelation(lambda x: x)
+    assert strict.add(sky, gapped) == 6
+    loose = jr.RingCorrelation(lambda x: x, min_coverage=0.95)
+    assert loose.add(sky, gapped) == 9
+    out = jr.summary(loose)
+    assert min(out["coherence"]) > 0.999
+    full_strict, full_loose = jr.RingCorrelation(lambda x: x), jr.RingCorrelation(lambda x: x, 0.95)
+    full_strict.add(sky, sky)
+    full_loose.add(sky, sky)
+    assert np.array_equal(full_strict.sj, full_loose.sj) and np.array_equal(full_strict.jj, full_loose.jj)

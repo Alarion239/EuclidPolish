@@ -33,6 +33,7 @@ from euclid_polish.tng._image import (
     SOFT_WINDOW_DECADES,
     SOFT_WINDOW_INNER_FRACTION,
     SOFT_WINDOW_RIM_MARGIN_PX,
+    ViewRead,
     _block_mean,
     _centered_rotation_crop_slices,
     _downsample_surface_brightness,
@@ -40,7 +41,6 @@ from euclid_polish.tng._image import (
     _soft_circular_window,
     _soft_circular_window_array,
     _stochastic_round_factor,
-    ViewRead,
     compile_glow_kernels,
     start_view_read,
 )
