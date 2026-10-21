@@ -133,7 +133,8 @@ type JobsState = {
 
 type JobsActions = {
   /** Merge one snapshot (a summary never erases a known log; a late
-   *  "running" snapshot never regresses a finished job). */
+   *  "running" snapshot never regresses a finished job, nor withdraws a
+   *  cancel request). */
   upsert: (job: Job, opts?: { detail?: boolean }) => void;
   /** Merge a `/api/jobs?summary=1` listing; jobs the server no longer lists
    *  are dropped unless they were started here and have finished. */
@@ -148,8 +149,12 @@ export type JobsStore = JobsState & JobsActions;
 function mergeJob(prev: Job | undefined, next: Job): Job {
   if (!prev) return next;
   if (isTerminal(prev.status) && !isTerminal(next.status)) return prev;
-  if (next.log != null) return next;
-  return { ...next, log: prev.log, log_truncated: prev.log != null ? prev.log_truncated : next.log_truncated };
+  // A cancel request is one-way on the server (`Job.cancel`): a running
+  // snapshot without it was read before the cancel landed, so keep it.
+  const snap = prev.cancel_requested && !next.cancel_requested && !isTerminal(next.status)
+    ? { ...next, cancel_requested: true, cancellable: false } : next;
+  if (snap.log != null) return snap;
+  return { ...snap, log: prev.log, log_truncated: prev.log != null ? prev.log_truncated : snap.log_truncated };
 }
 
 const EMPTY_STATE: JobsState = { jobs: {}, started: [], keyed: {}, final: {} };

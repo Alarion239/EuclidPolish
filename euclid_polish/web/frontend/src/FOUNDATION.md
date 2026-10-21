@@ -256,8 +256,9 @@ const fit = useTrackedJob("combiner: fit starfull");   // attach by label (feed-
 - FASRC offline (C4) shows up as `fasrcOffline: true` with an empty `slurm` list. It is not an
   error.
 - SLURM rows come from `live` (C5, WP-B1b) when present, else from the single `current.job`.
-- The store merges snapshots, with two guarantees: a summary never erases a known log, and a
-  late "running" snapshot never regresses a finished job.
+- The store merges snapshots, with three guarantees: a summary never erases a known log, a late
+  "running" snapshot never regresses a finished job, and it never withdraws a cancel request
+  (the server's flag is one-way, so a snapshot without it was read before the cancel landed).
 
 ### 4.4 Endpoint modules
 

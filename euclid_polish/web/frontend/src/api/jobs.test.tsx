@@ -227,6 +227,15 @@ describe("useJobsFeed", () => {
     expect(useJobsStore.getState().jobs.a.log).toBe("end");
   });
 
+  it("never withdraws a cancel request from a late running snapshot or summary", () => {
+    const store = useJobsStore.getState();
+    store.upsert(job("a", { cancel_requested: true, cancellable: false }));
+    store.upsert(job("a", { progress: { current: 4, total: 10, pct: 40, label: "" } }));
+    expect(useJobsStore.getState().jobs.a).toMatchObject({ cancel_requested: true, cancellable: false, progress: { pct: 40 } });
+    store.mergeFeed([job("a", { log: null, duration: 9 })]);
+    expect(useJobsStore.getState().jobs.a).toMatchObject({ cancel_requested: true, cancellable: false, duration: 9 });
+  });
+
   it("lists live SLURM jobs from current-submission", async () => {
     const srv = server();
     srv.on("GET", LOCAL_FEED_URL, () => ({ body: [] }));
@@ -313,6 +322,10 @@ describe("cancelJob", () => {
 describe("useJob().cancel", () => {
   it("cancels the hook's current job and reports the server's reply", async () => {
     const srv = server();
+    // Only the first detail poll runs (the next one is 10 s away): the flags
+    // checked below must come from cancel() itself, not from a poll landing
+    // between it and the assertion.
+    JOBS_FEED_TIMING.detailMinMs = JOBS_FEED_TIMING.detailMaxMs = 10_000;
     srv.on("POST", "/api/run", () => ({ body: { job_id: "c1" } }));
     srv.on("GET", "/api/jobs/c1", () => ({ body: job("c1") }));
     srv.on("GET", LOCAL_FEED_URL, () => ({ body: [] }));
@@ -324,6 +337,34 @@ describe("useJob().cancel", () => {
     await act(async () => { reply = await result.current.cancel(); });
     expect(reply).toEqual({ ok: true });
     expect(srv.count("/api/jobs/c1/cancel", "POST")).toBe(1);
+    expect(result.current.job).toMatchObject({ cancel_requested: true, cancellable: false });
+    expect(srv.count("/api/jobs/c1")).toBe(1);                 // the first poll only
+  });
+
+  it("keeps the cancel request when a poll read before it is answered after it", async () => {
+    const srv = server();
+    let answerPoll2 = (): void => { throw new Error("poll 2 was not sent"); };
+    srv.on("POST", "/api/run", () => ({ body: { job_id: "c2" } }));
+    srv.on("GET", LOCAL_FEED_URL, () => ({ body: [] }));
+    srv.on("POST", "/api/jobs/c2/cancel", () => ({ body: { ok: true } }));
+    srv.on("GET", "/api/jobs/c2", () => {
+      const n = srv.count("/api/jobs/c2");
+      if (n === 1) return { body: job("c2") };
+      // Poll 2 reads the job before the cancel lands and is answered after its
+      // reply (threaded Flask); later polls stay unanswered, so nothing else
+      // writes the job meanwhile.
+      if (n > 2) return new Promise<never>(() => {});
+      return new Promise((resolve) => {
+        answerPoll2 = () => resolve({ body: job("c2", { progress: { current: 4, total: 10, pct: 40, label: "" } }) });
+      });
+    });
+    const { result } = renderHook(() => useJob());
+    await act(() => result.current.run("/api/run"));
+    await waitFor(() => expect(srv.count("/api/jobs/c2")).toBe(2));   // poll 2 is in flight
+    await act(async () => { await result.current.cancel(); });
+    expect(result.current.job).toMatchObject({ cancel_requested: true, cancellable: false });
+    answerPoll2();
+    await waitFor(() => expect(result.current.job?.progress.pct).toBe(40));   // its snapshot landed
     expect(result.current.job).toMatchObject({ cancel_requested: true, cancellable: false });
   });
 
