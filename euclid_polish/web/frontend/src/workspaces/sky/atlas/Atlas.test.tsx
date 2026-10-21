@@ -174,6 +174,26 @@ describe("Sky atlas", () => {
     expect(Number(search().get("fov"))).toBeLessThan(0.1);
   });
 
+  it("still frames the inspected tile when its layer arrives after the view write-back delay (a slow server)", async () => {
+    let answer!: () => void;
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    const respond = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).startsWith("/api/sky/layer/nexus-tiles")) await held;
+      return respond(input, init);
+    });
+    act(() => { useInspector.getState().show({ kind: "tile", id: "nexus/f200w-0001" }); });
+    show("/sky/atlas?layers=nexus-tiles");
+    await waitFor(() => expect(currentSkyEngine()?.attachedTo).toBeTruthy());
+    // Longer than the view write-back debounce (350 ms): the opening view is
+    // the home view, so nothing is written and the link still has no position.
+    await act(async () => { await new Promise((r) => setTimeout(r, 400)); });
+    expect(search().get("ra")).toBeNull();
+    answer();
+    await waitFor(() => expect(search().get("ra")).not.toBeNull());
+    expect(Number(search().get("ra"))).toBeCloseTo(268.3935, 3);
+  });
+
   it("a URL view change moves the engine; a user move is written back to the URL", async () => {
     show("/sky/atlas?ra=268.38&dec=65.1&fov=0.2&layers=-");
     await waitFor(() => expect(currentSkyEngine()?.attachedTo).toBeTruthy());

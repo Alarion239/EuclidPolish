@@ -93,7 +93,17 @@ export function makeFakeAladin(opts: { initError?: unknown } = {}) {
 
   const A: AladinStatic = {
     init: opts.initError ? Promise.reject(opts.initError) : Promise.resolve(),
-    aladin(el, o) { created.push(o); al.hosts.push(el); return al; },
+    aladin(el, o) {
+      created.push(o);
+      al.hosts.push(el);
+      // Aladin opens where it was created (its constructor goes to `target`
+      // and applies `fov`), so the engine's first view is the one it asked for.
+      const [ra, dec] = String(o.target ?? "").trim().split(/\s+/).map(Number);
+      if (Number.isFinite(ra) && Number.isFinite(dec)) { view.ra = ra; view.dec = dec; }
+      if (typeof o.fov === "number" && o.fov > 0) view.fov = o.fov;
+      if (typeof o.projection === "string") view.proj = o.projection;
+      return al;
+    },
     HiPS: (url, o) => makeLayer("hips", url, o),
     image: (url, o) => makeLayer("image", url, o),
     MOCFromURL: (url, o = {}) => ({
