@@ -32,6 +32,7 @@ from euclid_polish.web import fasrc_jobs
 from euclid_polish.web.helpers import ensemble_viz as ev
 from euclid_polish.web.helpers import purge_requests
 from euclid_polish.web.helpers import universal_models as um
+from euclid_polish.web.helpers import universal_spectra as us
 from euclid_polish.web.remote import STATE
 
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
@@ -615,9 +616,9 @@ class _FakeEnsemble:
         return (up * self.scale)[None]
 
 
-def _records(env, monkeypatch, *, fp="fp"):
+def _records(env, monkeypatch, *, fp="fp", size=4):
     rng = np.random.default_rng(3)
-    lrs = {i: rng.exponential(100.0, (4, 4, 4)).astype(np.float32) for i in (0, 1, 2)}
+    lrs = {i: rng.exponential(100.0, (size, size, 4)).astype(np.float32) for i in (0, 1, 2)}
     hrs = {i: np.repeat(np.repeat(lr, 2, axis=0), 2, axis=1) for i, lr in lrs.items()}
     records = os.path.join(str(env), "records")
     os.makedirs(records, exist_ok=True)
@@ -733,6 +734,83 @@ def test_a_stale_score_keeps_where_it_was_made(env, monkeypatch):
     assert row["train_hours"] == pytest.approx(2.0) and row["steps"] == 4000
     assert row["scored_hours"] == pytest.approx(1.0) and row["scored_steps"] == 2000
     assert row["served_step"] == 3000
+
+
+# ---- spectra (Models › Spectra) ------------------------------------------------ #
+
+def test_the_score_job_writes_each_models_spectra_next_to_its_curves(env, monkeypatch):
+    """96-px LR → 192-px SR: one 128-px radial window after the 32-px border."""
+    base, regime = _score_world(env)
+    _records(env, monkeypatch, size=96)
+    out = um.job_universal_score(_Cap())
+    assert out["spectra"] == ["member_196", "member_211"]
+    record = ev.read_universal_spectra("member_211")
+    assert os.path.isfile(os.path.join(regime, "universal", "member_211.spectra.json"))
+    assert record["available"] is True and record["n_fields"] == 2
+    assert record["fingerprint"] == member_fingerprint(os.path.join(base, "member_211"))
+    assert record["identity"] == ev.read_universal_scores()["identity"]
+    assert record["served_step"] == 3000 and record["bands"] == list(BANDS)
+    coherence = np.array(record["radial"]["coherence"], float)
+    assert coherence.shape == (4, 63) and np.all(coherence[:, :8] > 0.9)
+    assert len(record["map"]["values"]) == 4 and len(record["map"]["values"][0]) == 64
+
+    payload = us.spectra_payload()
+    assert payload["records_local"] is True and payload["missing"] == []
+    assert payload["period_bands"] == [[2, 3], [3, 6], [6, 12], [12, 21], [21, 42]]
+    assert len(payload["angle_deg"]) == 36 and len(payload["period_px"]) == 63
+    assert np.array(payload["truth_power"], float).shape == (4, 63)
+    rows = {m["name"]: m for m in payload["models"]}
+    assert list(rows) == ["member_196", "member_211"]
+    row = rows["member_211"]
+    assert row["status"] == "current" and row["number"] == 211 and row["depth"] == 16
+    assert row["knees"] == KNEES6 and row["isotropy_penalty"] == 0.0 and row["steps"] == 3000
+    assert row["mean_psnr"] == ev.read_universal_scores()["models"]["member_211"]["mean"]
+    assert set(row["radial"]) == {"power_sr", "coherence", "transfer"}
+    assert "map" not in row and set(row["angular"]) == {"2-3", "3-6", "6-12", "12-21"}
+
+    detail = us.spectra_map_payload("member_211")
+    assert detail["name"] == "member_211" and detail["status"] == "current"
+    assert detail["map"]["k"][0] == -32 and detail["map"]["period_lines_px"] == [21, 3]
+    assert us.spectra_map_payload("member_170") is None          # not universal
+
+    # a new checkpoint makes them stale
+    _member(base, 211, origin=LEARNED, ckpt="ckpt-9")
+    assert {m["name"]: m["status"] for m in us.spectra_payload()["models"]} == {
+        "member_196": "current", "member_211": "stale"}
+
+
+def test_spectra_rerun_a_model_whose_score_is_current_only_when_asked(env, monkeypatch):
+    _base, regime = _score_world(env)
+    _records(env, monkeypatch, size=96)
+    um.job_universal_score(_Cap())
+    os.remove(os.path.join(regime, "universal", "member_196.spectra.json"))
+    assert {m["name"]: m["status"] for m in us.spectra_payload()["models"]} == {
+        "member_196": "missing", "member_211": "current"}
+    assert us.spectra_payload()["missing"] == ["member_196"]
+    assert us.spectra_map_payload("member_196") is None
+    plain = um.job_universal_score(_Cap())
+    assert plain["scored"] == [] and plain["spectra"] == []
+    asked = um.job_universal_score(_Cap(), spectra=True)
+    assert asked["scored"] == ["member_196"] and asked["spectra"] == ["member_196"]
+    assert asked["reused"] == ["member_211"]
+    assert ev.read_universal_spectra("member_196")["available"] is True
+
+
+def test_spectra_of_fields_smaller_than_the_windows_say_why(env, monkeypatch):
+    _score_world(env)
+    _records(env, monkeypatch)                                    # 8-px SR
+    um.job_universal_score(_Cap(), members=["211"])
+    row = next(m for m in us.spectra_payload()["models"] if m["name"] == "member_211")
+    assert row["status"] == "current" and row["radial"] is None and row["angular"] is None
+    assert "smaller than" in row["reason"]
+    assert us.spectra_map_payload("member_211") is None
+
+
+def test_the_spectra_payload_answers_on_an_empty_ensemble(env):
+    payload = us.spectra_payload()
+    assert payload["models"] == [] and payload["truth_power"] is None
+    assert payload["records_local"] is False and payload["schema"] == 1
+    assert any("not local" in note for note in payload["notes"])
 
 
 def _fake_gate_diagnostic(monkeypatch, calls):

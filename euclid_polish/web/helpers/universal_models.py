@@ -29,6 +29,12 @@ cache keyed on the active members; it loads as an ensemble of one through
   stored per model in ``<vis>/ensemble/starfull/universal/`` (``<name>.npz``
   per-field curves + ``index.json``; the read side lives in
   :mod:`~euclid_polish.web.helpers.ensemble_viz`). Never in a cube bucket.
+* **Spectra** (Models › Spectra): made by the same pass over the same test
+  fields — the output's power spectrum against the truth's, their coherence
+  and transfer, and the direction structure of the error
+  (:mod:`~euclid_polish.eval.model_spectra`) — stored as
+  ``<name>.spectra.json`` next to the curves; served by
+  :mod:`~euclid_polish.web.helpers.universal_spectra`.
 
 :func:`universal_payload` (``GET /ensemble/universal.json``) only reads: no
 SSH, no TensorFlow, no writes. :func:`job_universal_score` is a local job;
@@ -60,6 +66,7 @@ from euclid_polish.ensemble import EnsembleModel, member_fingerprint
 from euclid_polish.eval.combiner import BAND_NAMES, COMBINER_MODELS, combiner_artifact_fingerprint
 from euclid_polish.eval.gate_members import member_peak_weights
 from euclid_polish.eval.knee_psnr import KNEE_GRID_E, integrated_psnr, knee_psnr, stretched_truth
+from euclid_polish.eval.model_spectra import SpectraAccumulator, field_sums
 from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND, load_spatial_gate
 from euclid_polish.image.collection import ImageSet
 from euclid_polish.image.tfio import tfrecord_path
@@ -855,20 +862,35 @@ def _test_pairs(records_dir: str, wanted: list[int]) -> Iterator[tuple[int, np.n
             yield index, np.asarray(lr.data, np.float32), target
 
 
-def _field_curve(sr: np.ndarray, target_record, fwhm: float) -> np.ndarray:
-    """PSNR at every knee and band of one field — the Leaderboard's metric:
-    the HR record blurred to the target PSF, the stretched truth reused."""
-    truth = np.asarray(blur_target_array(
+def _field_truth(target_record, fwhm: float) -> np.ndarray:
+    """The Leaderboard's truth of one field: the HR record blurred to the
+    target PSF."""
+    return np.asarray(blur_target_array(
         np.asarray(target_record.data, np.float32), fwhm,
         pixel_scale_arcsec=target_record.pixel_scale_arcsec), np.float32)
+
+
+def _field_curve(sr: np.ndarray, target_record, fwhm: float) -> np.ndarray:
+    """PSNR at every knee and band of one field — the Leaderboard's metric,
+    the stretched truth reused."""
+    truth = _field_truth(target_record, fwhm)
     return knee_psnr(sr, truth, truth_asinh=stretched_truth(truth))
 
 
+def _field_measures(sr: np.ndarray, target_record, fwhm: float) -> tuple[np.ndarray, dict]:
+    """One field's PSNR curve (:func:`_field_curve`) and spectra partial sums
+    (:func:`~euclid_polish.eval.model_spectra.field_sums`), one truth for
+    both."""
+    truth = _field_truth(target_record, fwhm)
+    return knee_psnr(sr, truth, truth_asinh=stretched_truth(truth)), field_sums(sr, truth)
+
+
 def _score_model(cap, name: str, d: str, identity: dict, records_dir: str, *,
-                 done: int, total: int) -> tuple[dict, np.ndarray, list[int]]:
+                 done: int, total: int) -> tuple[dict, np.ndarray, list[int], dict]:
     """Score one universal model on the identity's test fields: ``(index
-    entry, curves (F, K, C), fields)``. The model loads as an ensemble of
-    one (the ensemble-only rule)."""
+    entry, curves (F, K, C), fields, spectra record)`` — the spectra come
+    from the same outputs and truths. The model loads as an ensemble of one
+    (the ensemble-only rule)."""
     label = ensemble_registry.member_label(name)
     started = time.monotonic()
     fingerprint = member_fingerprint(d)           # before loading: a pull mid-score → stale
@@ -880,18 +902,21 @@ def _score_model(cap, name: str, d: str, identity: dict, records_dir: str, *,
     n_wanted = len(identity["indices"])
     fields: list[int] = []
     curves: list[np.ndarray] = []
+    spectra = SpectraAccumulator()
     pending: list[tuple[int, Future]] = []
 
     def drain(limit: int) -> None:
         while len(pending) > limit:
             index, future = pending.pop(0)
-            curves.append(future.result())
+            curve, sums = future.result()
+            curves.append(curve)
+            spectra.merge(sums)
             fields.append(index)
 
     with ThreadPoolExecutor(max_workers=ev._KNEE_PSNR_WORKERS) as pool:
         for n, (index, lr, target) in enumerate(_test_pairs(records_dir, identity["indices"])):
             sr = np.asarray(model.member_arrays(lr)[0], np.float32)
-            pending.append((index, pool.submit(_field_curve, sr, target, fwhm)))
+            pending.append((index, pool.submit(_field_measures, sr, target, fwhm)))
             drain(2 * ev._KNEE_PSNR_WORKERS)
             cap.tick(done + n + 1, total, f"{name}: field {n + 1}/{n_wanted}")
         drain(0)
@@ -910,7 +935,10 @@ def _score_model(cap, name: str, d: str, identity: dict, records_dir: str, *,
                                if learned is not None else None),
              "served_step": checkpoint_step(d),
              "scored_hours": logged["hours"], "scored_steps": logged_steps}
-    return entry, stack, fields
+    record = {**spectra.result(list(BAND_NAMES)), "name": name, "fingerprint": fingerprint,
+              "identity": identity, "served_step": entry["served_step"],
+              "computed_at": entry["scored_at"]}
+    return entry, stack, fields, record
 
 
 def _save_curves(store: str, name: str, fields: list[int], curves: np.ndarray) -> None:
@@ -923,6 +951,15 @@ def _save_curves(store: str, name: str, fields: list[int], curves: np.ndarray) -
     os.replace(tmp, path)
 
 
+def _needs_spectra(name: str, d: str, identity: dict, *, force: bool) -> bool:
+    """Whether a model's spectra record is missing or stale (as a score:
+    another checkpoint, or other fields/target/records)."""
+    record = None if force else ev.read_universal_spectra(name)
+    if not record or record.get("fingerprint") != member_fingerprint(d):
+        return True
+    return not ev.universal_identity_matches(record.get("identity"), identity)
+
+
 def _needs_score(entry: dict | None, d: str, stored_identity: dict | None,
                  identity: dict, *, force: bool) -> bool:
     """Whether a model's stored score is missing or stale (another checkpoint,
@@ -933,22 +970,26 @@ def _needs_score(entry: dict | None, d: str, stored_identity: dict | None,
     return not ev.universal_identity_matches(stored_identity, identity)
 
 
-def job_universal_score(cap, *, members: list[str] | None = None, force: bool = False) -> dict:
+def job_universal_score(cap, *, members: list[str] | None = None, force: bool = False,
+                        spectra: bool = False) -> dict:
     """Measure the gate weights, then score the universal models (every local
     one, or ``members``) on the Leaderboard's test fields with its exact
-    knee-integrated PSNR, into the universal scores store. Local job
+    knee-integrated PSNR, into the universal scores store; every model scored
+    also gets its spectra record (Models › Spectra). Local job
     (``kind="universal-score"``).
 
     The weight diagnostic of every gate variant lacking a current one is
     measured FIRST, from the validate cubes only — so it runs even when
     nothing needs scoring or the test records are not local. A model whose
     entry is current (same checkpoint fingerprint, same identity) is reused
-    unless ``force``. Without local test records the job still succeeds when
+    unless ``force`` — or, with ``spectra``, unless its spectra record is
+    missing or stale. Without local test records the job still succeeds when
     nothing needs scoring (scores are left as they are) and fails, after the
     gate weights, when something does.
 
     Result ``{scored, reused, failed: {name: error}, gates: {computed,
-    reused, unavailable: {variant: reason}}, identity}``."""
+    reused, unavailable: {variant: reason}}, identity, spectra: [names whose
+    spectra record was written]}``."""
     base = ev.ensemble_dir()
     targets = universal_targets(base)
     if members:
@@ -965,19 +1006,23 @@ def job_universal_score(cap, *, members: list[str] | None = None, force: bool = 
     index = ev.read_universal_scores()
     records_dir = ev._sky_records_local_dir()
     identity = ev.universal_score_identity()
+
+    def needs_work(name: str, d: str) -> bool:
+        return (_needs_score(index["models"].get(name), d, index.get("identity"), identity,
+                             force=force)
+                or (spectra and _needs_spectra(name, d, identity, force=force)))
+
     if not records_dir or identity["records_fp"] is None:
         why = (ev._NO_SKY_RECORDS if not records_dir else
                "the test records (dirty_test + hr_test) are not local — sync them on "
                "Synthetic › Records.")
-        need = [n for n, (_cls, d) in targets.items()
-                if _needs_score(index["models"].get(n), d, index.get("identity"), identity,
-                                force=force)]
+        need = [n for n, (_cls, d) in targets.items() if needs_work(n, d)]
         if need:
             raise RuntimeError(f"{why} ({len(need)} model(s) need a score: "
                                f"{', '.join(need)}; the gate weights were measured first)")
         print("  • every universal model's score is current (test records not local)")
         return {"scored": [], "reused": list(targets), "failed": {}, "gates": gates,
-                "identity": index.get("identity")}
+                "identity": index.get("identity"), "spectra": []}
     store = ev.universal_scores_dir()
     os.makedirs(store, exist_ok=True)
     index_path = os.path.join(store, ev.UNIVERSAL_SCORES_INDEX)
@@ -988,9 +1033,7 @@ def job_universal_score(cap, *, members: list[str] | None = None, force: bool = 
                 os.remove(os.path.join(store, f"{name}.npz"))
         index = {"schema": ev.UNIVERSAL_SCORES_SCHEMA, "identity": identity, "models": {}}
         ev._atomic_json(index_path, index)
-    todo = [n for n, (_cls, d) in targets.items()
-            if _needs_score(index["models"].get(n), d, index.get("identity"), identity,
-                            force=force)]
+    todo = [n for n, (_cls, d) in targets.items() if needs_work(n, d)]
     reused = [n for n in targets if n not in todo]
     per_model = len(identity["indices"])
     total = max(1, len(todo) * per_model)
@@ -1000,8 +1043,8 @@ def job_universal_score(cap, *, members: list[str] | None = None, force: bool = 
         d = targets[name][1]
         print(f"  • scoring {name} on {per_model} test fields")
         try:
-            entry, curves, fields = _score_model(cap, name, d, identity, records_dir,
-                                                 done=k * per_model, total=total)
+            entry, curves, fields, record = _score_model(cap, name, d, identity, records_dir,
+                                                         done=k * per_model, total=total)
         except Exception as exc:  # noqa: BLE001 — one model never voids the others
             failed[name] = f"{type(exc).__name__}: {exc}"
             print(f"  ! {name} not scored: {failed[name]}")
@@ -1009,15 +1052,17 @@ def job_universal_score(cap, *, members: list[str] | None = None, force: bool = 
         _save_curves(store, name, fields, curves)
         index["models"][name] = entry
         ev._atomic_json(index_path, index)
+        ev._atomic_json(ev.universal_spectra_path(name), record)
         scored.append(name)
         print(f"  ✓ {name}: ∫PSNR {entry['mean']:.3f} dB "
               f"({' / '.join(f'{v:.2f}' for v in entry['integrated'])}) on "
-              f"{entry['n_fields']} fields, {entry['seconds']:.0f} s")
+              f"{entry['n_fields']} fields, {entry['seconds']:.0f} s"
+              + ("" if record["available"] else f" (no spectra: {record['reason']})"))
     if failed and not scored and not reused:
         raise RuntimeError("no universal model could be scored: "
                            + "; ".join(f"{n}: {e}" for n, e in failed.items()))
     return {"scored": scored, "reused": reused, "failed": failed, "gates": gates,
-            "identity": identity}
+            "identity": identity, "spectra": list(scored)}
 
 
 # --------------------------------------------------------------------------- #

@@ -1141,6 +1141,33 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
   with no local checkpoint — a failed pull or a dir the mirror removed —
   listed so it can be pulled again)}`. Training hours are wall hours on the hardware used (MIG
   slices are not A100-equivalent).
+- **Spectra** (`helpers/universal_spectra.py`, math in `eval/model_spectra.py`;
+  Models › Spectra). Made by the score job in the same pass as each score (same
+  fields, outputs and blurred truths) and stored as
+  `<vis>/ensemble/starfull/universal/<member_NNN>.spectra.json`
+  `{schema: 1, name, bands, n_fields, available, reason (when not available:
+  the fields are smaller than the windows), fingerprint, identity (as the
+  scores'), served_step, computed_at, radial{window_px: 128, stretch_knee_e: 1,
+  n_windows, period_px[63], power_sr[4][63], power_truth[4][63],
+  coherence[4][63], transfer[4][63]}, direction{window_px: 64,
+  long_window_px: 128, stretch_knee_e: 0.01, n_windows, angle_deg[36],
+  angular{"2-3"|"3-6"|"6-12"|"12-21": [4][36]}, axis_diag{"2-3"|…|"21-42":
+  [4][[axis, diagonal]]}}, map{k[64] (-32…31), period_lines_px [21, 3],
+  n_windows, values[4][64][64]}}`. Per field a 32-px border is dropped.
+  Radial: 128-px round-Hann windows of asinh(x / 1 e⁻), ring-averaged power
+  (white noise of variance σ² → flat σ²), coherence `Re<S T*> /
+  sqrt(<|S|²><|T|²>)`, transfer `sqrt(<|S|²> / <|T|²>)` (as
+  `eval/power_spectrum.py`), window sums over every field (not medians), period
+  = 128 / ring px on the 0.05″ grid. Direction: the error in asinh(x / 0.01 e⁻)
+  (as the isotropy penalty, `training/isotropy.py`), each window's power over
+  its own round expectation (ring means interpolated log-log to the bin's |k|,
+  floored at a 1e-4 e⁻ pattern), averaged: 1 = no preferred direction; axis /
+  diagonal = the mean over the bins within 1.5 bins of a pixel axis / of a
+  diagonal; 2–21 px from 64-px windows, 21–42 px from 128-px windows. Every
+  number may be `null` (non-finite ring, empty angle bin, map bin outside the
+  measured disc: DC and the corners beyond Nyquist). A record is `current`
+  while its checkpoint fingerprint and identity hold (records that are not
+  local cannot invalidate it), `stale` otherwise, `missing` without one.
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
@@ -1168,7 +1195,9 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
 | GET | `/ensemble/training-jobs.json` |  | `{jobs:[{jobid, state, submitted_at, started_at, ended_at, elapsed_seconds, req_time_limit, req_memory, req_cpus, req_gpus, partition, gpu_util_mean, mode, member_names, steps, continue_basis, target_steps, extra_steps, params}]}` — every ensemble_train submission in the local job log, newest first (the Train tab's presets / clone). |
 | GET | `/ensemble/universal.json` |  | Models › Universal: the universal models payload (see **Universal models** above) — `{available, knees, bands, integration, identity, production, mean_model, comparable, models, combiners, fasrc, weights_pending, notes}`. Local files only (registry, `origin.json`, training logs, the job log, the scores store, the knee payload, gate payloads, compare reports): no SSH, no TensorFlow, no file of its own written (the shared registry and knee readers behave as on every Models GET); answers on an empty ensemble. `?mode=starless` answers an empty payload (universal models are STARFULL only). |
 | POST | `/ensemble/universal/pull` | fasrc | Pull universal models from FASRC as standalone models (local job `universal-pull`, one at a time): `members` (comma list, required). 400 for a malformed, active or archived name, or one a local gate or cube manifest reads (an ensemble member whose dir vanished), before spawning. Per name the job refuses the same names, then in ONE ssh call checks that the remote dir holds a checkpoint (`checkpoint` or `*.index`) and reads its `origin.json`: no checkpoint → refused "no checkpoint on FASRC" and nothing registered; no `origin.json`, or a recipe that is not universal → refused. It registers the name (`ensemble_registry.add_universal_entry`) BEFORE the rsync of `<remote ensemble>/<name>/` → `ckpt/ensemble/<name>/`, so the registry never makes it an ensemble member; an rsync that raises or leaves no loadable checkpoint (manifest + the index it names) deletes the partial dir this call created, then removes the registration this call added (`ensemble_registry.remove_universal_entry`; a registration that predates the call stays, so the model is still offered as a FasrcRow with `registered: true`); one name's failure never stops the others. Prunes orphaned checkpoint files; requests a stale-cube purge. `{ok, job_id, already_running}`; job result `{pulled:[names], refused:{name: reason}}`. |
-| POST | `/ensemble/universal/score` |  | Score universal models on the Leaderboard's test fields (local job `universal-score`, TensorFlow, one at a time): `members` (comma list; default every local universal model — active universal members and registered universal models with a checkpoint), `force=1` rescores current entries. Each model loads alone (`EnsembleModel(labels=[label], include_universal=True, starless=False)`); an entry whose checkpoint fingerprint and identity are unchanged is reused; scores made under another identity (fields, records, target) are dropped. The weight diagnostic of every gate variant without a current one (`<variant dir>_evals.json`, validate cubes only) is measured FIRST — also when nothing needs scoring or the test records are not local (POST with no `members` and no `force` = "Measure gate weights"); one gate that fails is reported unavailable, never stops the others. Without local test records the job succeeds when every score is current (scores left as they are) and fails, after the gate weights, when a model needs a score. Each score records `scored_hours`/`scored_steps`. 400 for a name that is not a local universal model with a checkpoint. `{ok, job_id, already_running}`; job result `{scored, reused, failed{name: error}, gates{computed, reused, unavailable{variant: reason}}, identity}`. |
+| GET | `/ensemble/universal/spectra.json` |  | Models › Spectra (see **Spectra** above): `{schema: 1, records_local, bands, period_bands [[2,3],[3,6],[6,12],[12,21],[21,42]], angle_deg[36], period_px[63], pixel_scale_arcsec (0.05), radial{window_px, stretch_knee_e}, direction{window_px, long_window_px, stretch_knee_e}, truth_power[4][63]\|null (from a current record, else any), models[{name, label, number, status (current\|stale\|missing), computed_at, n_fields, mean_psnr (the score's ∫PSNR)\|null, steps (the step the spectra describe, else the training log's), served_step, depth, knees, isotropy_penalty, radial{power_sr, coherence, transfer}\|null, axis_diag\|null, angular\|null, reason\|null}] (every local universal model, by number; no maps), missing[names], notes[]}`. Local files only; answers on an empty ensemble. |
+| GET | `/ensemble/universal/spectra/<name>.json` |  | One model's 2-D error-direction map: its spectra row plus `bands` and `map{k, period_lines_px, n_windows, values[4][64][64]}`. 404 `{ok:false, error}` for a malformed name, a name that is not a local universal model, or one without an available record. |
+| POST | `/ensemble/universal/score` |  | Score universal models on the Leaderboard's test fields (local job `universal-score`, TensorFlow, one at a time): `members` (comma list; default every local universal model — active universal members and registered universal models with a checkpoint), `force=1` rescores current entries, `spectra=1` also re-runs the models whose spectra record is missing or stale (every model scored gets its spectra record either way). Each model loads alone (`EnsembleModel(labels=[label], include_universal=True, starless=False)`); an entry whose checkpoint fingerprint and identity are unchanged is reused; scores made under another identity (fields, records, target) are dropped. The weight diagnostic of every gate variant without a current one (`<variant dir>_evals.json`, validate cubes only) is measured FIRST — also when nothing needs scoring or the test records are not local (POST with no `members` and no `force` = "Measure gate weights"); one gate that fails is reported unavailable, never stops the others. Without local test records the job succeeds when every score is current (scores left as they are) and fails, after the gate weights, when a model needs a score. Each score records `scored_hours`/`scored_steps`. 400 for a name that is not a local universal model with a checkpoint. `{ok, job_id, already_running}`; job result `{scored, reused, failed{name: error}, gates{computed, reused, unavailable{variant: reason}}, identity, spectra[names whose spectra record was written]}`. |
 
 ### Evaluation (`routes/evaluation.py`)
 

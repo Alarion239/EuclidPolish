@@ -88,6 +88,7 @@ from euclid_polish.eval.knee_psnr import (
     knee_psnr,
     stretched_truth,
 )
+from euclid_polish.eval.model_spectra import SCHEMA as MODEL_SPECTRA_SCHEMA
 from euclid_polish.eval.power_spectrum import (
     LR_NYQUIST_CYC_ARCSEC,
     EnsembleSpectrumAccumulator,
@@ -4157,6 +4158,27 @@ def universal_identity_matches(stored: dict | None, current: dict) -> bool:
         if stored.get(key) != current.get(key):
             return False
     return current.get("records_fp") is None or stored.get("records_fp") == current["records_fp"]
+
+
+#: A universal model's spectra record (written by the score job next to its
+#: curves): ``<name>.spectra.json`` in the universal scores store.
+UNIVERSAL_SPECTRA_SUFFIX = ".spectra.json"
+
+
+def universal_spectra_path(name: str) -> str:
+    """Where a universal model's spectra record lives (``name`` a member
+    name, already validated)."""
+    return os.path.join(universal_scores_dir(), f"{name}{UNIVERSAL_SPECTRA_SUFFIX}")
+
+
+def read_universal_spectra(name: str) -> dict | None:
+    """A universal model's spectra record (:mod:`~euclid_polish.eval.model_spectra`
+    plus its ``fingerprint``, ``identity``, ``served_step`` and
+    ``computed_at``); ``None`` when absent or of another schema. Read-only."""
+    data = _read_json_file(universal_spectra_path(name))
+    if not data or data.get("schema") != MODEL_SPECTRA_SCHEMA:
+        return None
+    return data
 
 
 def report_identity_matches(report_identity: dict | None, identity: dict | None) -> bool:

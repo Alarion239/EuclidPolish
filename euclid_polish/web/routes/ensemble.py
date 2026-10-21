@@ -64,6 +64,7 @@ from euclid_polish.web.helpers.universal_models import (
     universal_payload,
     universal_targets,
 )
+from euclid_polish.web.helpers.universal_spectra import spectra_map_payload, spectra_payload
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.security import (
     fresh_requested,
@@ -521,13 +522,37 @@ def register(app):
         models still only on FASRC (from the local job log). Local files only."""
         return jsonify(universal_payload(_mode_starless()))
 
+    @app.route("/ensemble/universal/spectra.json")
+    def ensemble_universal_spectra_json():
+        """Models › Spectra: every local universal model's power spectrum
+        against the truth's (coherence, transfer) and the direction structure
+        of its error, from the records the score job writes. Local files
+        only."""
+        return jsonify(spectra_payload())
+
+    @app.route("/ensemble/universal/spectra/<name>.json")
+    def ensemble_universal_spectra_map_json(name: str):
+        """One universal model's 2-D error-direction map (404 when the name is
+        no local universal model or it has no spectra yet)."""
+        try:
+            name = member_name(name)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        payload = spectra_map_payload(name)
+        if payload is None:
+            return jsonify({"ok": False, "error": f"no spectra for {name} — not a local universal "
+                                                  "model, or not computed yet"}), 404
+        return jsonify(payload)
+
     @app.route("/ensemble/universal/score", methods=["POST"])
     def ensemble_universal_score():
         """Measure missing gate-variant weights (validate cubes only — first,
         even with nothing to score or no local test records), then score the
         universal models (``members``: comma list, default every local one;
-        ``force=1`` rescores current entries) on the Leaderboard's test
-        fields (local job, one at a time)."""
+        ``force=1`` rescores current entries; ``spectra=1`` also re-runs the
+        models whose spectra are missing or stale) on the Leaderboard's test
+        fields (local job, one at a time). Every model scored gets its
+        spectra."""
         try:
             members = [member_name(token) for token in _form_list("members")]
         except ValueError as exc:
@@ -537,10 +562,13 @@ def register(app):
         if unknown:
             return _bad("not a local universal model with a checkpoint: " + ", ".join(unknown))
         force = _form_bool("force")
+        spectra = _form_bool("spectra")
         what = ", ".join(members) if members else "every universal model"
         job, started = REGISTRY.spawn_exclusive(
-            f"universal: score {what} on the test fields" + (" (forced)" if force else ""),
-            lambda cap: job_universal_score(cap, members=members or None, force=force),
+            f"universal: score {what} on the test fields"
+            + (" (forced)" if force else "") + (" + spectra" if spectra else ""),
+            lambda cap: job_universal_score(cap, members=members or None, force=force,
+                                            spectra=spectra),
             kind="universal-score")
         return jsonify({"ok": True, "job_id": job.job_id, "already_running": not started})
 

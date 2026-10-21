@@ -59,13 +59,16 @@ def _capture(monkeypatch, name):
 def test_read_endpoints_answer_on_an_empty_ensemble(client):
     for url in ("/ensemble/overview.json", "/ensemble/members.json",
                 "/ensemble/combiners.json", "/ensemble/training-jobs.json",
-                "/ensemble/training-curves.json", "/ensemble/universal.json"):
+                "/ensemble/training-curves.json", "/ensemble/universal.json",
+                "/ensemble/universal/spectra.json"):
         r = client.get(url)
         assert r.status_code == 200, url
     assert client.get("/ensemble/members.json").get_json()["members"] == []
     assert client.get("/ensemble/members.json").get_json()["universal"] == []
     universal = client.get("/ensemble/universal.json").get_json()
     assert universal["available"] is False and universal["models"] == []
+    spectra = client.get("/ensemble/universal/spectra.json").get_json()
+    assert spectra["models"] == [] and spectra["missing"] == []
     assert universal["combiners"] == [] and universal["fasrc"] == []
     body = client.get("/ensemble/combiners.json?mode=starless").get_json()
     assert body["regime"] == "starless" and body["variants"] == [] and body["reports"] == []
@@ -298,12 +301,25 @@ def test_universal_score_validates_the_models_and_passes_knobs(client, exclusive
     r = client.post("/ensemble/universal/score", data={"members": "211·psnr", "force": "1"})
     assert r.get_json() == {"ok": True, "job_id": "job1", "already_running": False}
     exclusive[0]["target"](_Cap())
-    assert seen == {"members": ["member_211"], "force": True}
+    assert seen == {"members": ["member_211"], "force": True, "spectra": False}
     assert exclusive[0]["kind"] == "universal-score"
     seen.clear()
     assert client.post("/ensemble/universal/score").status_code == 200
     exclusive[1]["target"](_Cap())
-    assert seen == {"members": None, "force": False}
+    assert seen == {"members": None, "force": False, "spectra": False}
+    seen.clear()
+    assert client.post("/ensemble/universal/score", data={"spectra": "1"}).status_code == 200
+    exclusive[2]["target"](_Cap())
+    assert seen == {"members": None, "force": False, "spectra": True}
+    assert "spectra" in exclusive[2]["label"]
+
+
+def test_universal_spectra_map_404s_are_json(client, tmp_path):
+    for url in ("/ensemble/universal/spectra/bogus!.json",
+                "/ensemble/universal/spectra/member_07.json"):
+        r = client.get(url)
+        assert r.status_code == 404 and r.get_json()["ok"] is False, url
+    assert "member_07" in client.get("/ensemble/universal/spectra/member_07.json").get_json()["error"]
 
 
 def test_universal_pull_needs_names_and_refuses_ensemble_members(client, exclusive, monkeypatch,
