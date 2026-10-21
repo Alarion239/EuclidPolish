@@ -28,6 +28,8 @@ the trainer wires up from a member's ``loss_norm`` knob.
 
 from __future__ import annotations
 
+import math
+
 import tensorflow as tf
 
 from euclid_polish.training.augmentation import asinh_stretch_multi_knee, expand_to_knees
@@ -96,9 +98,24 @@ def build_loss(name: str = "l1"):
     raise ValueError(f"unknown loss {name!r}; use one of {sorted(LOSS_NAMES)}")
 
 
-def channel_balanced_loss(name: str):
+def knee_tilt_weights(knees, tilt: float, n_bands: int) -> list[float]:
+    """Per-channel weights of a knee-major tensor (channel ``k·n_bands + c``
+    = band ``c`` at knee ``k``) tilting the balanced loss across knees: knee
+    ``k`` weighs ``(k / k_ref)**tilt``, ``k_ref`` the geometric mean of the
+    knees, normalised to a mean of 1 — so ``tilt`` < 0 puts more weight on
+    the small knees (faint light), > 0 on the large ones (bright cores), and
+    0 is the plain balanced loss."""
+    logs = [math.log(float(q)) for q in knees]
+    centre = sum(logs) / len(logs)
+    per_knee = [math.exp(float(tilt) * (v - centre)) for v in logs]
+    mean = sum(per_knee) / len(per_knee)
+    return [w / mean for w in per_knee for _ in range(int(n_bands))]
+
+
+def channel_balanced_loss(name: str, weights=None):
     """``name``'s loss per output channel, combined by the geometric mean over
-    channels; signature ``loss(a, b)``.
+    channels (weighted by ``weights``, one per channel, when given — see
+    :func:`knee_tilt_weights`); signature ``loss(a, b)``.
 
     Minimising the geometric mean minimises the mean log error over channels,
     i.e. maximises the mean PSNR over every band and knee. It is the
@@ -110,11 +127,19 @@ def channel_balanced_loss(name: str):
     the LR schedule, clipping and spike guard need no retuning.
     """
     base = build_loss(name)
+    w = None if weights is None else tf.constant([float(v) for v in weights], tf.float32)
 
     def _balanced(a, b):
         per_channel = tf.stack([base(a[..., i:i + 1], b[..., i:i + 1])
                                 for i in range(int(a.shape[-1]))])
-        return tf.exp(tf.reduce_mean(tf.math.log(tf.maximum(per_channel, 1e-12))))
+        logs = tf.math.log(tf.maximum(per_channel, 1e-12))
+        if w is None:
+            return tf.exp(tf.reduce_mean(logs))
+        weight = tf.cast(w, logs.dtype)
+        if int(weight.shape[0]) != int(per_channel.shape[0]):
+            raise ValueError(f"{int(weight.shape[0])} weights for "
+                             f"{int(per_channel.shape[0])} channels")
+        return tf.exp(tf.reduce_sum(weight * logs) / tf.reduce_sum(weight))
     return _balanced
 
 

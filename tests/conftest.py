@@ -250,6 +250,13 @@ def _redirect_writable_config_paths(
     vis_dir = str(pkg_tmp / "vis")
     os.makedirs(vis_dir, exist_ok=True)
     monkeypatch.setattr(Config, "VIS_DIR", vis_dir, raising=False)
+    # The ensemble registry (``<checkpoint parent>/ensemble_registry.json``)
+    # is read — and bootstrap-WRITTEN — by every model lookup, and the live
+    # one names the user's members and production model: a test must never
+    # see or touch it. Tests get an empty checkpoint tree (a test that needs
+    # members builds them, or monkeypatches the path itself and wins).
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR",
+                        str(pkg_tmp / "ckpt" / "wdsr"), raising=False)
     # Isolate the experiment-tracking store: submit handlers now log every
     # FASRC job into the active campaign (or tracking/unassigned_*.jsonl),
     # which would otherwise create a real ./tracking folder in the repo.

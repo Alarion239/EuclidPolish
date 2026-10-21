@@ -236,6 +236,12 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "the noise). Unbiased, unlike noise on the targets; "
                         "below f the loss stops rewarding sub-noise detail. "
                         "Member-spec key: loss_floor.")
+    p.add_argument("--knee-tilt", type=float, default=0.0,
+                   help="Balanced multi-knee member: tilt the loss across its "
+                        "scored knees, knee k weighing (k / k_ref)^tilt with "
+                        "k_ref their geometric mean (< 0: more weight on the "
+                        "small knees, faint light; > 0: on the large ones, "
+                        "bright cores). 0 = equal. Member-spec key: knee_tilt.")
     p.add_argument("--noise-texture-jitter", action="store_true",
                    help="Live training: randomise the noise texture per scene "
                         "and band (dithered exposure count and a white share, "
@@ -459,7 +465,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "saturation_mask_prob",
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
-               "loss_knees", "loss_floor", "noise_texture_jitter",
+               "loss_knees", "loss_floor", "knee_tilt", "noise_texture_jitter",
                "isotropy_penalty", "isotropy_knee", "isotropy_scales",
                "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
@@ -492,6 +498,19 @@ def _loss_floor(value) -> float | None:
         print(f"✗ loss_floor must be non-negative, got {value!r}")
         raise SystemExit(2)
     return floor or None
+
+
+def _knee_tilt(value) -> float:
+    """``knee_tilt`` → a finite float in [-2, 2] (0 when unset)."""
+    try:
+        tilt = float(value or 0.0)
+    except (TypeError, ValueError) as exc:
+        print(f"✗ knee_tilt must be a number, got {value!r}")
+        raise SystemExit(2) from exc
+    if not -2.0 <= tilt <= 2.0:
+        print(f"✗ knee_tilt must be within [-2, 2], got {value!r}")
+        raise SystemExit(2)
+    return tilt
 
 
 def _isotropy(penalty, knee) -> tuple[float, float | None]:
@@ -642,6 +661,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "knee_loss": str(over.get("knee_loss", args.knee_loss)),
             "loss_knees": _loss_knees(over.get("loss_knees", args.loss_knees), knees),
             "loss_floor": _loss_floor(over.get("loss_floor", args.loss_floor)),
+            "knee_tilt": _knee_tilt(over.get("knee_tilt", args.knee_tilt)),
             "noise_texture_jitter": _flag(over.get("noise_texture_jitter", args.noise_texture_jitter),
                                           "noise_texture_jitter"),
             "isotropy_penalty": isotropy_penalty,
@@ -717,6 +737,8 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
         identity["loss_knees"] = tuple(float(q) for q in origin["loss_knees"])
     if origin.get("loss_floor") and "loss_floor" not in override:
         identity["loss_floor"] = float(origin["loss_floor"])
+    if origin.get("knee_tilt") and "knee_tilt" not in override:
+        identity["knee_tilt"] = float(origin["knee_tilt"])
     if origin.get("noise_texture_jitter") is True and "noise_texture_jitter" not in override:
         identity["noise_texture_jitter"] = True
     if origin.get("isotropy_penalty") and "isotropy_penalty" not in override:
@@ -992,6 +1014,8 @@ def main() -> int:
                 knobs += " loss_knees=" + ",".join(f"{q:g}" for q in s.loss_knees) + "e"
             if s.loss_floor:
                 knobs += f" loss_floor={s.loss_floor:g}σ"
+            if s.knee_tilt:
+                knobs += f" knee_tilt={s.knee_tilt:+g}"
             if s.output_knee is not None:
                 knobs += f" output_knee={s.output_knee:g}e"
                 if s.learn_output_knee:

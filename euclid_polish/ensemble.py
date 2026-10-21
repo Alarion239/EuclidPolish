@@ -187,6 +187,10 @@ class MemberTrainSpec:
     #: each band's per-pixel sky scatter (``model.loss_floor_e``); ``None`` =
     #: none. Recorded in origin.json; continue keeps it.
     loss_floor: float | None = None
+    #: Balanced multi-knee member: tilt of the loss across its scored knees,
+    #: knee ``k`` weighing ``(k / k_ref)**knee_tilt`` (< 0: more weight on
+    #: the small knees); 0 = equal. Recorded in origin.json; continue keeps it.
+    knee_tilt: float = 0.0
     #: Live training draws a randomised noise texture (exposure count + white
     #: share per scene and band). Recorded in origin.json; continue keeps it.
     noise_texture_jitter: bool = False
@@ -501,6 +505,8 @@ class EnsembleModel:
                         origin["loss_knees"] = [float(q) for q in spec.loss_knees]
                     if spec.loss_floor:
                         origin["loss_floor"] = float(spec.loss_floor)
+                    if spec.knee_tilt:
+                        origin["knee_tilt"] = float(spec.knee_tilt)
                     output_knee = getattr(m, "_output_knee", spec.output_knee)
                     if output_knee is not None:
                         origin["output_knee"] = float(output_knee)
@@ -535,6 +541,8 @@ class EnsembleModel:
                     member_train_kwargs["loss_knees"] = spec.loss_knees
                 if spec.loss_floor:
                     member_train_kwargs["loss_floor"] = spec.loss_floor
+                if spec.knee_tilt:
+                    member_train_kwargs["knee_tilt"] = float(spec.knee_tilt)
             if spec.noise_texture_jitter:
                 member_train_kwargs["noise_texture_jitter"] = True
             if spec.isotropy_penalty:
