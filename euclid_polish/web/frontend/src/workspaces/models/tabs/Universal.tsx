@@ -29,11 +29,16 @@
      time-matched combiner, named — only against a combiner scored on the
      same fields with a current score, a stale model's Δ marked; real holes /
      R̃ from the newest Sky › Compare run that scored THIS model; a row opens
-     the member inspector; "Compare on real fields"), the combiners table
-     ("≥" hours for a partial one) and the universal models on FASRC (Pull,
-     Try pull, Pull again per row).
+     the member inspector; "Compare on real fields", "Make production…"), the
+     combiners table ("≥" hours for a partial one) and the universal models on
+     FASRC (Pull, Try pull, Pull again per row).
+   Production is the production gate, or one of these models (the payload's
+   `production_model`, its row badged "production"): then every "production"
+   reference — the summary, the line across, Δ vs production — is that
+   model's own score, and the gate is the former production gate.
    Opening the page reads caches only (GETs: the payload, the Sky › Compare
-   runs and their records, the catalogue); every job asks first. */
+   runs and their records, the catalogue); every job and the production
+   switch ask first. */
 import { useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Plot, { Legend, useLegend, type Guide, type LegendItem, type Series } from "../../../charts/Plot";
@@ -55,15 +60,16 @@ import {
   type UniversalCombiner, type UniversalFasrcRow,
 } from "../api";
 import { LoadState, openMember } from "../common";
-import { JOB, measureGateWeights, pullUniversal, scoreUniversal, useOnJobEnd } from "../jobs";
+import { JOB, measureGateWeights, pullUniversal, scoreUniversal, setProduction, useOnJobEnd } from "../jobs";
 import { compareRunPath, db, dbDelta, kneeNum, memberNumber } from "../model";
 import { universalNote } from "../notes";
+import { gateName, universalLabel } from "../production";
 import {
   METRICS, WEIGHTINGS, X_AXES, classText, combinerComparable, combinerHours, combinerHoursText, combinerName, combinerPoints, compareHref, depthKey,
   depthLabel,
   depthOrder, depthSlot, fasrcKind, fasrcSplit, hardwareText, hoursText, isComparable, isPartial, kneeWords, learnedKneesText, lengthLines,
-  logDomain, nearestPoint, numbersText, parseMetric, parseWeighting, parseXAxis, pendingWeights, productionReference, metricValue, realPicks,
-  scoredFields, shapeRows, stepImplText, stepsShort, STATUS_TEXT, timePoints, toScore, universalSummary, type Metric, type ModelPoint,
+  logDomain, nearestPoint, numbersText, parseMetric, parseWeighting, parseXAxis, pendingWeights, preferCurrent, productionLabel, productionReference,
+  metricValue, realPicks, scoredFields, shapeRows, stepImplText, stepsShort, STATUS_TEXT, timePoints, toScore, universalSummary, type Metric, type ModelPoint,
   type RealPick, type ShapedRow, type Weighting, type XAxis,
 } from "../universal";
 import { LogToNotebookButton } from "../../shared/LogToNotebook";
@@ -81,6 +87,9 @@ const sentence = (t: string) => {
 
 /* ── summary ───────────────────────────────────────────────────────────── */
 
+/** The best model against production: the production gate (its hours under
+ *  the weighting) or the universal model that is production (its own score
+ *  and hours; "is production" when it is the best). */
 function Summary({ s, weighting }: { s: ReturnType<typeof universalSummary>; weighting: Weighting }) {
   if (!s.n) return null;
   const b = s.best;
@@ -89,15 +98,19 @@ function Summary({ s, weighting }: { s: ReturnType<typeof universalSummary>; wei
   }
   const prod = s.production;
   const gain = s.gain;
-  const prodText = prod?.mean != null
-    ? ` (${db(prod.mean)} dB${prod.hours != null ? `; ${prod.partial ? "≥ " : ""}${hoursText(prod.hours)} ${weightText(weighting)}` : ""})` : "";
+  const isProd = !!prod?.name && b.name === prod.name;
+  const prodHours = prod?.hours == null ? ""
+    : prod.label ? `; ${hoursText(prod.hours)}` : `; ${prod.partial ? "≥ " : ""}${hoursText(prod.hours)} ${weightText(weighting)}`;
+  const prodText = prod?.mean != null ? ` (${db(prod.mean)} dB${prodHours})` : "";
+  const what = prod?.label ? `production, ${prod.label}` : "the production gate";
   return (
     <SummaryLine>
-      {plural(s.n, "universal model")}; the best, <Num>#{b.num}</Num>, scores <Num unit="dB">{db(b.mean)}</Num> integrated PSNR
+      {plural(s.n, "universal model")}; the best, <Num>#{b.num}</Num>, {isProd ? "is production and scores" : "scores"}{" "}
+      <Num unit="dB">{db(b.mean)}</Num> integrated PSNR
       {b.hours != null && <> after <Num unit="h">{hoursNum(b.hours)}</Num> of training</>}
-      {gain != null && (gain >= 0
-        ? <>, <Num>{dbDelta(gain)}</Num> dB over the production gate{prodText}</>
-        : <>, <Num tone="warn">{db(-gain)}</Num> dB under the production gate{prodText}</>)}
+      {!isProd && gain != null && (gain >= 0
+        ? <>, <Num>{dbDelta(gain)}</Num> dB over {what}{prodText}</>
+        : <>, <Num tone="warn">{db(-gain)}</Num> dB under {what}{prodText}</>)}
       {s.bestStale && " (a stale score)"}
     </SummaryLine>
   );
@@ -196,18 +209,25 @@ export default function Universal() {
   const split = useMemo(() => fasrcSplit(data?.fasrc ?? []), [data]);
   const localSpecs = useMemo(() => rows.filter((r) => r.fingerprint).map((r) => r.spec), [rows]);
   const metricInfo = METRICS.find((m) => m.value === metric) ?? METRICS[0];
+  // Production: the gate, or one of these models (its own score is then the reference).
+  const prodName = data?.production_model ?? null;
+  const prodLabel = productionLabel(data);
+  const prodSpec = prodName ? `universal:${prodName}` : null;
+  const gateWord = gateName(prodName);
+  const prodRow = prodName ? rows.find((r) => r.name === prodName) ?? null : null;
   const prodRef = data ? productionReference(data) : null;
   const prodValue = metricValue(prodRef, metric, bands);
   const meanValue = metricValue(data?.mean_model, metric, bands);
   const comparable = data ? isComparable(data) : true;
-  const combs = useMemo(() => (data ? combinerPoints(data.combiners ?? [], weighting, metric, bands, comparable) : []),
+  const combs = useMemo(() => (data ? combinerPoints(data.combiners ?? [], weighting, metric, bands, comparable, data.production_model ?? null) : []),
     [data, weighting, metric, bands, comparable]);
   const pending = useMemo(() => pendingWeights(data), [data]);
   const pendingIds = useMemo(() => new Set(pending.map((g) => g.id)), [pending]);
 
   /* real fields: each spec's newest Sky › Compare run that scored THIS model
-     (the walk names the run records it needs; it grows as they arrive) */
-  const specs = useMemo(() => rows.map((r) => r.spec), [rows]);
+     (the walk names the run records it needs; it grows as they arrive); the
+     production model's row also takes a run of `production`, which runs it */
+  const specs = useMemo(() => [...rows.map((r) => r.spec), ...(prodName ? ["production"] : [])], [rows, prodName]);
   const [ids, setIds] = useState<string[]>([]);
   const records = useExperimentDetails(ids);
   // An unreadable catalogue leaves every run "earlier" (nothing proven current), never "checking…" forever.
@@ -215,7 +235,8 @@ export default function Universal() {
   const real = useMemo(() => realPicks(specs, exps.data?.experiments, records.details,
     catalog.data ?? (catalogFailed ? { models: [] } : null), undefined, records.failed), [specs, exps.data, records, catalog.data, catalogFailed]);
   if (real.ids.join(",") !== ids.join(",")) setIds(real.ids); // state derived from the previous render
-  const pickOf = (spec: string): RealPick | undefined => (!exps.data && exps.loading ? { state: "loading" } : real.picks.get(spec));
+  const pickOf = (spec: string): RealPick | undefined => (!exps.data && exps.loading ? { state: "loading" }
+    : spec === prodSpec ? preferCurrent(real.picks.get(spec), real.picks.get("production")) : real.picks.get(spec));
 
   /* jobs */
   const score = () => void scoreUniversal(scoreNames, nFields);
@@ -227,7 +248,10 @@ export default function Universal() {
     const kind = fasrcKind(r);
     void pullUniversal([r.name], kind === "again" ? { again: true } : kind === "try" ? { state: r.state ?? "unfinished" } : {});
   };
-  const compareAll = compareHref(localSpecs);
+  /** Only a registered universal model with a checkpoint here can be production. */
+  const canProduce = (r: ShapedRow) => r.class === "universal" && !!r.fingerprint;
+  const makeProduction = (r: ShapedRow) => void setProduction({ spec: r.spec, label: universalLabel(r.name) }, prodLabel ?? "the production gate");
+  const compareAll = compareHref(localSpecs, prodSpec);
   usePageActions([
     { id: "uni-score", label: "Universal: score the models without a current score…", group: "Models", keywords: ["universal", "knee", "psnr"],
       disabled: !scoreNames.length, run: score },
@@ -278,7 +302,7 @@ export default function Universal() {
           inspect: { kind: "combiner", id: c.combiner.name } });
         xs.push(c.hours);
       }
-      if (combs.some((c) => c.production)) items.push({ label: "production gate", key: "comb:production", color: C.comb, marker: "diamond" });
+      if (combs.some((c) => c.production)) items.push({ label: gateWord, key: "comb:production", color: C.comb, marker: "diamond" });
       if (combs.some((c) => !c.production)) items.push({ label: "other gates", key: "comb:variants", color: C.muted, marker: "diamond" });
     } else {
       const lines = lengthLines(rows);
@@ -295,12 +319,16 @@ export default function Universal() {
       }
     }
     const guides: Guide[] = [];
-    if (prodValue != null) guides.push({ axis: "y", v: prodValue, color: C.comb, dash: [6, 3], width: 1.4, label: "production gate" });
+    // production's line: the gate's (the combiner colour), or the universal model's (its depth colour, as its dot)
+    if (prodValue != null) {
+      guides.push({ axis: "y", v: prodValue, color: prodLabel ? colorOf(prodRow?.depth ?? null) : C.comb, dash: [6, 3], width: 1.4,
+        label: prodLabel ? `production · ${prodLabel}` : "production gate" });
+    }
     if (meanValue != null) guides.push({ axis: "y", v: meanValue, color: C.mean, dash: [2, 3], width: 1.2, label: "plain mean" });
     const xDomain = logDomain(xs, x === "time" ? [0.1, 100] : [1e4, 1e7]);
     const yDomain = paddedDomain([...series.flatMap((s) => s.y), ...guides.map((g) => g.v)], { pad: 0.08, minSpan: 0.2 });
     return { series, drawn, items, guides, xDomain, yDomain, missing };
-  }, [rows, order, combs, x, weighting, prodValue, meanValue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rows, order, combs, x, weighting, prodValue, meanValue, prodLabel, gateWord]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onPlotClick = (at: { x: number; y: number }) => {
     const hit = nearestPoint(plot.drawn, at, plot.xDomain, plot.yDomain, true);
@@ -309,10 +337,11 @@ export default function Universal() {
 
   /* tables */
   const columns = useMemo<DataColumn<ShapedRow>[]>(() => [
-    { id: "model", header: "Model", accessor: (r) => Number(r.num), width: 86,
+    { id: "model", header: "Model", accessor: (r) => Number(r.num), width: prodName ? 156 : 86,
       cell: (r) => (
         <span className="mdl-member">
           <span className="mdl-swatch" data-ring={r.mig || undefined} style={{ ["--sw" as string]: colorOf(r.depth) }} />#{r.num}
+          {r.name === prodName && <Badge tone="accent" size="sm">production</Badge>}
         </span>
       ) },
     { id: "class", header: "Class", accessor: (r) => classText(r.class), width: 128, priority: 5 },
@@ -348,7 +377,8 @@ export default function Universal() {
       id: `b_${b}`, header: `∫${BAND_SHORT[b] ?? b}`, numeric: true, hidden: true, width: 76,
       accessor: (r) => (r.bandValues[i] == null ? null : Number((r.bandValues[i] as number).toFixed(4))), cell: (r) => db(r.bandValues[i]),
     })),
-    { id: "vsProduction", header: "vs production", headerText: "∫PSNR minus the production gate's (dB)", numeric: true, width: 104,
+    { id: "vsProduction", header: "vs production",
+      headerText: `∫PSNR minus ${prodLabel ? `production's (${prodLabel})` : "the production gate's"} (dB)`, numeric: true, width: 104,
       accessor: (r) => r.vsProduction,
       cell: (r) => (r.stale && r.vsProduction != null ? (
         <Tooltip content={STALE_DELTA}><span tabIndex={0} className="mdl-faint">{dbDelta(r.vsProduction)}*</span></Tooltip>
@@ -380,12 +410,15 @@ export default function Universal() {
       cell: (r) => (
         <Menu label={`#${r.num} actions`} trigger={<IconButton size="sm" icon="more" label={`#${r.num} actions`} />} items={[
           { label: "Inspect", onSelect: () => openMember(r.name) },
-          { label: "Compare on real fields", disabled: !r.fingerprint, onSelect: () => navigate(compareHref([r.spec])) },
+          { label: "Compare on real fields", disabled: !r.fingerprint, onSelect: () => navigate(compareHref([r.spec], prodSpec)) },
           ...(r.fingerprint ? [{ label: r.status === "scored" ? "Re-score…" : "Score…",
             onSelect: () => void scoreUniversal([r.name], nFields, r.status === "scored") }] : []),
+          // a registered universal model (not an ensemble member) with a checkpoint here
+          ...(r.class === "universal" && r.name !== prodName ? [{ type: "separator" as const },
+            { label: "Make production…", disabled: !canProduce(r), onSelect: () => makeProduction(r) }] : []),
         ]} />
       ) },
-  ], [bands, metric, metricInfo, weighting, real, exps.data, exps.loading, order, nFields]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [bands, metric, metricInfo, weighting, real, exps.data, exps.loading, order, nFields, prodName, prodLabel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const combColumns = useMemo<DataColumn<UniversalCombiner>[]>(() => {
     const hoursCol = (id: "sum" | "max" | "mean", header: string, headerText: string): DataColumn<UniversalCombiner> => ({
@@ -403,8 +436,8 @@ export default function Universal() {
       },
     });
     return [
-      { id: "gate", header: "Gate", accessor: (c) => combinerName(c), width: 150,
-        cell: (c) => (c.production ? <strong>{combinerName(c)}</strong> : combinerName(c)) },
+      { id: "gate", header: "Gate", accessor: (c) => combinerName(c, prodName), width: prodName ? 190 : 150,
+        cell: (c) => (c.production ? <strong>{combinerName(c, prodName)}</strong> : combinerName(c, prodName)) },
       { id: "reads", header: "Members read", numeric: true, accessor: (c) => c.n_reads, width: 110 },
       hoursCol("sum", "Σ hours", "training hours of every member it reads"),
       hoursCol("max", "Max-weighted h", "Σ hours × the member's peak gate share"),
@@ -420,16 +453,16 @@ export default function Universal() {
           </Tooltip>
         ) : <b>{db(c.mean)}</b>) },
       { id: "weights", header: "Weights from", accessor: (c) => c.weights_source ?? c.weights_reason ?? null, width: 200,
-        cell: (c) => (c.weights_source ? (c.weights_source === "production" ? "the production gate's diagnostic" : "the variant's own diagnostic")
+        cell: (c) => (c.weights_source ? (c.weights_source === "production" ? `the ${gateWord}'s diagnostic` : "the variant's own diagnostic")
           : pendingIds.has(c.id) ? <span className="mdl-warn">not measured yet: Measure gate weights</span>
             : <span className="mdl-faint">{c.weights_reason ?? "—"}</span>) },
       { id: "fit", header: "Fit h", headerText: "the gate's own fit time (not counted above)", numeric: true, hidden: true, width: 70,
         accessor: (c) => c.fit_hours, cell: (c) => (c.fit_hours == null ? "—" : hoursNum(c.fit_hours)) },
     ];
-  }, [weighting, pendingIds, comparable]);
+  }, [weighting, pendingIds, comparable, prodName, gateWord]);
 
   const note = () => (data ? universalNote(shapeRows(data, { weighting, metric: "mean" }), data.combiners ?? [],
-    { weighting, nFields, integration: data.integration }) : "");
+    { weighting, nFields, integration: data.integration, production: data.production_model ?? null }) : "");
   const integration = data?.integration;
   const kneeRange = `${kneeNum(integration?.from_e ?? 0.1)}–${kneeNum(integration?.to_e ?? 1e4)} e⁻`;
   const runMenu = (
@@ -536,12 +569,17 @@ export default function Universal() {
                 {fasrcText}.
               </Callout>
             )}
-            {data.production?.stale && (
+            {data.production?.stale && (prodLabel ? (
+              <Callout tone="warn" dense>
+                Production's ∫PSNR ({prodLabel}) is stale (an earlier checkpoint or other test fields): Δ vs production may be off
+                until it is scored again.
+              </Callout>
+            ) : (
               <Callout tone="warn" dense action={<Button size="sm" asChild><Link to={tabPath("leaderboard")}>Leaderboard</Link></Button>}>
                 The production gate's ∫PSNR is stale (its knee curves predate the current cubes): Δ vs production may be off until
                 the Leaderboard's Evaluate and Knee PSNR run again.
               </Callout>
-            )}
+            ))}
             {data.notes.length > 0 && (
               <Caption>{data.notes.map((n, i) => <span key={i}>{sentence(n)} </span>)}</Caption>
             )}
@@ -587,11 +625,12 @@ export default function Universal() {
                   {plot.drawn.length > 0 && <>
                     {x === "time"
                       ? <>One dot per model, coloured by depth (a ring: trained on a MIG slice of gpu_test, a fraction of an A100;
-                        faded: a stale score, at the hours it was scored); the diamonds are the combiners at their {weightText(weighting)}{" "}
-                        training hours (thin: a lower bound, a member it reads has no hours). Click a point to open it.</>
+                        faded: a stale score, at the hours it was scored){combs.length > 0 && <>; the diamonds are the combiners at
+                        their {weightText(weighting)} training hours (thin: a lower bound, a member it reads has no hours)</>}.
+                        Click a point to open it.</>
                       : <>One line per depth through its models by steps trained; the dots are the models (a ring: a MIG slice;
                         faded: a stale score, at the steps it was scored).</>}
-                    {" "}The lines across are the production gate and the plain mean.{" "}
+                    {" "}The lines across are {prodLabel ? `production (${prodLabel})` : "the production gate"} and the plain mean.{" "}
                   </>}
                   {unscored.length > 0 && `Not drawn: ${unscored.map((n) => `#${n}`).join(", ")} (no score). `}
                   {unplaced.length > 0 && `Not drawn: ${unplaced.map((n) => `#${n}`).join(", ")} (${x === "time" ? "no training time" : "no step count"}).`}
@@ -620,9 +659,9 @@ export default function Universal() {
                 <Caption>
                   A gate's training time is that of the members it reads; max weight (the default) weights each by its largest
                   share of the gate over the bands and brightness bins, so a member the gate leans on in a few cores counts.
-                  ∫PSNR: production's from the Leaderboard, a variant's from its newest compare report (* a stale score; † scored
+                  ∫PSNR: {prodLabel ? `the ${gateWord}'s` : "production's"} from the Leaderboard, a variant's from its newest compare report (* a stale score; † scored
                   on other test fields than the universal models). ≥: a lower bound, a member it reads has no training time.
-                  The gate's own fit time is the hidden Fit h column.
+                  The gate's own fit time is the hidden Fit h column.{prodLabel ? ` Production is ${prodLabel}: no gate runs in production.` : ""}
                 </Caption>
               </section>
             )}

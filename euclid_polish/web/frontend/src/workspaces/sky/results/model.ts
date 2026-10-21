@@ -104,6 +104,17 @@ export function specShort(spec: string): string {
   return spec;
 }
 
+/** The model a `production` row runs, in words, without the "Production ·"
+ *  prefix: "spatial gate (convolutional, convex)", "Universal 238". */
+export const productionModelLabel = (m: Pick<ModelSpecRow, "label">): string => String(m.label ?? "").replace(/^Production\s*·\s*/i, "").trim();
+
+/** The universal spec production runs when a universal model is production
+ *  (its `details.model_spec`, universal:member_238), else null. */
+export function productionUniversalSpec(models: readonly Pick<ModelSpecRow, "kind" | "details">[]): string | null {
+  const spec = models.find((m) => m.kind === "production")?.details?.model_spec;
+  return typeof spec === "string" && isUniversalSpec(spec) ? spec : null;
+}
+
 export type ModelGroup = { id: string; label: string; items: ModelSpecRow[] };
 
 /** The model catalogue grouped for pickers (spec §7.3): production, universal

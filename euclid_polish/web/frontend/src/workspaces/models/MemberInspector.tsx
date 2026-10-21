@@ -8,7 +8,10 @@
    universal models (standalone, not ensemble members: their recipe and
    curves, Models › Universal, Sky › Compare and Archive; "vs plain mean"
    only when their score is current and on the knee payload's fields, a
-   stale ∫PSNR marked). GET /ensemble/member/<name>.json. */
+   stale ∫PSNR marked). While a universal model is production (the
+   catalogue's `production`, GET /api/models) it is badged and cannot be
+   archived, and the gate is the former production gate.
+   GET /ensemble/member/<name>.json. */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Plot, { type Series } from "../../charts/Plot";
@@ -22,7 +25,7 @@ import { logTicks } from "../../ticks";
 import {
   Badge, Button, DefList, EmptyState, JobProgress, JsonTree, Section, Segmented, Skeleton, confirm,
 } from "../../ui";
-import { BAND_SHORT, BANDS, url, type MemberDetail } from "./api";
+import { BAND_SHORT, BANDS, url, useModelCatalog, type CatalogProduction, type MemberDetail } from "./api";
 import { JOB, useOnJobEnd } from "./jobs";
 import { db, dbDelta, inspectorVsMean, kneeText, memberName, memberNumber, relativeTo, restoreText, stepsText, xy } from "./model";
 import { compareHref } from "./universal";
@@ -70,17 +73,19 @@ function CurvesPlot({ d }: { d: MemberDetail }) {
   );
 }
 
-function KneePlot({ d }: { d: MemberDetail }) {
+/** `gate`: the gate's curve in words ("production gate", or the former one
+ *  while a universal model is production). */
+function KneePlot({ d, gate }: { d: MemberDetail; gate: string }) {
   const [band, setBand] = useState(0);
   const k = d.knee;
   const me = k?.models.find((m) => m.kind === "member" && m.label === d.label);
   if (!k || !me) return <EmptyState compact icon="activity" title="No PSNR-vs-knee curve" />;
   const mean = k.models.find((m) => m.kind === "mean");
-  const gate = k.models.find((m) => m.id === "spatial_gate");
+  const gateModel = k.models.find((m) => m.id === "spatial_gate");
   const rel = (p: number[][]) => relativeTo(p, mean?.psnr).map((r) => r[band]);
   const series: Series[] = [
     { x: k.knees, y: rel(me.psnr), color: categorical(0), width: 2.4, dots: true, name: `#${memberNumber(d.name)}` },
-    ...(gate ? [{ x: k.knees, y: rel(gate.psnr), color: C.comb, width: 2, name: "production gate" }] : []),
+    ...(gateModel ? [{ x: k.knees, y: rel(gateModel.psnr), color: C.comb, width: 2, name: gate }] : []),
     { x: k.knees, y: k.knees.map(() => 0), color: C.mean, width: 1.2, dash: [4, 3], name: "plain mean" },
   ];
   const ys = series.flatMap((s) => s.y.filter((v): v is number => v != null && Number.isFinite(v)));
@@ -98,9 +103,12 @@ function KneePlot({ d }: { d: MemberDetail }) {
   );
 }
 
-function GatePlot({ d }: { d: MemberDetail }) {
+/** `production`: a universal model that is production (then no gate runs in production). */
+function GatePlot({ d, production }: { d: MemberDetail; production: CatalogProduction | null }) {
   const g = d.gate;
-  if (!g) return <EmptyState compact icon="layers" title="Not read by the production gate" />;
+  if (!g) {
+    return <EmptyState compact icon="layers" title={production ? `No gate weight: production is ${production.label}` : "Not read by the production gate"} />;
+  }
   const names = g.brightness_names;
   const series: Series[] = [
     ...g.bands.map((b) => ({ x: names.map((_, i) => i), y: (g.by_brightness[b] ?? []).map((v) => v ?? null), color: bandColor(b),
@@ -126,6 +134,9 @@ export default function MemberInspector({ id }: InspectorProps) {
   const navigate = useNavigate();
   const restore = useJob(JOB.restore);
   const archive = useJob(JOB.archive);
+  // A universal model that is production (the gate is then the former production gate).
+  const catalog = useModelCatalog();
+  const production = catalog.data?.production?.kind === "universal" ? catalog.data.production : null;
   useOnJobEnd(restore.job, () => void res.reload());
   useOnJobEnd(archive.job, () => void res.reload());
   if (res.loading) return <Skeleton lines={6} />;
@@ -144,6 +155,7 @@ export default function MemberInspector({ id }: InspectorProps) {
   // An archived one comes back as a universal model (its tombstone's class).
   const archivedUniversal = !d.active && !universal && (d.archived?.class === "universal" || d.class === "universal");
   const stale = universal && r?.score_stale === true;
+  const isProduction = universal && production?.name === d.name;
   const doArchive = async () => {
     if (await confirm({ title: `Archive ${d.name}?`, tone: "danger", confirmLabel: "Archive",
       message: `Zipped to the tracking campaign, tombstoned and deleted (also on FASRC when connected). Restorable from the zip${universal ? ", as a universal model again" : ""}.` })) {
@@ -154,6 +166,7 @@ export default function MemberInspector({ id }: InspectorProps) {
     <div className="mdl-insp">
       <div className="mdl-insp__head">
         <span className="mdl-insp__title">#{num}</span>
+        {isProduction && <Badge tone="accent">production</Badge>}
         {universal ? <Badge tone="accent">universal</Badge>
           : archivedUniversal ? <Badge tone="warn">universal · archived</Badge>
             : !d.active && <Badge tone="warn">archived</Badge>}
@@ -174,8 +187,9 @@ export default function MemberInspector({ id }: InspectorProps) {
       {universal && (
         <div className="mdl-row">
           <Button size="sm" onClick={() => tab("universal")}>Universal</Button>
-          <Button size="sm" variant="ghost" onClick={() => navigate(compareHref([`universal:${d.name}`]))}>Compare on real fields</Button>
-          <Button size="sm" variant="danger" loading={archive.busy} onClick={doArchive}>Archive</Button>
+          <Button size="sm" variant="ghost" onClick={() => navigate(compareHref([`universal:${d.name}`], production?.spec ?? null))}>Compare on real fields</Button>
+          <Button size="sm" variant="danger" loading={archive.busy} onClick={doArchive} disabled={isProduction}
+            title={isProduction ? "The production model: make another model production first (Models › Universal)" : undefined}>Archive</Button>
         </div>
       )}
       {!d.active && d.archived && (
@@ -223,8 +237,8 @@ export default function MemberInspector({ id }: InspectorProps) {
       </>}
       {d.active && <>
         <Section title="Training curves"><CurvesPlot d={d} /></Section>
-        <Section title="PSNR vs knee"><KneePlot d={d} /></Section>
-        <Section title="Production-gate usage"><GatePlot d={d} /></Section>
+        <Section title="PSNR vs knee"><KneePlot d={d} gate={production ? "former production gate" : "production gate"} /></Section>
+        <Section title={production ? "Former production-gate usage" : "Production-gate usage"}><GatePlot d={d} production={production} /></Section>
         {r?.origin && <Section title="origin.json" collapsible defaultOpen={false}><JsonTree data={r.origin} expandDepth={1} /></Section>}
       </>}
       {vsMean != null && (

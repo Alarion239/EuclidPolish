@@ -24,7 +24,13 @@
  *    (`/api/models` `members`, or `/api/system/production`), never all
  *    active members.
  *  - production model: the `production` spec of `/api/models` (its combiner,
- *    mix space and fit time; `available` = fitted for the current members).
+ *    mix space and fit time; `available` = fitted for the current members) —
+ *    or, when `/api/models` `production.kind` is "universal", ONE registered
+ *    universal model ("Universal 238"; `available` = it can run). Then the
+ *    verdict is that model's own knee-integrated PSNR, its universal score
+ *    (`/ensemble/overview.json` `production_model`), with no Δ against the
+ *    ensemble (its score may be on other test fields); the gate's numbers
+ *    above describe the old member ensemble only.
  *  - tracking catch-up: the `tracking` health check's `facts.unlogged`
  *    (results written after the newest `## <ISO>` heading of log.md), one
  *    line each with the matching headline number, for the "Log to notebook" entry
@@ -200,32 +206,65 @@ export type ModelSpecRow = {
   [key: string]: unknown;
 };
 
-export type ModelsCatalog = { production_kind?: string; members?: string[]; models?: ModelSpecRow[] };
+/** `/api/models` `production`: what production is (servers since the
+ *  universal production; absent before: the gate). */
+export type CatalogProduction = {
+  kind?: string; spec?: string; name?: string | null; label?: string; available?: boolean; reason?: string | null;
+};
+
+export type ModelsCatalog = { production_kind?: string; production?: CatalogProduction | null; members?: string[]; models?: ModelSpecRow[] };
 
 export type ProductionModel = {
-  /** "spatial gate" — the combiner's name without the "Production ·" prefix or its qualifiers. */
+  /** "gate": the production gate; "universal": one registered universal model. */
+  kind: "gate" | "universal";
+  /** "spatial gate" — the combiner's name without the "Production ·" prefix or
+   *  its qualifiers — or the universal model's label ("Universal 238"). */
   label: string;
+  /** The universal model's name ("member_238"); null for the gate. */
+  name: string | null;
   mix: string | null;
   fittedAt: string | null;
   available: boolean;
   reason: string | null;
 };
 
-/** The production combiner as `/api/models` describes it (null without one). */
+/** The production model as `/api/models` describes it (null without one):
+ *  the gate, or a universal model (`production.kind`, else the spec's
+ *  `details.universal` / `production_kind` of an older payload shape). */
 export function productionModel(catalog: ModelsCatalog | null | undefined): ProductionModel | null {
   const spec = catalog?.models?.find((m) => m.spec === "production");
-  if (!spec) return null;
-  const fromLabel = (spec.label ?? "").replace(/^production\s*·\s*/i, "").replace(/\s*\(.*\)\s*$/, "").trim();
-  const kind = spec.combiner_kind ?? catalog?.production_kind ?? "";
-  const label = fromLabel || kind.replace(/_/g, " ") || "production";
-  const details = spec.details ?? null;
+  const summary = catalog?.production ?? null;
+  if (!spec && !summary) return null;
+  const fromLabel = (spec?.label ?? "").replace(/^production\s*·\s*/i, "").replace(/\s*\(.*\)\s*$/, "").trim();
+  const details = spec?.details ?? null;
+  const universal = summary?.kind ? summary.kind === "universal" : catalog?.production_kind === "universal" || details?.universal === true;
+  const kind = spec?.combiner_kind ?? catalog?.production_kind ?? "";
+  const label = universal ? summary?.label || fromLabel || "a universal model" : fromLabel || kind.replace(/_/g, " ") || "production";
   return {
+    kind: universal ? "universal" : "gate",
     label,
-    mix: typeof details?.mix_space === "string" ? details.mix_space : null,
-    fittedAt: typeof details?.fitted_at === "string" ? details.fitted_at : null,
-    available: !!spec.available,
-    reason: spec.reason ?? null,
+    name: universal ? summary?.name ?? (typeof details?.member === "string" ? details.member : null) : null,
+    mix: !universal && typeof details?.mix_space === "string" ? details.mix_space : null,
+    fittedAt: !universal && typeof details?.fitted_at === "string" ? details.fitted_at : null,
+    available: !!(spec?.available ?? summary?.available),
+    reason: spec?.reason ?? summary?.reason ?? null,
   };
+}
+
+/** The universal production's score (GET /ensemble/overview.json
+ *  `production_model`): its knee-integrated PSNR, mean of the four bands. */
+export type UniversalScore = { label: string; mean: number | null; bands: (number | null)[]; stale: boolean; scoredAt: string | null };
+/** The slice of GET /ensemble/overview.json read here. */
+export type OverviewProduction = {
+  production_model?: { label?: string; integrated?: (number | null)[] | null; mean?: number | null; scored_at?: string | null; stale?: boolean | null } | null;
+};
+
+export function universalScore(o: OverviewProduction | null | undefined): UniversalScore | null {
+  const pm = o?.production_model;
+  if (!pm) return null;
+  const bands = (pm.integrated ?? []).map((v) => finite(v));
+  const mean = finite(pm.mean) ?? (bands.length === 4 && bands.every((v) => v != null) ? bandMean(bands) : null);
+  return { label: pm.label ?? "", mean, bands, stale: !!pm.stale, scoredAt: pm.scored_at ?? null };
 }
 
 /* ── members ────────────────────────────────────────────────────────────── */
@@ -260,48 +299,69 @@ export function unloggedItems(check: { facts?: Record<string, unknown> } | null 
     .map((u) => ({ at: String(u.at ?? ""), label: u.label }));
 }
 
-type CatchUpFacts = { knee: KneeHeadline | null; prod: ProductionHeadline | null; members: number | null; production: ProductionModel | null };
+type CatchUpFacts = {
+  knee: KneeHeadline | null; prod: ProductionHeadline | null; members: number | null; production: ProductionModel | null;
+  /** The universal production's own score (universalScore), when production is one. */
+  score?: UniversalScore | null;
+};
 
 const fmt = (v: number) => v.toFixed(2);
 const signed = (v: number) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}`;
 
-function kneeLine(k: KneeHeadline | null): string | null {
+/** The gate in words: the production gate, or — while a universal model is
+ *  production — the former production gate (the old member ensemble's). */
+const gateWord = (m: ProductionModel | null) => (m?.kind === "universal" ? "former production gate" : "production gate");
+
+function kneeLine(k: KneeHeadline | null, gate = "production gate"): string | null {
   const head = k?.gate ?? k?.mean;
   if (!k || head == null) return null;
-  const what = k.gate != null ? "production gate" : "plain mean";
+  const what = k.gate != null ? gate : "plain mean";
   const vs = [k.best && k.vsBest != null ? `${signed(k.vsBest)} dB vs ${k.best.name.replace("member_", "member ")}` : null,
     k.vsMean != null ? `${signed(k.vsMean)} dB vs plain mean` : null, k.nFields != null ? `${k.nFields} fields` : null].filter(Boolean).join(", ");
   return `∫PSNR ${what} ${fmt(head)} dB${vs ? ` (${vs})` : ""}${k.stale ? ", stale" : ""}`;
 }
 
-function testLine(p: ProductionHeadline | null): string | null {
+function testLine(p: ProductionHeadline | null, gate = "production gate"): string | null {
   if (!p) return null;
   if (p.kind === "mean") return `test PSNR plain mean ${fmt(p.psnr)} dB${p.vsMeanMember != null ? ` (${signed(p.vsMeanMember)} dB vs mean member)` : ""}`;
   const vs = [p.vsBest != null ? `${signed(p.vsBest)} dB vs best member` : null, p.vsMean != null ? `${signed(p.vsMean)} dB vs plain mean` : null].filter(Boolean).join(", ");
-  return `test PSNR production gate ${fmt(p.psnr)} dB${vs ? ` (${vs})` : ""}${p.stale ? ", summary stale" : ""}`;
+  return `test PSNR ${gate} ${fmt(p.psnr)} dB${vs ? ` (${vs})` : ""}${p.stale ? ", summary stale" : ""}`;
 }
 
-const gateLine = (m: ProductionModel | null): string | null => (m
-  ? `${m.label}${m.mix ? `, ${m.mix} mix` : ""}, ${m.available ? "fitted for the current members" : `out of date${m.reason ? ` (${m.reason})` : ""}`}`
-  : null);
+/** The production model in one line: the gate and its fit, or the universal
+ *  model with its own ∫PSNR. */
+function gateLine(m: ProductionModel | null, score?: UniversalScore | null): string | null {
+  if (!m) return null;
+  if (m.kind === "universal") {
+    const value = score?.mean != null ? `, ∫PSNR ${fmt(score.mean)} dB${score.stale ? " (stale score)" : ""}` : "";
+    return `${m.label} is production (one universal model, no gate)${value}${m.available ? "" : `, cannot run${m.reason ? ` (${m.reason})` : ""}`}`;
+  }
+  return `${m.label}${m.mix ? `, ${m.mix} mix` : ""}, ${m.available ? "fitted for the current members" : `out of date${m.reason ? ` (${m.reason})` : ""}`}`;
+}
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The Home "Log to notebook" entry: one line per result the notebook has not
- *  logged yet (the `tracking` check), else the production model as it is. */
+ *  logged yet (the `tracking` check), else the production model as it is.
+ *  While a universal model is production, the knee and evaluation results
+ *  are the old member ensemble's: their gate is the former production gate. */
 export function trackingCatchUpNote(check: { facts?: Record<string, unknown> } | null | undefined, f: CatchUpFacts): string {
   const items = unloggedItems(check);
   const members = f.members != null ? `${f.members} STARFULL members` : null;
+  const gate = gateWord(f.production);
   if (!items.length) {
-    return [`**Production model**${members ? ` — ${members}` : ""}`, "",
-      ...[kneeLine(f.knee), testLine(f.prod), gateLine(f.production)].filter((l): l is string => !!l).map((l) => `- ${cap(l)}`)].join("\n");
+    const lines = f.production?.kind === "universal"
+      ? [gateLine(f.production, f.score)]
+      : [kneeLine(f.knee), testLine(f.prod), gateLine(f.production)];
+    return [`**Production model**${members && f.production?.kind !== "universal" ? ` — ${members}` : ""}`, "",
+      ...lines.filter((l): l is string => !!l).map((l) => `- ${cap(l)}`)].join("\n");
   }
   const last = check?.facts?.last_entry;
   const detail = (label: string): string | null => {
     const l = label.toLowerCase();
-    if (l.includes("knee")) return kneeLine(f.knee);
-    if (l.includes("evaluation")) return [testLine(f.prod), members].filter(Boolean).join(", ") || null;
-    if (l.includes("gate")) return gateLine(f.production);
+    if (l.includes("knee")) return kneeLine(f.knee, gate);
+    if (l.includes("evaluation")) return [testLine(f.prod, gate), members].filter(Boolean).join(", ") || null;
+    if (l.includes("gate")) return gateLine(f.production, f.score);
     if (l.includes("experiment")) return "see Sky › Compare";
     return null;
   };
@@ -338,7 +398,7 @@ export function productionRun(exps: readonly ExperimentSummary[] | null | undefi
 }
 
 /** Production's real holes from its newest Sky › Compare run, when that run
- *  scored the CURRENT production fit (see the definitions above). */
+ *  scored the CURRENT production model (see the definitions above). */
 export function productionRealHoles(exps: readonly ExperimentSummary[] | null | undefined,
   detail: ExperimentDetail | null | undefined, catalog: CatalogFingerprints | null | undefined): RealHoles {
   if (exps == null) return { state: "loading" };
@@ -370,10 +430,18 @@ export function kneeText(v: number): string {
 }
 
 /** "30 members · gate fitted 4 h ago · 100 test fields · knees 0.1–10⁴ e⁻":
- *  what the verdict's numbers are made of (parts without data are left out). */
-export function homeCaption({ members, production, knee, nFields, now = Date.now() }: {
-  members: number | null; production: ProductionModel | null; knee: KneePayload | null | undefined; nFields: number | null; now?: number;
+ *  what the verdict's numbers are made of (parts without data are left out).
+ *  A universal production: "one universal model, no gate · scored 3 h ago"
+ *  ("cannot run" when it is unavailable). */
+export function homeCaption({ members, production, knee, nFields, score, now = Date.now() }: {
+  members: number | null; production: ProductionModel | null; knee: KneePayload | null | undefined; nFields: number | null;
+  score?: UniversalScore | null; now?: number;
 }): string[] {
+  if (production?.kind === "universal") {
+    return ["one universal model, no gate",
+      !production.available ? "cannot run" : score?.scoredAt ? `scored ${formatRelative(score.scoredAt, now)}` : null,
+    ].filter((p): p is string => !!p);
+  }
   const range = knee?.available ? knee.integration : null;
   return [
     members != null ? `${members} members` : null,

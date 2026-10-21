@@ -188,7 +188,7 @@ def test_the_checks_name_the_universal_production(env):
     assert stage["state"] == "current" and stage["reason"] == "production is Universal 238"
     overview = ev.ensemble_overview(False)
     ids = {c["id"]: c for c in overview["checks"]}
-    assert ids["production"]["ok"] and "gate" not in ids
+    assert ids["production"]["ok"] and "gate" not in ids and "eval-gate" not in ids
     assert overview["production_model"]["name"] == "member_238"
 
 
@@ -205,7 +205,8 @@ def test_the_universal_tab_compares_with_the_production_models_score(env):
     with open(os.path.join(store, ev.UNIVERSAL_SCORES_INDEX), "w") as f:
         json.dump(scores, f)
     payload = um.universal_payload()
-    assert payload["production_model"] == "member_238"
+    assert payload["production_model"] == "member_238" and payload["production_comparable"] is True
+    assert payload["comparable"] is False          # no knee payload to compare with
     assert payload["production"] == {"integrated": [62.0] * 4, "mean": 62.0, "stale": False,
                                      "model": "member_238"}
     rows = {m["name"]: m for m in payload["models"]}

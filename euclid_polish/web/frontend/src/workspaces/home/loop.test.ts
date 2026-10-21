@@ -50,6 +50,27 @@ describe("the Loop strip", () => {
     expect(failed.find((s) => s.id === "real-sr")?.to).toBe("/sky/targets");
     expect(loopStages({ computed_at: iso(0), ttl_s: 60, stages: [], counts: {}, errors: {} }).every((s) => s.state === "loading")).toBe(true);
   });
+
+  it("reads the Gate chip as the production stage while a universal model is production", () => {
+    const universal = { kind: "universal" as const, label: "Universal 238" };
+    const gate = (state: "current" | "stale", reason: string) => ({ id: "gate" as const, label: "Gate", state, reason, to: "/models/universal" });
+    const payload = (g: ReturnType<typeof gate>): LoopPayload => ({ computed_at: iso(0), ttl_s: 60, counts: {}, errors: {}, stages: [
+      { id: "members", label: "Members", state: "current", reason: "30 active", to: "/models/members" }, g] });
+    // the server: "production is Universal 238" → "Production", "Universal 238"
+    expect(loopStages(payload(gate("current", "production is Universal 238")), false, universal)).toEqual([
+      { id: "members", label: "Members", state: "current", reason: "30 active", to: "/models/members" },
+      { id: "gate", label: "Production", state: "current", reason: "Universal 238", to: "/models/universal" },
+    ]);
+    // a problem keeps the server's own reason
+    expect(loopStages(payload(gate("stale", "the production model Universal 238 cannot run")), false, universal)[1])
+      .toMatchObject({ label: "Production", state: "stale", reason: "the production model Universal 238 cannot run" });
+    // the placeholders too, linking to Models › Universal
+    expect(loopStages(null, false, universal).find((s) => s.id === "gate"))
+      .toEqual({ id: "gate", label: "Production", state: "loading", reason: "checking", to: "/models/universal" });
+    // the gate as production: the server's stages untouched
+    const stages = payload(gate("current", "fitted for the 30 members"));
+    expect(loopStages(stages, false, { kind: "gate", label: "spatial gate" })).toBe(stages.stages);
+  });
 });
 
 describe("strip warnings (only when broken)", () => {

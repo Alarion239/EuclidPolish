@@ -214,7 +214,7 @@ export function Roster({ data }: { data: MembersPayload }) {
         empty="No members: train some, then pull them." />
       {archiving && <span className="mdl-muted">Archiving {archiving}…</span>}
       <Caption>
-        Sorted by ∫PSNR over {data.knee.n_fields ?? "the"} test fields; the ranking with the plain mean and the production gate
+        Sorted by ∫PSNR over {data.knee.n_fields ?? "the"} test fields; the ranking with production and the plain mean
         is the <Link to={tabPath("leaderboard")}>Leaderboard</Link>.
       </Caption>
     </div>

@@ -68,6 +68,9 @@ describe("leaderboard real benchmark", () => {
     const b = leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p0" } }, CATALOG);
     expect(b).toMatchObject({ state: "none", last: { expId: "e-new" } });
     expect(b.state === "none" && b.reason).toBe("no real benchmark for this membership: the last Sky › Compare run of production scored an earlier one");
+    // a universal model is production: the reason names it, not a membership
+    const u = leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p0" } }, CATALOG, "Universal 238");
+    expect(u.state === "none" && u.reason).toBe("no real benchmark for Universal 238: the last Sky › Compare run of production scored an earlier model");
   });
 
   it("waits for the run's fingerprints, and has nothing without a run", () => {

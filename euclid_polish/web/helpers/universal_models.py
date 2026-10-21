@@ -791,16 +791,18 @@ def universal_payload(starless: bool = False) -> dict:
     identity = scores.get("identity") if isinstance(scores.get("identity"), dict) else None
     current = ev.universal_score_identity()
     identity_ok = ev.universal_identity_matches(identity, current)
+    comparable = _comparable(knee, identity)
     universal_production = ensemble_registry.production_name(base)
     if universal_production is not None:
         # Production is one universal model: its own score, on the same store.
         production = _universal_reference(universal_production, scores, identity_ok)
-        comparable = production is not None
+        production_comparable = production is not None
     else:
         production = _knee_model(knee, SPATIAL_GATE_KIND)
-        comparable = _comparable(knee, identity)
+        production_comparable = comparable
     models = [_model_row(name, cls, d, jobs=jobs, by_member=by_member, scores=scores,
-                         identity_ok=identity_ok, production=production, comparable=comparable)
+                         identity_ok=identity_ok, production=production,
+                         comparable=production_comparable)
               for name, (cls, d) in universal_targets(base).items()]
     fasrc = fasrc_universal_rows(jobs, registry)
     combiners, pending = _combiner_table(base=base, registry=registry, identity=identity,
@@ -812,9 +814,13 @@ def universal_payload(starless: bool = False) -> dict:
         # the universal model that is production (null: production is the gate)
         "production_model": universal_production,
         "mean_model": _knee_model(knee, "ensemble_mean"),
-        # production/mean_model scored on the same fields, records and target
-        # as the universal scores (the rows' vs_production_db needs it).
+        # the knee payload (gate, mean_model) scored on the same fields,
+        # records and target as the universal scores
         "comparable": comparable,
+        # production's reference is on the universal scores' fields (the
+        # rows' vs_production_db needs it): a scored universal production,
+        # else ``comparable``
+        "production_comparable": production_comparable,
         "models": models,
         "combiners": combiners,
         "fasrc": fasrc,

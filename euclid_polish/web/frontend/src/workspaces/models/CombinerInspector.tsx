@@ -2,18 +2,22 @@
    `combiner:spatial_gate_linear`; an older id with the regime in front still
    opens): one combiner variant — its fit (knobs, held-out selection),
    membership vs the active members, held-out curve, test / knee-integrated
-   PSNR, and the promote / compare actions. */
+   PSNR, and the promote / compare actions. While a universal model is
+   production the production gate dir reads "former production", and Promote
+   says it makes the gate production again. */
 import { useNavigate } from "react-router-dom";
 import Plot from "../../charts/Plot";
 import { C } from "../../colors";
+import { invalidate } from "../../api/query";
 import { useJob } from "../../api/jobs";
 import type { InspectorProps } from "../../app/inspector";
 import { pagePath } from "../../app/nav";
 import { formatDateTime } from "../../format";
 import { Badge, Button, DefList, EmptyState, JobProgress, JsonTree, Section, Skeleton, confirm } from "../../ui";
-import { BAND_SHORT, REGIME, useCombiners } from "./api";
+import { BAND_SHORT, REGIME, url, useCombiners } from "./api";
 import { JOB, useOnJobEnd } from "./jobs";
 import { combinerVariant, db, memberNumber, variantLabel } from "./model";
+import { universalLabel } from "./production";
 import "./models.css";
 
 const nums = (labels: string[]) => labels.map((l) => memberNumber(l) ?? l).join(", ");
@@ -24,13 +28,16 @@ export default function CombinerInspector({ id }: InspectorProps) {
   const navigate = useNavigate();
   const promote = useJob(JOB.promote);
   const compare = useJob(JOB.compare);
-  useOnJobEnd(promote.job);
+  useOnJobEnd(promote.job, () => void invalidate(url.models()));
   useOnJobEnd(compare.job);
   if (res.loading) return <Skeleton lines={6} />;
   const v = res.data?.variants.find((x) => x.name === name || x.spec === name);
   if (res.error || !v) {
     return <EmptyState icon="warn" title={`No combiner ${name}`}><span className="mdl-mono">{res.error?.message ?? "not among the combiner variants"}</span></EmptyState>;
   }
+  // a universal model that is production: the gates are not
+  const prodModel = res.data?.production_model ?? null;
+  const prodLabel = prodModel ? universalLabel(prodModel) : null;
   const f = v.fit as Record<string, unknown>;
   const hist = v.history.filter((h) => h.loss != null);
   const ys = hist.map((h) => h.loss as number);
@@ -40,20 +47,21 @@ export default function CombinerInspector({ id }: InspectorProps) {
     const mismatch = !v.membership.current;
     if (await confirm({
       title: `Promote ${v.name} to production?`,
-      message: `The production gate is backed up to spatial_gate_backup_<UTC time> first.${mismatch ? " It was fitted for other members than the active ones." : ""}`,
+      message: `${prodLabel ? `Production is ${prodLabel} now: promoting makes this gate production again (every page that defaults to production runs it instead). ` : ""}The production gate is backed up to spatial_gate_backup_<UTC time> first.${mismatch ? " It was fitted for other members than the active ones." : ""}`,
       tone: mismatch ? "danger" : "default", confirmLabel: "Promote", ...(mismatch ? { requireText: "promote" } : {}),
     })) await promote.run("/ensemble/combiners/promote", { mode: REGIME, variant: v.name, ...(mismatch ? { force: "1" } : {}) });
   };
+  const versus = prodLabel ? "the former production gate" : "production";
   const doCompare = async () => {
-    if (await confirm({ title: `Compare ${variantLabel(v.name)} with production?`, message: "Scores both on the cached test cubes and blackout copies.", confirmLabel: "Compare" })) {
+    if (await confirm({ title: `Compare ${variantLabel(v.name)} with ${versus}?`, message: "Scores both on the cached test cubes and blackout copies.", confirmLabel: "Compare" })) {
       await compare.run("/ensemble/combiners/compare", { mode: REGIME, gates: [res.data?.production ?? "spatial_gate_combiner", v.name].filter((x, i, a) => a.indexOf(x) === i).join(",") });
     }
   };
   return (
     <div className="mdl-insp">
       <div className="mdl-insp__head">
-        <span className="mdl-insp__title">{variantLabel(v.name)}</span>
-        {v.production && <Badge tone="accent">production</Badge>}
+        <span className="mdl-insp__title">{prodLabel && v.production ? "former production" : variantLabel(v.name)}</span>
+        {v.production && (prodLabel ? <Badge>former production</Badge> : <Badge tone="accent">production</Badge>)}
         {v.backup && <Badge>backup</Badge>}
         {!v.membership.current && <Badge tone="warn">other members</Badge>}
       </div>

@@ -9,7 +9,7 @@
      (?set=records&split=test&id=test:12, the `sky` collection, the SR tier
      Synthetic › Records shows) with their counts — and "Generate SR over
      local records…" (confirmed);
-   - the viewer, opening on LR | SR | HR (SR = the production gate); tiers
+   - the viewer, opening on LR | SR | HR (SR = production's); tiers
      mean, member stills, the disagreement movie and BHR are in its tier menu;
    - under it the footer, SR's Δm vs LR in the shown band (images/fluxDelta),
      and the per-set caption (PSNR vs HR);

@@ -5252,6 +5252,7 @@ def ensemble_overview(starless: bool) -> dict:
     prod_manifest = _read_json_file(os.path.join(
         regime_dir, COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir, "combiner.json"))
     gate_labels = [str(v) for v in (prod_manifest or {}).get("member_labels") or []]
+    universal_production = _universal_production(starless)
     checks = []
 
     def check(cid, ok, tone, title, detail, action=None):
@@ -5275,11 +5276,11 @@ def ensemble_overview(starless: bool) -> dict:
         fps = identity.get("combiner_fps") or {}
         gate_fp = _combiner_fingerprint(regime_dir, SPATIAL_GATE_KIND)
         gate_ok = fps.get(SPATIAL_GATE_KIND) in (None, gate_fp) or not gate_fp
-        check("eval-gate", gate_ok, "warn", "Evaluation vs production gate",
-              "The production gate is the one evaluated." if gate_ok else
-              "The production gate changed (refit or promotion) since the evaluation.",
-              "evaluate")
-    universal_production = _universal_production(starless)
+        if universal_production is None:      # a universal production has no gate
+            check("eval-gate", gate_ok, "warn", "Evaluation vs production gate",
+                  "The production gate is the one evaluated." if gate_ok else
+                  "The production gate changed (refit or promotion) since the evaluation.",
+                  "evaluate")
     if universal_production is not None:
         check("production", True, "good", f"Production is {universal_production['label']}",
               "A single universal model (no gate); the ensemble below is for comparison.",

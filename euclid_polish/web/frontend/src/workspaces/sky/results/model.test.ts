@@ -4,8 +4,8 @@ import { atlasHref, experimentsHref, splitRef, URLS } from "./api";
 import {
   bandSeries, cardDelta, cardFiles, evalHeadline, cardHeadline, cardViewerTiers, defaultExperimentId, defaultRunSpecs, experimentCost, experimentCostText,
   experimentMarkdown, formatMetric, groupModels, headlineSpec, isUniversalSpec, membersText, metricRows, outputOrigin, productionMembersText,
-  metricsPlan, num, parseRefs, realTileViewerParams, recordSpecs, seriesDomain, sortSpecs, specRank, specShort, specWords, universalDetails,
-  universalDetailText,
+  metricsPlan, num, parseRefs, productionModelLabel, productionUniversalSpec, realTileViewerParams, recordSpecs, seriesDomain, sortSpecs, specRank,
+  specShort, specWords, universalDetails, universalDetailText,
 } from "./model";
 
 const tile = (ref: string, state?: string, models: TileRow["models"] = {}): TileRow => {
@@ -143,6 +143,15 @@ describe("model specs", () => {
     expect(universalDetailText({ kind: "universal", details: { universal: true } })).toBe("");
     expect(universalDetailText({ kind: "gate", details: { mix_space: "linear" } })).toBe("");
     expect(universalDetailText({})).toBe("");
+  });
+  it("names the model production runs, and the universal spec it already covers", () => {
+    expect(productionModelLabel({ label: "Production · Universal 238" })).toBe("Universal 238");
+    expect(productionModelLabel({ label: "Production · spatial gate (convolutional, convex)" })).toBe("spatial gate (convolutional, convex)");
+    expect(productionUniversalSpec([{ kind: "mean", details: {} }, { kind: "production", details: { universal: true, model_spec: "universal:member_238" } }]))
+      .toBe("universal:member_238");
+    expect(productionUniversalSpec([{ kind: "production", details: { mix_space: "linear" } }])).toBeNull();
+    expect(productionUniversalSpec([{ kind: "production", details: { model_spec: "gate:p20" } }])).toBeNull();
+    expect(productionUniversalSpec([])).toBeNull();
   });
   it("reads typed universal details only from a universal row", () => {
     expect(universalDetails({ kind: "universal", details: { universal: true, class: "universal", num_res_blocks: 16, knee: "learned" } }))

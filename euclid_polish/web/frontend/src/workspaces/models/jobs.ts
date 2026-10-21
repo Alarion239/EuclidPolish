@@ -2,14 +2,16 @@
    and these tabs never start the same job twice), the
    confirmed starters of the loop's local jobs (evaluate, PSNR vs knee,
    member PSNR, the universal models' score, spectra and pull, a
-   knee-attribution run) and an end-of-job effect. Jobs start through
+   knee-attribution run), the confirmed production switch (an instant POST,
+   no job) and an end-of-job effect. Jobs start through
    `startJob` (app/RunActions), which confirms, registers the job under its
    key and toasts the start; the shell toasts the end. */
 import { useEffect, useRef } from "react";
+import { apiPost } from "../../api/client";
 import { isTerminal, type Job } from "../../api/jobs";
 import { invalidate } from "../../api/query";
 import { startJob } from "../../app/RunActions";
-import { confirm } from "../../ui";
+import { confirm, toast } from "../../ui";
 import { REGIME, url } from "./api";
 import { kneeUrl } from "./kneesApi";
 import { numbersText } from "./universal";
@@ -32,6 +34,8 @@ export const JOB = {
   universalScore: "ensemble:universal-score",
   universalPull: "ensemble:universal-pull",
   kneeAttribution: "models:knee-attribution",
+  gatesArchive: "ensemble:gates-archive",
+  gatesRestore: "ensemble:gates-restore",
 } as const;
 
 /** The start of the universal score job's label (routes/ensemble.py), so a
@@ -67,7 +71,7 @@ export const computeKnee = () => startJob({
 export async function generateSr(subsets: readonly string[], overwrite: boolean) {
   const ok = await confirm({
     title: `Generate the production SR for ${subsets.join(" + ")}?`,
-    message: `Loads every active member (TensorFlow) and the production gate${overwrite ? "; the existing SR of these splits is deleted first" : ""}.`,
+    message: `Runs the production model (TensorFlow) over the records${overwrite ? "; the existing SR of these splits is deleted first" : ""}.`,
     confirmLabel: "Generate", tone: overwrite ? "danger" : "default",
   });
   if (!ok) return null;
@@ -164,7 +168,7 @@ export function pullUniversal(names: readonly string[], opts: { again?: boolean;
   const what = plural(names.length, "universal model");
   const message = opts.again
     ? `Copies ${numbers(names)} from FASRC again: ${names.length === 1 ? "it is" : "they are"} registered as universal ${names.length === 1 ? "model" : "models"}, but the last pull left no checkpoint here.`
-    : `Registers ${numbers(names)} as universal models and copies ${names.length === 1 ? "its checkpoint" : "their checkpoints"} here. They stay out of the ensemble: the production gate, the plain mean and Evaluate never read them.`;
+    : `Registers ${numbers(names)} as universal models and copies ${names.length === 1 ? "its checkpoint" : "their checkpoints"} here. They stay out of the ensemble: the gates, the plain mean and Evaluate never read them.`;
   const tried = opts.state ? ` ${names.length === 1 ? "Its job" : "Their jobs"} ended ${opts.state}: when FASRC holds no checkpoint the pull refuses and registers nothing.` : "";
   return startJob({
     key: JOB.universalPull, url: url.universalPull(),
@@ -192,6 +196,38 @@ export function startKneeAttribution(fields: Record<string, string>, estimate: s
       confirmLabel: "Run",
     },
   });
+}
+
+/** The reads that name production: the catalogue and the Universal,
+ *  Leaderboard and Combiner payloads (Home reads the first two of these). */
+const PRODUCTION_READS = [url.models(), url.universal(), url.overview(), url.combiners()];
+
+/** Make a registered universal model production — `target` its spec and
+ *  label (universal:member_238, "Universal 238") — or the production gate
+ *  again (`"gate"`), after a confirm. An instant POST (no job, nothing
+ *  deleted); then every read that names production is refreshed.
+ *  `current`: what production is now, in words ("the production gate",
+ *  "Universal 238"). Resolves true when production changed; a refusal (the
+ *  server's 400) is toasted. */
+export async function setProduction(target: { spec: string; label: string } | "gate", current: string): Promise<boolean> {
+  const gate = target === "gate";
+  const what = gate ? "the production gate" : target.label;
+  const ok = await confirm({
+    title: gate ? "Make the gate production again?" : `Make ${target.label} production?`,
+    message: `Every page that defaults to “production” — Sky, the NEXUS plates, the figures and inference — will run ${what}${gate ? "" : " (one universal model, no gate)"} instead of ${current}. The production outputs made so far (real SR tiles, plates, figures) turn stale until they are run again. Instant: no job runs and nothing is deleted.`,
+    confirmLabel: gate ? "Make the gate production" : "Make production",
+  });
+  if (!ok) return false;
+  try {
+    const r = await apiPost<{ ok?: boolean; error?: string }>(url.production(), { model: gate ? "gate" : target.spec });
+    if (r.ok === false || r.error) throw new Error(r.error ?? "refused");
+  } catch (e) {
+    toast.error("Production: not changed", { description: e instanceof Error ? e.message : String(e) });
+    return false;
+  }
+  toast.success(gate ? "The production gate is production again" : `${target.label} is production`);
+  await Promise.all(PRODUCTION_READS.map((u) => invalidate(u)));
+  return true;
 }
 
 /** Score the members' test PSNR (changed or unscored ones only; confirmed). */

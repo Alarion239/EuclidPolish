@@ -4,7 +4,9 @@
  * 215 (a MIG slice, a stale score made at 1.2 h / 120k steps), 196 (an
  * ensemble member, unscored) and 212 (no checkpoint yet) — two scored gates
  * on the scores' own fields (`comparable`; `comb` alone is a legacy row
- * without the flag) and two FASRC rows (one pullable, one training). */
+ * without the flag) and two FASRC rows (one pullable, one training).
+ * `universalProduction` is the same payload while one of the models is
+ * production (210 by default, 61.0 dB): its own score is the reference. */
 import type { UniversalCombiner, UniversalPayload, UniversalRow } from "../api";
 
 export const score = (mean: number, patch: Partial<NonNullable<UniversalRow["score"]>> = {}) => ({
@@ -68,3 +70,19 @@ export const payload = (patch: Partial<UniversalPayload> = {}): UniversalPayload
   notes: [],
   ...patch,
 });
+
+/** The payload while universal model `name` is production, as the server
+ *  sends it: `production` is its own score (`model` = its name; null while it
+ *  is unscored), `comparable` once it is scored, each row's Δ vs production
+ *  against it. The gates stay (the gate dir is the former production gate). */
+export const universalProduction = (name = "member_210", patch: Partial<UniversalPayload> = {}): UniversalPayload => {
+  const base = payload();
+  const s = base.models.find((r) => r.name === name)?.score ?? null;
+  const ref = s ? { integrated: s.integrated, mean: s.mean, stale: s.stale, model: name } : null;
+  return {
+    ...base, production_model: name, production: ref, comparable: ref != null,
+    models: base.models.map((r) => ({ ...r,
+      vs_production_db: ref?.mean != null && r.score?.mean != null ? +(r.score.mean - ref.mean).toFixed(4) : null })),
+    ...patch,
+  };
+};

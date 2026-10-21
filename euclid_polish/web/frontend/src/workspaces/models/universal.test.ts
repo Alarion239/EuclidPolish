@@ -8,12 +8,12 @@
  * the summary and the Leaderboard's best universal model. */
 import { describe, expect, it } from "vitest";
 import type { ExperimentSummary, UniversalFasrcRow } from "./api";
-import { comb, payload, score, urow } from "./testing/universalFixture";
+import { comb, payload, score, universalProduction, urow } from "./testing/universalFixture";
 import {
   DEPTH_SLOTS, bestUniversal, combinerComparable, combinerHours, combinerHoursText, isComparable, isPartial, combinerName, combinerPoints,
   compareHref, depthOrder, depthSlot, fasrcKind, fasrcSplit, hoursText, isMig, kneeWords, learnedKneesText, lengthLines, logDomain, metricValue,
-  nearestPoint, numbersText, parseMetric, parseWeighting, parseXAxis, pendingWeights, pointLabel, realPicks, scoredFields, shapeRows,
-  stepImplText, stepsShort, timeMatch, timePoints, toScore, universalStatus, universalSummary, weightedHours,
+  nearestPoint, numbersText, parseMetric, parseWeighting, parseXAxis, pendingWeights, pointLabel, preferCurrent, productionLabel, productionReference, realPicks,
+  scoredFields, shapeRows, stepImplText, stepsShort, timeMatch, timePoints, toScore, universalStatus, universalSummary, weightedHours,
 } from "./universal";
 
 describe("toolbar choices", () => {
@@ -373,6 +373,55 @@ describe("summary", () => {
     // scored on other fields than the Leaderboard's: no row
     expect(bestUniversal({ ...payload(), comparable: false })).toBeNull();
     expect(bestUniversal(null)).toBeNull();
+  });
+});
+
+describe("a universal model as production", () => {
+  const p = universalProduction();            // 210 (61.0 dB, 2.5 h) is production
+
+  it("sets every model against production's own score, never the gate's", () => {
+    expect(productionLabel(p)).toBe("Universal 210");
+    expect(productionLabel(payload())).toBeNull();
+    expect(productionReference(p)).toMatchObject({ mean: 61, model: "member_210" });
+    // not scored yet: no reference at all (the former production gate's score is not production's)
+    expect(productionReference({ ...p, production: null })).toBeNull();
+    const rows = shapeRows(p, { weighting: "max", metric: "mean" });
+    const r211 = rows.find((r) => r.name === "member_211");
+    expect(r211?.vsProduction).toBeCloseTo(0.6, 9);
+    expect(rows.find((r) => r.name === "member_210")?.vsProduction).toBe(0);
+    // the gate dir is the former production gate, wherever a combiner is named
+    expect(r211?.match?.name).toBe("former production gate");
+    expect(combinerName(comb("production"), "member_210")).toBe("former production gate");
+    expect(combinerName(comb("gate:p20s1"), "member_210")).toBe("gate p20s1");
+    expect(pendingWeights({ ...p, weights_pending: ["production", "gate:p20s1"] }).map((g) => g.name)).toEqual(["former production gate", "gate p20s1"]);
+    expect(pendingWeights({ ...p, combiners: [], weights_pending: ["production"] })).toEqual([{ id: "production", name: "former production gate" }]);
+  });
+
+  it("names production in the summary, with its own hours; the best may be production itself", () => {
+    const s = universalSummary(shapeRows(p, { weighting: "max", metric: "mean" }), p, "max");
+    expect(s.production).toEqual({ name: "member_210", label: "Universal 210", mean: 61, hours: 2.5, partial: false, stale: false });
+    expect(s.best?.name).toBe("member_211");
+    expect(s.gain).toBeCloseTo(0.6, 9);
+    const top = universalProduction("member_211");
+    const t = universalSummary(shapeRows(top, { weighting: "max", metric: "mean" }), top, "max");
+    expect([t.best?.name, t.production?.name, t.gain]).toEqual(["member_211", "member_211", 0]);
+  });
+
+  it("never compares production with itself on real fields, and reads its real facts from either spec", () => {
+    expect(compareHref(["universal:member_211", "universal:member_210"], "universal:member_210"))
+      .toBe("/sky/compare?new=1&models=production,universal:member_211");
+    expect(compareHref(["universal:member_210"], "universal:member_210")).toBe("/sky/compare?new=1&models=production");
+    const bench = { holeMean: 4, holeMax: 6, medianR: 1, rLt08: 0, nTiles: 1, bands: [], worst: null };
+    const current = (expId: string, created: string) => ({ state: "current" as const, expId, created, tileSet: "1 real tile", bench });
+    const earlier = { state: "earlier" as const, expId: "e0" };
+    // a run of `production` (which runs this model) when its own spec has none current
+    expect(preferCurrent(earlier, current("e2", "2026-10-21"))).toMatchObject({ expId: "e2" });
+    expect(preferCurrent({ state: "none" }, { state: "loading" })).toEqual({ state: "loading" });
+    expect(preferCurrent(current("e1", "2026-10-20"), earlier)).toMatchObject({ expId: "e1" });
+    // both current: the newer run
+    expect(preferCurrent(current("e1", "2026-10-20"), current("e2", "2026-10-21"))).toMatchObject({ expId: "e2" });
+    expect(preferCurrent(current("e3", "2026-10-22"), current("e2", "2026-10-21"))).toMatchObject({ expId: "e3" });
+    expect(preferCurrent(undefined, undefined)).toBeUndefined();
   });
 });
 

@@ -221,19 +221,25 @@ export function kneeLeaderboard(models: readonly KneeModel[], knees: number[], r
 }
 
 /** A knee-PSNR model's display name (the Knee tab, its tracking note):
- *  "#196", "plain mean", "production gate", else the combiner's label. */
-export function kneeModelName(m: { id: string; kind: string; label: string }): string {
+ *  "#196", "plain mean", the gate as `gate` names it ("production gate";
+ *  production.ts gateName while a universal model is production), else the
+ *  combiner's label. */
+export function kneeModelName(m: { id: string; kind: string; label: string }, gate = "production gate"): string {
   if (m.kind === "member") return `#${memberNumber(m.label) ?? m.label}`;
   if (m.kind === "mean") return "plain mean";
-  return m.id === "spatial_gate" ? "production gate" : m.label;
+  return m.id === "spatial_gate" ? gate : m.label;
 }
 
 /* ── the Leaderboard comparison ───────────────────────────────────────── */
 
 export type ComparisonRow = {
-  id: "gate" | "mean" | "best" | "universal"; label: string; integrated: number | null; bands: (number | null)[];
-  /** The row's model catalogue spec, when the row names it itself (the best universal model). */
-  spec?: string;
+  /** `production`: a universal model that is production (production.ts
+   *  productionComparison); `gate`: the production gate, or the former one. */
+  id: "production" | "gate" | "mean" | "best" | "universal"; label: string; integrated: number | null; bands: (number | null)[];
+  /** The row's model catalogue spec, when the row names it itself (the best
+   *  universal model, production); null: it has no real facts (the gate while
+   *  a universal model is production). */
+  spec?: string | null;
 };
 export type Comparison = { rows: ComparisonRow[]; source: "knee" | "headline"; bestNumber: string | null };
 
@@ -683,9 +689,11 @@ export function productionRun(exps: readonly ExperimentSummary[] | null | undefi
  *  production, when it scored THIS production (its spec fingerprint equals
  *  the catalogue's); each other row only when its own fingerprint matches.
  *  `detail` is that run's record (GET /api/experiments/<id>), `catalog` the
- *  current model catalogue (GET /api/models). */
+ *  current model catalogue (GET /api/models); `production` names a universal
+ *  model that is production ("Universal 238"), which the reason then names
+ *  instead of the gate's membership. */
 export function leaderboardBenchmark(exps: readonly ExperimentSummary[] | null | undefined, detail: ExpDetail | null | undefined,
-  catalog: Catalog | null | undefined): LeaderBenchmark {
+  catalog: Catalog | null | undefined, production: string | null = null): LeaderBenchmark {
   const run = productionRun(exps);
   if (!run) return { state: "none", reason: "no real benchmark yet: no Sky › Compare run has scored production" };
   if (!detail || detail.id !== run.id || !catalog) return { state: "loading" };
@@ -694,7 +702,9 @@ export function leaderboardBenchmark(exps: readonly ExperimentSummary[] | null |
   const fresh = (spec: string) => !!fps[spec] && fps[spec] === current.get(spec);
   const last = { expId: run.id, created: run.created, label: run.label };
   if (!fresh("production")) {
-    return { state: "none", last, reason: "no real benchmark for this membership: the last Sky › Compare run of production scored an earlier one" };
+    return { state: "none", last, reason: production
+      ? `no real benchmark for ${production}: the last Sky › Compare run of production scored an earlier model`
+      : "no real benchmark for this membership: the last Sky › Compare run of production scored an earlier one" };
   }
   const bench = benchmarkExperiment([run], run.id);
   return {

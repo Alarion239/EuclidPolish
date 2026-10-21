@@ -18,35 +18,43 @@
      scale, each curve its own style (model.ts heldOutCurves);
    - the compare report, only when one exists (its blackout group only when
      the report scored blackout fields).
+   While a universal model is production (`production_model`) a banner says
+   so — gates are not used for production — with "Make the gate production
+   again…" and "Archive every gate…" (one tracking zip, a job); the gate dir
+   reads "former production", and Promote says it makes that gate production
+   again. With no gate left, the newest archive is offered back ("Restore
+   gates from <zip>", a job).
    The legacy RBF is never listed or offered. Opening the page reads caches
-   only; every job asks first. */
+   only; every job and the production switch ask first. */
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Plot, { useLegend, type Series } from "../../../charts/Plot";
 import { C, categorical } from "../../../colors";
 import { useJob } from "../../../api/jobs";
-import { useResource } from "../../../api/query";
+import { invalidate, useResource } from "../../../api/query";
 import { openInspector } from "../../../app/inspector";
 import { pagePath } from "../../../app/nav";
 import { usePageActions } from "../../../app/palette";
-import { formatDateTime, formatRelative } from "../../../format";
+import { formatBytes, formatDateTime, formatRelative } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { useSelected, useSelection } from "../../../state/selection";
 import {
-  Badge, Button, Caption, Checkbox, Chip, DataTable, Dialog, EmptyState, Field, IconButton, Input, JobProgress, Menu, MultiSelect,
+  Badge, Button, Callout, Caption, Checkbox, Chip, DataTable, Dialog, EmptyState, Field, IconButton, Input, JobProgress, Menu, MultiSelect,
   NumberField, Page, Segmented, Select, Skeleton, Toolbar, ToolbarGroup, ToolbarSeparator, ToolbarSpacer, Tooltip, confirm, type DataColumn,
 } from "../../../ui";
 import {
-  BAND_SHORT, REGIME, url, useCombiners, useExperiment, useExperiments, useMembers, useModelCatalog, type CombinersPayload, type CompareReport, type Variant,
+  BAND_SHORT, REGIME, url, useCombiners, useExperiment, useExperiments, useMembers, useModelCatalog, type CombinersPayload, type CompareReport,
+  type GateArchive, type Variant,
 } from "../api";
 import { LoadState, ShareBar } from "../common";
-import { JOB, useOnJobEnd } from "../jobs";
+import { JOB, setProduction, useOnJobEnd } from "../jobs";
 import {
   benchFreshness, benchmarkChoices, benchmarkExperiment, compareRunPath, db, dbDelta, heldOutComparable, heldOutCurves, holesText, memberNumber,
   productionRunsText, productionShares, pruneThreshold, readsText, reportShares, variantLabel, variantScope,
   type Bench, type HeldOutMetric, type ShareRow,
 } from "../model";
 import { compareNote, compareRows, holesLine, promoteNote, utcText, variantNote } from "../notes";
+import { gateName, universalLabel } from "../production";
 import { LogToNotebookButton, useLogToNotebook } from "../../shared/LogToNotebook";
 import "../models.css";
 
@@ -55,6 +63,13 @@ const method = (v: Variant) => `gate:${v.name}`;
 const meanOf = (vs: (number | null | undefined)[] | null | undefined) => {
   const f = (vs ?? []).filter((v): v is number => v != null && Number.isFinite(v));
   return f.length ? f.reduce((a, b) => a + b, 0) / f.length : null;
+};
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+/** A variant or compare-report method by name; the production gate dir reads
+ *  "former production" while a universal model is production. */
+const gateLabel = (name: string, universal: boolean) => {
+  const label = variantLabel(name);
+  return universal && label === "production" ? "former production" : label;
 };
 
 type Row = Variant & {
@@ -161,6 +176,7 @@ function CompareDialog({ open, onOpenChange, data, onStart }: {
   open: boolean; onOpenChange: (v: boolean) => void; data: CombinersPayload; onStart: (body: Record<string, string>) => void;
 }) {
   const gates = data.variants.filter((v) => v.kind === "gate" && v.applies_to_test_cubes);
+  const universal = !!data.production_model;
   const [picked, setPicked] = useState<string[]>(() => variantScope(gates, false).shown.map((v) => v.name));
   const [blackout, setBlackout] = useState("40");
   const [knee, setKnee] = useState(true);
@@ -184,7 +200,9 @@ function CompareDialog({ open, onOpenChange, data, onStart }: {
                 <Checkbox checked={picked.includes(v.name)} aria-label={`Compare ${v.name}`}
                   onChange={(on) => setPicked((p) => (on ? [...p, v.name] : p.filter((x) => x !== v.name)))} />
               </span>
-              <span className="mdl-pick__meta">{readsText(v)} · {v.mix_space}{v.production ? " · production" : v.backup ? " · backup" : ""}</span>
+              <span className="mdl-pick__meta">
+                {readsText(v)} · {v.mix_space}{v.production ? ` · ${universal ? "former production" : "production"}` : v.backup ? " · backup" : ""}
+              </span>
             </label>
           ))}
         </div>
@@ -205,7 +223,7 @@ function ratio(v: number | null | undefined, ref: number | null | undefined): st
   return x == null || !Number.isFinite(x) ? "—" : x.toFixed(3);
 }
 
-function ReportTable({ report }: { report: CompareReport }) {
+function ReportTable({ report, universal }: { report: CompareReport; universal: boolean }) {
   const [asked, setGroup] = useUrlState("group", "natural");
   // A report scored without blackout fields carries an empty blackout group
   // (null PSNRs, zero errors): it is never shown, whatever ?group= says.
@@ -240,7 +258,7 @@ function ReportTable({ report }: { report: CompareReport }) {
               const top = s.band_psnr[0] != null && rows.every((x) => vis(x) <= vis(r));
               return (
                 <tr key={r} data-best={top}>
-                  <td>{r.startsWith("member:") ? `best member #${memberNumber(r.slice(7))}` : variantLabel(r)}</td>
+                  <td>{r.startsWith("member:") ? `best member #${memberNumber(r.slice(7))}` : gateLabel(r, universal)}</td>
                   {s.band_psnr.map((v, i) => <td key={i}>{db(v, 3)}</td>)}
                   {group === "natural" && report.knee && <td>{db(meanOf(knee[r]?.integrated), 3)}</td>}
                   {s.bin_mse.map((v, i) => <td key={i}>{ratio(v, ref?.bin_mse[i])}</td>)}
@@ -258,8 +276,10 @@ function ReportTable({ report }: { report: CompareReport }) {
 }
 
 /* ── gate share per member ──────────────────────────────────────────────── */
-function GateShare({ rows, loading, variant, onPick }: {
+function GateShare({ rows, loading, variant, onPick, gate }: {
   rows: ShareRow[] | null; loading: boolean; variant: Variant | null; onPick: (name: string) => void;
+  /** The production gate dir in words (production.ts gateName). */
+  gate: string;
 }) {
   const navigate = useNavigate();
   const [sel, setSel] = useState<string[]>([]);
@@ -290,16 +310,16 @@ function GateShare({ rows, loading, variant, onPick }: {
     <section id="mdl-share" className="mdl-stack mdl-stack--tight" aria-labelledby="mdl-share-title">
       <div className="mdl-row">
         <h2 id="mdl-share-title" className="mdl-h2">Gate share per member</h2>
-        {variant && <span className="mdl-muted">{variant.production ? "the production gate" : `variant ${variantLabel(variant.name)}`}</span>}
+        {variant && <span className="mdl-muted">{variant.production ? `the ${gate}` : `variant ${variantLabel(variant.name)}`}</span>}
         {variant && !variant.production && (
-          <Button size="sm" variant="ghost" onClick={() => onPick("")}>Show production</Button>
+          <Button size="sm" variant="ghost" onClick={() => onPick("")}>{gate === "production gate" ? "Show production" : `Show the ${gate}`}</Button>
         )}
       </div>
       {rows == null
         ? loading
           ? <div aria-busy="true" aria-label="Reading the gate share"><Skeleton lines={4} /></div>
           : <p className="mdl-note">{variant?.production
-            ? "The production gate's share per member is not readable (members.json)."
+            ? `The ${gate}'s share per member is not readable (members.json).`
             : "No gate share recorded for this variant: compare it with production to measure one."}</p>
         : (
           <DataTable rows={list} columns={columns} rowKey={(r) => r.name} aria-label="Gate share per member" dense
@@ -336,13 +356,25 @@ export default function Combiner() {
   const fit = useJob(JOB.fit);
   const compare = useJob(JOB.compare);
   const promote = useJob(JOB.promote);
+  const archive = useJob(JOB.gatesArchive);
+  const restore = useJob(JOB.gatesRestore);
+  // An archive or a restore changes the catalogue's gate variants too (Sky's pickers).
+  const rereadCatalog = () => void invalidate(url.models());
   useOnJobEnd(fit.job);
   useOnJobEnd(compare.job);
-  useOnJobEnd(promote.job);
+  useOnJobEnd(promote.job, rereadCatalog);
+  useOnJobEnd(archive.job, rereadCatalog);
+  useOnJobEnd(restore.job, rereadCatalog);
   const [fitOpen, setFitOpen] = useState(false);
   const [cmpOpen, setCmpOpen] = useState(false);
   const lg = useLegend();
   const rep = hasReports ? report.data ?? null : null;
+  // Production: the gate, or a universal model (then no gate runs in production).
+  const prodModel = data?.production_model ?? null;
+  const prodLabel = prodModel ? universalLabel(prodModel) : null;
+  const gateWord = gateName(prodModel);
+  const gates = useMemo(() => (data?.variants ?? []).filter((v) => v.kind === "gate"), [data]);
+  const newestArchive: GateArchive | null = data?.archives?.[0] ?? null;
 
   const benchmark = useMemo(() => benchmarkExperiment(exps.data?.experiments, benchId), [exps.data, benchId]);
   // A run's score counts only for the fit it scored: check each spec's fingerprint
@@ -358,7 +390,8 @@ export default function Combiner() {
   const rows = useMemo<Row[]>(() => scope.shown.map((v) => {
     const nat = rep?.groups?.natural?.[method(v)];
     const blk = rep?.groups?.blackout?.[method(v)];
-    const scored = benchmark?.bySpec.get(v.spec) ?? null;
+    // A run's `production` score is of the universal model while it is production: never the gate's holes.
+    const scored = prodModel && v.production ? null : benchmark?.bySpec.get(v.spec) ?? null;
     const fresh = scored ? freshness(v.spec) : null;
     return {
       ...v,
@@ -370,7 +403,7 @@ export default function Combiner() {
       benchPending: fresh === "loading",
       lossComparable: heldOutComparable(v, production),
     };
-  }), [scope, rep, benchmark, freshness, production]);
+  }), [scope, rep, benchmark, freshness, production, prodModel]);
   const prod = rows.find((r) => r.production) ?? null;
   const prodScores = prod ? { testVis: prod.testVis, kneeMean: prod.kneeMean } : null;
   const noteFor = (v: Row) => variantNote(v, { prod: prodScores, benchmark });
@@ -378,7 +411,7 @@ export default function Combiner() {
     `**Combiner variants** — ${rows.length} variants${rep ? ` · compare report \`${rep.id ?? "latest"}\`` : ""}${benchmark ? ` · real holes on ${benchmark.tileSet} (experiment \`${benchmark.expId}\`)` : ""}`, "",
     "| Variant | Members | Mix | Held-out | ∫PSNR | Real holes VIS · Y · J · H | Fitted |",
     "| --- | --- | --- | ---: | ---: | --- | --- |",
-    ...rows.map((v) => `| ${variantLabel(v.name)}${v.production ? " (production)" : ""} | ${readsText(v)} | ${v.mix_space ?? "—"} | ${v.lossComparable && v.selected?.loss != null ? v.selected.loss.toFixed(4) : "—"} | ${db(v.kneeMean)} | ${v.bench ? holesText(v.bench) : "—"} | ${v.fitted_at ? utcText(v.fitted_at) : "—"} |`),
+    ...rows.map((v) => `| ${variantLabel(v.name)}${v.production ? ` (${prodModel ? "former production" : "production"})` : ""} | ${readsText(v)} | ${v.mix_space ?? "—"} | ${v.lossComparable && v.selected?.loss != null ? v.selected.loss.toFixed(4) : "—"} | ${db(v.kneeMean)} | ${v.bench ? holesText(v.bench) : "—"} | ${v.fitted_at ? utcText(v.fitted_at) : "—"} |`),
   ].join("\n");
   const fitResult = fit.job?.status === "done" ? (fit.job.result as { variant?: string } | null) : null;
   const fitted = fitResult?.variant ? rows.find((r) => r.name === fitResult.variant || r.name === `spatial_gate_${fitResult.variant}`) ?? null : null;
@@ -404,12 +437,38 @@ export default function Combiner() {
     const blocked = v.promotion && !v.promotion.ok ? ` ${v.promotion.reason ?? ""}` : "";
     const ok = await confirm({
       title: `Promote ${v.name} to production?`,
-      message: `The current production gate is first backed up to spatial_gate_backup_<UTC time> (promote that to roll back). Then the gate is re-applied to the cached test cubes and the summary + knee curves rebuilt.${mismatch ? ` WARNING: fitted for ${v.n_members} members; the active ensemble has ${data?.active_members.length}. Production would read unavailable until refit.` : ""}${blocked}`,
+      message: `${prodLabel ? `Production is ${prodLabel} now: promoting makes this gate production again (every page that defaults to production runs it instead). ` : ""}The current production gate is first backed up to spatial_gate_backup_<UTC time> (promote that to roll back). Then the gate is re-applied to the cached test cubes and the summary + knee curves rebuilt.${mismatch ? ` WARNING: fitted for ${v.n_members} members; the active ensemble has ${data?.active_members.length}. Production would read unavailable until refit.` : ""}${blocked}`,
       tone: mismatch ? "danger" : "default", confirmLabel: "Promote",
       ...(mismatch ? { requireText: "promote" } : {}),
     });
     if (ok) await promote.run("/ensemble/combiners/promote", { mode: REGIME, variant: v.name, ...(mismatch ? { force: "1" } : {}) });
   }
+  /** Every spatial_gate_* artifact into one tracking zip (a job; production must be universal). */
+  async function doArchive() {
+    if (!prodLabel || !gates.length) return;
+    const ok = await confirm({
+      title: "Archive every spatial gate?",
+      message: `Every spatial_gate_* artifact — ${plural(gates.length, "gate")} (the ${gateWord}, the variants and the promotion backups), the compare reports and the gate payloads — goes into ONE zip in the active tracking campaign (models/gates-<UTC time>.zip), restorable from this tab. The gate outputs cached in the test cubes are dropped. Production stays ${prodLabel}.`,
+      confirmLabel: "Archive",
+    });
+    if (ok) await archive.run(url.gatesArchive(), {});
+  }
+  /** Unzip a gate archive back into the ensemble (a job); production stays as it is. */
+  async function doRestore(a: GateArchive) {
+    const ok = await confirm({
+      title: `Restore the gates from ${a.name}?`,
+      message: `Unzips its ${a.n_items != null ? plural(a.n_items, "artifact") : "artifacts"} (the production gate, the variants, the promotion backups, the compare reports) back into the ensemble. Production stays ${prodLabel ?? "as it is"}: promote a restored gate to make it production again.`,
+      confirmLabel: "Restore",
+    });
+    if (ok) await restore.run(url.gatesRestore(), { archive: a.name });
+  }
+  const gateProduction = () => void setProduction("gate", prodLabel ?? "the production gate");
+  // Where the newest gate archive is, in words: "tracking campaign current, archived 2 h ago, 1.2 GiB".
+  const archiveFacts = newestArchive ? [
+    newestArchive.campaign ? `tracking campaign ${newestArchive.campaign}` : null,
+    newestArchive.archived_at ? `archived ${formatRelative(newestArchive.archived_at)}` : null,
+    newestArchive.size_bytes != null ? formatBytes(newestArchive.size_bytes) : null,
+  ].filter(Boolean).join(", ") : "";
   const startCompare = (body: Record<string, string>) => void (async () => {
     if (await confirm({ title: "Run the compare?", message: "Scores the picked variants on the test cubes (blackout fields may need member inference the first time).", confirmLabel: "Compare" })) {
       await compare.run("/ensemble/combiners/compare", { mode: REGIME, ...body });
@@ -420,6 +479,10 @@ export default function Combiner() {
     { id: "comb-fit", label: "Fit a spatial-gate variant…", group: "Combiner", keywords: ["gate", "train"], run: () => setFitOpen(true) },
     { id: "comb-compare", label: "Compare gate variants…", group: "Combiner", run: () => setCmpOpen(true) },
     { id: "comb-history", label: showHistory ? "Combiner: current membership only" : "Combiner: show every variant (history)", group: "Combiner", run: toggleHistory },
+    { id: "comb-archive", label: "Combiner: archive every spatial gate…", group: "Combiner", keywords: ["gate", "archive", "tracking", "zip"],
+      disabled: !prodModel || !gates.length || archive.busy, run: () => void doArchive() },
+    { id: "comb-restore", label: newestArchive ? `Combiner: restore the gates from ${newestArchive.name}…` : "Combiner: restore the gates…", group: "Combiner",
+      keywords: ["gate", "archive", "unzip"], disabled: !newestArchive || restore.busy, run: () => { if (newestArchive) void doRestore(newestArchive); } },
   ]);
 
   const benchHeader = benchmark ? (
@@ -432,7 +495,7 @@ export default function Combiner() {
       cell: (v) => (
         <span className="mdl-variant-name">
           <code>{v.name.replace(/^spatial_gate_/, "")}</code>
-          {v.production && <Badge tone="accent">production</Badge>}
+          {v.production && (prodModel ? <Badge>former production</Badge> : <Badge tone="accent">production</Badge>)}
           {v.backup && <Badge>backup</Badge>}
         </span>
       ) },
@@ -486,7 +549,8 @@ export default function Combiner() {
         <Menu label={`${v.name} actions`} trigger={<IconButton size="sm" icon="more" label={`${v.name} actions`} />} items={[
           { label: "Inspect", onSelect: () => openInspector({ kind: "combiner", id: v.name }) },
           ...(!v.production ? [{ label: "Promote to production…", onSelect: () => void doPromote(v) }] : []),
-          ...(v.applies_to_test_cubes && !v.production ? [{ label: "Compare with production", onSelect: () => startCompare({ gates: [data?.production ?? "spatial_gate_combiner", v.name].filter((x, i, a) => a.indexOf(x) === i).join(","), blackout_fields: "40" }) }] : []),
+          ...(v.applies_to_test_cubes && !v.production ? [{ label: prodModel ? "Compare with the former production gate" : "Compare with production",
+            onSelect: () => startCompare({ gates: [data?.production ?? "spatial_gate_combiner", v.name].filter((x, i, a) => a.indexOf(x) === i).join(","), blackout_fields: "40" }) }] : []),
           { type: "separator" as const },
           { label: "Log to notebook…", onSelect: () => logToNotebook(noteFor(v)) },
         ]} />
@@ -500,17 +564,20 @@ export default function Combiner() {
     const h = heldOutCurves(rows, historyMetric, palette.length);
     const series: Series[] = h.curves.map((c) => ({
       x: c.x, y: c.y, color: c.slot < 0 ? C.comb : palette[c.slot], dash: c.dash ? [6, 3] : undefined,
-      width: c.production ? 2.6 : 1.5, dots: true, name: c.production ? "production gate" : variantLabel(c.name),
+      width: c.production ? 2.6 : 1.5, dots: true, name: c.production ? gateWord : variantLabel(c.name),
     }));
     const ys = series.flatMap((s) => s.y.filter((y): y is number => y != null));
     const lo = ys.length ? Math.min(...ys) : 0, hi = ys.length ? Math.max(...ys) : 1;
     const pad = (hi - lo) * 0.08 || 0.05;
     const maxStep = Math.max(1, ...h.curves.flatMap((c) => c.x));
     return { series, offScale: h.offScale, xDomain: [0, maxStep] as [number, number], yDomain: [lo - pad, hi + pad] as [number, number] };
-  }, [rows, historyMetric]);
+  }, [rows, historyMetric, gateWord]);
 
-  const jobs = (fit.job || compare.job || promote.job || fit.error || compare.error || promote.error) && (
+  const jobs = (fit.job || compare.job || promote.job || archive.job || restore.job
+    || fit.error || compare.error || promote.error || archive.error || restore.error) && (
     <div className="mdl-jobs">
+      <JobProgress job={archive.job} error={archive.error} />
+      <JobProgress job={restore.job} error={restore.error} />
       <JobProgress job={fit.job} error={fit.error} />
       {fitted && (
         <div className="mdl-row">
@@ -557,16 +624,32 @@ export default function Combiner() {
           title="Variants fitted for earlier memberships, and the promotion backups">History{scope.hidden ? ` ${scope.hidden}` : ""}</Chip>
         <LogToNotebookButton from="Models › Combiner" disabled={!rows.length} note={tableNote} title="Open Notebook › Log with the variant table; you edit it there first" />
       </Toolbar>
+      {prodLabel && (
+        <Callout tone="info" dense action={(production || gates.length > 0) && (
+          <span className="mdl-row">
+            {production && <Button size="sm" onClick={gateProduction}>Make the gate production again…</Button>}
+            {gates.length > 0 && <Button size="sm" loading={archive.busy} onClick={() => void doArchive()}>Archive every gate…</Button>}
+          </span>
+        )}>
+          Production is {prodLabel} — gates are not used for production.
+        </Callout>
+      )}
+      {jobs}
       <LoadState loading={res.loading} error={res.error} onRetry={res.reload}
-        empty={data && !scope.shown.length && !scope.hidden && (
+        empty={data && !scope.shown.length && !scope.hidden && (!data.variants.length && newestArchive ? (
+          <EmptyState icon="layers" title="Every gate is archived"
+            action={<Button variant="primary" loading={restore.busy} onClick={() => void doRestore(newestArchive)}>Restore gates from {newestArchive.name}</Button>}>
+            {newestArchive.n_items != null ? plural(newestArchive.n_items, "gate artifact") : "The gate artifacts"} sit in {newestArchive.name}
+            {archiveFacts ? ` (${archiveFacts})` : ""}.{prodLabel ? ` Production is ${prodLabel}.` : ""}
+          </EmptyState>
+        ) : (
           <EmptyState icon="layers" title="No combiner yet" action={<Button variant="primary" onClick={() => setFitOpen(true)}>Fit a variant</Button>}>
             Fit a spatial gate on the validate member cubes, compare it, then promote it.
           </EmptyState>
-        )}>
+        ))}>
         {data && (
           <div className="mdl-stack">
-            {jobs}
-            {prod && (
+            {prod && !prodModel && (
               <p className="mdl-status">
                 {productionRunsText(prod.n_reads, prod.n_members, pruneThreshold(prod))}
                 {prod.fitted_at ? `; fitted ${formatRelative(prod.fitted_at)}` : ""}.
@@ -587,7 +670,7 @@ export default function Combiner() {
                 : <>Real holes come from a <Link to="/sky/compare">Sky › Compare</Link> run; there is none yet.</>}
               {!showHistory && scope.hidden > 0 ? ` ${scope.hidden} more variant${scope.hidden === 1 ? "" : "s"} (earlier memberships, backups) under History.` : ""}
             </Caption>
-            <GateShare rows={shareRows} loading={shareLoading} variant={shareVariant ?? null} onPick={setShareOf} />
+            <GateShare rows={shareRows} loading={shareLoading} variant={shareVariant ?? null} onPick={setShareOf} gate={gateWord} />
             <section className="mdl-stack mdl-stack--tight" aria-labelledby="mdl-held-title">
               <div className="mdl-row">
                 <h2 id="mdl-held-title" className="mdl-h2">Held-out curves</h2>
@@ -615,7 +698,7 @@ export default function Combiner() {
                   <span className="mdl-grow" />
                   <LogToNotebookButton from="Models › Combiner" note={() => compareNote(rep)} title="Open Notebook › Log with this compare report; you edit it there first" />
                 </div>
-                <ReportTable report={rep} />
+                <ReportTable report={rep} universal={!!prodModel} />
               </section>
             )}
           </div>

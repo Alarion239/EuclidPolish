@@ -1095,10 +1095,12 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
   identity (the store's)|null, production{integrated[4], mean,
   stale, model?}|null, mean_model{…}|null (the knee payload's production gate and
   plain mean, with its `stale` flag; when a universal model is production,
-  `production` is ITS universal score with `model` = its name, `comparable`
-  is true once it is scored, and `production_model` names it — null while
-  production is the gate), comparable (they were scored on the
-  same fields, records and target as the universal scores),
+  `production` is ITS universal score with `model` = its name and
+  `production_model` names it — null while production is the gate),
+  comparable (the knee payload was scored on the same fields, records and
+  target as the universal scores), production_comparable (the rows'
+  `vs_production_db` is meaningful: a scored universal production, else
+  `comparable`),
   models[UniversalRow], combiners[CombinerRow],
   fasrc[FasrcRow], weights_pending[combiner ids] (gates whose shares are
   missing but measurable now from the validate cubes — the score job

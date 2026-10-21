@@ -37,11 +37,22 @@ export type Headline = {
     best_member?: number | null; best_member_label?: string | null;
   };
 };
+/** The registered universal model the registry names production, with its
+ *  universal score (Models › Universal's ∫PSNR: VIS Y J H and their mean;
+ *  null until it is scored; `stale`: an earlier checkpoint or other fields). */
+export type ProductionModelScore = {
+  name: string; spec: string; label: string;
+  integrated?: (number | null)[] | null; mean?: number | null; scored_at?: string | null; stale?: boolean | null;
+};
 export type Overview = {
   active_members: string[]; n_members: number; records_dir?: string | null;
   eval_subset?: string; test_present: boolean; evaluated_at?: string | null;
   summary: Record<string, unknown> | null; headline: Headline; checks: Check[];
   production_gate: { available: boolean; n_members: number; mix_space?: string | null; fitted_at?: string | null; promoted_from?: string | null };
+  /** The universal model that is production (null or absent: production is
+   *  the gate). While it is set, `headline.production` and
+   *  `headline.knee.production` are still the gate's last numbers. */
+  production_model?: ProductionModelScore | null;
 };
 
 /* ── members.json / member/<name>.json ─────────────────────────────────── */
@@ -168,9 +179,17 @@ export type Variant = {
   eval?: { psnr?: number | null; vs_mean_db?: number | null; vs_best_member_db?: number | null };
 };
 export type ReportRef = { id: string; created?: string | null; methods?: string[] | null; n_fields?: Record<string, number> | null; gates_requested?: string[] | null };
+/** One gate archive: every `spatial_gate_*` artifact zipped into a tracking
+ *  campaign (`models/gates-<UTC stamp>.zip`), restorable. */
+export type GateArchive = { name: string; campaign?: string | null; size_bytes?: number | null; archived_at?: string | null; n_items?: number | null };
 export type CombinersPayload = {
   production: string; active_members: string[]; cube_members: string[];
   variants: Variant[]; compare: ReportRef | null; reports: ReportRef[];
+  /** The universal model that is production (`member_238`); null or absent:
+   *  production is the gate. */
+  production_model?: string | null;
+  /** The gate archives, newest first (absent on older servers). */
+  archives?: GateArchive[] | null;
 };
 /** One method's scores on a field group (null: not scored, e.g. a report's
  *  empty blackout group when it was run without blackout fields). */
@@ -248,17 +267,26 @@ export type UniversalFasrcRow = {
   /** Registered as a universal model but with no checkpoint here: pull it again. */
   registered?: boolean;
 };
-export type UniversalReference = { integrated: (number | null)[]; mean: number | null; stale: boolean };
+/** A reference score: the knee payload's production gate or plain mean, or —
+ *  while a universal model is production — that model's own score (`model`). */
+export type UniversalReference = { integrated: (number | null)[]; mean: number | null; stale: boolean; model?: string | null };
 export type UniversalPayload = {
   available: boolean; knees: number[]; bands: string[];
   integration: { from_e: number; to_e: number } | null;
   /** The scores store's identity: the test fields (`indices`) and the truth. */
   identity: { indices?: number[] | null; subset?: string | null; [key: string]: unknown } | null;
   production: UniversalReference | null;
+  /** The universal model that is production (`member_238`): `production` is
+   *  then its own score. Null or absent: production is the gate. */
+  production_model?: string | null;
   mean_model: UniversalReference | null;
-  /** Whether `production` / `mean_model` were scored on the scores' own fields
-   *  (absent: read off the rows, universal.ts isComparable). */
+  /** Whether the knee payload (the gate, `mean_model`) was scored on the
+   *  scores' own fields (absent: read off the rows, universal.ts isComparable). */
   comparable?: boolean | null;
+  /** Whether `production` is on the scores' own fields, so the rows'
+   *  `vs_production_db` is meaningful: a scored universal production, else
+   *  `comparable`. */
+  production_comparable?: boolean | null;
   models: UniversalRow[];
   combiners: UniversalCombiner[];
   fasrc: UniversalFasrcRow[];
@@ -345,8 +373,17 @@ export type EvalRuns = { rows: EvalRow[]; n?: number; n_ok?: number; groups?: Re
 /** A curve row the loss facets split (training-curves.json). */
 export type CurveFacetRow = { loss_norm: string; name: string };
 
-/** The model catalogue (GET /api/models): each spec's fingerprint. */
-export type ModelCatalog = { models: { spec: string; label?: string; fingerprint?: string | null; available?: boolean }[] };
+/** What production is (GET /api/models `production`): one registered
+ *  universal model, or the production gate. */
+export type CatalogProduction = {
+  kind: "universal" | "gate"; spec: string; name: string | null; label: string; available?: boolean; reason?: string | null;
+};
+/** The model catalogue (GET /api/models): each spec's fingerprint, and what
+ *  production is (absent on older servers: the gate). */
+export type ModelCatalog = {
+  models: { spec: string; label?: string; fingerprint?: string | null; available?: boolean }[];
+  production?: CatalogProduction | null; production_kind?: string | null;
+};
 /** One Sky › Compare run's record (GET /api/experiments/<id>): the fields read here. */
 export type ExperimentDetail = { id: string; label?: string; created?: string; fingerprints?: Record<string, string | null> | null };
 
@@ -369,6 +406,10 @@ export const url = {
   evalBands: () => "/ensemble/evals/bands",
   combiners: () => `/ensemble/combiners.json?mode=${REGIME}`,
   report: (id?: string | null) => `/ensemble/combiners/compare.json?mode=${REGIME}${id ? `&report=${encodeURIComponent(id)}` : ""}`,
+  /** POST `model` = universal:member_NNN, or `gate` (instant, no job). */
+  production: () => "/ensemble/production",
+  gatesArchive: () => "/ensemble/combiners/archive",
+  gatesRestore: () => "/ensemble/combiners/restore",
   trainingJobs: () => "/ensemble/training-jobs.json",
   universal: () => `/ensemble/universal.json?mode=${REGIME}`,
   universalScore: () => "/ensemble/universal/score",

@@ -1,5 +1,5 @@
 /* NEXUS comparison plates: render them (a local job over tiles, a band or
- * the temperature colour and a model spec — the production spatial gate by
+ * the temperature colour and a model spec — the production model by
  * default; Render asks first) and browse the runs in output/nexus_comparisons
  * with one caption line each ("made with <model> · current/stale · rendered
  * N d ago") and their contact sheet. The run / render / enlarged tile live

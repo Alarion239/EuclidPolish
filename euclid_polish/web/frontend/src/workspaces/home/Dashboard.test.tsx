@@ -242,6 +242,61 @@ describe("Home · the production verdict", () => {
     show(<Dashboard />);
     await summaryText();
     expect(calls.some((c) => c.url.startsWith("/ensemble/status.json"))).toBe(false);
+    // the overview is read only for a universal production's score
+    expect(calls.some((c) => c.url.startsWith("/ensemble/overview.json"))).toBe(false);
+  });
+});
+
+describe("Home · a universal model as production", () => {
+  const PROD_MODEL = { name: "member_238", spec: "universal:member_238", label: "Universal 238",
+    integrated: [56, 65.5, 63, 64], mean: 62.13, scored_at: ago(0.125), stale: false };
+  beforeEach(() => {
+    routes["GET /api/models"] = () => ({ body: {
+      members: STARFULL.map((m) => `${m.slice(7)}·psnr`), production_kind: "universal",
+      production: { kind: "universal", spec: "universal:member_238", name: "member_238", label: "Universal 238", available: true, reason: null },
+      models: [{ spec: "production", kind: "production", available: true, reason: null, combiner_kind: null, fingerprint: "u238",
+        label: "Production · Universal 238", details: { universal: true, model_spec: "universal:member_238", member: "member_238" } }],
+    } });
+    routes["GET /ensemble/overview.json?mode=starfull"] = () => ({ body: { production_model: PROD_MODEL } });
+    routes["GET /api/experiments/e-new"] = () => ({ body: { id: "e-new", fingerprints: { production: "u238" } } });
+    routes["GET /api/system/loop"] = () => ({ body: { ...LOOP_OK(), stages: LOOP_OK().stages.map((s) => (s.id === "gate"
+      ? stage("gate", "Gate", "current", "production is Universal 238", "/models/universal") : s)) } });
+  });
+
+  it("states the universal model and its own integrated PSNR, then its real holes, never the gate's numbers", async () => {
+    show(<Dashboard />);
+    const text = await summaryText(/real holes/);
+    expect(text).toMatch(/^Production is Universal 238: 62\.13\u00a0dB integrated PSNR; real holes 20% in J, its worst band \(Sky › Compare, .+\)\.$/);
+    expect(text).not.toMatch(/60\.97|59\.24|best member|plain mean|gate/);
+    expect(within(summary()!).getByRole("link", { name: "integrated PSNR" }).getAttribute("href")).toBe("/models/universal");
+    const cap = await waitFor(() => {
+      const el = document.querySelector(".home__caption") as HTMLElement | null;
+      if (!el?.textContent?.includes("scored")) throw new Error("no caption yet");
+      return el;
+    });
+    expect(cap.textContent).toBe("one universal model, no gate · scored 3 h ago");
+    expect(within(cap).getByRole("link", { name: "one universal model, no gate" }).getAttribute("href")).toBe("/models/universal");
+    expect(cap.textContent).not.toMatch(/gate fitted|gate out of date|members/);
+  });
+
+  it("reads the Gate chip as the production stage: Production, Universal 238, linking to Models › Universal", async () => {
+    show(<Dashboard />);
+    const chip = await chipAt("Production", "current");
+    expect(chip.textContent).toBe("ProductionUniversal 238");
+    expect(chip.getAttribute("href")).toBe("/models/universal");
+    expect(screen.queryByRole("link", { name: /^Gate: / })).toBeNull();
+  });
+
+  it("names the universal model when the newest real run scored an earlier production, and says when it is not scored yet", async () => {
+    routes["GET /api/experiments/e-new"] = () => ({ body: { id: "e-new", fingerprints: { production: "d9ef" } } });
+    const view = show(<Dashboard />);
+    expect(await summaryText(/benchmark/)).toMatch(
+      /^Production is Universal 238: 62\.13\u00a0dB integrated PSNR; no real benchmark for Universal 238 \(the last run, .+, scored an earlier one\)\.$/);
+    view.unmount();
+    queryClient.clear();
+    routes["GET /ensemble/overview.json?mode=starfull"] = () => ({ body: { production_model: { ...PROD_MODEL, integrated: null, mean: null, scored_at: null, stale: null } } });
+    show(<Dashboard />);
+    expect(await summaryText(/not scored/)).toMatch(/^Production is Universal 238, not scored on the test fields yet; no real benchmark for Universal 238/);
   });
 });
 

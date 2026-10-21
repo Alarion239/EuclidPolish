@@ -9,7 +9,9 @@
  * /api/system/loop (helpers/system_alerts.py, which System › Lineage reads
  * too; its rules are pinned by tests/test_system_alerts.py). Until it
  * answers, each chip reads "checking"; if it fails, "not checked" — never
- * "current". */
+ * "current". While a universal model is production there is no gate to keep
+ * fitted: the Gate chip reads as the production stage ("Production", the
+ * model's label, Models › Universal). */
 import type { HealthCheck, SystemAlerts } from "../../app/status";
 import { memberRange } from "./homeModel";
 
@@ -55,13 +57,27 @@ const STAGES: readonly { id: StageId; label: string; to: string }[] = [
   { id: "figures", label: "Figures", to: "/figures/plates" },
 ];
 
+/** What production is, as the Loop needs it (homeModel.ts productionModel). */
+type ProductionSlice = { kind: "gate" | "universal"; label: string } | null | undefined;
+
+/** The Gate chip as the production stage while a universal model is
+ *  production: "Production", the model's label as the reason while current
+ *  (the server says "production is Universal 238"), its own reason
+ *  otherwise, linking to Models › Universal. */
+function productionStage(stage: Stage, production: ProductionSlice): Stage {
+  if (stage.id !== "gate" || production?.kind !== "universal") return stage;
+  const reason = stage.state === "current" ? production.label : stage.reason;
+  return { ...stage, label: "Production", reason, to: "/models/universal" };
+}
+
 /** The chips to show: the service's stages, or placeholders ("checking"
- *  while it loads, "not checked" when it failed). */
-export function loopStages(payload: LoopPayload | null | undefined, failed = false): Stage[] {
-  if (payload?.stages?.length) return payload.stages;
-  return STAGES.map((s) => failed
+ *  while it loads, "not checked" when it failed); the Gate chip is the
+ *  production stage while `production` is a universal model. */
+export function loopStages(payload: LoopPayload | null | undefined, failed = false, production: ProductionSlice = null): Stage[] {
+  const stages = payload?.stages?.length ? payload.stages : STAGES.map((s) => failed
     ? { ...s, state: "unknown" as const, reason: "not checked" }
     : { ...s, state: "loading" as const, reason: "checking" });
+  return production?.kind === "universal" ? stages.map((s) => productionStage(s, production)) : stages;
 }
 
 /* ── strip warnings ─────────────────────────────────────────────────────── */

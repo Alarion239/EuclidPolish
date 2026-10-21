@@ -1,6 +1,6 @@
 /* Models workspace, `/models/<tab>` (console regrouping, Team M): which
    model is best on synthetic truth and on real data, how the members trained,
-   which combiner is production, and what SR looks like on synthetic fields.
+   which model is production, and what SR looks like on synthetic fields.
    Tabs: leaderboard, universal, knees, spectra, members, train, combiner,
    diagnostics, images (./tabs).
    A bare `/models` returns to the last tab visited. Nothing sits beside the

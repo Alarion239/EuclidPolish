@@ -3,16 +3,21 @@
  * its availability — an unavailable spec is disabled and says why. The
  * universal models (standalone single-image multi-knee models, and the active
  * members that are universal too — those stay in Members as well) list their
- * depth, steps, knee and training time. The legacy RBF combiner sits behind a
- * "Legacy RBF" toggle (hidden by default, shown while one is picked), so it
- * can still be benchmarked on real tiles. Quick picks for the common
- * comparisons; a filter for the long lists (members, universal models). */
+ * depth, steps, knee and training time; so does production when it is one of
+ * them, named first ("Universal 238 · depth 16 · …"). The legacy RBF combiner
+ * sits behind a "Legacy RBF" toggle (hidden by default, shown while one is
+ * picked), so it can still be benchmarked on real tiles. Quick picks for the
+ * common comparisons ("Production + universal" leaves out the universal spec
+ * production already runs); a filter for the long lists (members, universal
+ * models). */
 import { useMemo, useState } from "react";
 import { useResource } from "../../../api/query";
 import { formatDateTime } from "../../../format";
 import { Button, Callout, Checkbox, Input, Skeleton, Tooltip } from "../../../ui";
 import { URLS, type ModelSpecRow, type ModelsPayload } from "./api";
-import { groupModels, membersText, productionMembersText, specShort, universalDetails, universalDetailText } from "./model";
+import {
+  groupModels, membersText, productionMembersText, productionModelLabel, productionUniversalSpec, specShort, universalDetails, universalDetailText,
+} from "./model";
 import "./results.css";
 
 export function useModels() {
@@ -20,8 +25,12 @@ export function useModels() {
 }
 
 function detail(m: ModelSpecRow): string {
-  // a universal model (or a member that is one): depth, steps, knee, hours — not "1 member"
-  if (universalDetails(m)) return universalDetailText(m);
+  // a universal model (or a member that is one): depth, steps, knee, hours — not "1 member";
+  // production when it is one: which one first
+  if (universalDetails(m)) {
+    const text = universalDetailText(m);
+    return m.kind === "production" ? [productionModelLabel(m), text].filter(Boolean).join(" · ") : text;
+  }
   const d = m.details ?? {};
   const bits: string[] = [];
   // "6 of 20 members" for a pruned gate; production says how many it runs.
@@ -74,6 +83,8 @@ export function ModelPicker({ value, onChange, compact = false }: {
   }
   const pick = (kinds: string[]) => set([...selected, ...available.filter((m) => kinds.includes(String(m.kind))).map((m) => m.spec)]);
   const production = available.filter((m) => m.kind === "production").map((m) => m.spec);
+  // the universal spec production runs (a universal model is production): `production` covers it
+  const runsAlready = productionUniversalSpec(offered);
   return (
     <div className="res-models" data-compact={compact || undefined}>
       <div className="res-models__quick" role="group" aria-label="Quick picks">
@@ -81,7 +92,8 @@ export function ModelPicker({ value, onChange, compact = false }: {
           Production + mean
         </Button>
         {universalGroup && (
-          <Button size="sm" variant="subtle" disabled={!universal.length} onClick={() => set([...production, ...universal])}>
+          <Button size="sm" variant="subtle" disabled={!universal.length}
+            onClick={() => set([...production, ...universal.filter((s) => !production.length || s !== runsAlready)])}>
             Production + universal
           </Button>
         )}

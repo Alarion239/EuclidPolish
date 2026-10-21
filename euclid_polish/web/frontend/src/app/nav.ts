@@ -50,9 +50,9 @@ export const WORKSPACE_META: Record<string, WorkspaceMeta> = {
   },
   models: {
     icon: "layers", goKey: "m", keywords: ["ensemble"],
-    description: "Which model is best on synthetic truth and real data, how the members trained, and which combiner is production",
+    description: "Which model is best on synthetic truth and real data, how the members trained, and which model is production",
     tabs: {
-      leaderboard: { label: "Leaderboard", description: "Production gate, plain mean and members ranked, with the knee curves", keywords: ["overview", "knee", "psnr"] },
+      leaderboard: { label: "Leaderboard", description: "Production, the plain mean and the members ranked, with the knee curves", keywords: ["overview", "knee", "psnr"] },
       universal: { label: "Universal", description: "Universal multi-knee models by training time, length and depth, against the combiner",
         keywords: ["multi-knee", "learned knee", "scaling", "training time", "gpu hours", "depth", "steps"] },
       knees: { label: "Knees", description: "Which asinh knees a multi-knee model relies on, for which pixels",

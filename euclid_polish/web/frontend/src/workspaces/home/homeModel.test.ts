@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bandMean, compareRunPath, homeCaption, kneeHeadline, kneeText, memberName, memberRange, productionFromStatus, productionHeadline,
-  productionModel, productionRealHoles, starfullMembers, trackingCatchUpNote, unloggedItems, type ExperimentSummary, type KneePayload,
+  productionModel, productionRealHoles, starfullMembers, trackingCatchUpNote, universalScore, unloggedItems, type ExperimentSummary, type KneePayload,
 } from "./homeModel";
 
 describe("productionHeadline (eval_summary.json)", () => {
@@ -116,8 +116,11 @@ describe("productionModel (/api/models)", () => {
 
   it("names the production combiner, its mix space and when it was fitted", () => {
     expect(productionModel({ production_kind: "spatial_gate", models: [PROD] })).toEqual({
-      label: "spatial gate", mix: "linear", fittedAt: "2026-09-25T22:30:13+00:00", available: true, reason: null,
+      kind: "gate", label: "spatial gate", name: null, mix: "linear", fittedAt: "2026-09-25T22:30:13+00:00", available: true, reason: null,
     });
+    // a server that says so: the gate
+    expect(productionModel({ production_kind: "spatial_gate", models: [PROD],
+      production: { kind: "gate", spec: "production", name: null, label: "spatial gate", available: true, reason: null } })?.kind).toBe("gate");
   });
 
   it("falls back to the production kind and reports why it is unavailable", () => {
@@ -125,12 +128,51 @@ describe("productionModel (/api/models)", () => {
       production_kind: "spatial_gate",
       models: [{ spec: "production", available: false, reason: "fitted for other members" }],
     });
-    expect(m).toEqual({ label: "spatial gate", mix: null, fittedAt: null, available: false, reason: "fitted for other members" });
+    expect(m).toEqual({ kind: "gate", label: "spatial gate", name: null, mix: null, fittedAt: null, available: false, reason: "fitted for other members" });
   });
 
   it("is null without a production spec", () => {
     expect(productionModel({ models: [{ spec: "mean", available: true }] })).toBeNull();
     expect(productionModel(null)).toBeNull();
+  });
+
+  const UNIVERSAL = {
+    spec: "production", kind: "production", available: true, reason: null, combiner_kind: null, fingerprint: "u238",
+    label: "Production · Universal 238", reads: ["238·psnr"],
+    details: { universal: true, model_spec: "universal:member_238", member: "member_238", num_res_blocks: 16 },
+  };
+
+  it("names a universal model that is production, from the catalogue's production summary", () => {
+    expect(productionModel({ production_kind: "universal", models: [UNIVERSAL],
+      production: { kind: "universal", spec: "universal:member_238", name: "member_238", label: "Universal 238", available: true, reason: null } }))
+      .toEqual({ kind: "universal", label: "Universal 238", name: "member_238", mix: null, fittedAt: null, available: true, reason: null });
+  });
+
+  it("reads a universal production off the spec when the summary is absent, and says why it cannot run", () => {
+    expect(productionModel({ production_kind: "universal", models: [UNIVERSAL] }))
+      .toMatchObject({ kind: "universal", label: "Universal 238", name: "member_238" });
+    expect(productionModel({ models: [{ ...UNIVERSAL, available: false, reason: "production model member_238: no checkpoint" }] }))
+      .toMatchObject({ kind: "universal", available: false, reason: "production model member_238: no checkpoint" });
+  });
+});
+
+describe("universalScore (/ensemble/overview.json production_model)", () => {
+  const PM = { name: "member_238", spec: "universal:member_238", label: "Universal 238", integrated: [56, 65.5, 63, 64],
+    mean: 62.13, scored_at: "2026-10-21T08:00:00Z", stale: false };
+
+  it("is the universal production's own ∫PSNR, its bands and when it was scored", () => {
+    expect(universalScore({ production_model: PM })).toEqual({
+      label: "Universal 238", mean: 62.13, bands: [56, 65.5, 63, 64], stale: false, scoredAt: "2026-10-21T08:00:00Z" });
+    // no mean: the four bands' mean; a stale score says so
+    expect(universalScore({ production_model: { ...PM, mean: null, stale: true } })).toMatchObject({ mean: 62.125, stale: true });
+  });
+
+  it("is null while the gate is production, and has no number before the model is scored", () => {
+    expect(universalScore({ production_model: null })).toBeNull();
+    expect(universalScore({})).toBeNull();
+    expect(universalScore(null)).toBeNull();
+    expect(universalScore({ production_model: { ...PM, integrated: null, mean: null, scored_at: null, stale: null } }))
+      .toEqual({ label: "Universal 238", mean: null, bands: [], stale: false, scoredAt: null });
   });
 });
 
@@ -158,7 +200,12 @@ describe("tracking catch-up note (the Home notebook alert › Log)", () => {
     knee: { gate: 60.97, mean: 59.1, best: { name: "member_196", label: "196·psnr", value: 59.96 }, vsBest: 1.01, vsMean: 1.87, perBand: [], nFields: 100, stale: false },
     prod: { kind: "gate" as const, psnr: 59.2354, vsMean: 0.8601, vsBest: 0.2948, meanPsnr: 58.4, stale: false },
     members: 30,
-    production: { label: "spatial gate", mix: "linear", fittedAt: "2026-09-25T22:30:13+00:00", available: true, reason: null },
+    production: { kind: "gate" as const, label: "spatial gate", name: null, mix: "linear", fittedAt: "2026-09-25T22:30:13+00:00", available: true, reason: null },
+  };
+  const universal = {
+    ...facts,
+    production: { kind: "universal" as const, label: "Universal 238", name: "member_238", mix: null, fittedAt: null, available: true, reason: null },
+    score: { label: "Universal 238", mean: 62.13, bands: [56, 65.5, 63, 64], stale: false, scoredAt: "2026-10-21T08:00:00Z" },
   };
   it("reads the alert's unlogged items (newest first)", () => {
     expect(unloggedItems(check).map((u) => u.label)).toEqual(["experiment", "PSNR vs knee", "evaluation", "production gate fit"]);
@@ -178,6 +225,15 @@ describe("tracking catch-up note (the Home notebook alert › Log)", () => {
     expect(md).toContain("**Production model** — 30 STARFULL members");
     expect(md).toContain("- ∫PSNR production gate 60.97 dB");
     expect(md).toContain("- Test PSNR production gate 59.24 dB");
+  });
+  it("names a universal production with its own ∫PSNR, and the ensemble's gate as the former production gate", () => {
+    const now = trackingCatchUpNote({ facts: { last_entry: "2026-09-27T00:00:00Z", unlogged: [] } }, universal);
+    expect(now).toBe("**Production model**\n\n- Universal 238 is production (one universal model, no gate), ∫PSNR 62.13 dB");
+    const md = trackingCatchUpNote(check, universal);
+    expect(md).toContain("- PSNR vs knee — 2026-09-25 23:33 UTC: ∫PSNR former production gate 60.97 dB");
+    expect(md).toContain("- evaluation — 2026-09-25 23:32 UTC: test PSNR former production gate 59.24 dB");
+    expect(md).toContain("- production gate fit — 2026-09-25 22:30 UTC: Universal 238 is production (one universal model, no gate), ∫PSNR 62.13 dB");
+    expect(md).not.toMatch(/: ∫PSNR production gate|test PSNR production gate/);
   });
 });
 
@@ -226,7 +282,18 @@ describe("real holes from Sky › Compare", () => {
 
 describe("the caption under the verdict", () => {
   const NOW = Date.parse("2026-09-27T23:00:00Z");
-  const production = { label: "spatial gate", mix: "linear", fittedAt: "2026-09-27T19:00:00Z", available: true, reason: null };
+  const production = { kind: "gate" as const, label: "spatial gate", name: null, mix: "linear", fittedAt: "2026-09-27T19:00:00Z", available: true, reason: null };
+  it("says a universal production is one model with no gate, and when it was scored", () => {
+    const universal = { ...production, kind: "universal" as const, label: "Universal 238", name: "member_238", mix: null, fittedAt: null };
+    const score = { label: "Universal 238", mean: 62.13, bands: [], stale: false, scoredAt: "2026-09-27T20:00:00Z" };
+    expect(homeCaption({ members: 30, production: universal, score, nFields: 100, now: NOW,
+      knee: { available: true, integration: { from_e: 0.1, to_e: 10000 } } }))
+      .toEqual(["one universal model, no gate", "scored 3 h ago"]);
+    expect(homeCaption({ members: 30, production: { ...universal, available: false }, score, nFields: 100, knee: null, now: NOW }))
+      .toEqual(["one universal model, no gate", "cannot run"]);
+    expect(homeCaption({ members: 30, production: universal, score: null, nFields: null, knee: null, now: NOW }))
+      .toEqual(["one universal model, no gate"]);
+  });
   it("names the members, the gate fit, the test fields and the knee range", () => {
     expect(homeCaption({ members: 30, production, nFields: 100, now: NOW,
       knee: { available: true, integration: { from_e: 0.1, to_e: 10000 } } }))

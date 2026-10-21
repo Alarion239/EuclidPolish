@@ -16,6 +16,11 @@
    - the leaderboard table — the one ranking Members, Combiner, Images and
      Home link to — with Test VIS @100 e⁻ and Test 4b as hidden columns. A row
      opens the member or combiner inspector.
+   While a universal model is production (overview `production_model`) the
+   verdict names it with its own ∫PSNR (its universal score; no Δ against the
+   ensemble rows, which may be scored on other fields), its row leads the
+   table, and the ensemble rows — the gate as the former or archived
+   production gate, the plain mean, the best member — stay for comparison.
    Opening the page reads caches only; every job asks first. */
 import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -33,7 +38,7 @@ import {
 } from "../../../ui";
 import {
   BAND_SHORT, BANDS, useExperiment, useExperiments, useKnee, useMembers, useModelCatalog, useOverview, useUniversal,
-  type KneeModel, type MemberRow, type Overview,
+  type KneeModel, type MemberRow, type Overview, type ProductionModelScore,
 } from "../api";
 import { kneeColor, kneeOrderOf, LoadState } from "../common";
 import { JOB, computeKnee, evaluate, refreshMemberPsnr, useOnJobEnd } from "../jobs";
@@ -43,6 +48,7 @@ import {
   type Comparison, type ComparisonRow, type LeaderBenchmark, type LeaderRow, type StatusCheck,
 } from "../model";
 import { evaluationNote, kneeNote } from "../notes";
+import { gateName, productionComparison } from "../production";
 import { bestUniversal } from "../universal";
 import { FreezeStudyDialog } from "../../shared/FreezeStudyDialog";
 import { LogToNotebookButton } from "../../shared/LogToNotebook";
@@ -89,6 +95,7 @@ function StatusLine({ checks, o, nFields, onEvaluate }: {
     if (c.fix === "knee") return <Button size="sm" onClick={() => void computeKnee()}>Knee PSNR</Button>;
     if (c.fix === "member-psnr") return <Button size="sm" onClick={() => void refreshMemberPsnr()}>Member PSNR</Button>;
     if (c.fix === "combiners") return <Button size="sm" asChild><Link to={tabPath("combiner")}>Combiner</Link></Button>;
+    if (c.fix === "universal") return <Button size="sm" asChild><Link to={tabPath("universal")}>Universal</Link></Button>;
     return <span />;
   };
   return (
@@ -141,9 +148,25 @@ function EvaluateDialog({ open, onOpenChange, defaultN, lastN, defaultForce, onS
 /* ── verdict and comparison table ──────────────────────────────────────── */
 
 /** The production gate (else the plain mean) against the best member and the
- *  plain mean, on the comparison table's own numbers. */
-function Verdict({ cmp }: { cmp: Comparison }) {
+ *  plain mean, on the comparison table's own numbers. While a universal model
+ *  is production (`production`): that model and its own ∫PSNR, with no Δ —
+ *  its universal score may be on other test fields than the ensemble's knee
+ *  curves — and the ensemble rows named as the comparison they are. */
+function Verdict({ cmp, production }: { cmp: Comparison; production: ProductionModelScore | null }) {
   const row = (id: ComparisonRow["id"]) => cmp.rows.find((r) => r.id === id)?.integrated ?? null;
+  if (production) {
+    const score = row("production");
+    const rest = cmp.rows.some((r) => r.id !== "production" && r.id !== "universal");
+    return (
+      <SummaryLine>
+        Production is {production.label}
+        {score != null
+          ? <>: <Num>{db(score)}</Num>{"\u00a0"}dB integrated PSNR{production.stale ? " (a stale score)" : ""}</>
+          : ", not scored on the test fields yet"}
+        {rest && "; the ensemble rows below are the old member ensemble, for comparison"}
+      </SummaryLine>
+    );
+  }
   const gate = row("gate"), mean = row("mean"), best = row("best");
   const head = gate ?? mean;
   if (head == null) return null;
@@ -162,20 +185,25 @@ function Verdict({ cmp }: { cmp: Comparison }) {
 }
 
 const SPEC: Record<ComparisonRow["id"], (best: string | null) => string | null> = {
-  gate: () => "production", mean: () => "mean", best: (n) => (n ? `member:member_${n}` : null),
+  production: () => "production", gate: () => "production", mean: () => "mean", best: (n) => (n ? `member:member_${n}` : null),
   universal: () => null,   // the row names its own spec
 };
 
 function ComparisonTable({ cmp, bands, bench }: { cmp: Comparison; bands: readonly string[]; bench: LeaderBenchmark }) {
   const real = bench.state === "current" ? bench : null;
   const facts = (r: ComparisonRow) => {
-    const spec = r.spec ?? SPEC[r.id](cmp.bestNumber);
+    // a row's own spec (null: none — the gate while a universal model is production)
+    const spec = r.spec !== undefined ? r.spec : SPEC[r.id](cmp.bestNumber);
     return real && spec ? real.facts(spec) : null;
   };
+  // production leads in bold: the universal model that is production, else the gate
+  const lead = cmp.rows.some((r) => r.id === "production") ? "production" : "gate";
+  const universalLink = (text: string) => (
+    <Link to={tabPath("universal")} title="Models › Universal: every universal model by training time">{text}</Link>
+  );
   const columns: Column<ComparisonRow>[] = [
-    { header: "", cell: (r) => (r.id === "gate" ? <strong>{r.label}</strong>
-      : r.id === "universal" ? <Link to={tabPath("universal")} title="Models › Universal: every universal model by training time">{r.label}</Link>
-        : r.label) },
+    { header: "", cell: (r) => (r.id === lead ? <strong>{r.id === "production" ? universalLink(r.label) : r.label}</strong>
+      : r.id === "universal" ? universalLink(r.label) : r.label) },
     { header: "∫PSNR [dB]", align: "right", cell: (r) => <span className="mdl-tnum">{db(r.integrated)}</span> },
     ...bands.map((b, i): Column<ComparisonRow> => ({
       header: `∫${BAND_SHORT[b] ?? b} [dB]`, align: "right", cell: (r) => <span className="mdl-tnum">{db(r.bands[i])}</span>,
@@ -295,16 +323,20 @@ export default function Leaderboard() {
   const checks = useMemo(() => (o ? statusChecks(o.checks, memberRows) : []), [o, memberRows]);
   const kneeOffered = checks.some((c) => c.fix === "knee" || c.action === "knee");
   const universal = useUniversal();
+  // Production: the gate, or a universal model (its row first; the gate is then the former / archived one).
+  const pm = o?.production_model ?? null;
+  const gate = gateName(pm?.name, o?.production_gate.available);
   const cmp = useMemo(() => {
-    const c = overviewComparison(kneeData, o?.headline.knee);
-    // The best universal model with a current score on the same test fields (Models › Universal).
+    const c = productionComparison(overviewComparison(kneeData, o?.headline.knee), o);
+    // The best universal model with a current score on the same test fields (Models › Universal),
+    // unless it is production (its row leads already).
     const u = c.rows.length ? bestUniversal(universal.data) : null;
-    if (!u) return c;
+    if (!u || u.row.name === o?.production_model?.name) return c;
     const row: ComparisonRow = { id: "universal", label: `Best universal model (#${memberNumber(u.row.name) ?? u.row.name})`,
       integrated: u.mean, bands: u.bands, spec: u.row.spec };
     return { ...c, rows: [...c.rows, row] };
   }, [kneeData, o, universal.data]);
-  const bench = leaderboardBenchmark(exps.data?.experiments, detail.data, catalog.data);
+  const bench = leaderboardBenchmark(exps.data?.experiments, detail.data, catalog.data, pm?.label ?? null);
   const nUniversal = universal.data?.models?.length ?? 0;
   const timeouts = (memberRows ?? []).filter((m) => m.timeout);
 
@@ -341,15 +373,15 @@ export default function Leaderboard() {
       series.push({
         x: knees, y, color: modelColor(m, colorBy, kneeOrder), width: main ? 2.6 : 1.2, alpha: main ? 1 : 0.8,
         dots: main, dash: k.kind === "multi" && !isUniversal(m) ? [5, 3] : undefined,
-        name: `${kneeModelName(m)}${m.kind === "member" ? ` · ${k.text}` : ""}`,
-        key: m.kind === "member" ? memberFacet(m, colorBy, kneeOrder).key : kneeModelName(m),
+        name: `${kneeModelName(m, gate)}${m.kind === "member" ? ` · ${k.text}` : ""}`,
+        key: m.kind === "member" ? memberFacet(m, colorBy, kneeOrder).key : kneeModelName(m, gate),
       });
     }
     if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
     const pad = (hi - lo) * 0.06 || 0.5;
     const shade: PlotBand[] = isFull ? [] : [{ axis: "x", from: range[0], to: range[1], color: C.guide, alpha: 0.18, label: "integration range" }];
     return { c, name: BAND_SHORT[bands[c]] ?? bands[c], series, yDomain: [lo - pad, hi + pad] as [number, number], bands: shade };
-  }), [bandIdx.join(","), models, showMembers, view, mean, knees, colorBy, kneeOrder, isFull, range[0], range[1], bands]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [bandIdx.join(","), models, showMembers, view, mean, knees, colorBy, kneeOrder, isFull, range[0], range[1], bands, gate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const legend = useMemo<LegendItem[]>(() => {
     const main: LegendItem[] = [];
@@ -359,14 +391,14 @@ export default function Leaderboard() {
         if (!showMembers) continue;
         const f = memberFacet(m, colorBy, kneeOrder);
         if (!facets.has(f.key)) facets.set(f.key, f);
-      } else if (!main.some((it) => it.label === kneeModelName(m))) {
-        main.push({ label: kneeModelName(m), key: kneeModelName(m), color: modelColor(m, colorBy, kneeOrder), line: true });
+      } else if (!main.some((it) => it.label === kneeModelName(m, gate))) {
+        main.push({ label: kneeModelName(m, gate), key: kneeModelName(m, gate), color: modelColor(m, colorBy, kneeOrder), line: true });
       }
     }
-    main.sort((a, b) => Number(b.label === "production gate") - Number(a.label === "production gate"));
+    main.sort((a, b) => Number(b.label === gate) - Number(a.label === gate));
     const facetItems = [...facets.values()].sort((a, b) => a.rank - b.rank).map(({ key, label, color, dash }) => ({ key, label, color, dash }));
     return [...main, ...facetItems];
-  }, [models, showMembers, colorBy, kneeOrder]);
+  }, [models, showMembers, colorBy, kneeOrder, gate]);
 
   /* leaderboard */
   const byLabel = useMemo(() => new Map((memberRows ?? []).map((m) => [memberNumber(m.name) ?? m.name, m])), [memberRows]);
@@ -385,8 +417,8 @@ export default function Leaderboard() {
     { id: "rankDelta", header: "Δ", headerText: "rank change vs full range", numeric: true, width: 52, priority: 2,
       cell: (r) => (r.rankDelta == null || r.rankDelta === 0 || isFull ? <span className="mdl-faint">·</span>
         : <span className={r.rankDelta > 0 ? "mdl-good" : "mdl-bad"}>{r.rankDelta > 0 ? `▲${r.rankDelta}` : `▼${-r.rankDelta}`}</span>) },
-    { id: "label", header: "Model", accessor: (r) => kneeModelName(r.model),
-      cell: (r) => <span className="mdl-member"><span className="mdl-swatch" style={{ ["--sw" as string]: modelColor(r.model, colorBy, kneeOrder) }} />{kneeModelName(r.model)}</span> },
+    { id: "label", header: "Model", accessor: (r) => kneeModelName(r.model, gate),
+      cell: (r) => <span className="mdl-member"><span className="mdl-swatch" style={{ ["--sw" as string]: modelColor(r.model, colorBy, kneeOrder) }} />{kneeModelName(r.model, gate)}</span> },
     { id: "knee", header: "Trained", accessor: (r) => (r.kind === "member" ? kneeText(r.model).text : r.kind), width: 128, priority: 4 },
     { id: "loss", header: "Loss", accessor: (r) => r.model.loss ?? null, hidden: true },
     ...bands.map((b, i): DataColumn<BoardRow> => ({
@@ -401,20 +433,21 @@ export default function Leaderboard() {
       accessor: (r) => r.testVis, cell: (r) => db(r.testVis) },
     { id: "test4b", header: "Test 4b", headerText: "test PSNR, joint 4-band asinh (member-PSNR cache)", numeric: true, hidden: true,
       accessor: (r) => r.test4b, cell: (r) => db(r.test4b) },
-  ], [bands, band, colorBy, kneeOrder, isFull, kneeAt]);
+  ], [bands, band, colorBy, kneeOrder, isFull, kneeAt, gate]);
 
   const integration = kneeData?.integration ?? o?.headline.knee.integration ?? null;
   const nKneeFields = kneeData?.n_fields ?? o?.headline.knee.n_fields ?? null;
   const caption = o ? [
     `${o.n_members} member${o.n_members === 1 ? "" : "s"}`,
-    o.production_gate.available && o.production_gate.fitted_at
-      ? `production gate fitted ${nb(formatRelative(o.production_gate.fitted_at))}${o.production_gate.mix_space ? ` (${o.production_gate.mix_space} mix)` : ""}` : null,
+    pm ? `${pm.label} ${pm.scored_at ? `scored ${nb(formatRelative(pm.scored_at))}` : "not scored yet"}`
+      : o.production_gate.available && o.production_gate.fitted_at
+        ? `production gate fitted ${nb(formatRelative(o.production_gate.fitted_at))}${o.production_gate.mix_space ? ` (${o.production_gate.mix_space} mix)` : ""}` : null,
     cmp.rows.length ? `∫ = PSNR averaged over log knee ${nb(`${kneeE(integration?.from_e ?? 0.1)}–${kneeE(integration?.to_e ?? 1e4)} e⁻`)}${nKneeFields ? ` on ${nKneeFields} test fields` : ""}` : null,
     o.evaluated_at ? `evaluated ${nb(formatRelative(o.evaluated_at))}` : "not evaluated yet",
   ].filter(Boolean).join(" · ") : "";
 
   const note = () => [o ? evaluationNote(o) : "",
-    board.length ? kneeNote(board, { range, full, band, bands, nFields: kneeData?.n_fields }) : ""].filter(Boolean).join("\n\n");
+    board.length ? kneeNote(board, { range, full, band, bands, nFields: kneeData?.n_fields, gate }) : ""].filter(Boolean).join("\n\n");
   const runMenu = (
     <Menu label="Run" trigger={<Button size="sm" iconRight="chevronDown" loading={evalJob.busy || kneeJob.busy || psnrJob.busy}>Run</Button>} items={[
       { label: "Evaluate test fields…", onSelect: run_.evaluate, disabled: o ? !o.test_present : true },
@@ -441,11 +474,11 @@ export default function Leaderboard() {
             {members.error && !members.data && <p className="mdl-note">Could not read the members: {members.error.message}</p>}
             {jobs}
             <section className="mdl-result" aria-label="Production model">
-              <Verdict cmp={cmp} />
+              <Verdict cmp={cmp} production={pm} />
               <Caption>{caption}</Caption>
               {cmp.rows.length > 0 && <ComparisonTable cmp={cmp} bands={bands} bench={bench} />}
               {cmp.rows.length > 0 && <RealSource bench={bench} />}
-              {cmp.rows.length > 0 && nUniversal > 0 && !cmp.rows.some((r) => r.id === "universal") && (
+              {cmp.rows.length > 0 && nUniversal > 0 && !pm && !cmp.rows.some((r) => r.id === "universal") && (
                 <Caption>
                   {nUniversal} universal model{nUniversal === 1 ? "" : "s"} here, none with a current score on these test fields:{" "}
                   <Link to={tabPath("universal")}>Models › Universal</Link>.
@@ -519,7 +552,7 @@ export default function Leaderboard() {
             urlKey="k" defaultSort={[{ id: "rank", desc: false }]} exportName="knee-leaderboard" height={480}
             caption={`${cmp.rows.length && nKneeFields ? "" : `${kneeData?.n_fields ?? "?"} test fields · `}∫ uniform in log knee over ${kneeNum(range[0])}–${kneeNum(range[1])} e⁻`}
             inspect={(r) => (r.kind === "member" ? { kind: "member", id: `member_${memberNumber(r.label)}` }
-              : r.kind === "combiner" ? { kind: "combiner", id: "spatial_gate_combiner" } : null)} />
+              : r.kind === "combiner" && o?.production_gate.available !== false ? { kind: "combiner", id: "spatial_gate_combiner" } : null)} />
         </LoadState>
       </section>
       {freezeOpen && <FreezeStudyDialog onClose={() => setFreezeOpen(false)} />}

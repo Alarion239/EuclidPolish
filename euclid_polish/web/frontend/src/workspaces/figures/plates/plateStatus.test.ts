@@ -74,12 +74,16 @@ describe("NEXUS and poster captions", () => {
   it("is stale for an earlier fit, for a stale tile output and for a legacy SR", () => {
     const earlier = render({ model_fingerprint: "p0" });
     expect(captionParts(nexusCaption(earlier, run(earlier), catalog), NOW)[1]).toBe("stale");
+    // production is a role: its earlier model may be another one (the gate before a universal model)
+    expect(nexusCaption(earlier, run(earlier), catalog).reason).toBe("Rendered with an earlier production model; render again with the current one.");
+    const rbf = render({ model: "rbf", model_fingerprint: "r0" });
+    expect(nexusCaption(rbf, run(rbf), catalog).reason).toBe("Rendered with an earlier fit of rbf; render again for the current one.");
     const tile = render({ tiles: [{ index: 40, file: "a.png", model_state: "stale" }] });
     expect(nexusCaption(tile, run(tile), catalog).reason).toMatch(/1 tile output predates/);
     const legacy = render({ model: null, legacy: true, model_label: "minibatched RBF", model_fingerprint: null, created: null });
     const c = nexusCaption(legacy, run(legacy), catalog);
     expect(captionParts(c, NOW)).toEqual(["made with minibatched RBF (legacy SR)", "stale", "rendered 1 d ago"]);
-    expect(c.reason).toMatch(/not the production gate/);
+    expect(c.reason).toMatch(/not the production model/);
   });
 
   it("names the poster's pull time", () => {

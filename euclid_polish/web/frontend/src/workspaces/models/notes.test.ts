@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CompareReport, KneeModel, Overview, Variant } from "./api";
 import { benchmarkExperiment, kneeLeaderboard } from "./model";
 import { compareNote, compareRows, evaluationNote, kneeNote, promoteNote, universalNote, utcText, variantNote } from "./notes";
-import { comb, payload } from "./testing/universalFixture";
+import { comb, payload, universalProduction } from "./testing/universalFixture";
 import { shapeRows } from "./universal";
 
 const OVERVIEW: Overview = {
@@ -54,6 +54,23 @@ describe("evaluation note", () => {
     expect(md).not.toContain("∫PSNR");
     expect(md).not.toContain("Open:");
   });
+  it("names a universal production with its own score; the gate's numbers are the former (or archived) gate's", () => {
+    const pm = { name: "member_238", spec: "universal:member_238", label: "Universal 238", integrated: [56, 65.5, 63, 64], mean: 62.13,
+      scored_at: "2026-10-21T08:00:00+00:00", stale: false };
+    const md = evaluationNote({ ...OVERVIEW, production_model: pm });
+    expect(md).toContain("- Production: Universal 238 (one universal model, no gate): ∫PSNR 62.13 dB · VIS 56.00 · Y 65.50 · J 63.00 · H 64.00 (its universal score, 2026-10-21 08:00 UTC)");
+    expect(md).toContain("- The ensemble numbers below are the old member ensemble, for comparison");
+    expect(md).toContain("- Former production gate: 44.12 dB (+0.23 dB vs best member, +0.40 dB vs plain mean)");
+    expect(md).toContain("(100 fields): former production gate 38.21 dB");
+    expect(md).toContain("- Former production gate fitted for 30 members, linear mix");
+    expect(md).not.toMatch(/- Production gate|: production gate/);
+    // archived: the gate's numbers stay, its fit line goes; not scored yet: said so
+    const archived = evaluationNote({ ...OVERVIEW, production_model: { ...pm, mean: null, integrated: null, scored_at: null },
+      production_gate: { available: false, n_members: 0 } });
+    expect(archived).toContain("- Production: Universal 238 (one universal model, no gate), not scored on the test fields yet");
+    expect(archived).toContain("- Archived gate: 44.12 dB");
+    expect(archived).not.toContain("fitted for");
+  });
 });
 
 const model = (id: string, kind: KneeModel["kind"], label: string, v: number): KneeModel => ({
@@ -81,6 +98,12 @@ describe("knee leaderboard note", () => {
     expect(md).toContain("#196");
     expect(md).not.toContain("#195");
     expect(md).toContain("Top 1 of 3 members, plus the plain mean and the combiners.");
+  });
+  it("names the gate as the page does while a universal model is production", () => {
+    const md = kneeNote(board, { range: [0.1, 10000], full: [0.1, 10000], band: "all", bands: ["VIS", "Y_E", "J_E", "H_E"], nFields: 100,
+      gate: "archived gate" });
+    expect(md).toContain("| 1 | archived gate | combiner | 40.00 |");
+    expect(md).not.toContain("production gate");
   });
 });
 
@@ -178,5 +201,15 @@ describe("universal note", () => {
     // #215 (stale, scored at 1.2 h): Δ vs production marked; its nearest gate (p20s1, 3 h) is on other fields
     expect(md).toContain("| 60.80 (stale) | +0.30 (stale) | — (gate p20s1: other fields) |");
     expect(md).toContain("| production gate | 2 | ≥ 6.00 | ≥ 2.00 | ≥ 0.90 | 60.50 |");
+  });
+
+  it("names a universal production in the header and its row; the gate is the former production gate", () => {
+    const p = universalProduction();
+    const md = universalNote(shapeRows(p, { weighting: "max", metric: "mean" }), p.combiners,
+      { weighting: "max", nFields: 100, integration: p.integration, production: p.production_model });
+    expect(md).toContain("**Universal models** — 6 models · production: Universal 210 · ∫PSNR over 0.1–10k e⁻");
+    expect(md).toContain("| #211 | universal | 16 | 1.0M | 4 × 8 | learned | plain | A100 | 12.7 | 61.60 | +0.60 | +1.10 vs former production gate (2.00 h) |");
+    expect(md).toContain("| #210 (production) | universal |");
+    expect(md).toContain("| former production gate | 2 | 6.00 | 2.00 | 0.90 | 60.50 |");
   });
 });

@@ -10,7 +10,7 @@ import { registerInspector, useInspectorRegistry } from "../../../app/inspector"
 import { useInspector } from "../../../state/inspector";
 import { useSelection } from "../../../state/selection";
 import { LAST_TILE_KEY } from "../atlas/home";
-import { CARD, POSTER, answer, installBackend, show, teardownBackend, type Post, type Routes } from "../testing/backend";
+import { CARD, MODELS, POSTER, answer, installBackend, show, teardownBackend, type Post, type Routes } from "../testing/backend";
 import ExperimentInspector from "./ExperimentInspector";
 import { ModelPicker } from "./ModelPicker";
 import RealTileInspector from "./RealTileInspector";
@@ -134,6 +134,23 @@ describe("model picker", () => {
     expect(seen.at(-1)).toEqual(["production", "member:member_2", "universal:member_211"]);
     fireEvent.click(screen.getByRole("button", { name: "+ all universal" }));
     expect(seen.at(-1)).toEqual(["mean", "member:member_2", "universal:member_211"]);
+  });
+
+  it("names the universal model production runs, and leaves its own spec out of Production + universal", async () => {
+    routes["GET /api/models"] = () => ({ body: { ...MODELS, production_kind: "universal",
+      models: MODELS.models.map((m) => (m.spec !== "production" ? m : {
+        spec: "production", kind: "production", label: "Production · Universal 211", available: true, n_members: 1, reads: ["211·psnr"],
+        details: { universal: true, class: "universal", model_spec: "universal:member_211", member: "member_211", num_res_blocks: 16,
+          steps: 1_000_000, target_steps: 1_000_000, knee: "learned", train_hours: 12.7 } })) } });
+    const seen: string[][] = [];
+    show(<ModelPicker value={[]} onChange={(v) => seen.push(v)} />);
+    const group = await screen.findByRole("group", { name: "Production" });
+    expect(within(group).getByText("Universal 211 · depth 16 · 1.0M steps · learned knee · 12.7 h")).toBeTruthy();
+    // production runs universal:member_211 already
+    fireEvent.click(screen.getByRole("button", { name: "Production + universal" }));
+    expect(seen.at(-1)).toEqual(["production", "member:member_2"]);
+    fireEvent.click(screen.getByRole("button", { name: "+ all universal" }));
+    expect(seen.at(-1)).toEqual(["member:member_2", "universal:member_211"]);
   });
 
   it("offers no universal quick picks without universal models", async () => {

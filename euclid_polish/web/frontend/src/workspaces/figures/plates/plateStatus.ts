@@ -126,14 +126,16 @@ export function nexusCaption(render: PlateRender, run: PlateRun | undefined, cat
   const label = render.model_label ?? render.model_short ?? render.model ?? "an unknown model";
   if (render.legacy || !render.model) {
     return { madeWith: `${label} (legacy SR)`, state: "stale", verb: "rendered", at, tone: "warn",
-      reason: "Drawn from a legacy SR output, not the production gate. Render the plates again with production." };
+      reason: "Drawn from a legacy SR output, not the production model. Render the plates again with production." };
   }
   const staleTiles = render.tiles.filter((t) => t.model_state && t.model_state !== "current").length;
   const current = catalog?.models?.find((m) => m.spec === render.model)?.fingerprint ?? null;
   const earlier = !!render.model_fingerprint && !!current && render.model_fingerprint !== current;
   if (earlier || staleTiles) {
     return { madeWith: label, state: "stale", verb: "rendered", at, tone: "warn",
-      reason: earlier ? `Rendered with an earlier fit of ${render.model}; render again for the current one.`
+      // production is a role (the gate, or one universal model): its earlier model may be another one
+      reason: earlier ? (render.model === "production" ? "Rendered with an earlier production model; render again with the current one."
+        : `Rendered with an earlier fit of ${render.model}; render again for the current one.`)
         : `${staleTiles} tile output${staleTiles === 1 ? "" : "s"} predate${staleTiles === 1 ? "s" : ""} the current ${render.model}.` };
   }
   const known = !!render.model_fingerprint && !!current;

@@ -362,6 +362,9 @@ describe("member counts and the disagreement member menu", () => {
     expect(kneeModelName({ id: "mean", kind: "mean", label: "mean" })).toBe("plain mean");
     expect(kneeModelName({ id: "spatial_gate", kind: "combiner", label: "Spatial gate" })).toBe("production gate");
     expect(kneeModelName({ id: "rbf", kind: "combiner", label: "RBF" })).toBe("RBF");
+    // while a universal model is production the gate is named as the page names it
+    expect(kneeModelName({ id: "spatial_gate", kind: "combiner", label: "Spatial gate" }, "archived gate")).toBe("archived gate");
+    expect(kneeModelName({ id: "member_196", kind: "member", label: "196·psnr" }, "archived gate")).toBe("#196");
   });
 });
 
