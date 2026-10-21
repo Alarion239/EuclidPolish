@@ -60,7 +60,8 @@ from euclid_polish.training.inference import (
 )
 from euclid_polish.training.inference import reconstruct_heads
 from euclid_polish.training.isotropy import DEFAULT_KNEE_E as DEFAULT_ISOTROPY_KNEE_E
-from euclid_polish.training.isotropy import ResidualIsotropy
+from euclid_polish.training.isotropy import DEFAULT_SCALES as DEFAULT_ISOTROPY_SCALES
+from euclid_polish.training.isotropy import MultiScaleIsotropy, canonical_scales
 from euclid_polish.training.loss_names import plateau_guard_applies
 from euclid_polish.training.losses import (
     KNEE_LOSS_MODES,
@@ -576,6 +577,7 @@ class Model:
         noise_texture_jitter: bool = False,
         isotropy_penalty: float = 0.0,
         isotropy_knee: float | None = None,
+        isotropy_scales: Sequence[Sequence[float]] | None = None,
         jit_compile: bool = False,
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
@@ -638,7 +640,9 @@ class Model:
         (:mod:`~euclid_polish.training.isotropy`) to the objective: on
         average over recent batches, the error stretched at
         ``isotropy_knee`` (e⁻, default 0.01) must not prefer a direction,
-        which the pixel-axis grid does. It needs a learned output knee
+        which the pixel-axis grid does, at the ``isotropy_scales``
+        ((window px, shortest period px, longest period px[, weight]) each;
+        ``None`` → ``training.isotropy.DEFAULT_SCALES``). It needs a learned output knee
         (electrons out) and live training (electrons in).
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
@@ -652,6 +656,10 @@ class Model:
         if isotropy_penalty and not (self._learn_output_knee and forward_onthefly):
             raise ValueError("isotropy_penalty needs a learned-output-knee member (electrons "
                              "out) trained on the live (on-the-fly) forward model (electrons in)")
+        scales = canonical_scales(isotropy_scales or DEFAULT_ISOTROPY_SCALES)
+        if isotropy_penalty and max(scale[0] for scale in scales) > int(hr_crop_size):
+            raise ValueError(f"isotropy windows {[int(s[0]) for s in scales]} must fit the "
+                             f"{int(hr_crop_size)}-px training crops")
         train_hr_path, valid_lr_path, valid_hr_path = member_record_paths(
             lr_path, hr_path,
             starless=bool(starless), forward_onthefly=bool(forward_onthefly),
@@ -741,9 +749,10 @@ class Model:
         isotropy = None
         if isotropy_penalty:
             knee = float(isotropy_knee) if isotropy_knee else DEFAULT_ISOTROPY_KNEE_E
-            isotropy = ResidualIsotropy(knee_e=knee, n_bands=Config.NUM_HR_CHANNELS)
+            isotropy = MultiScaleIsotropy(scales, knee_e=knee, n_bands=Config.NUM_HR_CHANNELS)
             provenance_fields["isotropy_penalty"] = float(isotropy_penalty)
             provenance_fields["isotropy_knee"] = knee
+            provenance_fields["isotropy_scales"] = [list(scale) for scale in scales]
         loss = self._member_loss(loss_norm, knee_loss, loss_knees, loss_floor)
         if loss_floor:
             print("  loss floor (e⁻/HR px): " + ", ".join(

@@ -12,14 +12,15 @@ Per square window of the residual ``r = asinh(sr/k) - asinh(hr/k)``
 (electrons; ``k`` = ``knee_e``, 0.01 e⁻ by default, nearly logarithmic above
 it, so faint light counts as much as bright), minus its mean and tapered by
 a round Hann window, the FFT power of every bin with a period of
-``period_min``-``period_max`` pixels is divided by the window's own isotropic
-expectation at that |k|: its ring means, interpolated log-log to the bin's
-exact |k|. A plain ring mean, constant over a ring one bin wide, would not do:
-on the square lattice the bins of one ring sit at radii that depend on their
-direction, so a steep but isotropic spectrum looks 4-fold anisotropic by up
-to ~50 % (2026-10-20). A window's normalised spectrum is ~1 at every bin when
-its error is isotropic, and a faint empty-sky window counts as much as a
-bright halo.
+``period_min``-``period_max`` pixels (down to the Nyquist period, 2 px: beyond
+it only the square grid's corners remain, which no rotation reaches) is
+divided by the window's own isotropic expectation at that |k|: its ring
+means, interpolated log-log to the bin's exact |k|. A plain ring mean,
+constant over a ring one bin wide, would not do: on the square lattice the
+bins of one ring sit at radii that depend on their direction, so a steep but
+isotropic spectrum looks 4-fold anisotropic by up to ~50 % (2026-10-20). A
+window's normalised spectrum is ~1 at every bin when its error is isotropic,
+and a faint empty-sky window counts as much as a bright halo.
 
 The batch mean ``B(k)`` of the normalised spectra feeds an exponential moving
 average ``M(k)`` (``decay``; state checkpointed with the model), so isotropy
@@ -29,16 +30,53 @@ carry more error than the rest of their ring, and the penalty is
 ``sum_k E(k) B(k) / sum_k B(k)``, averaged over the bands. ``E``, the window
 references and the denominator are constants, so the gradient only removes
 error power where it concentrates (adding isotropic error elsewhere earns
-nothing), and the penalty vanishes once the error is isotropic.
+nothing), and the penalty vanishes once the error is isotropic. Within a step
+it is a weighted squared error of the residual, which the ideal estimator
+(the posterior mean) minimises for any weights: it never pulls a perfect
+model off the truth, it only changes what an imperfect one fixes first, and
+an anisotropy no estimator can remove costs no gradient at the optimum.
+
+:class:`MultiScaleIsotropy` scores several scales, each a window size and
+period range with its own moving average and weight: a 64-px window resolves
+too few directions at long periods (its rings there are a few bins on the
+square grid; it reads round 128-px spectra as ~10 % axis-heavy at 32-43 px,
+2026-10-20). Periods of 2-3 px carry far more gradient per unit of anisotropy
+than the rest (~400x on member_235): a period-2 pattern along the axes is what
+the 2x upsampler's four sub-pixel channels make when slightly unbalanced, and
+one last-layer weight moves every other pixel at once. That band is weighted
+down to the same leverage per unit of anisotropy.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 import numpy as np
 import tensorflow as tf
 
 #: The residual's asinh knee (e⁻ per HR pixel).
 DEFAULT_KNEE_E = 0.01
+#: (window px, shortest period px, longest period px, weight) per scale:
+#: 64-px windows for 3-21 px, the same for 2-3 px weighted 0.003 (equal
+#: leverage per unit of anisotropy, see above), 128-px windows for 21-42 px.
+#: On 2026-10-20 the largest anisotropy left (2.6-3.5x on the axes in every
+#: member) was at 2-3 px, outside the first members' range.
+DEFAULT_SCALES: tuple[tuple[float, float, float, float], ...] = (
+    (64.0, 3.0, 21.0, 1.0), (64.0, 2.0, 3.0, 0.003), (128.0, 21.0, 42.0, 1.0))
+#: The range of the first members with the penalty (233-235).
+LEGACY_SCALES: tuple[tuple[float, float, float, float], ...] = ((64.0, 3.0, 21.0, 1.0),)
+
+
+def canonical_scales(scales: Sequence[Sequence[float]]) -> tuple[tuple[float, float, float, float], ...]:
+    """Scales as (window, shortest, longest period, weight) floats; a
+    three-number scale has weight 1."""
+    out = []
+    for scale in scales:
+        values = tuple(float(v) for v in scale)
+        if len(values) not in (3, 4):
+            raise ValueError(f"a scale is (window, shortest, longest[, weight]), got {scale!r}")
+        out.append(values if len(values) == 4 else (*values, 1.0))
+    return tuple(out)
 
 
 def _round_hann(window: int) -> np.ndarray:
@@ -64,14 +102,18 @@ class ResidualIsotropy(tf.Module):
         if not 0.0 <= decay < 1.0:
             raise ValueError(f"decay must be in [0, 1), got {decay!r}")
         lo, hi = w / float(period_max), w / float(period_min)
+        if lo < 2.0:
+            raise ValueError(f"period_max {period_max!r} is too long for a {w}-pixel window")
         k_y, k_x = np.meshgrid(np.fft.fftfreq(w) * w, np.fft.fftfreq(w) * w, indexing="ij")
         radius = np.hypot(k_x, k_y).ravel()                 # |k| in cycles per window
         rings = np.rint(radius).astype(int)
         # Whole rings one beyond the annulus on each side, so every annulus bin
-        # lies between two ring centres.
-        first, last = max(1, int(np.floor(lo)) - 1), int(np.ceil(hi)) + 1
-        if last + 0.5 >= w / 2.0:
-            raise ValueError(f"period_min {period_min!r} is too short for a {w}-pixel window")
+        # lies between two ring centres - at the top no further than the last
+        # ring the window holds whole: the few bins past its centre, up to the
+        # Nyquist circle, take the last two rings' slope.
+        first = max(1, int(np.floor(lo)) - 1)
+        last = min(int(np.ceil(hi)) + 1, int(np.floor(w / 2.0 - 0.5)))
+        hi = min(hi, w / 2.0)
         ring_ids = np.arange(first, last + 1)
         member = (rings[None, :] == ring_ids[:, None]).astype(np.float64)       # (R, w²)
         log_centre = np.log((member @ radius) / member.sum(axis=1))
@@ -90,6 +132,8 @@ class ResidualIsotropy(tf.Module):
         self.knee_e = float(knee_e)
         self.n_bands = int(n_bands)
         self.window = w
+        self.period_min = float(period_min)
+        self.period_max = float(period_max)
         self.decay = float(decay)
         self.tolerance = float(tolerance)
         self.n_bins = int(annulus.size)
@@ -131,13 +175,20 @@ class ResidualIsotropy(tf.Module):
         ring = tf.matmul(tf.matmul(mean, self._ann_mean, transpose_b=True), self._ann_onehot)
         return tf.nn.relu(mean / ring - 1.0 - self.tolerance)
 
+    def residual(self, sr: tf.Tensor, hr: tf.Tensor) -> tf.Tensor:
+        """``asinh(sr/k) - asinh(hr/k)`` of electrons, ``(B, H, W, C)``."""
+        sr = tf.cast(sr, tf.float32)
+        hr = tf.cast(hr, tf.float32)
+        return tf.asinh(sr / self.knee_e) - tf.asinh(hr / self.knee_e)
+
     def penalty(self, sr: tf.Tensor, hr: tf.Tensor) -> tf.Tensor:
         """The penalty of a batch of predictions ``sr`` against targets
         ``hr``, both ``(B, H, W, n_bands)`` electrons; folds the batch into
         the moving average."""
-        sr = tf.cast(sr, tf.float32)
-        hr = tf.cast(hr, tf.float32)
-        residual = tf.asinh(sr / self.knee_e) - tf.asinh(hr / self.knee_e)
+        return self.penalty_of_residual(self.residual(sr, hr))
+
+    def penalty_of_residual(self, residual: tf.Tensor) -> tf.Tensor:
+        """:meth:`penalty` of a :meth:`residual`."""
         batch = tf.reduce_mean(self.normalised_spectra(residual), axis=0)          # (C, n_bins)
         mean = self.decay * self.mean + (1.0 - self.decay) * tf.stop_gradient(batch)
         self.mean.assign(mean)
@@ -153,5 +204,62 @@ class ResidualIsotropy(tf.Module):
         return (tf.reduce_sum(self._excess(mean) * mean, axis=-1)
                 / tf.reduce_sum(mean, axis=-1)).numpy()
 
+    def describe(self) -> str:
+        return f"{self.window}-px windows, periods {self.period_min:g}-{self.period_max:g} px"
 
-__all__ = ["DEFAULT_KNEE_E", "ResidualIsotropy"]
+    def summary(self) -> str:
+        """The moving-average excess per band."""
+        return " ".join(f"band{b} {float(e):.4f}" for b, e in enumerate(self.excess()))
+
+
+class MultiScaleIsotropy(tf.Module):
+    """The penalty over several scales - ``(window, period_min, period_max[,
+    weight])`` each, with its own moving average - as a weighted mean; one
+    residual feeds them all."""
+
+    def __init__(self, scales: Sequence[Sequence[float]] = DEFAULT_SCALES,
+                 knee_e: float = DEFAULT_KNEE_E, n_bands: int = 4, decay: float = 0.99,
+                 tolerance: float = 0.05, floor_e: float = 1e-4, name: str = "multi_scale_isotropy"):
+        super().__init__(name=name)
+        if not scales:
+            raise ValueError("need at least one scale")
+        scales = canonical_scales(scales)
+        if not all(weight > 0 for *_, weight in scales):
+            raise ValueError(f"scale weights must be positive, got {scales!r}")
+        self.scales = [ResidualIsotropy(knee_e=knee_e, n_bands=n_bands, window=int(w), period_min=lo,
+                                        period_max=hi, decay=decay, tolerance=tolerance, floor_e=floor_e,
+                                        name=f"isotropy_{int(w)}px_{i}")
+                       for i, (w, lo, hi, _) in enumerate(scales)]
+        self.weights = tuple(weight for *_, weight in scales)
+        self.knee_e = float(knee_e)
+        self.decay = float(decay)
+        self.tolerance = float(tolerance)
+
+    @property
+    def window(self) -> int:
+        """The largest window: training crops must hold one."""
+        return max(scale.window for scale in self.scales)
+
+    def penalty(self, sr: tf.Tensor, hr: tf.Tensor) -> tf.Tensor:
+        residual = self.scales[0].residual(sr, hr)
+        terms = [weight * scale.penalty_of_residual(residual)
+                 for scale, weight in zip(self.scales, self.weights, strict=True)]
+        return tf.add_n(terms) / sum(self.weights)
+
+    def excess(self) -> np.ndarray:
+        """Per band, the scales' :meth:`ResidualIsotropy.excess`, weighted as
+        the penalty weights them."""
+        return np.average([scale.excess() for scale in self.scales], axis=0, weights=self.weights)
+
+    def describe(self) -> str:
+        return "; ".join(f"{scale.describe()} x{weight:g}" for scale, weight in zip(self.scales, self.weights,
+                                                                                   strict=True))
+
+    def summary(self) -> str:
+        """Each scale's moving-average excess, mean over bands."""
+        return ", ".join(f"{scale.window}px {scale.period_min:g}-{scale.period_max:g} "
+                         f"{float(np.mean(scale.excess())):.4f}" for scale in self.scales)
+
+
+__all__ = ["DEFAULT_KNEE_E", "DEFAULT_SCALES", "LEGACY_SCALES", "MultiScaleIsotropy", "ResidualIsotropy",
+           "canonical_scales"]

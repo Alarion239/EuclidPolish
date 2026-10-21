@@ -27,7 +27,7 @@ from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ConfigSnapshot, Process, Stamp
 from euclid_polish.training.inference import infer_checkpoint_asinh_knee
-from euclid_polish.training.isotropy import ResidualIsotropy
+from euclid_polish.training.isotropy import MultiScaleIsotropy, ResidualIsotropy
 from euclid_polish.training.models.common import evaluate
 from euclid_polish.training.models.output_knee import learned_output_knees
 from euclid_polish.training.plateau import PlateauLRReducer
@@ -249,7 +249,7 @@ class Trainer:
         batch_stretch: Callable[[tf.Tensor, tf.Tensor], tuple[tf.Tensor, tf.Tensor]] | None = None,
         steps_per_call: int = 1,
         device_prefetch: bool = False,
-        isotropy: ResidualIsotropy | None = None,
+        isotropy: ResidualIsotropy | MultiScaleIsotropy | None = None,
         isotropy_weight: float = 0.0,
     ):
         """
@@ -319,7 +319,7 @@ class Trainer:
             (``copy_to_device`` + a device-side ``prefetch``), so the
             host→device copy overlaps the previous step instead of opening
             each one. No effect without a GPU.
-        isotropy : ResidualIsotropy, optional
+        isotropy : ResidualIsotropy or MultiScaleIsotropy, optional
             Adds ``isotropy_weight`` × its penalty to every step's objective:
             the error must not prefer a direction (see
             :mod:`euclid_polish.training.isotropy`). It compares electrons, so
@@ -805,7 +805,7 @@ class Trainer:
         if self._isotropy is not None:
             iso = self._isotropy
             tqdm.write(f"  residual isotropy penalty: λ={self._isotropy_weight:g}, knee "
-                       f"{iso.knee_e:g} e⁻, {iso.window}-px windows, moving average "
+                       f"{iso.knee_e:g} e⁻, {iso.describe()}, moving average "
                        f"{iso.decay:g}, tolerance {iso.tolerance:g}")
 
         self.now = time.perf_counter()
@@ -972,7 +972,9 @@ class Trainer:
                 status += (f", isotropy penalty {window['isotropy']:.4f} (moving average "
                            + " ".join(f"{band} {float(e):.4f}" for band, e in
                                       zip(Config.HR_TARGET_BAND_NAMES, self._isotropy.excess(),
-                                          strict=False)) + ")")
+                                          strict=False))
+                           + (f"; {self._isotropy.summary()}"
+                              if isinstance(self._isotropy, MultiScaleIsotropy) else "") + ")")
             tqdm.write(status)
 
             # Persist for later plotting. Append-only CSV so each row

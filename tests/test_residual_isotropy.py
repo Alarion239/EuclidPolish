@@ -15,7 +15,13 @@ import tensorflow as tf
 from euclid_polish import ensemble as ens_mod
 from euclid_polish.ensemble import EnsembleModel, MemberTrainSpec
 from euclid_polish.model import Model
-from euclid_polish.training.isotropy import DEFAULT_KNEE_E, ResidualIsotropy
+from euclid_polish.training.isotropy import (
+    DEFAULT_KNEE_E,
+    DEFAULT_SCALES,
+    LEGACY_SCALES,
+    MultiScaleIsotropy,
+    ResidualIsotropy,
+)
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import Trainer
 from scripts.train_ensemble import _continue_identity, build_specs, parse_args
@@ -218,8 +224,12 @@ def test_member_spec_cli_and_continue_carry_the_knob(tmp_path):
                                                "isotropy_knee": 0.01}))
     identity = _continue_identity("member_312", str(d), {}, {})
     assert identity["isotropy_penalty"] == 0.5 and identity["isotropy_knee"] == 0.01
+    assert identity["isotropy_scales"] == LEGACY_SCALES          # recorded before the scales were
     kept = _continue_identity("member_312", str(d), {}, {"isotropy_penalty": 0.0})
     assert "isotropy_penalty" not in kept
+    (d / "origin.json").write_text(json.dumps({"asinh_knees": list(KNEES), "isotropy_penalty": 0.5,
+                                               "isotropy_knee": 0.01, "isotropy_scales": [[64, 2, 21]]}))
+    assert _continue_identity("member_312", str(d), {}, {})["isotropy_scales"] == ((64.0, 2.0, 21.0, 1.0),)
 
 
 class _Recorder:
@@ -248,7 +258,85 @@ def test_train_members_records_and_passes_the_knob(tmp_path, monkeypatch):
     ens.train_members("lr", "hr", [on, off])
     origin = json.loads((base / "member_313" / "origin.json").read_text())
     assert origin["isotropy_penalty"] == 0.5 and origin["isotropy_knee"] == DEFAULT_KNEE_E
+    assert origin["isotropy_scales"] == [list(scale) for scale in DEFAULT_SCALES]
     assert "isotropy_penalty" not in json.loads((base / "member_314" / "origin.json").read_text())
     kw_on, kw_off = (m.trained for m in ens._models)
     assert kw_on["isotropy_penalty"] == 0.5 and kw_on["isotropy_knee"] is None
+    assert kw_on["isotropy_scales"] is None
     assert "isotropy_penalty" not in kw_off
+
+
+# -- the range down to the Nyquist period, and several scales ---------------------
+
+@pytest.mark.parametrize("alpha", [0.0, -3.0])
+def test_isotropic_errors_cost_nothing_down_to_the_nyquist_period(alpha):
+    iso = ResidualIsotropy(n_bands=1, decay=0.0, period_min=2.0)
+    assert _penalty_of(_isotropic_field(alpha, 64), iso) < 2e-3
+
+
+def test_alternating_columns_cost_once_the_range_reaches_two_pixels():
+    field = _isotropic_field(0.0, 64, seed=5)
+    columns = 0.3 * (-1.0) ** np.arange(256)[None, None, :, None]       # period 2 px along x
+    striped = (field + columns).astype(np.float32)
+    assert _penalty_of(striped, ResidualIsotropy(n_bands=1, decay=0.0, period_min=3.0)) < 2e-3
+    assert _penalty_of(striped, ResidualIsotropy(n_bands=1, decay=0.0, period_min=2.0)) > 2e-3
+
+
+def test_long_periods_need_a_window_that_holds_them():
+    ResidualIsotropy(window=128, period_min=21.0, period_max=42.0)
+    with pytest.raises(ValueError, match="too long"):
+        ResidualIsotropy(window=64, period_min=21.0, period_max=42.0)
+
+
+def test_scales_average_and_each_keeps_its_moving_average(tmp_path):
+    rng = np.random.default_rng(6)
+    sr = rng.normal(0.0, 0.05, (4, 256, 256, 2)).astype(np.float32)
+    sr[..., ::3, :, 0] += 0.05                                            # rows every 3 px in band 0
+    hr = np.zeros_like(sr)
+    multi = MultiScaleIsotropy(DEFAULT_SCALES, n_bands=2, decay=0.0)
+    alone = [ResidualIsotropy(window=int(w), period_min=a, period_max=b, n_bands=2, decay=0.0)
+             for w, a, b, _ in DEFAULT_SCALES]
+    weights = [weight for *_, weight in DEFAULT_SCALES]
+    got = float(multi.penalty(tf.constant(sr), tf.constant(hr)))
+    expected = np.average([float(iso.penalty(tf.constant(sr), tf.constant(hr))) for iso in alone], weights=weights)
+    assert got == pytest.approx(expected, rel=1e-5)
+    np.testing.assert_allclose(multi.excess(), np.average([iso.excess() for iso in alone], axis=0,
+                                                          weights=weights), rtol=1e-5)
+    assert multi.window == 128
+    for text in ("3-21 px x1", "2-3 px x0.003", "21-42 px x1"):
+        assert text in multi.describe()
+    assert "64px 2-3" in multi.summary()
+    with pytest.raises(ValueError, match="positive"):
+        MultiScaleIsotropy(((64, 3, 21, 0.0),))
+    path = tf.train.Checkpoint(isotropy=multi).save(str(tmp_path / "ckpt"))
+    fresh = MultiScaleIsotropy(DEFAULT_SCALES, n_bands=2, decay=0.0)
+    tf.train.Checkpoint(isotropy=fresh).restore(path).assert_consumed()
+    for a, b in zip(multi.scales, fresh.scales, strict=True):
+        np.testing.assert_array_equal(a.mean.numpy(), b.mean.numpy())
+
+
+def test_the_scales_knob_from_cli_and_member_spec(tmp_path):
+    member = {"asinh_knees": list(KNEES), "learn_output_knee": True, "isotropy_penalty": 0.2,
+              "isotropy_scales": [[64, 2, 21], [128, 21, 42]]}
+    spec = build_specs(parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([member])]),
+                       str(tmp_path / "s1"))[0]
+    assert spec.isotropy_scales == ((64.0, 2.0, 21.0, 1.0), (128.0, 21.0, 42.0, 1.0))
+    cli = build_specs(parse_args(["--count", "1", "--steps", "10", "--asinh-knees", ",".join(map(str, KNEES)),
+                                  "--learn-output-knee", "--isotropy-penalty", "0.2",
+                                  "--isotropy-scales", "64:3:21,64:2:3:0.01"]), str(tmp_path / "s2"))[0]
+    assert cli.isotropy_scales == ((64.0, 3.0, 21.0, 1.0), (64.0, 2.0, 3.0, 0.01))
+    for bad in ({**member, "isotropy_scales": [[64, 1, 21]]}, {**member, "isotropy_scales": [[64, 21, 42]]},
+                {**member, "isotropy_scales": [[64, 3, 21, 0]]}, {**member, "isotropy_scales": "x"},
+                {"asinh_knees": list(KNEES), "isotropy_scales": [[64, 2, 21]]}):
+        with pytest.raises(SystemExit):
+            build_specs(parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([bad])]),
+                        str(tmp_path / "s3"))
+
+
+def test_model_train_needs_crops_that_hold_the_largest_window(tmp_path):
+    learned = Model(str(tmp_path / "l"), scale=2, num_res_blocks=1, asinh_knees=KNEES,
+                    output_knee=10.0, learn_output_knee=True)
+    with pytest.raises(ValueError, match="fit"):
+        learned.train("missing_lr", "missing_hr", steps=1, isotropy_penalty=0.1, forward_onthefly=True,
+                      hr_crop_size=96)
+
