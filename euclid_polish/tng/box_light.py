@@ -105,7 +105,8 @@ def refresh(root: str | Path, *, workers: int = 8) -> dict[str, Any]:
     for (galaxy, identity), fractions in zip(todo, shares, strict=True):
         entries[galaxy.subhalo_id] = {"fractions": [round(f, 6) for f in fractions], "files": identity}
     limit = Config.Tng.MAX_OUTSIDE_STAR_FRACTION
-    boxed = sorted((gid for gid, e in entries.items() if max(e["fractions"]) > limit), key=lambda g: (len(g), g))
+    boxed = sorted((gid for gid, e in entries.items() if max(e["fractions"]) > limit),
+                   key=lambda g: (len(g), g))
     table = {"version": TABLE_VERSION,
              "rule": "share of the dusty VIS light where the dust-free VIS twin is dark, per orientation",
              "limit": limit, "galaxies": dict(sorted(entries.items()))}
@@ -126,7 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args(argv)
     result = refresh(args.root, workers=args.workers)
-    print(f"TNG box light: {result['galaxies']} galaxies ({result['measured']} measured, {result['reused']} reused); "
+    print(f"TNG box light: {result['galaxies']} galaxies "
+          f"({result['measured']} measured, {result['reused']} reused); "
           f"{len(result['left_out'])} left out above {100 * Config.Tng.MAX_OUTSIDE_STAR_FRACTION:g} %: "
           f"{', '.join(result['left_out']) or 'none'}")
     return 0

@@ -12,12 +12,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 from astropy.io import fits
-
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 
 from euclid_polish.config import Config
 from euclid_polish.tng import renderer
-from euclid_polish.tng._image import GLOW_FADE_REACH, start_view_read, star_light_with_glow
+from euclid_polish.tng._image import GLOW_FADE_REACH, star_light_with_glow, start_view_read
 from euclid_polish.tng.atlas import _scan_complete_galaxies
 from euclid_polish.tng.radius_manifest import algorithm_version, build_manifest
 from euclid_polish.tng.types import TNGView, dust_free_twin

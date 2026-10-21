@@ -24,6 +24,7 @@ from euclid_polish.provenance.checkpoint import model_id_of_checkpoint
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
+from euclid_polish.sky.observation.noise import pixel_scatter_factor
 from euclid_polish.training.augmentation import (
     _augment_multiband,
     add_lr_noise,
@@ -73,7 +74,6 @@ from euclid_polish.training.losses import (
     knee_subset_loss,
     knee_tilt_weights,
 )
-from euclid_polish.sky.observation.noise import pixel_scatter_factor
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.output_knee import learned_knee_bounds, middle_knee
 from euclid_polish.training.models.wdsr import initialize_weight_norms
@@ -773,7 +773,7 @@ class Model:
         if loss_floor:
             print("  loss floor (e⁻/HR px): " + ", ".join(
                 f"{b} {f:.3g}" for b, f in zip(Config.LR_INPUT_BAND_NAMES,
-                                              loss_floor_e(float(loss_floor), self._scale))))
+                                              loss_floor_e(float(loss_floor), self._scale), strict=True)))
         if loss_knees:
             print("  loss knees (e⁻): " + ",".join(f"{q:g}" for q in loss_knees)
                   + " of the input knees " + ",".join(f"{q:g}" for q in self._asinh_knees))

@@ -73,8 +73,8 @@ def test_jittered_texture_spans_lower_correlation_and_keeps_the_noise_level():
     np.testing.assert_allclose(a, dithered_unit_noise((60, 60), NISP, r, n_exposures=4))
 
 
-@pytest.mark.parametrize("bad", [dict(exposures=(0, 4)), dict(exposures=(8, 4)), dict(white_max=-0.1),
-                                 dict(white_max=1.5)])
+@pytest.mark.parametrize("bad", [{"exposures": (0, 4)}, {"exposures": (8, 4)}, {"white_max": -0.1},
+                                 {"white_max": 1.5}])
 def test_noise_texture_jitter_rejects_bad_ranges(bad):
     with pytest.raises(ValueError):
         NoiseTextureJitter(**bad)
@@ -101,8 +101,8 @@ def test_the_training_forward_passes_the_texture_to_the_noise(monkeypatch):
     monkeypatch.setattr(obs_mod, "apply_archive_noise", spy)
     sets = load_all_band_psf_sets(psf_dir="/nonexistent_dir_for_test")
     field = np.abs(np.random.default_rng(0).normal(20, 5, (128, 128, 4))).astype(np.float32)
-    kw = dict(seed=1, crops_per_field=1, hr_crop_size=int(Config.DEFAULT_HR_CROP_SIZE) // 2,
-              add_artifacts=False, add_saturation=False, inject_stars=False, psf_warp_prob=0.0)
+    kw = {"seed": 1, "crops_per_field": 1, "hr_crop_size": int(Config.DEFAULT_HR_CROP_SIZE) // 2,
+          "add_artifacts": False, "add_saturation": False, "inject_stars": False, "psf_warp_prob": 0.0}
     OnTheFlyForward(sets, **kw).crops(field)
     assert seen and all(t is None for t in seen)
     seen.clear()
@@ -115,7 +115,7 @@ def test_the_training_forward_passes_the_texture_to_the_noise(monkeypatch):
 
 def test_loss_floor_e_is_a_fraction_of_each_bands_pixel_scatter():
     floors = loss_floor_e(1.0)
-    for f, name in zip(floors, Config.LR_INPUT_BAND_NAMES):
+    for f, name in zip(floors, Config.LR_INPUT_BAND_NAMES, strict=True):
         band = Config.get_band(name)
         assert f == pytest.approx(band.mer_rms_e * pixel_scatter_factor(band) / 4)
     assert loss_floor_e(0.25) == pytest.approx(tuple(0.25 * f for f in floors))

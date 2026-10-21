@@ -26,7 +26,6 @@ from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 from euclid_polish.tng.radius_manifest import _file_identity, _inventory
 from euclid_polish.tng.types import TNG_FITS_BANDS, TNG_MODEL_BANDS, TNGView, dust_free_twin
 
-
 # --------------------------------------------------------------------------- #
 # The replaced implementations, verbatim in substance.
 
