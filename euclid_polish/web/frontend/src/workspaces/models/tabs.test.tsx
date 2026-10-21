@@ -743,6 +743,12 @@ describe("universal", () => {
       fireEvent.pointerDown(within(row).getByRole("button", { name: `#${num} actions` }), { button: 0 });
       await screen.findByRole("menuitem", { name: "Inspect" });
     };
+    // Escape hands focus back to the trigger a tick later: a menu opened before
+    // that loses focus to it and closes (the kit's menus are not modal).
+    const closeMenuOf = async (num: string) => {
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+      await waitFor(() => expect(document.activeElement).toBe(within(table).getByRole("button", { name: `#${num} actions` })));
+    };
     await menuOf("211");
     fireEvent.click(screen.getByRole("menuitem", { name: "Make production…" }));
     const dlg = await screen.findByRole("alertdialog", { name: "Make Universal 211 production?" });
@@ -761,10 +767,10 @@ describe("universal", () => {
     // production itself offers no switch; a model with no checkpoint cannot be production; an ensemble member is not offered
     await menuOf("210");
     expect(screen.queryByRole("menuitem", { name: "Make production…" })).toBeNull();
-    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await closeMenuOf("210");
     await menuOf("212");
     expect(screen.getByRole("menuitem", { name: "Make production…" }).getAttribute("aria-disabled")).toBe("true");
-    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await closeMenuOf("212");
     await menuOf("196");
     expect(screen.queryByRole("menuitem", { name: "Make production…" })).toBeNull();
   });
@@ -938,7 +944,7 @@ describe("members", () => {
     await waitFor(() => expect((go as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(go);
     await waitFor(() => expect(posts("/ensemble/pull")[0]?.form).toEqual({ members: "member_195,member_199" }));
-    expect(await screen.findByText(/Left out as universal models \(not ensemble members\): 195\./, {}, { timeout: 3000 })).toBeTruthy();
+    expect(await screen.findByText(/Left out as universal models \(not ensemble members\): 195\./)).toBeTruthy();
   });
 
   it("restores an archived universal model as a universal model, and says so", async () => {

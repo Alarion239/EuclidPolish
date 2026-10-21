@@ -388,7 +388,7 @@ describe("Shell", () => {
     expect(await screen.findByRole("link", { name: "FASRC offline" })).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Jobs: 1 running" })).toBeTruthy();
     expect(screen.getByText("The server is answering again")).toBeTruthy();   // live region
-  }, 15_000);
+  }, 45_000);   // the outage shows only after the retry backoff (0.5 + 1 s)
 
   it("keeps the tab strip on one line: tabs that do not fit go to More, the active one stays", async () => {
     // jsdom has no layout: give every tab its text width and the strip 420 px.

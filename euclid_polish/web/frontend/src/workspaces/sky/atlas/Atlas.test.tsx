@@ -199,7 +199,7 @@ describe("Sky atlas", () => {
     await waitFor(() => expect(currentSkyEngine()?.attachedTo).toBeTruthy());
     // Simulate the user panning in Aladin.
     act(() => { fake.view.ra = 10; fake.view.dec = 20; fake.view.fov = 3; fake.fire("positionChanged", { ra: 10, dec: 20 }); });
-    await waitFor(() => expect(search().get("ra")).toBe("10"), { timeout: 2000 });
+    await waitFor(() => expect(search().get("ra")).toBe("10"));
     expect(search().get("fov")).toBe("3");
     expect(search().get("layers")).toBe("-");
   });

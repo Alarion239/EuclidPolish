@@ -305,7 +305,7 @@ describe("Sheet tab · rows and the live preview", () => {
     await waitFor(() => {
       const img = document.querySelector<HTMLImageElement>('img[src^="/viewer/results/grid.png"]');
       expect(img?.getAttribute("src")).toBe(`/viewer/results/grid.png?result=${REAL.id}&row=dirty%3AVIS&row=sr%3AVIS_H&dpi=120&inline=1`);
-    }, { timeout: 2000 });
+    });
     expect(screen.getByText("2 × 1 ready")).toBeTruthy();
     const png = screen.getByRole("link", { name: /PNG/ });
     expect(png.getAttribute("href")).toContain("dpi=300");
@@ -365,7 +365,7 @@ describe("Sheet tab · rows and the live preview", () => {
       const el = document.querySelector<HTMLImageElement>(`img[src="${next}"]`);
       expect(el).toBeTruthy();
       return el!;
-    }, { timeout: 2000 });
+    });
     expect(document.querySelector(`img[src="${first}"]`)?.className).toBe("is-stale");
     fireEvent.load(fresh);
     await waitFor(() => expect(document.querySelector(`img[src="${first}"]`)).toBeNull());

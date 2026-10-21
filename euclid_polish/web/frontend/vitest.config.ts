@@ -14,6 +14,9 @@ export default defineConfig({
     restoreMocks: true,
     unstubGlobals: true,
     clearMocks: true,
+    // 15 s, not vitest's 5 s: loaded, a test took up to ~4.5 s (20–50× its
+    // idle time). The waits inside it have 3 s each (test/setup.ts).
+    testTimeout: 15_000,
     // Stylesheets are not processed in tests, except `?raw` text imports
     // (used by the token-contract tests to read the CSS as a string).
     css: { include: [/\?raw$/] },

@@ -669,7 +669,7 @@ describe("stars", () => {
     routes["GET /api/star-distribution?include_training=0"] = () => ({ body: starPayload({ distribution: null }) });
     const Stars = await tab("Stars");
     show(<Stars />, "/synthetic/stars");
-    fireEvent.click(await screen.findByRole("button", { name: "How this is produced" }, { timeout: 3000 }));
+    fireEvent.click(await screen.findByRole("button", { name: "How this is produced" }));
     await waitFor(() => expect(params().get("how")).toBe("1"));
   });
 });

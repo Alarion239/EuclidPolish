@@ -562,7 +562,7 @@ describe("<ImageViewer>", () => {
     </MemoryRouter>);
     await waitFor(() => expect(api?.getIndex()).toBe(1));
     act(() => { api!.setTiers(["lr", "sr"]); });
-    await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("v.t.t=lr%2Csr"), { timeout: 2000 });
+    await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("v.t.t=lr%2Csr"));
     expect(screen.getByTestId("loc").textContent).toContain("v.t.id=b");
   });
 
@@ -577,11 +577,11 @@ describe("<ImageViewer>", () => {
     expect(screen.getByTestId("loc").textContent).toBe("?keep=1");
     // navigating writes the object id; the tiers stay implicit while unchanged
     act(() => { api!.goTo(2); });
-    await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("v.t.id=c"), { timeout: 2000 });
+    await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("v.t.id=c"));
     expect(screen.getByTestId("loc").textContent).not.toContain("v.t.t=");
     // back to the mount-time object: the id is dropped again
     act(() => { api!.goTo(0); });
-    await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe("?keep=1"), { timeout: 2000 });
+    await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe("?keep=1"));
   });
 
   it("never writes a tier set the object has none of to the URL (the requested tiers are unavailable)", async () => {
@@ -632,7 +632,7 @@ describe("<ImageViewer>", () => {
     await new Promise((r) => setTimeout(r, 450));
     expect(screen.getByTestId("loc").textContent).toBe("");
     act(() => { api!.setView({ color: "H_E" }); });
-    await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe("?v.t.c=H_E"), { timeout: 2000 });
+    await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe("?v.t.c=H_E"));
   });
 
   it("a tier with no coverage shows a quiet caption; a sparse corner of data is painted with one at its foot", async () => {

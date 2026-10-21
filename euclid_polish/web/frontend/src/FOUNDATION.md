@@ -113,6 +113,15 @@ How to write tests:
 - To test a persisted store's first load (hydration), seed `localStorage`, call
   `vi.resetModules()`, then `await import("./store")` for a fresh module instance.
 - happy-dom `localStorage` is cleared after every test (`test/setup.ts`).
+- Time budgets: `findBy*`/`waitFor` wait 3 s (`test/setup.ts`) and a test gets 15 s
+  (`vitest.config.ts`), because a loaded machine makes waits 20–50× slower. Pass a longer
+  `{ timeout }` only for a fixed delay on top (a retry backoff); never a shorter one.
+- A failure that only shows under load and still fails with much longer budgets is a race, not
+  a budget: a poller (`JOBS_FEED_TIMING`, `refetchInterval`) or a debounce writing state
+  between `act()` and the assertion, or a fake that does not behave like the real thing. Freeze
+  the poller, hold the response in a deferred, or make the fake realistic. Note that `waitFor`
+  rethrows its callback's last error when it times out, so a budget overrun can look like a
+  failed assertion.
 - pytest never reads `frontend/src`. The frontend's behaviour is tested here.
 
 Dependencies are pinned to exact versions in `package.json`. Only WP-F and WP-V add
