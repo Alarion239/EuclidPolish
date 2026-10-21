@@ -935,9 +935,17 @@ class Trainer:
             gnorm_avg   = window["gnorm_avg"]
             gnorm_peak  = window["gnorm_max"]
             # An accepted, fully post-warmup window's peak joins the baseline
-            # the next windows' spike bar is measured against.
+            # the next windows' spike bar is measured against. A warmup
+            # window (never rolled back) seeds it with its pre-clip peak, the
+            # member's own gradient scale: without seeds the first post-warmup
+            # windows faced the flat GRAD_SPIKE_SKIP_NORM, and a member whose
+            # ordinary peaks run higher (knee tilt -0.25, member_242: |g|
+            # 70-130) was rolled back until it aborted. Post-warmup peaks
+            # push the seeds out within GRAD_SPIKE_BASELINE_WINDOWS windows.
             if step - evaluate_every >= GRAD_SPIKE_SKIP_WARMUP_STEPS:
                 recent_peaks.append(float(window["spike_norm"]))
+            else:
+                recent_peaks.append(float(window["gnorm_max"]))
 
             # Validation (same code path as the resume baseline, so the
             # two are directly comparable).
