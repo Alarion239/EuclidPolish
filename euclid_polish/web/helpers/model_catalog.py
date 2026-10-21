@@ -3,11 +3,16 @@
 A **model spec** names one way of turning a real LR tile into an SR image:
 
 ====================  ========================================================
-``production``        the production combiner — the spatial gate
-                      (``ACTIVE_COMBINER_KINDS[0]``); available while every
-                      member it READS is an active STARFULL member with a
-                      checkpoint (members that joined after the fit are a
-                      ``note``), unavailable otherwise (no fallback)
+``production``        the production model: the registered universal model
+                      the registry names production
+                      (:func:`~euclid_polish.ensemble_registry.production_name`,
+                      run as an ensemble of one; unavailable with the reason
+                      when it cannot run), else the production combiner — the
+                      spatial gate (``ACTIVE_COMBINER_KINDS[0]``); available
+                      while every member it READS is an active STARFULL
+                      member with a checkpoint (members that joined after the
+                      fit are a ``note``), unavailable otherwise (no
+                      fallback)
 ``mean``              plain mean of every active STARFULL member
 ``member:<name>``     one active member, e.g. ``member:member_170``
 ``gate:<variant>``    a named spatial-gate variant (``spatial_gate_<variant>/``
@@ -586,6 +591,39 @@ def _load_combiner(directory: str, labels: Sequence[str], kind: str):
     return _load_cached(directory, tuple(labels), kind, stamp)
 
 
+def production_model_name() -> str | None:
+    """The universal model that is production (``"member_238"``), or ``None``
+    when production is the production gate."""
+    return ensemble_registry.production_name(ensemble_dir())
+
+
+def is_single_model(spec: ModelSpec) -> bool:
+    """Whether ``spec`` runs one model and no combiner (a member, a universal
+    model, or production when it is a universal model)."""
+    return spec.kind in ("member", "universal") or (
+        spec.kind == "production" and spec.combiner_dir is None and len(spec.reads) == 1)
+
+
+def _universal_production_spec(name: str) -> ModelSpec:
+    """``production`` as the universal model ``name`` (an ensemble of one)."""
+    label = member_label(name)
+    universal_spec = f"{UNIVERSAL_PREFIX}{member_name(label)}"
+    fp = member_fingerprints([label]).get(label)
+    reason = (None if label in set(universal_labels())
+              else f"{name} is no longer a registered universal model")
+    reason = reason or _universal_reason(label, fp)
+    details = {**member_details(label, ensemble_registry.UNIVERSAL_CLASS),
+               "universal": True, "model_spec": universal_spec, "member": member_name(label)}
+    return ModelSpec(
+        SPEC_PRODUCTION, "production", f"Production · {spec_label(universal_spec)}",
+        (label,), (label,), reason is None,
+        reason=None if reason is None else f"production model {name}: {reason}",
+        fingerprint=(spec_fingerprint("universal", member_labels=(label,),
+                                      member_fingerprints=(fp,))
+                     if reason is None else None),
+        member_fingerprints=(fp,), details=details)
+
+
 def list_specs() -> list[ModelSpec]:
     """Every model spec: production, mean, rbf, each active member, each
     gate variant, each registered universal model (unavailable ones carry a
@@ -595,14 +633,18 @@ def list_specs() -> list[ModelSpec]:
     root = regime_dir()
     specs: list[ModelSpec] = []
 
-    production = _combiner_spec(
-        spec=SPEC_PRODUCTION, kind="production",
-        label=f"Production · {COMBINER_MODELS[PRODUCTION_KIND].label}",
-        directory=root / PRODUCTION_ARTIFACT_DIR, fitted_for_current=True,
-        active=active, fps=fps)
-    if not active:
-        production = ModelSpec(SPEC_PRODUCTION, "production", production.label, (), (),
-                               False, reason="no active STARFULL members")
+    universal_production = production_model_name()
+    if universal_production is not None:
+        production = _universal_production_spec(universal_production)
+    else:
+        production = _combiner_spec(
+            spec=SPEC_PRODUCTION, kind="production",
+            label=f"Production · {COMBINER_MODELS[PRODUCTION_KIND].label}",
+            directory=root / PRODUCTION_ARTIFACT_DIR, fitted_for_current=True,
+            active=active, fps=fps)
+        if not active:
+            production = ModelSpec(SPEC_PRODUCTION, "production", production.label, (), (),
+                                   False, reason="no active STARFULL members")
     specs.append(production)
 
     mean_reason = (_membership_reason(active, active, fps) if active
@@ -687,13 +729,32 @@ def needed_members(specs: Iterable[ModelSpec]) -> list[str]:
     return out
 
 
+def production_summary(specs: Sequence[ModelSpec] | None = None) -> dict[str, Any]:
+    """What production is: ``{kind: "universal"|"gate", spec (the model it
+    runs: "universal:member_238" | "production"), name|null, label,
+    available, reason}``."""
+    production = resolve_spec(SPEC_PRODUCTION, specs)
+    name = production_model_name()
+    if name is not None:
+        model_spec = f"{UNIVERSAL_PREFIX}{member_name(member_label(name))}"
+        return {"kind": "universal", "spec": model_spec, "name": name,
+                "label": spec_label(model_spec), "available": production.available,
+                "reason": production.reason}
+    return {"kind": "gate", "spec": SPEC_PRODUCTION, "name": None,
+            "label": COMBINER_MODELS[PRODUCTION_KIND].label,
+            "available": production.available, "reason": production.reason}
+
+
 def catalog_payload() -> dict[str, Any]:
     """``GET /api/models``."""
     specs = list_specs()
     active = active_member_labels()
+    production = production_summary(specs)
     return {
         "regime": "starfull",
-        "production_kind": PRODUCTION_KIND,
+        # "universal" when production is a universal model, else the gate's kind
+        "production_kind": "universal" if production["kind"] == "universal" else PRODUCTION_KIND,
+        "production": production,
         "members": active,
         "models": [item.to_dict() for item in specs],
     }
@@ -720,7 +781,7 @@ def predict(spec: ModelSpec, lr_e: np.ndarray, members: MemberSource) -> np.ndar
     """SR ``(2H, 2W, 4)`` electrons of ``spec`` for one LR tile."""
     if not spec.available:
         raise ValueError(f"model {spec.spec} is unavailable: {spec.reason}")
-    if spec.kind in ("member", "universal"):
+    if is_single_model(spec):
         return np.asarray(members.get(spec.reads[0]), np.float32)
     if spec.kind == "mean":
         total = None

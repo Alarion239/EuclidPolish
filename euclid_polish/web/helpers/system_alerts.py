@@ -431,6 +431,13 @@ def gate_stage(alerts: Mapping[str, Any] | None) -> dict[str, Any]:
     if alerts is None:
         return _loading("gate", to)
     c = _check(alerts, "combiner")
+    model = ((c or {}).get("facts") or {}).get("label")
+    if model:
+        # Production is one universal model: there is no gate to keep fitted.
+        to = (c or {}).get("to") or "/models/universal"
+        if _bad(c):
+            return _stage("gate", "stale", _lower_first(c["title"]), to=to, detail=c.get("detail"))
+        return _stage("gate", "current", f"production is {model}", to=to)
     if _bad(c):
         return _stage(
             "gate",
@@ -487,7 +494,7 @@ def real_sr_stage(alerts: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def nexus_freshness(plates: Mapping[str, Any], catalog: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Is the newest NEXUS render made with today's production gate? ``{current, reason, detail}``."""
+    """Is the newest NEXUS render made with today's production model? ``{current, reason, detail}``."""
     runs = plates.get("runs") or []
     renders = (runs[0].get("renders") or []) if runs else []
     if not renders:
@@ -507,8 +514,8 @@ def nexus_freshness(plates: Mapping[str, Any], catalog: Mapping[str, Any] | None
     if fingerprint and render.get("model_fingerprint") and render["model_fingerprint"] != fingerprint:
         return {
             "current": False,
-            "reason": "NEXUS plates predate this fit",
-            "detail": "Made with an earlier production gate fit." + again,
+            "reason": "NEXUS plates predate this production model",
+            "detail": "Made with an earlier production model." + again,
         }
     if any(t.get("model_state") and t.get("model_state") != "current" for t in render.get("tiles") or []):
         return {

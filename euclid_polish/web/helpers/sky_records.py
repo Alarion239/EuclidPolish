@@ -548,6 +548,17 @@ def clear_sr(subset: str) -> int:
     return removed
 
 
+def _production_name(identity: Mapping[str, Any]) -> str:
+    """How an SR identity's model reads in a reason."""
+    kind = identity.get("combiner_kind") or None
+    labels = list(identity.get("member_labels") or [])
+    if kind == "universal" and len(labels) == 1:
+        return f"universal model {str(labels[0]).split('·')[0]}"
+    if kind:
+        return f"the {kind} combiner"
+    return "the member mean"
+
+
 def sr_state(subset: str, current: Mapping[str, Any] | None,
              records_path: str | None) -> dict[str, Any]:
     """The SR tier of one split against the model an SR run would load now
@@ -568,13 +579,21 @@ def sr_state(subset: str, current: Mapping[str, Any] | None,
     recorded = manifest.get("identity") or {}
     if current and recorded:
         was, now = list(recorded.get("member_labels") or []), list(current.get("member_labels") or [])
-        if was != now:
-            reasons.append(f"members changed ({len(was)} → {len(now)} STARFULL members)")
-        if (recorded.get("combiner_kind") or None) != (current.get("combiner_kind") or None):
-            reasons.append(f"combiner changed ({recorded.get('combiner_kind') or 'mean'} → "
-                           f"{current.get('combiner_kind') or 'mean'})")
-        elif (recorded.get("combiner_fingerprint") or None) != (current.get("combiner_fingerprint") or None):
-            reasons.append("the production combiner was refitted")
+        was_name, now_name = _production_name(recorded), _production_name(current)
+        if was_name != now_name and "universal" in (recorded.get("combiner_kind"),
+                                                    current.get("combiner_kind")):
+            reasons.append(f"production changed ({was_name} → {now_name})")
+        else:
+            if was != now:
+                reasons.append(f"members changed ({len(was)} → {len(now)} STARFULL members)")
+            if (recorded.get("combiner_kind") or None) != (current.get("combiner_kind") or None):
+                reasons.append(f"combiner changed ({recorded.get('combiner_kind') or 'mean'} → "
+                               f"{current.get('combiner_kind') or 'mean'})")
+            elif ((recorded.get("combiner_fingerprint") or None)
+                  != (current.get("combiner_fingerprint") or None)):
+                reasons.append("the production model was retrained"
+                               if current.get("combiner_kind") == "universal"
+                               else "the production combiner was refitted")
     stamp, now_stamp = manifest.get("records"), _records_stamp(records_path)
     if stamp and now_stamp and _records_changed(stamp, now_stamp):
         reasons.append("the records were regenerated since the SR")

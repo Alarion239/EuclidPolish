@@ -3477,6 +3477,9 @@ def job_archive_member(cap, *, name: str) -> dict:
     universal = name in reg["universal"]
     if name not in reg["active"] and not universal:
         raise RuntimeError(f"{name} is not an active ensemble member or a universal model")
+    if (reg.get(ensemble_registry.PRODUCTION_KEY) or {}).get("name") == name:
+        raise RuntimeError(f"{name} is the production model — make another model production "
+                           "first (Models › Universal)")
     src = os.path.join(base, name)
     store = tracking_default_store()
     if not store.has_current():
@@ -4787,6 +4790,11 @@ def combiner_variants(starless: bool) -> dict:
     return {"regime": _regime_slug(starless), "production": production_dir,
             "active_members": active, "cube_members": cube_labels,
             "variants": rows,
+            "production_model": (None if starless
+                                 else ensemble_registry.production_name(ensemble_dir())),
+            "archives": ([] if starless else
+                         [{k: a[k] for k in ("name", "campaign", "size_bytes", "archived_at")}
+                          | {"n_items": len(a["items"])} for a in gate_archives()]),
             "compare": ({"id": report.get("id"), "created": report.get("created"),
                          "methods": report.get("methods"), "n_fields": report.get("n_fields")}
                         if report else None)}
@@ -5020,6 +5028,10 @@ def job_combiner_promote(cap, *, starless: bool, variant: str, force: bool = Fal
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     shutil.rmtree(old, ignore_errors=True)
+    if not starless and ensemble_registry.production_name(ensemble_dir()) is not None:
+        # Production was a universal model: promoting a gate makes it production.
+        ensemble_registry.set_production(ensemble_dir(), None)
+        print("  • production was a universal model — the promoted gate is production now")
     result = {"promoted": name, "backup": backup, "test_rescored": False, "summary": None}
     cap.tick(2, 5, "refreshing the production gate payload")
     try:
@@ -5051,7 +5063,179 @@ def job_combiner_promote(cap, *, starless: bool, variant: str, force: bool = Fal
     return result
 
 
+# ---- archive / restore every gate ----------------------------------------- #
+
+#: Stem prefix of a gate archive zip in a tracking campaign's ``models/``.
+GATE_ARCHIVE_PREFIX = "gates-"
+_GATE_ARCHIVE_MANIFEST = "ARCHIVE.json"
+_GATE_ARCHIVE_ZIP = re.compile(r"gates-\d{8}-\d{6}(?:-\d+)?\.zip")
+
+
+def _gate_artifacts(regime_dir: str) -> list[str]:
+    """Every spatial-gate artifact of a regime dir, by name: the production
+    gate, the named variants, the promotion backups, the compare reports and
+    every gate payload (``spatial_gate_*``)."""
+    return sorted(os.path.basename(path)
+                  for path in glob.glob(os.path.join(regime_dir, "spatial_gate_*")))
+
+
+def _drop_gate_cubes(starless: bool) -> int:
+    """Delete the spatial-gate outputs baked into a regime's cube buckets and
+    clear their flag; returns how many cubes went."""
+    prefix = _combiner_cube_prefix(SPATIAL_GATE_KIND)
+    removed = 0
+    for man_path in glob.glob(os.path.join(_regime_dir_ro(starless), "cubes*", "viz_index.json")):
+        cubes_dir = os.path.dirname(man_path)
+        for path in glob.glob(os.path.join(cubes_dir, f"{prefix}_*.npy")):
+            with contextlib.suppress(OSError):
+                os.remove(path)
+                removed += 1
+        man = read_bucket_manifest(cubes_dir) or {}
+        if man.get(f"has_combiner_{SPATIAL_GATE_KIND}"):
+            man[f"has_combiner_{SPATIAL_GATE_KIND}"] = False
+            write_bucket_manifest(cubes_dir, man)
+    return removed
+
+
+def gate_archives(tracking_root: str | None = None) -> list[dict]:
+    """Every gate archive zip in the tracking campaigns, newest first:
+    ``{name, campaign, size_bytes, items}`` (``items`` from its manifest)."""
+    out = []
+    for campaign, folder in ensemble_registry._campaign_dirs(tracking_root or Config.TRACKING_DIR):
+        for path in glob.glob(os.path.join(folder, "models", f"{GATE_ARCHIVE_PREFIX}*.zip")):
+            name = os.path.basename(path)
+            if not _GATE_ARCHIVE_ZIP.fullmatch(name):
+                continue
+            try:
+                with zipfile.ZipFile(path) as zf:
+                    manifest = json.loads(zf.read(_GATE_ARCHIVE_MANIFEST))
+                size = os.path.getsize(path)
+            except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+                continue
+            out.append({"name": name, "path": path, "campaign": campaign, "size_bytes": size,
+                        "archived_at": manifest.get("archived_at"),
+                        "items": [str(v) for v in manifest.get("items") or []]})
+    out.sort(key=lambda row: row["name"], reverse=True)
+    return out
+
+
+def job_archive_gates(cap) -> dict:
+    """Archive every STARFULL spatial gate — the production gate, the named
+    variants, the promotion backups, the compare reports and every gate
+    payload — into ONE zip in the active tracking campaign
+    (``models/gates-<stamp>.zip``, with an ``ARCHIVE.json`` manifest), then
+    remove them from the regime dir and drop the gate cubes baked into the
+    cube buckets. Refused while production is still the gate: make a
+    universal model production first (``POST /ensemble/production``). The
+    zip is verified before anything is removed; any failure puts every
+    artifact back. :func:`job_restore_gates` is the inverse."""
+    base = ensemble_dir()
+    production = ensemble_registry.production_name(base)
+    if production is None:
+        raise RuntimeError("production is still the spatial gate — make a universal model "
+                           "production first (Models › Universal)")
+    store = tracking_default_store()
+    if not store.has_current():
+        raise RuntimeError("no active tracking campaign — start one in Notebook › Log "
+                           "(New campaign…) so the archived gates have somewhere to go.")
+    regime_dir = _ensemble_regime_dir(False)
+    names = _gate_artifacts(regime_dir)
+    if not names:
+        raise RuntimeError("no spatial gate artifacts to archive")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    staging = os.path.join(regime_dir, f".gate-archive-{stamp}")
+    os.makedirs(staging)
+    moved: list[str] = []
+    cap.tick(0, 4, f"collecting {len(names)} gate artifacts")
+    try:
+        for name in names:
+            os.rename(os.path.join(regime_dir, name), os.path.join(staging, name))
+            moved.append(name)
+        _atomic_json(os.path.join(staging, _GATE_ARCHIVE_MANIFEST), {
+            "archived_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "regime": "starfull", "items": names, "production": production,
+            "commit": (capture_git() or {}).get("short")})
+        cap.tick(1, 4, "zipping into the tracking campaign")
+        meta = store.archive_model_zip(
+            staging, f"{GATE_ARCHIVE_PREFIX}{stamp}",
+            comment="archived STARFULL spatial gates (production gate, variants, backups, "
+                    "compare reports)")
+        with zipfile.ZipFile(os.path.join(store.current_dir, "models", meta["name"])) as zf:
+            if zf.testzip() is not None or len(zf.namelist()) != len(meta["files"]):
+                raise RuntimeError("the gate archive failed its check")
+    except Exception:
+        for name in reversed(moved):            # put every artifact back
+            os.rename(os.path.join(staging, name), os.path.join(regime_dir, name))
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(staging, ignore_errors=True)
+    cap.tick(2, 4, "dropping the gate cubes from the cube caches")
+    dropped = _drop_gate_cubes(False)
+    cap.tick(3, 4, "logging")
+    store.append_log(
+        f"Archived {len(names)} STARFULL spatial-gate artifacts (production gate, variants, "
+        f"backups, compare reports) → `models/{meta['name']}` "
+        f"({meta['size_bytes'] / 1e6:.1f} MB); production is universal model `{production}`. "
+        "Restore: Models › Combiner (or POST /ensemble/combiners/restore).")
+    cap.tick(4, 4, "done")
+    print(f"  ✓ {len(names)} gate artifacts → tracking {meta['name']}; "
+          f"{dropped} gate cube(s) dropped; production is {production}")
+    return {"zip": meta["name"], "items": names, "production": production,
+            "cubes_dropped": dropped}
+
+
+def job_restore_gates(cap, *, archive: str | None = None) -> dict:
+    """Unzip a gate archive (``archive``: its zip name; default the newest)
+    back into the STARFULL regime dir. Refused when any of its artifacts is
+    already there. Production is left as it is: promote a restored gate to
+    make it production again."""
+    archives = gate_archives()
+    pick = next((a for a in archives if archive in (None, a["name"])), None)
+    if pick is None:
+        raise RuntimeError(f"no gate archive {archive}" if archive else "no gate archive found")
+    regime_dir = _ensemble_regime_dir(False)
+    clash = [name for name in pick["items"] if os.path.exists(os.path.join(regime_dir, name))]
+    if clash:
+        raise RuntimeError("already in the regime dir: " + ", ".join(clash[:6]))
+    staging = os.path.join(regime_dir, f".gate-restore-{datetime.now(UTC):%Y%m%d-%H%M%S}")
+    cap.tick(0, 2, f"unzipping {pick['name']}")
+    try:
+        with zipfile.ZipFile(pick["path"]) as zf:
+            _safe_extract(zf, staging)
+        for name in pick["items"]:
+            if os.path.exists(os.path.join(staging, name)):
+                os.rename(os.path.join(staging, name), os.path.join(regime_dir, name))
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    cap.tick(2, 2, "done")
+    with contextlib.suppress(Exception):
+        tracking_default_store().append_log(
+            f"Restored {len(pick['items'])} spatial-gate artifacts from `{pick['name']}`.")
+    print(f"  ✓ {len(pick['items'])} gate artifacts restored from {pick['name']}")
+    return {"archive": pick["name"], "restored": pick["items"],
+            "production": ensemble_registry.production_name(ensemble_dir())}
+
+
 # ---- overview -------------------------------------------------------------- #
+
+def _universal_production(starless: bool) -> dict | None:
+    """``{name, spec, label, integrated, mean, scored_at, stale}`` of the
+    universal model that is production (its universal score), else ``None``."""
+    if starless:
+        return None
+    name = ensemble_registry.production_name(ensemble_dir())
+    if name is None:
+        return None
+    entry = read_universal_scores()["models"].get(name) or {}
+    integrated = [_finite(v) for v in entry.get("integrated") or []]
+    fresh = entry.get("fingerprint") == member_fingerprint(os.path.join(ensemble_dir(), name))
+    return {"name": name, "spec": f"universal:{name}",
+            "label": f"Universal {name.removeprefix('member_')}",
+            "integrated": integrated or None,
+            "mean": _finite(entry.get("mean")),
+            "scored_at": entry.get("scored_at"),
+            "stale": not fresh if entry else None}
+
 
 def ensemble_overview(starless: bool) -> dict:
     """Models › Leaderboard: headline numbers (each with its definition) and the
@@ -5095,7 +5279,12 @@ def ensemble_overview(starless: bool) -> dict:
               "The production gate is the one evaluated." if gate_ok else
               "The production gate changed (refit or promotion) since the evaluation.",
               "evaluate")
-    if prod_manifest is None:
+    universal_production = _universal_production(starless)
+    if universal_production is not None:
+        check("production", True, "good", f"Production is {universal_production['label']}",
+              "A single universal model (no gate); the ensemble below is for comparison.",
+              "universal")
+    elif prod_manifest is None:
         check("gate", False, "bad", "No production gate",
               "Fit a gate variant and promote it.", "combiners")
     else:
@@ -5170,6 +5359,8 @@ def ensemble_overview(starless: bool) -> dict:
             "test_present": bool(rdir) and os.path.exists(tfrecord_path(rdir, f"dirty_{sub}")),
             "evaluated_at": _iso_mtime(os.path.join(regime_dir, "eval_summary.json")),
             "summary": summary, "headline": headline, "checks": checks,
+            # the universal model that is production (null: production is the gate)
+            "production_model": universal_production,
             "production_gate": {"available": prod_manifest is not None,
                                 "n_members": len(gate_labels),
                                 "mix_space": (prod_manifest or {}).get("mix_space"),

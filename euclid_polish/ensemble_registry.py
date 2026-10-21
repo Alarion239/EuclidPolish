@@ -5,9 +5,11 @@ level ABOVE the ensemble dir on purpose: the FASRC checkpoint mirror
 (:mod:`euclid_polish.web.fasrc_mirror`, manual) rsyncs the ensemble dir with
 ``--delete-after``, which would delete any local-only file inside it.
 
-It holds three keys (an older file without ``universal`` reads it as ``[]``)::
+It holds three keys (an older file without ``universal`` reads it as ``[]``)
+and an optional production pointer::
 
-    {"active": [...], "archived": [tombstone, ...], "universal": [...]}
+    {"active": [...], "archived": [tombstone, ...], "universal": [...],
+     "production": {"name": "member_238", "set_at": "..."}}
 
 Bootstrap rule: any ``member_*`` directory with a checkpoint that the registry
 has never seen (not active, archived or universal) is auto-added to ``active``
@@ -35,6 +37,13 @@ A tombstone records where the member went and which class it left::
 key existed are members.) Every read-modify-write of the file holds one
 module-level lock: jobs are threads in the console process, and page reads
 bootstrap-write too.
+
+``production`` names the registered universal model that IS the production
+model — the model catalogue's ``production`` spec and the evaluators' model
+(:func:`production_name`, :func:`set_production`). Absent, production is the
+legacy production gate (``<vis>/ensemble/starfull/spatial_gate_combiner``).
+The production model cannot be archived or unregistered while it is
+production.
 """
 
 from __future__ import annotations
@@ -58,6 +67,8 @@ _MEMBER_SPELLING = re.compile(r"^(?:member_)?(\d{1,6})(?:·psnr)?$")
 #: Tombstone ``class`` values: an ensemble member or a universal model.
 MEMBER_CLASS = "member"
 UNIVERSAL_CLASS = "universal"
+#: The registry key of the production pointer (see the module docstring).
+PRODUCTION_KEY = "production"
 
 #: Guards every read-modify-write of the registry file (see the module doc).
 _LOCK = threading.Lock()
@@ -147,6 +158,13 @@ def _tombstoned(reg: Mapping[str, Any]) -> set[str]:
     return {str(t.get("name")) for t in reg["archived"]}
 
 
+def _production_entry(raw: Any) -> dict[str, Any] | None:
+    """The stored production pointer when well formed (``{"name": ...}``)."""
+    if not isinstance(raw, Mapping) or not _MEMBER_SPELLING.fullmatch(str(raw.get("name") or "")):
+        return None
+    return {"name": member_name(str(raw["name"])), "set_at": raw.get("set_at")}
+
+
 def _load_locked(base_dir: str) -> dict[str, Any]:
     """:func:`load_registry` for a caller already holding :data:`_LOCK`."""
     reg = _read_json(registry_path(base_dir)) or {}
@@ -168,7 +186,10 @@ def _load_locked(base_dir: str) -> dict[str, Any]:
         active, changed = kept, True
     # Universal entries are never dropped for a missing dir: the pull
     # registers before its rsync, and the mirror may delete the dir.
-    out = {"active": sorted(active), "archived": archived, "universal": universal}
+    out: dict[str, Any] = {"active": sorted(active), "archived": archived, "universal": universal}
+    production = _production_entry(reg.get(PRODUCTION_KEY))
+    if production is not None:
+        out[PRODUCTION_KEY] = production         # carried through every write
     if changed and (on_disk or archived or universal):
         _write_json(registry_path(base_dir), out)
     return out
@@ -176,10 +197,41 @@ def _load_locked(base_dir: str) -> dict[str, Any]:
 
 def load_registry(base_dir: str) -> dict[str, Any]:
     """Load + bootstrap the registry; persists any change it makes. Always
-    returns ``{"active", "archived", "universal"}``; a write always carries
-    all three keys."""
+    returns ``{"active", "archived", "universal"}`` (plus ``production`` when
+    set); a write always carries all of them."""
     with _LOCK:
         return _load_locked(base_dir)
+
+
+def production_name(base_dir: str) -> str | None:
+    """The universal model named production (``"member_238"``), or ``None``
+    when production is the legacy production gate. The name is returned even
+    when it is no longer a loadable universal model, so callers report why
+    production is unavailable instead of silently using something else."""
+    entry = load_registry(base_dir).get(PRODUCTION_KEY)
+    return str(entry["name"]) if entry else None
+
+
+def set_production(base_dir: str, name: str | None) -> str | None:
+    """Make the registered universal model ``name`` (any :func:`member_name`
+    spelling) production, or clear the pointer (``None``: production is the
+    production gate again). Returns the stored name. Raises
+    :class:`ValueError` for a name that is not a registered universal model
+    with a checkpoint on disk."""
+    with _LOCK:
+        reg = _load_locked(base_dir)
+        if name is None:
+            reg.pop(PRODUCTION_KEY, None)
+        else:
+            name = member_name(name)
+            if name not in reg["universal"]:
+                raise ValueError(f"{name} is not a registered universal model")
+            if not _checkpoint_exists(os.path.join(base_dir, name)):
+                raise ValueError(f"{name} has no checkpoint on disk")
+            reg[PRODUCTION_KEY] = {"name": name,
+                                   "set_at": datetime.now(UTC).isoformat(timespec="seconds")}
+        _write_json(registry_path(base_dir), reg)
+    return name
 
 
 def active_member_dirs(base_dir: str) -> list[str]:
@@ -272,9 +324,16 @@ def remove_universal_entry(base_dir: str, name: str) -> str:
         reg = _load_locked(base_dir)
         if name not in reg["universal"]:
             raise ValueError(f"{name} is not a registered universal model")
+        _refuse_production(reg, name)
         reg["universal"] = [n for n in reg["universal"] if n != name]
         _write_json(registry_path(base_dir), reg)
     return name
+
+
+def _refuse_production(reg: Mapping[str, Any], name: str) -> None:
+    if (reg.get(PRODUCTION_KEY) or {}).get("name") == name:
+        raise ValueError(f"{name} is the production model — make another model "
+                         "production first")
 
 
 def tombstone_class(tombstone: Mapping[str, Any]) -> str:
@@ -313,6 +372,7 @@ def archive_member_entry(base_dir: str, name: str, *, zip_path: str,
     tombstone recording its ``class``. Returns the registry."""
     with _LOCK:
         reg = _load_locked(base_dir)
+        _refuse_production(reg, name)
         if name in reg["active"]:
             key, cls = "active", MEMBER_CLASS
         elif name in reg["universal"]:

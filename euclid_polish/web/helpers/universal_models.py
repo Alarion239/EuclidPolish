@@ -501,6 +501,18 @@ def _knee_model(knee: dict, model_id: str) -> dict | None:
             "stale": bool(knee.get("stale"))}
 
 
+def _universal_reference(name: str, scores: dict, identity_ok: bool) -> dict | None:
+    """``{integrated[4], mean, stale, model}`` of the universal model that is
+    production, from the universal scores (``None`` until it is scored)."""
+    entry = scores["models"].get(name)
+    if not entry:
+        return None
+    integrated = [ev._finite(v) for v in entry.get("integrated") or []]
+    fresh = entry.get("fingerprint") == member_fingerprint(os.path.join(ev.ensemble_dir(), name))
+    return {"integrated": integrated, "mean": _round(ev._finite(entry.get("mean"))),
+            "stale": not (fresh and identity_ok), "model": name}
+
+
 def _comparable(knee: dict, identity: dict | None) -> bool:
     """Whether the knee payload's production/mean numbers were scored on the
     same fields, records and target as the universal scores."""
@@ -779,8 +791,14 @@ def universal_payload(starless: bool = False) -> dict:
     identity = scores.get("identity") if isinstance(scores.get("identity"), dict) else None
     current = ev.universal_score_identity()
     identity_ok = ev.universal_identity_matches(identity, current)
-    production = _knee_model(knee, SPATIAL_GATE_KIND)
-    comparable = _comparable(knee, identity)
+    universal_production = ensemble_registry.production_name(base)
+    if universal_production is not None:
+        # Production is one universal model: its own score, on the same store.
+        production = _universal_reference(universal_production, scores, identity_ok)
+        comparable = production is not None
+    else:
+        production = _knee_model(knee, SPATIAL_GATE_KIND)
+        comparable = _comparable(knee, identity)
     models = [_model_row(name, cls, d, jobs=jobs, by_member=by_member, scores=scores,
                          identity_ok=identity_ok, production=production, comparable=comparable)
               for name, (cls, d) in universal_targets(base).items()]
@@ -791,6 +809,8 @@ def universal_payload(starless: bool = False) -> dict:
         "available": bool(models or fasrc),
         "identity": identity,
         "production": production,
+        # the universal model that is production (null: production is the gate)
+        "production_model": universal_production,
         "mean_model": _knee_model(knee, "ensemble_mean"),
         # production/mean_model scored on the same fields, records and target
         # as the universal scores (the rows' vs_production_db needs it).
@@ -823,13 +843,18 @@ def universal_payload(starless: bool = False) -> dict:
     if current.get("records_fp") is None:
         notes.append("the test records are not local — scores cannot be checked against "
                      "them (sync them on Synthetic › Records)")
-    if not knee.get("available"):
+    if universal_production is not None:
+        pass                      # production is a universal model: no gate to evaluate
+    elif not knee.get("available"):
         notes.append("no knee-PSNR payload — the production gate's ∫PSNR is unknown "
                      "(Models › Leaderboard: compute the PSNR-vs-knee curves)")
     elif knee.get("stale"):
         notes.append("the knee-PSNR payload is stale — production and plain-mean ∫PSNR refer "
                      "to older cubes; re-run Evaluate for a like-for-like comparison")
-    if production and identity and not comparable:
+    if universal_production is not None:
+        notes.append(f"production is universal model {universal_production.removeprefix('member_')}"
+                     " — Δ vs production compares with its score")
+    elif production and identity and not comparable:
         notes.append("the knee-PSNR payload was scored on other fields or records than the "
                      "universal models — Δ vs production is left out")
     notes.append("training time = Σ duration_s of every training_log.csv row (rolled-back "

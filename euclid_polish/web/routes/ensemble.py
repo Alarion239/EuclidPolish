@@ -34,6 +34,8 @@ from euclid_polish.web.helpers.ensemble_viz import (
     ensemble_overview,
     ensemble_status,
     gate_and_cube_member_names,
+    gate_archives,
+    job_archive_gates,
     job_archive_member,
     job_combiner_compare,
     job_combiner_promote,
@@ -42,6 +44,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_gate_variant_fit,
     job_knee_psnr,
     job_member_psnr,
+    job_restore_gates,
     job_restore_member,
     knee_psnr_status,
     ledger_universal_names,
@@ -298,6 +301,55 @@ def register(app):
             kind="gate-promote")
         return jsonify({"ok": True, "job_id": job_id})
 
+    @app.route("/ensemble/combiners/archive", methods=["POST"])
+    def ensemble_combiners_archive():
+        """Archive every STARFULL spatial gate (production gate, variants,
+        backups, compare reports, payloads) into one tracking zip (job).
+        Refused while production is still the gate."""
+        if ensemble_registry.production_name(ensemble_dir()) is None:
+            return _bad("production is still the spatial gate — make a universal model "
+                        "production first (POST /ensemble/production)")
+        job, started = REGISTRY.spawn_exclusive(
+            "combiner: archive every spatial gate (starfull)", job_archive_gates,
+            kind="gates-archive")
+        return jsonify({"ok": True, "job_id": job.job_id, "already_running": not started})
+
+    @app.route("/ensemble/combiners/restore", methods=["POST"])
+    def ensemble_combiners_restore():
+        """Unzip a gate archive (``archive``: its zip name, default the
+        newest) back into the STARFULL regime dir (job)."""
+        archive = (request.form.get("archive") or "").strip() or None
+        names = [a["name"] for a in gate_archives()]
+        if not names:
+            return _bad("no gate archive found")
+        if archive is not None and archive not in names:
+            return _bad(f"unknown gate archive {archive!r}")
+        job, started = REGISTRY.spawn_exclusive(
+            f"combiner: restore spatial gates from {archive or names[0]}",
+            lambda cap: job_restore_gates(cap, archive=archive), kind="gates-restore")
+        return jsonify({"ok": True, "job_id": job.job_id, "already_running": not started})
+
+    @app.route("/ensemble/production", methods=["POST"])
+    def ensemble_production():
+        """Make a registered universal model production (``model``: any
+        ``universal:member_NNN`` / ``member_NNN`` / ``NNN`` spelling), or the
+        production gate again (``model=gate``). Instant (no job)."""
+        raw = (request.form.get("model") or "").strip()
+        if not raw:
+            return _bad("name the model (model=universal:member_NNN, or gate)")
+        base = ensemble_dir()
+        try:
+            if raw.lower() == "gate":
+                ensemble_registry.set_production(base, None)
+            else:
+                ensemble_registry.set_production(
+                    base, member_name(raw.removeprefix("universal:")))
+        except ValueError as exc:
+            return _bad(str(exc))
+        name = ensemble_registry.production_name(base)
+        return jsonify({"ok": True, "production": name,
+                        "spec": f"universal:{name}" if name else "production"})
+
     # ---- knee, member PSNR, curves, diagnostics --------------------------- #
 
     @app.route("/ensemble/knee-psnr.json")
@@ -461,6 +513,8 @@ def register(app):
             return _bad(str(exc))
         if name not in _active_member_names() and name not in _universal_member_names():
             return _bad(f"{name} is not an active ensemble member or a universal model")
+        if ensemble_registry.production_name(ensemble_dir()) == name:
+            return _bad(f"{name} is the production model — make another model production first")
         job_id = REGISTRY.spawn(
             f"ensemble: archive {name} → tracking",
             target=lambda cap: job_archive_member(cap, name=name),

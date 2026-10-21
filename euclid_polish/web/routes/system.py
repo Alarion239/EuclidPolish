@@ -458,7 +458,7 @@ def check_real_sr() -> dict[str, Any]:
         worst = ", ".join(f"{s['label']} {s['stale']}" for s in sources if s["stale"])
         return {"state": "warn",
                 "title": f"{totals['stale']} real SR products are stale",
-                "detail": (f"{worst}: made by an older model than the production gate. "
+                "detail": (f"{worst}: made by an older model than production. "
                            "Rerun the production model on them from Sky › Targets."),
                 "to": "/sky/targets", "facts": facts}
     if totals["current"]:
@@ -470,12 +470,24 @@ def check_real_sr() -> dict[str, Any]:
 
 
 def check_combiner() -> dict[str, Any]:
-    """Is the production gate fitted for the current STARFULL members?"""
-    production = next((spec for spec in model_catalog.list_specs()
+    """Is the production model runnable — a universal model the registry
+    names production, or the production gate fitted for the current STARFULL
+    members?"""
+    specs = model_catalog.list_specs()
+    production = next((spec for spec in specs
                        if spec.spec == model_catalog.SPEC_PRODUCTION), None)
     if production is None:
         return {"state": "unknown", "title": "No production model in the catalogue",
                 "detail": None, "to": "/models/combiner"}
+    summary = model_catalog.production_summary(specs)
+    if summary["kind"] == "universal":
+        facts = {"model": summary["spec"], "label": summary["label"]}
+        if production.available:
+            return {"state": "ok", "title": f"Production is {summary['label']}",
+                    "detail": "A single universal model (no gate).",
+                    "to": "/models/universal", "facts": facts}
+        return {"state": "warn", "title": f"The production model {summary['label']} cannot run",
+                "detail": production.reason, "to": "/models/universal", "facts": facts}
     if production.available:
         n = len(production.member_labels)
         return {"state": "ok", "title": f"Production gate fitted for the current {n} members",

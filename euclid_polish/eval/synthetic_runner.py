@@ -327,7 +327,8 @@ def run_synthetic_eval(
     # (registry + gate manifest, no network) — resolved once for every field.
     production = (None if callable(getattr(model, "combine", None)) else
                   production_plan(regime_labels(ensemble_dir or default_ensemble_dir(), False)))
-    if production is not None and production.combiner is None and production.run_labels:
+    if (production is not None and production.combiner is None
+            and production.universal is None and production.run_labels):
         # Cached fields reconstruct without loading the model, so its
         # fallback warning would never fire: say it here, once per run.
         warn_mean_fallback(_emit, len(production.run_labels),

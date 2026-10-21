@@ -254,7 +254,7 @@ def test_figures_stale_for_legacy_or_earlier_nexus_plates_and_stale_galaxy_plots
     assert "minibatched convex all-knee RBF" in f["detail"]
     earlier = {"runs": [{**PLATES["runs"][0], "renders": [{**PLATES["runs"][0]["renders"][0],
                                                            "model_fingerprint": "p0"}]}]}
-    assert stages(plates=earlier)["figures"]["reason"] == "NEXUS plates predate this fit"
+    assert stages(plates=earlier)["figures"]["reason"] == "NEXUS plates predate this production model"
     items = [({**i, "state": "warn"} if i["id"] == "galaxy-plots" else i) for i in overview()["items"]]
     plots = stages(overview=overview(items))["figures"]
     assert (plots["reason"], plots["to"]) == ("galaxy plots need a rebuild", "/synthetic/status")

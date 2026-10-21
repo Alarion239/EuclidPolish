@@ -19,6 +19,11 @@ reads is active — members that joined after the fit are a note, not a
 reason to fall back. The model identity keeps the gate's FULL fitted list
 (``member_labels``) so reuse checks and registry probes agree; what actually
 ran is ``run_labels``.
+
+When the registry names a universal model production
+(:func:`~euclid_polish.ensemble_registry.production_name`), THAT model is the
+eval model — an ensemble of one, no combiner, no active members needed; its
+identity's ``combiner_kind`` is :data:`UNIVERSAL_PRODUCTION_KIND`.
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble import EnsembleModel
-from euclid_polish.ensemble_registry import default_ensemble_dir, regime_labels
+from euclid_polish.ensemble_registry import default_ensemble_dir, production_name, regime_labels
 from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS, COMBINER_MODELS, load_combiner
 from euclid_polish.image import Image, Role
 
@@ -41,6 +46,15 @@ _LOG = logging.getLogger(__name__)
 
 #: The combiner production reconstructions use (the spatial gate).
 PRODUCTION_COMBINER_KIND = ACTIVE_COMBINER_KINDS[0]
+#: ``combiner_kind`` of production when it is one universal model (no combiner).
+UNIVERSAL_PRODUCTION_KIND = "universal"
+
+
+def production_universal_label(base_dir: str | None = None) -> str | None:
+    """``"238·psnr"`` when the registry names a universal model production,
+    else ``None`` (production is the gate, or the mean without one)."""
+    name = production_name(base_dir or default_ensemble_dir())
+    return None if name is None else f"{name.removeprefix('member_')}·psnr"
 
 
 def starfull_regime_dir() -> str:
@@ -77,24 +91,35 @@ class ProductionPlan:
     loading any network.
 
     ``member_labels`` is the model identity: the gate's full fitted list (the
-    active members for the plain mean). ``run_labels`` are the members whose
-    SR is computed. ``joined`` are active members the gate was not fitted
-    with (refit to consider them)."""
+    active members for the plain mean; the one label of a universal
+    production). ``run_labels`` are the members whose SR is computed.
+    ``joined`` are active members the gate was not fitted with (refit to
+    consider them). ``universal`` is the label of the universal model that is
+    production (``None`` for the gate or the mean)."""
 
     member_labels: tuple[str, ...]
     run_labels: tuple[str, ...]
     combiner: Any | None
     joined: tuple[str, ...] = ()
+    universal: str | None = None
 
     @property
     def combiner_kind(self) -> str | None:
+        if self.universal is not None:
+            return UNIVERSAL_PRODUCTION_KIND
         return PRODUCTION_COMBINER_KIND if self.combiner is not None else None
 
 
 def production_plan(active_labels: Sequence[str],
-                    combiner_dir: str | None = None) -> ProductionPlan:
-    """The production gate and the members it needs for ``active_labels``;
-    the member mean of all of them when no current gate loads."""
+                    combiner_dir: str | None = None, *,
+                    base_dir: str | None = None) -> ProductionPlan:
+    """The universal model the registry names production (under
+    ``base_dir``), else the production gate and the members it needs for
+    ``active_labels``; the member mean of all of them when no current gate
+    loads."""
+    universal = production_universal_label(base_dir)
+    if universal is not None:
+        return ProductionPlan((universal,), (universal,), None, (), universal)
     active = tuple(str(v) for v in active_labels)
     combiner = load_production_combiner(active, combiner_dir) if active else None
     if combiner is None:
@@ -130,10 +155,13 @@ class EvalEnsemble:
     def __init__(self, ensemble: Any, combiner: Any | None,
                  combiner_kind: str | None, *,
                  member_labels: Sequence[str] | None = None,
-                 joined: Sequence[str] = ()) -> None:
+                 joined: Sequence[str] = (),
+                 production_model: str | None = None) -> None:
         self._ensemble = ensemble
         self.combiner = combiner
-        self.combiner_kind = combiner_kind if combiner is not None else None
+        self.production_model = production_model
+        self.combiner_kind = (UNIVERSAL_PRODUCTION_KIND if production_model is not None
+                              else combiner_kind if combiner is not None else None)
         self._member_labels = None if member_labels is None else [str(v) for v in member_labels]
         self.joined = [str(v) for v in joined]
 
@@ -161,6 +189,8 @@ class EvalEnsemble:
     @property
     def label(self) -> str:
         """Human description for job logs and provenance notes."""
+        if self.production_model is not None:
+            return f"universal model {self.production_model.split('·')[0]} (production)"
         if self.combiner is None:
             return f"member mean ({self.n_run} STARFULL models)"
         spec = COMBINER_MODELS[str(self.combiner_kind)]
@@ -226,24 +256,36 @@ def load_eval_ensemble(base_dir: str | None = None,
                        num_res_blocks: int | None = None, *,
                        log: Callable[[str], None] | None = None,
                        combiner_dir: str | None = None) -> EvalEnsemble:
-    """THE eval model: the production combiner fitted for the STARFULL
-    members under ``base_dir`` (default location), restoring and running
-    only the members it reads (:func:`production_plan`).
+    """THE eval model: the universal model the registry names production
+    (an ensemble of one), else the production combiner fitted for the
+    STARFULL members under ``base_dir`` (default location), restoring and
+    running only the members it reads (:func:`production_plan`).
 
-    Without a current production gate every active STARFULL member runs and
-    the SR is their plain mean — logged as a warning, never silently.
-    Raises ``RuntimeError`` when the registry has no active STARFULL members —
-    there is no single-model fallback (a lone model is an ensemble of 1).
+    Without a loadable production model every active STARFULL member runs
+    and the SR is their plain mean — logged as a warning, never silently.
+    Raises ``RuntimeError`` when that fallback has no active STARFULL members
+    — there is no single-model fallback (a lone model is an ensemble of 1).
     """
     emit = log or (lambda m: None)
     base = base_dir or default_ensemble_dir()
     blocks = num_res_blocks or Config.DEFAULT_NUM_RES_BLOCKS
     active = list(regime_labels(base, False))
+    plan = production_plan(active, combiner_dir, base_dir=base)
+    why = no_gate_reason(len(active))
+    if plan.universal is not None:
+        try:
+            ens = EnsembleModel(base, num_res_blocks=blocks, starless=False,
+                                labels=[plan.universal], include_universal=True)
+        except ValueError as exc:       # not registered, no checkpoint, …
+            why = f"the production model {plan.universal} does not load ({exc})"
+        else:
+            model = EvalEnsemble(ens, None, None, member_labels=[plan.universal],
+                                 production_model=plan.universal)
+            emit(f"using {model.label}")
+            return model
     if not active:
         raise RuntimeError(_NO_MEMBERS)
-    plan = production_plan(active, combiner_dir)
     ens = None
-    why = no_gate_reason(len(active))
     if plan.combiner is not None:
         try:
             ens = EnsembleModel(base, num_res_blocks=blocks, starless=False,
@@ -283,6 +325,7 @@ def warn_mean_fallback(emit: Callable[[str], None], n: int, why: str) -> None:
 
 __all__ = [
     "PRODUCTION_COMBINER_KIND",
+    "UNIVERSAL_PRODUCTION_KIND",
     "EvalEnsemble",
     "ProductionPlan",
     "combine_members",
@@ -291,6 +334,7 @@ __all__ = [
     "load_production_combiner",
     "no_gate_reason",
     "production_plan",
+    "production_universal_label",
     "sr_from_model",
     "starfull_regime_dir",
     "warn_mean_fallback",

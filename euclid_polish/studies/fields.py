@@ -270,6 +270,11 @@ class FieldSource:
             self.meta["gate"] = {"available": False,
                                  "reason": getattr(spec, "reason", "no production gate")}
             return None
+        if model_catalog.is_single_model(spec):
+            # Production is one universal model, not a combiner of these members.
+            self.meta["gate"] = {"available": False,
+                                 "reason": "production is a universal model (no gate)"}
+            return None
         meta = real_tiles.tile_outputs(entry, {spec.spec: spec.fingerprint}).get(spec.spec)
         if (meta is not None and meta.get("fingerprint") == spec.fingerprint
                 and meta.get("lr_sha") == lr_sha):

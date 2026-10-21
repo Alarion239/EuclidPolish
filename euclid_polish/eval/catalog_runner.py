@@ -28,11 +28,12 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.ensemble import default_ensemble_dir
+from euclid_polish.ensemble import default_ensemble_dir, member_fingerprint
 from euclid_polish.ensemble_registry import regime_labels
 from euclid_polish.eval import lens_catalog
 from euclid_polish.eval.combiner import COMBINER_MODELS, combiner_artifact_fingerprint
 from euclid_polish.eval.ensemble_infer import (
+    UNIVERSAL_PRODUCTION_KIND,
     load_eval_ensemble,
     production_plan,
     starfull_regime_dir,
@@ -96,9 +97,18 @@ _IDENTITY_KEYS = ("member_labels", "combiner_kind", "combiner_fingerprint")
 _RECORDED_KEYS = (*_IDENTITY_KEYS, "run_labels")
 
 
-def _production_fingerprint(kind: str | None) -> str | None:
+def _production_fingerprint(kind: str | None, member_labels: Sequence[str] = ()) -> str | None:
+    """The fitted gate's artifact hash, or — for a universal production —
+    the checkpoint identity of its one model (a retrained or re-pulled model
+    makes its SRs stale like a refitted gate)."""
     if not kind:
         return None
+    if kind == UNIVERSAL_PRODUCTION_KIND:
+        labels = [str(x) for x in member_labels]
+        if len(labels) != 1:
+            return None
+        name = "member_" + labels[0].split("·")[0].removeprefix("member_")
+        return member_fingerprint(os.path.join(default_ensemble_dir(), name))
     return combiner_artifact_fingerprint(starfull_regime_dir(),
                                          COMBINER_MODELS[str(kind)].artifact_dir)
 
@@ -112,7 +122,7 @@ def identity_for(member_labels: Sequence[str], combiner_kind: str | None,
     labels = [str(x) for x in member_labels]
     return {"member_labels": labels,
             "combiner_kind": combiner_kind or None,
-            "combiner_fingerprint": _production_fingerprint(combiner_kind),
+            "combiner_fingerprint": _production_fingerprint(combiner_kind, labels),
             "run_labels": [str(x) for x in (labels if run_labels is None else run_labels)]}
 
 
@@ -131,7 +141,7 @@ def current_eval_identity(ensemble_dir: str | None = None, *,
     — without loading any network. ``labels`` overrides the active list."""
     members = (list(labels) if labels is not None
                else list(regime_labels(ensemble_dir or default_ensemble_dir(), False)))
-    plan = production_plan(members)
+    plan = production_plan(members, base_dir=ensemble_dir)
     return identity_for(plan.member_labels, plan.combiner_kind, plan.run_labels)
 
 
@@ -140,10 +150,11 @@ def reuse_requirements(identity: Mapping[str, Any]) -> dict[str, Any]:
 
     Disagreement cubes are required when more than one member RAN (they are
     computed over those members); the recorded model is compared whenever
-    the model has more than one member (a plain single model is not)."""
+    the model has more than one member or is a universal production (a plain
+    single model is not)."""
     labels = [str(x) for x in identity.get("member_labels") or []]
     run = [str(x) for x in identity.get("run_labels") or labels]
-    ensemble = len(labels) > 1
+    ensemble = len(labels) > 1 or identity.get("combiner_kind") == UNIVERSAL_PRODUCTION_KIND
     return {"require_disagreement": len(run) > 1,
             "member_labels": labels if ensemble else None,
             "identity": identity if ensemble else None}
@@ -193,7 +204,9 @@ def object_model_state(obj_dir: str, identity: Mapping[str, Any]) -> dict[str, A
            "combiner_fingerprint": recorded.get("combiner_fingerprint")}
     want = [str(x) for x in identity.get("member_labels") or []]
     if labels != want:
-        now = (f"the production gate is fitted for {len(want)} now"
+        now = (f"production is universal model {want[0].split('·')[0]} now"
+               if identity.get("combiner_kind") == UNIVERSAL_PRODUCTION_KIND and want else
+               f"the production gate is fitted for {len(want)} now"
                if identity.get("combiner_kind") else
                f"{len(want)} active STARFULL now (member mean)")
         return {**out, "state": "stale", "reason": (

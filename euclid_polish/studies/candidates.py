@@ -35,6 +35,7 @@ from typing import Any
 import numpy as np
 from PIL import Image as PILImage
 
+from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.eval.combiner import BAND_NAMES, COMBINER_MODELS
 from euclid_polish.eval.ensemble_cube_cache import (
@@ -208,6 +209,12 @@ def production_gate(starless: bool, active: Sequence[str]) -> dict[str, Any]:
     """The production gate's identity and whether it fits the active members."""
     directory = Path(ev._regime_dir_ro(starless)) / PRODUCTION_DIR
     manifest = _manifest(directory / "combiner.json")
+    universal = (None if starless
+                 else ensemble_registry.production_name(ensemble_registry.default_ensemble_dir()))
+    if manifest is None and universal is not None:
+        return {"available": False, "state": "missing", "name": None,
+                "detail": (f"Production is universal model {universal.removeprefix('member_')} "
+                           "(no gate): a study freezes the members and their mean.")}
     if manifest is None:
         return {"available": False, "state": "missing", "name": None,
                 "detail": "No production gate — fit a gate variant and promote it."}
