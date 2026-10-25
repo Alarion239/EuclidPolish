@@ -27,7 +27,10 @@ under the pixel, :mod:`euclid_polish.eval.knee_attribution`). Three views:
 Each group or type becomes an "average pixel": the median of its stamps
 (:func:`cut_stamps`), each turned by a dihedral move so its brighter side
 points the same way (:func:`alignment`), where sources sit around it
-(:func:`occupancy`) and a few stamp measures (:func:`stamp_features`). Pure numerics, no I/O or plotting
+(:func:`occupancy`) and a few stamp measures (:func:`stamp_features`).
+:func:`look_around` asks how far around a pixel the knee choice looks: the
+rank correlation, at fixed brightness, between the effective knee and the
+brightest scene pixel within ``r`` pixels, for growing ``r``. Pure numerics, no I/O or plotting
 (``scripts/knee_pixel_types.py`` reads the run and draws).
 """
 
@@ -37,6 +40,7 @@ import warnings
 from collections.abc import Sequence
 
 import numpy as np
+from scipy.stats import spearmanr
 
 #: Brightness bins of the groups, in noise σ: decades from 1e-3 to 1e5 σ
 #: (values below 1e-2 σ, empty sky included, go to the first bin, from 1e4 σ
@@ -335,6 +339,48 @@ def stamp_features(stamps: np.ndarray, threshold: float = SOURCE_SIGMA) -> dict[
                 "local_max": local_max, "slope": np.hypot(gy, gx),
                 "contrast": centre - background, "nearest_source": nearest,
                 "stamp_peak": np.nanmax(s.reshape(n, -1), axis=1)}
+
+
+#: Radii (HR pixels) of :func:`look_around`.
+LOOK_RADII: tuple[float, ...] = (0, 1, 2, 3, 4, 6, 8, 12, 16, 20)
+
+
+def neighbourhood_max(stamps: np.ndarray, radii: Sequence[float] = LOOK_RADII) -> np.ndarray:
+    """The brightest value within each radius of the stamp centre:
+    ``(N, len(radii))`` (NaN-aware)."""
+    s = np.asarray(stamps, np.float64)
+    n, h, w = s.shape
+    yy, xx = np.mgrid[:h, :w]
+    r = np.hypot(yy - h // 2, xx - w // 2)
+    out = np.empty((n, len(radii)))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for i, radius in enumerate(radii):
+            out[:, i] = np.nanmax(np.where(r <= radius, s, np.nan).reshape(n, -1), axis=1)
+    return out
+
+
+def look_around(log_q: np.ndarray, bins: np.ndarray, maxima: np.ndarray, *, floor: float = 1e-2,
+                min_n: int = 100) -> dict[int, list[float]]:
+    """Per brightness bin with at least ``min_n`` samples: the Spearman
+    correlation of ``log_q`` with ``log10(max(maxima[:, j], floor))`` for
+    every radius ``j`` (:func:`neighbourhood_max`). The bin holds the
+    pixel's own brightness roughly fixed, so a correlation that grows with
+    the radius says the knee follows the light around the pixel, not the
+    pixel."""
+    log_q = np.asarray(log_q, np.float64)
+    maxima = np.log10(np.maximum(np.asarray(maxima, np.float64), floor))
+    out: dict[int, list[float]] = {}
+    for b in np.unique(bins[bins >= 0]):
+        sel = (bins == b) & np.isfinite(log_q) & np.isfinite(maxima).all(axis=1)
+        if sel.sum() < min_n:
+            continue
+        row = []
+        for j in range(maxima.shape[1]):
+            x = maxima[sel, j]
+            row.append(float(spearmanr(x, log_q[sel]).statistic) if np.ptp(x) > 0 else float("nan"))
+        out[int(b)] = row
+    return out
 
 
 def weighted_mix(labels: np.ndarray, weights: np.ndarray, names: Sequence[str]) -> dict[str, float]:

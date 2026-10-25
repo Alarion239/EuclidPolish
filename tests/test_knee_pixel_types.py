@@ -156,6 +156,25 @@ def test_balanced_weights_give_every_bin_the_same_total():
     np.testing.assert_allclose(out, [0.25, 0.25, 0.5, 1.0, 0.0])
 
 
+def test_neighbourhood_max_grows_with_the_radius():
+    stamp = np.zeros((1, 9, 9))
+    stamp[0, 4, 4] = 1.0
+    stamp[0, 4, 7] = 5.0                                 # 3 px from the centre
+    out = kt.neighbourhood_max(stamp, (0, 2, 3, 4))
+    assert out[0].tolist() == [1.0, 1.0, 5.0, 5.0]
+
+
+def test_look_around_finds_the_radius_the_knee_follows():
+    rng = np.random.default_rng(3)
+    n = 400
+    near = 10 ** rng.uniform(0, 3, n)                    # light within 4 px
+    maxima = np.stack([np.ones(n), np.ones(n), near, near], axis=1)
+    log_q = np.log10(near) + rng.normal(0, 0.1, n)       # the knee follows it
+    out = kt.look_around(log_q, np.zeros(n, int), maxima)
+    assert np.isnan(out[0][0]) and out[0][2] > 0.95
+    assert kt.look_around(log_q[:10], np.zeros(10, int), maxima[:10]) == {}
+
+
 def test_weighted_mix_counts_weight_not_samples():
     mix = kt.weighted_mix(np.array(["sky", "sky", "core"]), np.array([1.0, 1.0, 8.0]),
                           ["sky", "core", "wing"])

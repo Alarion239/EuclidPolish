@@ -502,6 +502,9 @@ def analyse_band(sub: dict, planes: list[dict], knees: np.ndarray, class_names, 
                                    kind)}
     bins = variants["raw"]["bins"]
     mech_bins = [_median(sub["log_q_mech"][bins == b]) for b in range(len(EDGES) - 1)]
+    maxima = kt.neighbourhood_max(st["scene"])
+    look = {"raw": kt.look_around(log_q, bins, maxima),
+            "learned": kt.look_around(log_q - sub["log_q_mech"], bins, maxima)}
 
     types = kt.knee_types(sub["share"], kt.balanced_weights(bins, sub["weight"]), knees, k, rng)
     total_w = sub["weight"][types >= 0].sum()
@@ -522,11 +525,42 @@ def analyse_band(sub: dict, planes: list[dict], knees: np.ndarray, class_names, 
     analysed = {"bright": sub["bright"], "log_q": log_q, "log_q_mech": sub["log_q_mech"],
                 "weight": sub["weight"], "bins": variants["raw"]["stats"], "bin": bins, "types": types,
                 "sigma": sigma, "variants": variants, "mech_bins": mech_bins, "type_stacks": type_stacks,
-                "blank_fraction": blank_fraction}
+                "blank_fraction": blank_fraction, "look": look}
     summary = {"noise_sigma_e": sigma, "n": int(sub["band"].size), "blank_fraction": blank_fraction,
                "bins": variants["raw"]["summary_bins"], "bins_learned": variants["learned"]["summary_bins"],
-               "baseline_log_q_sigma_by_bin": mech_bins, "types": type_summary}
+               "baseline_log_q_sigma_by_bin": mech_bins, "types": type_summary,
+               "look_around": {"radii_px": list(kt.LOOK_RADII),
+                               **{v: {_bin_label(b, kind): [x if np.isfinite(x) else None for x in r]
+                                      for b, r in look[v].items()} for v in look}}}
     return analysed, summary
+
+
+def look_around_figure(path: Path, analysed: dict, kind: str, title: str):
+    fig, axes = plt.subplots(2, len(BANDS), figsize=(3.9 * len(BANDS), 6.4), squeeze=False,
+                             constrained_layout=True)
+    colours = plt.cm.viridis(np.linspace(0.0, 0.92, len(EDGES) - 1))
+    radii = np.asarray(kt.LOOK_RADII, np.float64)
+    for c, band in enumerate(BANDS):
+        a = analysed.get(band)
+        if a is None:
+            continue
+        for r, (variant, label) in enumerate((("raw", "effective knee"),
+                                              ("learned", "network's own preference"))):
+            ax = axes[r, c]
+            for b, rho in sorted(a["look"][variant].items()):
+                ax.plot(radii, rho, marker="o", ms=3, color=colours[b], label=_bin_label(b, kind))
+            ax.axhline(0, color="#999999", lw=0.6)
+            ax.set_ylim(-0.3, 1.0)
+            ax.set_title(f"{band}: {label}", fontsize=8)
+            ax.set_xlabel("radius r (HR px)", fontsize=8)
+            ax.set_ylabel("Spearman ρ with brightest within r", fontsize=7)
+            ax.tick_params(labelsize=7)
+    axes[0, -1].legend(fontsize=6, title="pixel brightness", title_fontsize=6, loc="lower right")
+    scene = "truth" if kind == "synthetic" else "LR 3×3"
+    fig.suptitle(f"{title} — {kind}: how far around a pixel the knee choice looks (at fixed brightness, the "
+                 f"rank correlation of its knee with the brightest {scene} pixel within r)", fontsize=8)
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
 
 
 def mechanics(path: Path, analysed: dict, knees, kind: str, title: str):
@@ -579,6 +613,7 @@ def analyse_kind(run_id: str, spec: str, entry: dict, kind: str, out: Path, k: i
     group_features(out / f"group_features_{kind}.png", analysed, kind, spec)
     group_features(out / f"group_features_learned_{kind}.png", analysed, kind, spec, "learned")
     mechanics(out / f"mechanics_{kind}.png", analysed, knees, kind, spec)
+    look_around_figure(out / f"look_around_{kind}.png", analysed, kind, spec)
     types_by_brightness(out / f"types_by_brightness_{kind}.png", analysed, kind, spec)
     return summary
 
@@ -686,6 +721,40 @@ def compare_share_diff(path: Path, prepared: dict, knees, kind: str):
     plt.close(fig)
 
 
+def compare_look_around(path: Path, prepared: dict, kind: str) -> dict:
+    """:func:`kt.look_around` of the effective knee, every model overlaid
+    (one colour per brightness decade, one line style per model)."""
+    styles = ["-", "--", ":", "-."]
+    colours = plt.cm.viridis(np.linspace(0.0, 0.92, len(EDGES) - 1))
+    radii = np.asarray(kt.LOOK_RADII, np.float64)
+    fig, axes = plt.subplots(1, len(BANDS), figsize=(3.9 * len(BANDS), 3.6), constrained_layout=True)
+    out: dict = {}
+    for c, band in enumerate(BANDS):
+        for m, (name, p) in enumerate(prepared.items()):
+            s = p["samples"]
+            sel = (s["band"] == c) & ~s["blank"]
+            sub = {key: (v[sel] if isinstance(v, np.ndarray) else v) for key, v in s.items()}
+            bins = kt.brightness_bin(sub["bright"], EDGES)
+            look = kt.look_around(sub["log_q"], bins, kt.neighbourhood_max(stamps(sub, p["planes"])["scene"]))
+            out.setdefault(band, {})[name] = {_bin_label(b, kind): [x if np.isfinite(x) else None for x in r]
+                                              for b, r in look.items()}
+            for b, rho in sorted(look.items()):
+                axes[c].plot(radii, rho, ls=styles[m], color=colours[b],
+                             label=f"{name} · {_bin_label(b, kind)}" if c == 0 else None)
+        axes[c].axhline(0, color="#999999", lw=0.6)
+        axes[c].set_ylim(-0.3, 1.0)
+        axes[c].set_title(band, fontsize=9)
+        axes[c].set_xlabel("radius r (HR px)", fontsize=8)
+        axes[c].tick_params(labelsize=7)
+    axes[0].set_ylabel("Spearman ρ, knee vs brightest within r", fontsize=7)
+    fig.legend(fontsize=6, loc="outside right center")
+    fig.suptitle(f"{' vs '.join(prepared)} — {kind}: how far around a pixel the knee choice looks "
+                 f"({' / '.join(f'{st} {n}' for st, n in zip(styles, prepared, strict=False))})", fontsize=9)
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    return out
+
+
 def compare_pairs(path: Path, prepared: dict, band: int, kind: str) -> dict:
     """The same pixels in both models: within each brightness decade, the
     pixels B reads through a much LOWER / about the SAME / much HIGHER knee
@@ -762,6 +831,8 @@ def compare(run_ids: list[str], out_root: Path) -> None:
             continue
         compare_curves(out / f"compare_knee_{kind}.png", ready, kind)
         compare_share_diff(out / f"compare_share_diff_{kind}.png", ready, knees, kind)
+        summary[f"look_around_{kind}"] = compare_look_around(out / f"compare_look_around_{kind}.png",
+                                                             ready, kind)
         summary[kind] = {BANDS[b]: compare_pairs(out / f"compare_pairs_{kind}_{BANDS[b]}.png", ready, b, kind)
                          for b in range(len(BANDS))}
         print(f"  {kind} done", flush=True)
