@@ -194,7 +194,9 @@ def test_shares_sum_to_one_and_are_non_negative():
     assert (got["sensitivity"] > 0).all()
     once = ka.attribute(net, lr, samples, batch=64)    # batching does not change anything
     for key in got:
-        np.testing.assert_allclose(once[key], got[key], rtol=1e-5, atol=1e-7)
+        # Windows mixing across a batch would move shares by O(1); float32
+        # kernels picked per batch size (CI's CPU) move them by ~3e-4.
+        np.testing.assert_allclose(once[key], got[key], rtol=2e-3, atol=1e-5)
 
 
 def test_ablation_replaces_each_knee_with_its_window_mean():
