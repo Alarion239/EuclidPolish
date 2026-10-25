@@ -26,6 +26,7 @@ from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ConfigSnapshot, Process, Stamp
+from euclid_polish.training.brightness import BrightnessConsistency
 from euclid_polish.training.inference import infer_checkpoint_asinh_knee
 from euclid_polish.training.isotropy import MultiScaleIsotropy, ResidualIsotropy
 from euclid_polish.training.models.common import evaluate
@@ -251,6 +252,7 @@ class Trainer:
         device_prefetch: bool = False,
         isotropy: ResidualIsotropy | MultiScaleIsotropy | None = None,
         isotropy_weight: float = 0.0,
+        brightness: BrightnessConsistency | None = None,
     ):
         """
         Initialize the trainer.
@@ -328,6 +330,15 @@ class Trainer:
             the checkpoint. The logged ``loss`` stays the reconstruction loss.
         isotropy_weight : float
             The penalty's weight λ.
+        brightness : BrightnessConsistency, optional
+            The model's sky, re-observed as Euclid would, must match the
+            truth within Euclid's noise (see
+            :mod:`euclid_polish.training.brightness`). It enters the
+            objective as ``stop_gradient(loss) × penalty``: added to the log
+            of the loss, a violation counts as a relative increase of the
+            reconstruction loss, so it needs no weight. Electrons, like the
+            isotropy penalty. The logged ``loss`` stays the reconstruction
+            loss.
         """
         self.now = None
         self._batch_stretch = batch_stretch
@@ -336,6 +347,10 @@ class Trainer:
                              "(batch_stretch) and a model that outputs electrons")
         self._isotropy = isotropy
         self._isotropy_weight = float(isotropy_weight)
+        if brightness is not None and (batch_stretch is None or not output_electrons):
+            raise ValueError("the brightness penalty compares electrons: it needs raw batches "
+                             "(batch_stretch) and a model that outputs electrons")
+        self._brightness = brightness
         if int(steps_per_call) < 1:
             raise ValueError(f"steps_per_call must be at least 1, got {steps_per_call!r}")
         self._steps_per_call = int(steps_per_call)
@@ -449,6 +464,7 @@ class Trainer:
         self._win_gnorm_max = tf.Variable(0.0, trainable=False)
         self._win_spike_norm = tf.Variable(0.0, trainable=False)
         self._win_isotropy_sum = tf.Variable(0.0, trainable=False)
+        self._win_brightness_sum = tf.Variable(0.0, trainable=False)
         self._win_steps = tf.Variable(0.0, trainable=False)
 
         # Provenance: this checkpoint dir's identity. Resolved lazily on the
@@ -577,14 +593,15 @@ class Trainer:
 
     def _reset_window(self) -> None:
         for var in (self._win_loss_sum, self._win_gnorm_sum, self._win_gnorm_max,
-                    self._win_spike_norm, self._win_isotropy_sum, self._win_steps):
+                    self._win_spike_norm, self._win_isotropy_sum,
+                    self._win_brightness_sum, self._win_steps):
             var.assign(0.0)
 
     def _read_window(self) -> dict:
         """The one host sync per validation window: mean loss, mean / max
         pre-clip |g|, the spike norm (largest post-warmup |g|, non-finite
-        counted as infinite) and the mean isotropy penalty. Resets the
-        accumulators."""
+        counted as infinite) and the mean isotropy and brightness penalties.
+        Resets the accumulators."""
         n = max(float(self._win_steps.numpy()), 1.0)
         window = {
             "loss": float(self._win_loss_sum.numpy()) / n,
@@ -592,6 +609,7 @@ class Trainer:
             "gnorm_max": float(self._win_gnorm_max.numpy()),
             "spike_norm": float(self._win_spike_norm.numpy()),
             "isotropy": float(self._win_isotropy_sum.numpy()) / n,
+            "brightness": float(self._win_brightness_sum.numpy()) / n,
         }
         self._reset_window()
         return window
@@ -807,6 +825,9 @@ class Trainer:
             tqdm.write(f"  residual isotropy penalty: λ={self._isotropy_weight:g}, knee "
                        f"{iso.knee_e:g} e⁻, {iso.describe()}, moving average "
                        f"{iso.decay:g}, tolerance {iso.tolerance:g}")
+        if self._brightness is not None:
+            tqdm.write("  brightness consistency: × stop_gradient(loss), "
+                       + self._brightness.describe())
 
         self.now = time.perf_counter()
         n_rollbacks = 0   # rollbacks since the last LR halving
@@ -983,6 +1004,8 @@ class Trainer:
                                           strict=False))
                            + (f"; {self._isotropy.summary()}"
                               if isinstance(self._isotropy, MultiScaleIsotropy) else "") + ")")
+            if self._brightness is not None:
+                status += f", brightness penalty {window['brightness']:.4g}"
             tqdm.write(status)
 
             # Persist for later plotting. Append-only CSV so each row
@@ -1186,7 +1209,7 @@ class Trainer:
     def _train_step_impl(self, lr, hr):
         """One step's graph: the gradient step, the step counter and the
         window statistics → ``(loss, pre-clip gradient norm)``."""
-        loss_value, gnorm, isotropy = self._gradient_step(lr, hr)
+        loss_value, gnorm, isotropy, brightness = self._gradient_step(lr, hr)
 
         # Step counter and window statistics stay on the device; the training
         # loop reads them once per validation window. The counter waits for
@@ -1194,13 +1217,14 @@ class Trainer:
         # inside a multi-step call) never counts.
         with tf.control_dependencies([loss_value, gnorm]):
             step = self.checkpoint.step.assign_add(1)
-        self._update_window(loss_value, gnorm, step, isotropy)
+        self._update_window(loss_value, gnorm, step, isotropy, brightness)
         return loss_value, gnorm
 
-    def _update_window(self, loss_value, gnorm, step, isotropy=0.0):
+    def _update_window(self, loss_value, gnorm, step, isotropy=0.0, brightness=0.0):
         """Fold one step into the window statistics."""
         self._win_loss_sum.assign_add(loss_value)
         self._win_isotropy_sum.assign_add(isotropy)
+        self._win_brightness_sum.assign_add(brightness)
         self._win_gnorm_sum.assign_add(gnorm)
         self._win_gnorm_max.assign(tf.maximum(self._win_gnorm_max, gnorm))
         self._win_steps.assign_add(1.0)
@@ -1212,8 +1236,9 @@ class Trainer:
 
     def _gradient_step_impl(self, lr, hr):
         """Forward, loss, backward, global-norm clip and the Adam update →
-        ``(loss, pre-clip gradient norm, isotropy penalty)``; the loss
-        excludes the isotropy penalty, the gradient includes it."""
+        ``(loss, pre-clip gradient norm, isotropy penalty, brightness
+        penalty)``; the loss excludes both penalties, the gradient includes
+        them."""
         hr_electrons = hr
         if self._batch_stretch is not None:
             lr, hr = self._batch_stretch(lr, hr)
@@ -1225,7 +1250,11 @@ class Trainer:
             isotropy = tf.constant(0.0)
             if self._isotropy is not None:
                 isotropy = self._isotropy.penalty(sr, hr_electrons)
-                objective = loss_value + self._isotropy_weight * isotropy
+                objective = objective + self._isotropy_weight * isotropy
+            brightness = tf.constant(0.0)
+            if self._brightness is not None:
+                brightness = self._brightness.penalty(sr, hr_electrons)
+                objective = objective + tf.stop_gradient(loss_value) * brightness
 
         gradients = tape.gradient(objective, self.checkpoint.model.trainable_variables)
         gradients, gnorm = tf.clip_by_global_norm(
@@ -1233,7 +1262,7 @@ class Trainer:
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables, strict=False)
         )
-        return loss_value, gnorm, isotropy
+        return loss_value, gnorm, isotropy, brightness
 
     def _add_nonneg_penalty(self, loss_value, sr):
         """Add ``λ · mean(relu(-SR))`` to ``loss_value`` (no-op when λ=0).

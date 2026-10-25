@@ -202,6 +202,35 @@ def knee_floored_loss(loss, knees, floor_e, n_bands: int):
     return _loss
 
 
+def lupton_loss(loss, knees, softening_e, n_bands: int):
+    """``loss`` on Lupton's asinh magnitudes (Lupton, Gunn & Szalay 1999):
+    ``asinh(x / s_b)`` per band, the softening ``s_b`` (e⁻) at the band's
+    per-pixel sky scatter, for a member that outputs ELECTRONS. One stretch
+    for every brightness and no knee grid: linear below the noise, where the
+    estimate stays unbiased (the posterior mean) and errors count in noise
+    units; logarithmic above it, where every surface brightness counts by its
+    relative error. All bands are in noise units, so one ``loss`` over them
+    needs no balancing. The target arrives stretched at every knee
+    (knee-major); its electrons are recovered exactly from the block of the
+    knee nearest 1 e⁻."""
+    soft = [float(v) for v in softening_e]
+    if len(soft) != int(n_bands):
+        raise ValueError(f"softening_e needs one value per band ({n_bands}), got {soft}")
+    if min(soft) <= 0.0:
+        raise ValueError(f"softening_e must be positive, got {soft}")
+    if not knees:
+        raise ValueError("lupton_loss needs the target's knees to recover its electrons")
+    j = min(range(len(knees)), key=lambda i: abs(math.log(float(knees[i]))))
+    knee = float(knees[j])
+    soft_t = tf.constant(soft, tf.float32)
+
+    def _loss(sr, hr):
+        s = tf.cast(soft_t, sr.dtype)
+        hr_e = tf.cast(knee, sr.dtype) * tf.sinh(hr[..., j * n_bands:(j + 1) * n_bands])
+        return loss(tf.asinh(sr / s), tf.asinh(hr_e / s))
+    return _loss
+
+
 def knee_stretched_loss(loss, knees):
     """Loss of a member that outputs ELECTRONS (a learned output knee): its
     output is stretched at every knee and compared, channel for channel, with

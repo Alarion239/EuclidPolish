@@ -242,6 +242,19 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "k_ref their geometric mean (< 0: more weight on the "
                         "small knees, faint light; > 0: on the large ones, "
                         "bright cores). 0 = equal. Member-spec key: knee_tilt.")
+    p.add_argument("--lupton-loss", action="store_true",
+                   help="Learned-knee member: train on one Lupton asinh "
+                        "magnitude per band, softened at its per-pixel sky "
+                        "scatter, instead of the knee grid (no loss_knees, "
+                        "loss_floor or knee_tilt with it). Member-spec key: "
+                        "lupton_loss.")
+    p.add_argument("--brightness-consistency", action="store_true",
+                   help="Learned-knee live member: the sky re-observed as "
+                        "Euclid would (PSF + 2x sum-rebin) must match the truth "
+                        "within Euclid's noise at blocks of 1/2/4/8 archive "
+                        "pixels; the excess beyond 1 sigma multiplies the "
+                        "stop-gradient loss (euclid_polish.training.brightness). "
+                        "Member-spec key: brightness_consistency.")
     p.add_argument("--noise-texture-jitter", action="store_true",
                    help="Live training: randomise the noise texture per scene "
                         "and band (dithered exposure count and a white share, "
@@ -465,7 +478,8 @@ def _member_overrides(args, k: int) -> list[dict]:
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "saturation_mask_prob",
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
-               "loss_knees", "loss_floor", "knee_tilt", "noise_texture_jitter",
+               "loss_knees", "loss_floor", "knee_tilt", "lupton_loss",
+               "brightness_consistency", "noise_texture_jitter",
                "isotropy_penalty", "isotropy_knee", "isotropy_scales",
                "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
@@ -648,6 +662,21 @@ def _diversity_kwargs(args, over: dict) -> dict:
     if isotropy_scales and not isotropy_penalty:
         print("✗ isotropy_scales needs an isotropy_penalty")
         raise SystemExit(2)
+    lupton = _flag(over.get("lupton_loss", args.lupton_loss), "lupton_loss")
+    brightness = _flag(over.get("brightness_consistency", args.brightness_consistency),
+                       "brightness_consistency")
+    if (lupton or brightness) and not learn:
+        print("✗ lupton_loss and brightness_consistency need a learned output knee "
+              "(a member that outputs electrons)")
+        raise SystemExit(2)
+    if lupton and (over.get("loss_knees", args.loss_knees)
+                   or over.get("loss_floor", args.loss_floor)
+                   or over.get("knee_tilt", args.knee_tilt)):
+        print("✗ lupton_loss replaces the knee grid: no loss_knees, loss_floor or knee_tilt with it")
+        raise SystemExit(2)
+    if brightness and not bool(over.get("forward_onthefly", args.forward_onthefly)):
+        print("✗ brightness_consistency needs the live (on-the-fly) forward model")
+        raise SystemExit(2)
     if not 0.0 <= saturation_mask_prob <= \
             Config.TRAIN_SATURATION_MASK_PROB_MAX:
         print("✗ saturation_mask_prob must be in [0, "
@@ -662,6 +691,8 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "loss_knees": _loss_knees(over.get("loss_knees", args.loss_knees), knees),
             "loss_floor": _loss_floor(over.get("loss_floor", args.loss_floor)),
             "knee_tilt": _knee_tilt(over.get("knee_tilt", args.knee_tilt)),
+            "lupton": lupton,
+            "brightness_consistency": brightness,
             "noise_texture_jitter": _flag(over.get("noise_texture_jitter", args.noise_texture_jitter),
                                           "noise_texture_jitter"),
             "isotropy_penalty": isotropy_penalty,
@@ -739,6 +770,10 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
         identity["loss_floor"] = float(origin["loss_floor"])
     if origin.get("knee_tilt") and "knee_tilt" not in override:
         identity["knee_tilt"] = float(origin["knee_tilt"])
+    if origin.get("lupton_loss") is True and "lupton_loss" not in override:
+        identity["lupton"] = True
+    if origin.get("brightness_consistency") is True and "brightness_consistency" not in override:
+        identity["brightness_consistency"] = True
     if origin.get("noise_texture_jitter") is True and "noise_texture_jitter" not in override:
         identity["noise_texture_jitter"] = True
     if origin.get("isotropy_penalty") and "isotropy_penalty" not in override:
@@ -1016,6 +1051,10 @@ def main() -> int:
                 knobs += f" loss_floor={s.loss_floor:g}σ"
             if s.knee_tilt:
                 knobs += f" knee_tilt={s.knee_tilt:+g}"
+            if s.lupton:
+                knobs += " lupton_loss"
+            if s.brightness_consistency:
+                knobs += " brightness_consistency"
             if s.output_knee is not None:
                 knobs += f" output_knee={s.output_knee:g}e"
                 if s.learn_output_knee:

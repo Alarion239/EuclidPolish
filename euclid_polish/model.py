@@ -32,6 +32,13 @@ from euclid_polish.training.augmentation import (
     random_dihedral,
     stretch_pair,
 )
+from euclid_polish.training.brightness import (
+    BRIGHTNESS_KERNEL_PX,
+    BRIGHTNESS_SCALES,
+    BrightnessConsistency,
+    block_noise_factors,
+    core_kernel,
+)
 from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
@@ -73,6 +80,7 @@ from euclid_polish.training.losses import (
     knee_stretched_loss,
     knee_subset_loss,
     knee_tilt_weights,
+    lupton_loss,
 )
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.output_knee import learned_knee_bounds, middle_knee
@@ -497,7 +505,8 @@ class Model:
 
     def _member_loss(self, loss_norm: str, knee_loss: str = "plain",
                      loss_knees: Sequence[float] | None = None,
-                     loss_floor: float | None = None, knee_tilt: float = 0.0):
+                     loss_floor: float | None = None, knee_tilt: float = 0.0,
+                     lupton: bool = False):
         """The reconstruction loss this member trains under. A multi-knee
         member's ``knee_loss``: ``plain`` = the loss over all channels at
         once; ``balanced`` = every channel (band x knee) weighted equally. A
@@ -510,7 +519,21 @@ class Model:
         :func:`loss_floor_e`); ``None``/0 = no floor.
         ``knee_tilt``: tilt the balanced loss across the scored knees, knee
         ``k`` weighing ``(k / k_ref)**knee_tilt``
-        (:func:`~euclid_polish.training.losses.knee_tilt_weights`); 0 = equal."""
+        (:func:`~euclid_polish.training.losses.knee_tilt_weights`); 0 = equal.
+        ``lupton``: instead of the knee grid, one Lupton asinh magnitude per
+        band softened at its per-pixel sky scatter
+        (:func:`~euclid_polish.training.losses.lupton_loss`); a learned-knee
+        member only, and not with ``loss_knees``/``loss_floor``/``knee_tilt``,
+        which shape the knee grid it replaces."""
+        if lupton:
+            if not self._learn_output_knee:
+                raise ValueError("lupton loss needs a learned-output-knee member "
+                                 "(one that outputs electrons)")
+            if loss_knees or loss_floor or knee_tilt:
+                raise ValueError("lupton loss replaces the knee grid: no loss_knees, "
+                                 "loss_floor or knee_tilt with it")
+            return lupton_loss(build_loss(loss_norm), self._asinh_knees,
+                               loss_floor_e(1.0, self._scale), Config.NUM_HR_CHANNELS)
         if knee_loss not in KNEE_LOSS_MODES:
             raise ValueError(f"knee_loss must be one of {KNEE_LOSS_MODES}, got {knee_loss!r}")
         if knee_tilt and not (self._asinh_knees and knee_loss == "balanced"):
@@ -584,6 +607,8 @@ class Model:
         loss_knees: Sequence[float] | None = None,
         loss_floor: float | None = None,
         knee_tilt: float = 0.0,
+        lupton: bool = False,
+        brightness_consistency: bool = False,
         noise_texture_jitter: bool = False,
         isotropy_penalty: float = 0.0,
         isotropy_knee: float | None = None,
@@ -666,6 +691,10 @@ class Model:
         if isotropy_penalty and not (self._learn_output_knee and forward_onthefly):
             raise ValueError("isotropy_penalty needs a learned-output-knee member (electrons "
                              "out) trained on the live (on-the-fly) forward model (electrons in)")
+        if brightness_consistency and not (self._learn_output_knee and forward_onthefly):
+            raise ValueError("brightness_consistency needs a learned-output-knee member "
+                             "(electrons out) trained on the live (on-the-fly) forward "
+                             "model (electrons in)")
         scales = canonical_scales(isotropy_scales or DEFAULT_ISOTROPY_SCALES)
         if isotropy_penalty and max(scale[0] for scale in scales) > int(hr_crop_size):
             raise ValueError(f"isotropy windows {[int(s[0]) for s in scales]} must fit the "
@@ -674,9 +703,18 @@ class Model:
             lr_path, hr_path,
             starless=bool(starless), forward_onthefly=bool(forward_onthefly),
         )
+        brightness = None
         if forward_onthefly:
             psf_sets, note = member_psf_sets(seed=self._seed,
                                              psf_subset=psf_subset)
+            if brightness_consistency:
+                bands = [Config.get_band(name) for name in Config.HR_TARGET_BAND_NAMES]
+                brightness = BrightnessConsistency(
+                    [core_kernel(psf_sets[band.name].mean().data, BRIGHTNESS_KERNEL_PX)
+                     for band in bands],
+                    [band.mer_rms_e for band in bands],
+                    [block_noise_factors(band, BRIGHTNESS_SCALES) for band in bands],
+                    scales=BRIGHTNESS_SCALES, rebin=self._scale)
             print(f"  on-the-fly forward: {note} · "
                   f"{int(crops_per_field)} × {int(hr_crop_size)}px HR "
                   "crops/field · "
@@ -763,7 +801,16 @@ class Model:
             provenance_fields["isotropy_penalty"] = float(isotropy_penalty)
             provenance_fields["isotropy_knee"] = knee
             provenance_fields["isotropy_scales"] = [list(scale) for scale in scales]
-        loss = self._member_loss(loss_norm, knee_loss, loss_knees, loss_floor, knee_tilt)
+        loss = self._member_loss(loss_norm, knee_loss, loss_knees, loss_floor, knee_tilt,
+                                 lupton=bool(lupton))
+        if lupton:
+            provenance_fields["lupton_loss"] = True
+            print("  Lupton loss: asinh(x / s) per band, s (e⁻/HR px) = " + ", ".join(
+                f"{b} {f:.3g}" for b, f in zip(Config.LR_INPUT_BAND_NAMES,
+                                              loss_floor_e(1.0, self._scale), strict=True)))
+        if brightness is not None:
+            provenance_fields["brightness_consistency"] = True
+            print(f"  brightness consistency: {brightness.describe()}")
         if knee_tilt:
             provenance_fields["knee_tilt"] = float(knee_tilt)
             scored = tuple(loss_knees) if loss_knees else self._asinh_knees
@@ -809,7 +856,8 @@ class Model:
                           batch_stretch=(self.batch_stretch() if forward_onthefly
                                          else None),
                           isotropy=isotropy,
-                          isotropy_weight=float(isotropy_penalty))
+                          isotropy_weight=float(isotropy_penalty),
+                          brightness=brightness)
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):
