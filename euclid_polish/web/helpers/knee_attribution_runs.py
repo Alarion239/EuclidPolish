@@ -41,10 +41,12 @@ from euclid_polish.web.helpers import atomic_files, model_catalog, real_tiles
 from euclid_polish.web.helpers import ensemble_viz as ev
 from euclid_polish.web.jobs import JobCancelled
 
-#: 4: uniform sampling, per-sample weights and own-band knee splits, the
-#: synthetic truth in the field images, one sampling stream per field; 3: adds the local (3×3 LR) splits;
+#: 5: noise σ from lag-4 differences (the per-pixel σ of resampled NISP,
+#: 2.6× the old lag-1 estimate); 4: uniform sampling, per-sample weights and
+#: own-band knee splits, the synthetic truth in the field images, one
+#: sampling stream per field; 3: adds the local (3×3 LR) splits;
 #: 2: shares weighted by each input band's noise σ (1 weighted per electron).
-RECORD_VERSION = 4
+RECORD_VERSION = 5
 _RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 #: Most synthetic test fields a run takes (the universal scores' 100).

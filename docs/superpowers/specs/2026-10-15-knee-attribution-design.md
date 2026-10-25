@@ -29,10 +29,13 @@ For a sampled output pixel `p` (HR position, output band `b`) the network input 
 `∂y/∂x_c(u) = Σ_k t_{k,c}(u)`, with `t_{k,c}(u) = g_{k,c}(u) / √(q_k² + x_c(u)²)`.
 
 **Noise weighting (record version 2).**
-- A term is per input electron, and the bands' electrons differ in scale. On the test fields the VIS sky noise is about 18 e⁻ and NISP's about 0.8 e⁻.
+- A term is per input electron, and the bands' electrons differ in scale. On the test fields the VIS sky noise is about 20 e⁻ per pixel and NISP's about 2.1 e⁻ (record version ≤ 4 measured 18 and 0.8: see σ_c).
 - Summed per electron, every output band looked about 58 % Y-driven, and the knee shares followed NISP's scale. That was a units artifact.
 - So each input band's terms are weighted by its noise σ_c. `σ_c·|t_{k,c}|` is the change of `y` for a 1σ change of band `c` through knee `k`, comparable across bands.
-- σ_c is the field's own robust spread of neighbouring-pixel differences, `1.4826·MAD(Δ)/√2` over both axes. Pairs touching a 0 (a blanked hole) or a non-finite pixel are left out. A band without a usable σ takes the median of the others.
+- σ_c is the field's own robust spread of pixel differences 4 pixels apart, `1.4826·MAD(Δ)/√2` over both axes. Pairs touching a 0 (a blanked hole) or a non-finite pixel are left out. A band without a usable σ takes the median of the others.
+  - **Record version 5 (2026-10-25):** NISP is resampled from 0.3″ to the 0.1″ grid, so its noise is correlated over neighbours (ρ ≈ 0.86). Lag-1 differences (versions ≤ 4) saw only 0.38 of its pixel σ: NISP was under-weighted about 2.2× against VIS (whose ρ ≈ 0.25 gave 0.86).
+  - From lag 4 on, the noise is independent: on synthetic fields lag-4 σ is within 2 % of the empty-sky pixel σ in all four bands. Real NEXUS tiles show the same correlation (lag-4/lag-1 = 2.2–2.3 in NISP).
+  - Own-band knee splits do not depend on σ; cross-band shares and the pooled `knee_share` do.
 - Version-1 records (per-electron weights) were discarded.
 
 Reported per sample, with `a_{k,c} = σ_c Σ_u |t_{k,c}(u)|`:

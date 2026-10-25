@@ -40,6 +40,15 @@ def test_mechanical_share_spreads_over_the_knees_below_the_block():
     assert np.all(np.diff(log_q) > 0)
 
 
+def test_sky_level_ignores_sources_and_blanks():
+    rng = np.random.default_rng(5)
+    plane = rng.normal(1.3, 1.0, (200, 200))             # a 1.3σ pedestal
+    plane[50:120, 50:120] += 40.0                         # a big bright galaxy
+    plane[:5] = 0.0                                       # a blanked strip
+    assert kt.sky_level(plane, 1.0) == pytest.approx(1.3, abs=0.05)
+    assert kt.sky_level(np.zeros((4, 4)), 1.0) == 0.0
+
+
 def test_weighted_quantile_follows_the_weights():
     values = np.array([1.0, 2.0, 3.0])
     assert kt.weighted_quantile(values, np.ones(3), [0.5])[0] == pytest.approx(2.0)

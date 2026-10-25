@@ -17,10 +17,14 @@ band) with a class-stratified one (``--per-class``), weights halved: the
 weights count field pixels without bias (prevalences), while the stratified
 half keeps rare bright pixels sampled.
 
-Units: everything is in the band's LR noise σ (the field's own). The
-"scene" is the truth on synthetic fields and, on real tiles, the LR smoothed
-3×3 (noise σ/3; the SR is not used there: a model's holes in bright cores
-would pass for faint pixels). A pixel's brightness is the scene under it, in
+Units: everything is in the band's LR noise σ per pixel (the field's own,
+recomputed from the stored LR with lag-4 differences: resampled NISP noise is
+correlated over neighbours, so older records' lag-1 σ was 2.6× too small). The
+"scene" is the truth on synthetic fields and, on real tiles, the LR above
+the tile's clipped sky level, smoothed 3×3 (noise σ/3; the SR is not used
+there: a model's holes in bright cores would pass for faint pixels). Real
+tiles can sit on a pedestal (NEXUS NISP: ~1.3σ) that the models do not
+reproduce, hence the sky level. A pixel's brightness is the scene under it, in
 the electrons an LR pixel of that surface brightness holds (the truth times
 ``scale²``) — the units of the knees — over σ; the effective knee is over σ
 too. Stamps (41 HR px) are in the same units, each turned so the scene's
@@ -129,21 +133,27 @@ def load_samples(entry: dict, kind: str) -> dict:
 
 def field_planes(run_id: str, spec: str, fields: list[dict], kind: str) -> list[dict]:
     """Per field: the SR, the reference and scene (the truth on synthetic
-    fields; on real tiles the LR smoothed 3×3, repeated to the HR grid) and
-    the LR, float32."""
+    fields; on real tiles the LR above its sky level, smoothed 3×3, repeated
+    to the HR grid) and the LR, float32. A real tile's sky level per band
+    (:func:`kt.sky_level`) goes to its field row as ``sky_level_e``."""
     out = []
     for f in fields:
         with np.load(runs._field_path(run_id, spec, f["ref"])) as stored:
             sr = np.asarray(stored["sr"], np.float32)
             lr = np.asarray(stored["lr"], np.float32)
+            sigma = ka.noise_sigma(lr).astype(np.float64)     # per-pixel σ (record ≤ 4 kept lag 1)
+            f["sigma_e"] = sigma.tolist()
             if kind == "synthetic" and "truth" in stored:
                 ref = np.asarray(stored["truth"], np.float32)
                 scene = ref
             else:
-                smooth = uniform_filter(lr, size=(3, 3, 1), mode="nearest") / SCALE ** 2
+                sky = np.array([kt.sky_level(lr[..., c], sigma[c]) for c in range(lr.shape[2])])
+                f["sky_level_e"] = sky.tolist()
+                above = lr - sky.astype(np.float32)
+                smooth = uniform_filter(above, size=(3, 3, 1), mode="nearest") / SCALE ** 2
                 ref = np.repeat(np.repeat(smooth, SCALE, axis=0), SCALE, axis=1)[:sr.shape[0], :sr.shape[1]]
                 scene = ref
-        out.append({"sr": sr, "ref": ref, "scene": scene, "lr": lr})
+        out.append({"sr": sr, "ref": ref, "scene": scene, "lr": lr, "sigma": sigma})
     return out
 
 
@@ -470,6 +480,10 @@ def prepare(run_id: str, spec: str, entry: dict, kind: str) -> tuple[dict, list[
         return None
     knees = np.asarray(entry["knees"], np.float64)
     planes = field_planes(run_id, spec, samples["fields"], kind)
+    for f in np.unique(samples["field"]):                    # σ of the stored LR, lag-4 (true per pixel)
+        rows = samples["field"] == f
+        samples["sigma"][rows] = planes[f]["sigma"][samples["band"][rows]]
+    samples["bright"] = samples["value_e"] * SCALE ** 2 / samples["sigma"]
     if kind == "real":                                       # the scene under the pixel, not the SR
         for f in np.unique(samples["field"]):
             rows = samples["field"] == f
@@ -527,6 +541,9 @@ def analyse_band(sub: dict, planes: list[dict], knees: np.ndarray, class_names, 
                 "sigma": sigma, "variants": variants, "mech_bins": mech_bins, "type_stacks": type_stacks,
                 "blank_fraction": blank_fraction, "look": look}
     summary = {"noise_sigma_e": sigma, "n": int(sub["band"].size), "blank_fraction": blank_fraction,
+               "sky_level_sigma_median": _median([f["sky_level_e"][int(sub["band"][0])] / f["sigma_e"]
+                                                  [int(sub["band"][0])] for f in sub["fields"]
+                                                  if "sky_level_e" in f]) if sub["band"].size else None,
                "bins": variants["raw"]["summary_bins"], "bins_learned": variants["learned"]["summary_bins"],
                "baseline_log_q_sigma_by_bin": mech_bins, "types": type_summary,
                "look_around": {"radii_px": list(kt.LOOK_RADII),
@@ -806,7 +823,7 @@ def compare_pairs(path: Path, prepared: dict, band: int, kind: str) -> dict:
     return summary
 
 
-def compare(run_ids: list[str], out_root: Path, pair: list[str] | None = None) -> None:
+def compare(run_ids: list[str], out_root: Path, pair: list[str] | None = None, tag: str = "") -> None:
     """Compare the models of ``run_ids`` (the first two, or the ``pair`` of
     model names, e.g. ``member_244,member_245``, in that order)."""
     prepared, knees = {}, None
@@ -822,7 +839,7 @@ def compare(run_ids: list[str], out_root: Path, pair: list[str] | None = None) -
     if pair:
         prepared = {name: prepared[name] for name in pair if name in prepared}
     names = list(prepared)
-    out = out_root / ("compare_" + "_vs_".join(names))
+    out = out_root / ("compare_" + "_vs_".join(names) + (f"_{tag}" if tag else ""))
     out.mkdir(parents=True, exist_ok=True)
     print(f"compare {names} → {out}", flush=True)
     summary: dict = {"models": {n: p["spec"] for n, p in prepared.items()},
@@ -860,10 +877,12 @@ def main() -> None:
     parser.add_argument("--only", help="analyse only this model spec of the run")
     parser.add_argument("--compare", help="run ids (same seed) whose models to compare")
     parser.add_argument("--pair", help="the two model names to compare, e.g. member_244,member_245")
+    parser.add_argument("--tag", default="", help="suffix of the comparison's folder")
     args = parser.parse_args()
     if args.compare:
         pair = [m.strip() for m in args.pair.split(",")] if args.pair else None
-        compare([r.strip() for r in args.compare.split(",") if r.strip()], runs.root() / "pixel_types", pair)
+        compare([r.strip() for r in args.compare.split(",") if r.strip()], runs.root() / "pixel_types",
+                pair, args.tag)
         return
 
     run_id = args.run_id or run_attribution(args)

@@ -73,6 +73,27 @@ def effective_knee(share: np.ndarray, knees: Sequence[float]) -> np.ndarray:
     return np.where(total > 0, out, np.nan)
 
 
+def sky_level(plane: np.ndarray, sigma: float, *, clip: float = 3.0, iterations: int = 10) -> float:
+    """A field's sky level: the median of ``plane`` iteratively clipped at
+    ``± clip·sigma`` around it (zeros and non-finite pixels left out).
+    Sources above the sky fall away, so a field filled by a bright galaxy
+    still settles on the sky around it."""
+    x = np.asarray(plane, np.float64).reshape(-1)
+    x = x[np.isfinite(x) & (x != 0)]
+    if not x.size:
+        return 0.0
+    level = float(np.median(x))
+    for _ in range(int(iterations)):
+        kept = x[np.abs(x - level) < clip * float(sigma)]
+        if not kept.size:
+            break
+        new = float(np.median(kept))
+        if new == level:
+            break
+        level = new
+    return level
+
+
 def mechanical_share(blocks_e: np.ndarray, knees: Sequence[float]) -> np.ndarray:
     """The local knee share a network with the same gradient on every
     knee's channel would have: ``∝ Σ_u 1/√(q_k² + x_u²)`` over the LR

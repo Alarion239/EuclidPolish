@@ -8,6 +8,7 @@ import json
 import numpy as np
 import pytest
 import tensorflow as tf
+from scipy.ndimage import zoom
 
 from euclid_polish.eval import knee_attribution as ka
 from euclid_polish.model import Model
@@ -139,6 +140,18 @@ def test_noise_sigma_is_each_bands_own_noise():
     assert (ka.noise_sigma(np.zeros((8, 8, 2))) == 1.0).all()
     with pytest.raises(ValueError, match="h, w, C"):
         ka.noise_sigma(np.zeros((8, 8)))
+
+
+def test_noise_sigma_sees_through_resampled_correlated_noise():
+    # NISP-like: white noise on a 3× coarser grid, resampled (bilinear) to
+    # the fine grid: neighbours are correlated, the pixel σ is unchanged at
+    # the coarse nodes.
+    rng = np.random.default_rng(9)
+    coarse = rng.normal(0.0, 2.0, (100, 100, 1))
+    fine = zoom(coarse, (3, 3, 1), order=1)
+    pixel_sigma = float(np.std(fine))
+    assert ka.noise_sigma(fine, lag=1)[0] < 0.6 * pixel_sigma          # lag 1 misses most of it
+    assert ka.noise_sigma(fine)[0] == pytest.approx(pixel_sigma, rel=0.08)
 
 
 def test_bands_are_weighted_by_their_noise():

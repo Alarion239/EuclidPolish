@@ -104,7 +104,7 @@ def test_a_run_writes_samples_aggregates_and_field_images(tiny, monkeypatch):
     kinds = {f["ref"]: f["kind"] for f in entry["fields"]}
     assert kinds == {"test/7": "synthetic", "poster/t1": "real"}
     synth = next(f for f in entry["fields"] if f["ref"] == "test/7")
-    assert record["version"] == runs.RECORD_VERSION == 4
+    assert record["version"] == runs.RECORD_VERSION == 5
     np.testing.assert_allclose(synth["noise_sigma_e"], ka.noise_sigma(lr), rtol=1e-3)
     assert "knee_share_by_input" not in synth["samples"]       # aggregates only
     classes = set(synth["samples"]["class"])

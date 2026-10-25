@@ -10,7 +10,7 @@ splits the sensitivity to the LR electrons exactly into knee terms::
     ∂y/∂x_c(u) = Σ_k t_{k,c}(u),    t_{k,c}(u) = g_{k,c}(u) / √(q_k² + x_c(u)²)
 
 A term is per input electron, and the bands' electrons differ in scale (the
-VIS sky noise is ~18 e⁻, NISP's ~0.8 e⁻), so each band's terms are weighted
+VIS sky noise is ~20 e⁻, NISP's ~2 e⁻ per pixel), so each band's terms are weighted
 by the band's noise σ_c (:func:`noise_sigma`): ``σ_c·|t_{k,c}|`` is the change
 of ``y`` for a 1σ change of band ``c`` through knee ``k``, comparable across
 bands. :func:`attribute` reports, per sampled pixel, the share of
@@ -71,6 +71,12 @@ OUTPUTS: tuple[str, ...] = ("electrons", "stretched", "heads")
 MIN_WINDOW_SIDE = 64
 #: The local shares' reach in LR pixels around the sample's LR pixel (1: 3×3).
 LOCAL_RADIUS = 1
+#: Lag (LR pixels) of the pixel differences :func:`noise_sigma` reads. NISP
+#: is resampled from 0.3″ to the 0.1″ grid, so its noise is correlated over
+#: neighbours (ρ ≈ 0.86): lag-1 differences see only ~0.38 of its pixel σ.
+#: From lag 4 on the noise is independent (synthetic fields: lag-4 σ within
+#: 2 % of the empty-sky pixel σ in all four bands, sources included).
+NOISE_LAG = 4
 #: The gradient splits: over the receptive field, and over the local block.
 _SPLITS: tuple[tuple[str, str], ...] = (("", "the receptive field"), ("_local", "the local block"))
 
@@ -181,12 +187,14 @@ def stretch(x_e: np.ndarray, knees: Sequence[float]) -> np.ndarray:
 # pixel classes
 # --------------------------------------------------------------------------- #
 
-def noise_sigma(lr_e: np.ndarray) -> np.ndarray:
+def noise_sigma(lr_e: np.ndarray, lag: int = NOISE_LAG) -> np.ndarray:
     """Per-band noise σ (electrons) of an ``(h, w, C)`` LR field: the robust
-    spread of neighbouring-pixel differences, ``1.4826·MAD(Δ)/√2`` over both
-    axes, leaving out pairs touching a zero (a blanked hole) or a non-finite
-    pixel. Structure barely moves it (most neighbours are sky). A band without
-    a usable σ takes the median of the others (1 when none has one)."""
+    spread of pixel differences ``lag`` pixels apart, ``1.4826·MAD(Δ)/√2``
+    over both axes, leaving out pairs touching a zero (a blanked hole) or a
+    non-finite pixel. The lag (:data:`NOISE_LAG`) steps past the noise's
+    correlation length, so the result is the per-pixel σ even for resampled
+    bands; structure barely moves it (most pixels are sky). A band without a
+    usable σ takes the median of the others (1 when none has one)."""
     lr = np.asarray(lr_e, np.float64)
     if lr.ndim != 3:
         raise ValueError(f"the LR field must be (h, w, C), got {lr.shape}")
@@ -194,8 +202,9 @@ def noise_sigma(lr_e: np.ndarray) -> np.ndarray:
     for c in range(lr.shape[2]):
         plane = lr[..., c]
         good = np.isfinite(plane) & (plane != 0)
-        diffs = [(plane[:, 1:] - plane[:, :-1])[good[:, 1:] & good[:, :-1]],
-                 (plane[1:, :] - plane[:-1, :])[good[1:, :] & good[:-1, :]]]
+        k = max(1, min(int(lag), plane.shape[0] - 1, plane.shape[1] - 1))
+        diffs = [(plane[:, k:] - plane[:, :-k])[good[:, k:] & good[:, :-k]],
+                 (plane[k:, :] - plane[:-k, :])[good[k:, :] & good[:-k, :]]]
         d = np.concatenate(diffs)
         if d.size >= 16:
             sigma[c] = 1.4826 * np.median(np.abs(d - np.median(d))) / math.sqrt(2.0)
