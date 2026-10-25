@@ -72,11 +72,18 @@ def main() -> None:
     parser.add_argument("--compare-a", help="'<run id>|<model spec>': the reference model")
     parser.add_argument("--compare-b", help="'<run id>|<model spec>': the model compared with it")
     parser.add_argument("--tag", default="", help="suffix of the comparison's folder")
+    parser.add_argument("--overview", help="'<run id>|<spec>,…': up to eight models' knee curves "
+                                           "on one figure (pixel_types/overview_<tag>/)")
     args = parser.parse_args()
 
     def say(label: str) -> None:
         print(f"  {label}", flush=True)
 
+    if args.overview:
+        refs = [tuple(item.strip().split("|", 1)) for item in args.overview.split(",") if item.strip()]
+        out = report.overview(refs, args.tag or "models", progress=say)
+        print(f"overview → {out}", flush=True)
+        return
     if args.compare_a or args.compare_b:
         params = report.parse_compare_request({"a": args.compare_a, "b": args.compare_b, "tag": args.tag})
         out = report.compare_models(params["a"], params["b"], tag=params["tag"], progress=say)

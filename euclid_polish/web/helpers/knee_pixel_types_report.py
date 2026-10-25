@@ -649,11 +649,16 @@ def _bin_medians(values: np.ndarray, bins: np.ndarray, weights: np.ndarray) -> l
     return out
 
 
-def compare_curves(path: Path, prepared: dict, kind: str):
-    """Effective knee and the network's own preference per brightness
-    decade, every model overlaid; and the mean knee share difference."""
+#: Model colours of the overlays (up to eight models).
+MODEL_COLOURS = ["#3b6fb6", "#c8502d", "#2a9d8f", "#8e44ad", "#d4a017", "#5b5b5b", "#e377c2", "#17becf"]
+
+
+def compare_curves(path: Path, prepared: dict, kind: str, title: str | None = None):
+    """Effective knee (with each model's chain-rule baseline, dotted) and the
+    network's own preference per brightness decade, every model overlaid
+    (median and 20–80 % band)."""
     names = list(prepared)
-    colours = ["#3b6fb6", "#c8502d", "#2a9d8f", "#8e44ad"]
+    colours = MODEL_COLOURS
     centres = 0.5 * (np.log10(EDGES[:-1]) + np.log10(EDGES[1:]))
     centres[0] = -2.5
     fig, axes = _subplots(2, len(BANDS), figsize=(4.2 * len(BANDS), 7.0), squeeze=False,
@@ -867,6 +872,32 @@ def compare_models(a: tuple[str, str], b: tuple[str, str], *, tag: str = "",
         summary[kind] = {BANDS[i]: compare_pairs(out / f"compare_pairs_{kind}_{BANDS[i]}.png", ready, i, kind)
                          for i in range(len(BANDS))}
     atomic_files.write_json(out / "summary.json", summary, allow_nan=False, default=float)
+    return out
+
+
+def overview(models: Sequence[tuple[str, str]], tag: str, *, progress: Progress = _quiet) -> Path:
+    """Several models' knee curves on one figure (``models``: ``(run id,
+    spec)``, up to eight): ``pixel_types/overview_<tag>/``, one PNG per
+    field set. Not listed by the console (a comparison is two models)."""
+    if not 2 <= len(models) <= len(MODEL_COLOURS):
+        raise ValueError(f"an overview takes 2–{len(MODEL_COLOURS)} models")
+    entries = {}
+    for run_id, spec in models:
+        record = runs.get_run(run_id)
+        name = model_name(spec)
+        key = name if name not in entries else f"{name}#{run_id[-6:]}"
+        entries[key] = (run_id, spec, record["models"][spec])
+    out = report_root() / f"overview_{runs.slug(tag)}"
+    out.mkdir(parents=True, exist_ok=True)
+    for kind in ("synthetic", "real"):
+        progress(f"overview {tag}: {kind}")
+        ready = {}
+        for name, (run_id, spec, entry) in entries.items():
+            got = prepare(run_id, spec, entry, kind)
+            if got is not None:
+                ready[name] = {"samples": got[0], "planes": got[1]}
+        if len(ready) >= 2:
+            compare_curves(out / f"overview_knee_{kind}.png", ready, kind)
     return out
 
 
