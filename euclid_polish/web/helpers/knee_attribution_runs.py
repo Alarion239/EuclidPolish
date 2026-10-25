@@ -40,14 +40,20 @@ from euclid_polish.web.helpers import atomic_files, model_catalog, real_tiles
 from euclid_polish.web.helpers import ensemble_viz as ev
 from euclid_polish.web.jobs import JobCancelled
 
-#: 3: adds the local (3×3 LR) splits; 2: shares weighted by each input
-#: band's noise σ (1 weighted per electron).
-RECORD_VERSION = 3
+#: 4: uniform sampling, per-sample weights and own-band knee splits, the
+#: synthetic truth in the field images; 3: adds the local (3×3 LR) splits;
+#: 2: shares weighted by each input band's noise σ (1 weighted per electron).
+RECORD_VERSION = 4
 _RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 #: Most synthetic test fields a run takes (the universal scores' 100).
 MAX_SYNTHETIC = 100
 MAX_PER_CLASS = 256
+MAX_PER_BAND = 8192
+#: How a field's pixels are sampled: per class (``per_class`` of each class
+#: present), uniformly (``per_band`` pixels per band, classes as common as
+#: they are) or both pooled (``mixed``, weights halved).
+SAMPLINGS = ("class", "uniform", "mixed")
 #: Models a run accepts: multi-knee members, served as universal or member specs.
 _KINDS = ("universal", "member")
 
@@ -233,6 +239,10 @@ def parse_request(form: Mapping[str, Any]) -> dict[str, Any]:
 
     synthetic = number("synthetic", 20, 0, MAX_SYNTHETIC)
     per_class = number("per_class", 24, 1, MAX_PER_CLASS)
+    per_band = number("per_band", 512, 1, MAX_PER_BAND)
+    sampling = str(form.get("sampling", "") or "class").strip().lower()
+    if sampling not in SAMPLINGS:
+        raise ValueError(f"sampling must be one of {', '.join(SAMPLINGS)}")
     seed = number("seed", 0, 0, 2 ** 31 - 1)
     tiles = [f"{s}/{i}" for s, i in real_tiles.parse_refs(str(form.get("tiles", "") or ""))]
     for ref in tiles:
@@ -245,7 +255,8 @@ def parse_request(form: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("pick synthetic test fields or real tiles")
     ablation = str(form.get("ablation", "1")).strip().lower() not in ("0", "false", "no")
     return {"models": specs, "synthetic": synthetic, "tiles": tiles,
-            "per_class": per_class, "seed": seed, "ablation": ablation}
+            "per_class": per_class, "seed": seed, "ablation": ablation,
+            "sampling": sampling, "per_band": per_band}
 
 
 # --------------------------------------------------------------------------- #
@@ -258,15 +269,27 @@ def _round(values: np.ndarray, digits: int) -> list:
 
 def _field_samples(net, lr_e: np.ndarray, codes: np.ndarray, values: np.ndarray,
                    class_names: Sequence[str], *, per_class: int, rng: np.random.Generator,
-                   ablation: bool, sigma_e: np.ndarray
-                   ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+                   ablation: bool, sigma_e: np.ndarray, sampling: str = "class",
+                   per_band: int = 512) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     """One field's samples: ``(JSON row samples, numpy part for aggregate)``.
     The per-input knee splits (C × K per sample) and the local band shares
-    only go to the part: they would multiply the record's size."""
-    picked = ka.sample_pixels(codes, per_class, rng)
+    only go to the part: they would multiply the record's size. Each row
+    keeps its own band's knee split (``knee_share_own`` and
+    ``knee_share_own_local``: the split of the input band it predicts, the
+    one comparable across retrains) and its ``weight`` (field pixels it
+    stands for)."""
+    if sampling == "uniform":
+        picked = ka.sample_uniform(codes, per_band, rng)
+    elif sampling == "mixed":
+        picked = ka.sample_mixed(codes, per_class, per_band, rng)
+    else:
+        picked = ka.sample_pixels(codes, per_class, rng)
     shares = ka.attribute(net, lr_e, picked, ablation=ablation, sigma_e=sigma_e)
     band, y, x = picked["band"], picked["y"], picked["x"]
     value_e = values[y, x, band].astype(np.float64)
+    rows = np.arange(band.size)
+    own = shares["knee_share_by_input"][rows, band]
+    own_local = shares["knee_share_by_input_local"][rows, band]
     part = {"band": band, "code": picked["code"], "value_e": value_e,
             "knee_share": shares["knee_share"], "band_share": shares["band_share"],
             "knee_share_by_input": shares["knee_share_by_input"],
@@ -279,7 +302,10 @@ def _field_samples(net, lr_e: np.ndarray, codes: np.ndarray, values: np.ndarray,
            "x": x.astype(int).tolist(),
            "class": [class_names[int(c)] for c in picked["code"]],
            "value_e": _round(value_e, 4),
+           "weight": _round(picked["weight"], 3),
            "knee_share": _round(shares["knee_share"], 4),
+           "knee_share_own": _round(own, 4),
+           "knee_share_own_local": _round(own_local, 4),
            "knee_share_local": _round(shares["knee_share_local"], 4),
            "ablation_share": _round(part["ablation_share"], 4),
            "band_share": _round(shares["band_share"], 4),
@@ -287,20 +313,25 @@ def _field_samples(net, lr_e: np.ndarray, codes: np.ndarray, values: np.ndarray,
     return row, part
 
 
-def _save_field(run_id: str, spec: str, ref: str, sr_e: np.ndarray, lr_e: np.ndarray) -> str:
+def _save_field(run_id: str, spec: str, ref: str, sr_e: np.ndarray, lr_e: np.ndarray,
+                truth_e: np.ndarray | None = None) -> str:
+    """The field's SR and LR (and a synthetic field's truth, for the pixel
+    types' stamps) as float16 display copies."""
     path = _field_path(run_id, spec, ref)
     path.parent.mkdir(parents=True, exist_ok=True)
+    limit = float(np.finfo(np.float16).max)                 # display copies: clip, never inf
+    planes = {"sr": sr_e, "lr": lr_e} | ({} if truth_e is None else {"truth": truth_e})
     with atomic_files.temporary_sibling(path, suffix=".tmp.npz") as tmp:
-        limit = float(np.finfo(np.float16).max)             # display copies: clip, never inf
-        np.savez_compressed(tmp, sr=np.clip(sr_e, -limit, limit).astype(np.float16),
-                            lr=np.clip(lr_e, -limit, limit).astype(np.float16))
+        np.savez_compressed(tmp, **{k: np.clip(v, -limit, limit).astype(np.float16)
+                                    for k, v in planes.items()})
         os.replace(tmp, path)
     return (f"/api/knee-attribution/{run_id}/field/{slug(spec)}/{slug(ref)}.png")
 
 
 def _one_field(run_id: str, spec: str, net, member, ref: str, kind: str, lr_e: np.ndarray, *,
                galaxy: np.ndarray | None = None, star: np.ndarray | None = None,
-               per_class: int, rng: np.random.Generator, ablation: bool
+               per_class: int, rng: np.random.Generator, ablation: bool,
+               sampling: str = "class", per_band: int = 512
                ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     """One field of one model: ``(the record's field row, the aggregate
     part)``. Synthetic fields class by truth (``galaxy``/``star``), real ones
@@ -309,24 +340,28 @@ def _one_field(run_id: str, spec: str, net, member, ref: str, kind: str, lr_e: n
     # non-finite pixel would turn the SR around it into NaN).
     lr_e = np.nan_to_num(np.asarray(lr_e, np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     sr_e = np.asarray(member.upsample_array(lr_e), np.float32)
+    truth = None
     if kind == "synthetic":
         h, w = sr_e.shape[:2]
         codes, values = ka.truth_classes(galaxy[:h, :w], star[:h, :w], lr_e)
         names = ka.TRUTH_CLASSES
+        truth = values
     else:
         codes, values = ka.real_classes(sr_e, lr_e)
         names = ka.REAL_CLASSES
     sigma_e = ka.noise_sigma(lr_e)
     row, part = _field_samples(net, lr_e, codes, values, names, per_class=per_class,
-                               rng=rng, ablation=ablation, sigma_e=sigma_e)
-    image = _save_field(run_id, spec, ref, sr_e, lr_e)
+                               rng=rng, ablation=ablation, sigma_e=sigma_e,
+                               sampling=sampling, per_band=per_band)
+    image = _save_field(run_id, spec, ref, sr_e, lr_e, truth)
     return ({"ref": ref, "kind": kind, "shape": list(sr_e.shape[:2]), "image": image,
              "noise_sigma_e": _round(sigma_e, 4), "samples": row}, part)
 
 
 def job_knee_attribution(cap, *, run_id: str, models: Sequence[str], synthetic: int,
                          tiles: Sequence[str], per_class: int, seed: int,
-                         ablation: bool = True) -> dict[str, Any]:
+                         ablation: bool = True, sampling: str = "class",
+                         per_band: int = 512) -> dict[str, Any]:
     """The job: every model over every field, the record rewritten after each
     model; ``{run_id, status, errors}``. A cancelled run keeps the models it
     finished, status ``cancelled``."""
@@ -334,12 +369,14 @@ def job_knee_attribution(cap, *, run_id: str, models: Sequence[str], synthetic: 
         "version": RECORD_VERSION, "id": run_id,
         "created": datetime.now(UTC).isoformat(), "finished": None, "status": "running",
         "params": {"models": list(models), "synthetic": int(synthetic), "tiles": list(tiles),
-                   "per_class": int(per_class), "seed": int(seed), "ablation": bool(ablation)},
+                   "per_class": int(per_class), "seed": int(seed), "ablation": bool(ablation),
+                   "sampling": str(sampling), "per_band": int(per_band)},
         "models": {}, "errors": {}}
     _write(record)
     try:
         _run_models(cap, record, run_id, models, synthetic_indices(synthetic), tiles,
-                    per_class=per_class, seed=seed, ablation=ablation)
+                    per_class=per_class, seed=seed, ablation=ablation, sampling=sampling,
+                    per_band=per_band)
     except (JobCancelled, KeyboardInterrupt):
         record["status"] = "cancelled"
         raise
@@ -353,7 +390,7 @@ def job_knee_attribution(cap, *, run_id: str, models: Sequence[str], synthetic: 
 
 def _run_models(cap, record: dict[str, Any], run_id: str, models: Sequence[str],
                 indices: Sequence[int], tiles: Sequence[str], *, per_class: int, seed: int,
-                ablation: bool) -> None:
+                ablation: bool, sampling: str = "class", per_band: int = 512) -> None:
     """Every model over every field into ``record`` (rewritten after each model)."""
     n_fields = len(indices) + len(tiles)
     total = max(1, len(models) * n_fields)
@@ -376,7 +413,8 @@ def _run_models(cap, record: dict[str, Any], run_id: str, models: Sequence[str],
             try:
                 field, part = _one_field(run_id, spec, net, member, ref, "synthetic", lr_e,
                                          galaxy=galaxy, star=star, per_class=per_class,
-                                         rng=rng, ablation=ablation)
+                                         rng=rng, ablation=ablation, sampling=sampling,
+                                         per_band=per_band)
                 entry["fields"].append(field)
                 parts["synthetic"].append(part)
             except Exception as exc:  # noqa: BLE001 — one field never stops the run
@@ -387,7 +425,8 @@ def _run_models(cap, record: dict[str, Any], run_id: str, models: Sequence[str],
             cap.tick(done, total, f"{spec}: {ref}")
             try:
                 field, part = _one_field(run_id, spec, net, member, ref, "real", _real_lr(ref),
-                                         per_class=per_class, rng=rng, ablation=ablation)
+                                         per_class=per_class, rng=rng, ablation=ablation,
+                                         sampling=sampling, per_band=per_band)
                 entry["fields"].append(field)
                 parts["real"].append(part)
             except Exception as exc:  # noqa: BLE001

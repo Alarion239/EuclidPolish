@@ -142,3 +142,24 @@ Per HR pixel and band, a class name and a brightness value (electrons) used for 
   - Aggregation means and bins are right.
 - **Runs/API:** job and record round-trip with a tiny model, validation errors, listing, refusing a single-knee model, no job on GET.
 - **Frontend:** model helpers, rendering the charts from a fixture, the run form posting the right fields.
+
+## Pixel types (2026-10-25, record version 4)
+
+**Request (user):** "approximate averaged types of pixels which correspond to different prevalence of the input knee"; effective knee + brightness-controlled types + stacked stamps, uniform sampling; run on the best model (249: 1σ loss floor + isotropy 2–64 px), then compare a second model.
+
+**Record version 4.**
+- `sampling`: `class` (as before), `uniform` (`per_band` random pixels per band) or `mixed` (both pooled, weights halved).
+- Per sample: `weight` (the field pixels it stands for, so weighted sums count pixels without bias under any design), and `knee_share_own` / `knee_share_own_local` (the split of the sample's own input band, the one stable across retrains).
+- Synthetic field images also keep the `truth`.
+
+**Numerics:** `euclid_polish/eval/knee_pixel_types.py`.
+- Effective knee: `log10 q̄ = Σ s_k log10 q_k`.
+- Chain-rule baseline (`mechanical_share`): the share a network with the same gradient on every knee would get from the LR 3×3 block, `∝ Σ_u 1/√(q_k² + x_u²)`. The effective knee minus the baseline's is the network's own preference.
+- Brightness-controlled groups: within each decade of brightness in σ, the bottom 20 % / middle / top 20 % by effective knee (or by the preference).
+- Knee types: weighted k-means of the centred log-ratio of the shares, every brightness decade weighted alike; prevalences use the true weights.
+- Stamps: aligned by a dihedral move (the scene's brighter side up), median-stacked, with an occupancy map (fraction > 1σ) and measures (nearest source, brightest pixel nearby, local maximum, slope).
+
+**Script:** `scripts/knee_pixel_types.py` runs the attribution (no ablation) and writes the figures and `summary.json` to `<root>/pixel_types/<run>/<model>/`; `--compare A,B` pairs the same pixels across two runs of the same seed.
+- Units are the band's LR noise σ.
+- The real-tile scene and brightness are the LR smoothed 3×3, not the SR, because a model's holes in bright cores would pass for faint pixels.
+- Samples whose LR block holds a blank (0) pixel are left out, since there `1/q` puts the share on the lowest knee whatever the network does.

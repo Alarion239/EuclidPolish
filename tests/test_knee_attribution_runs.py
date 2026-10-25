@@ -73,12 +73,17 @@ def test_parse_request_validates(monkeypatch):
     ok = runs.parse_request({"models": "universal:member_9", "synthetic": "5", "tiles": "poster/t1",
                              "per_class": "8", "seed": "2"})
     assert ok == {"models": ["universal:member_9"], "synthetic": 5, "tiles": ["poster/t1"],
-                  "per_class": 8, "seed": 2, "ablation": True}
+                  "per_class": 8, "seed": 2, "ablation": True, "sampling": "class", "per_band": 512}
+    uniform = runs.parse_request({"models": "universal:member_9", "synthetic": "5",
+                                  "sampling": "uniform", "per_band": "64"})
+    assert uniform["sampling"] == "uniform" and uniform["per_band"] == 64
     for form, message in [({}, "at least one"),
                           ({"models": "member:member_3", "synthetic": "1"}, "single-knee"),
                           ({"models": "universal:member_9", "synthetic": "101"}, "synthetic"),
                           ({"models": "universal:member_9", "synthetic": "0"}, "pick synthetic"),
-                          ({"models": "universal:member_9", "per_class": "0", "synthetic": "1"}, "per_class")]:
+                          ({"models": "universal:member_9", "per_class": "0", "synthetic": "1"}, "per_class"),
+                          ({"models": "universal:member_9", "synthetic": "1", "sampling": "x"}, "sampling"),
+                          ({"models": "universal:member_9", "synthetic": "1", "per_band": "0"}, "per_band")]:
         with pytest.raises(ValueError, match=message):
             runs.parse_request(form)
 
@@ -99,12 +104,12 @@ def test_a_run_writes_samples_aggregates_and_field_images(tiny, monkeypatch):
     kinds = {f["ref"]: f["kind"] for f in entry["fields"]}
     assert kinds == {"test/7": "synthetic", "poster/t1": "real"}
     synth = next(f for f in entry["fields"] if f["ref"] == "test/7")
-    assert record["version"] == runs.RECORD_VERSION == 3
+    assert record["version"] == runs.RECORD_VERSION == 4
     np.testing.assert_allclose(synth["noise_sigma_e"], ka.noise_sigma(lr), rtol=1e-3)
     assert "knee_share_by_input" not in synth["samples"]       # aggregates only
     classes = set(synth["samples"]["class"])
     assert {"saturated", "galaxy core", "star wing"} <= classes
-    for key in ("knee_share", "knee_share_local"):
+    for key in ("knee_share", "knee_share_local", "knee_share_own", "knee_share_own_local"):
         for share in synth["samples"][key]:
             assert len(share) == len(KNEES) and abs(sum(share) - 1.0) < 1e-3
     agg = entry["aggregate"]
@@ -125,6 +130,24 @@ def test_a_run_writes_samples_aggregates_and_field_images(tiny, monkeypatch):
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     assert cap.ticks[-1][0] == cap.ticks[-1][1]
     assert [r["id"] for r in runs.list_runs()] == ["20261015-000000-abcdef"]
+
+
+def test_a_uniform_run_samples_every_band_alike_and_keeps_the_truth(tiny, monkeypatch):
+    lr, galaxy, star = _synthetic_field()
+    monkeypatch.setattr(runs, "synthetic_indices", lambda n: [7][:n])
+    monkeypatch.setattr(runs, "_synthetic_fields",
+                        lambda indices: iter([("test/7", lr, galaxy, star)]))
+    runs.job_knee_attribution(_Cap(), run_id="20261015-000004-abcdef", models=["universal:member_9"],
+                              synthetic=1, tiles=[], per_class=3, seed=1, ablation=False,
+                              sampling="uniform", per_band=40)
+    record = runs.get_run("20261015-000004-abcdef")
+    assert record["params"]["sampling"] == "uniform" and record["params"]["per_band"] == 40
+    samples = record["models"]["universal:member_9"]["fields"][0]["samples"]
+    assert samples["band"] == [0] * 40 + [1] * 40 + [2] * 40 + [3] * 40
+    np.testing.assert_allclose(samples["weight"], 48 * 48 / 40)
+    with np.load(runs._field_path("20261015-000004-abcdef", "universal:member_9", "test/7")) as stored:
+        truth = np.asarray(stored["truth"], np.float32)
+    np.testing.assert_allclose(truth, galaxy + star, rtol=1e-3)
 
 
 def test_a_failing_model_is_recorded_not_fatal(tiny, monkeypatch):

@@ -273,19 +273,30 @@ def real_classes(sr_e: np.ndarray, lr_e: np.ndarray, scale: int = 2) -> tuple[np
     return codes, value
 
 
+def _picked(codes: np.ndarray, bands: list, picks: list, weights: list) -> dict[str, np.ndarray]:
+    flat_index = np.concatenate(picks) if picks else np.zeros(0, np.int64)
+    y, x = np.divmod(flat_index, codes.shape[1])
+    band = (np.concatenate(bands) if bands else np.zeros(0)).astype(np.int16)
+    return {"band": band, "y": y.astype(np.int32), "x": x.astype(np.int32),
+            "code": codes[y, x, band].astype(np.int16) if band.size else np.zeros(0, np.int16),
+            "weight": (np.concatenate(weights) if weights else np.zeros(0)).astype(np.float64)}
+
+
 def sample_pixels(codes: np.ndarray, per_class: int,
                   rng: np.random.Generator) -> dict[str, np.ndarray]:
     """Stratified sample of an ``(H, W, C)`` class map: per band, up to
     ``per_class`` distinct random pixels of every class present.
-    ``{"band": int16, "y": int32, "x": int32, "code": int16}``, band-major,
-    classes ascending within a band."""
+    ``{"band": int16, "y": int32, "x": int32, "code": int16, "weight":
+    float64}``, band-major, classes ascending within a band; ``weight`` is
+    the number of the band's pixels each sample stands for (its class's
+    pixels over the class's samples), so weighted sums count pixels as a
+    uniform sample would."""
     codes = np.asarray(codes)
     if codes.ndim != 3:
         raise ValueError(f"the class map must be (H, W, C), got {codes.shape}")
     if int(per_class) < 1:
         raise ValueError(f"per_class must be at least 1, got {per_class!r}")
-    width = codes.shape[1]
-    bands, picks, labels = [], [], []
+    bands, picks, weights = [], [], []
     for band in range(codes.shape[2]):
         flat = codes[..., band].ravel()
         for code in np.unique(flat):
@@ -293,12 +304,43 @@ def sample_pixels(codes: np.ndarray, per_class: int,
             take = where[rng.choice(where.size, size=min(int(per_class), where.size), replace=False)]
             picks.append(take)
             bands.append(np.full(take.size, band))
-            labels.append(np.full(take.size, code))
-    flat_index = np.concatenate(picks) if picks else np.zeros(0, np.int64)
-    y, x = np.divmod(flat_index, width)
-    return {"band": (np.concatenate(bands) if bands else np.zeros(0)).astype(np.int16),
-            "y": y.astype(np.int32), "x": x.astype(np.int32),
-            "code": (np.concatenate(labels) if labels else np.zeros(0)).astype(np.int16)}
+            weights.append(np.full(take.size, where.size / take.size))
+    return _picked(codes, bands, picks, weights)
+
+
+def sample_uniform(codes: np.ndarray, per_band: int,
+                   rng: np.random.Generator) -> dict[str, np.ndarray]:
+    """Uniform sample of an ``(H, W, C)`` class map: per band, ``per_band``
+    distinct random pixels (all of them when the band has fewer), whatever
+    their class, so the classes come in as often as they cover the field.
+    Same keys as :func:`sample_pixels`; ``weight`` is ``H·W / per_band``."""
+    codes = np.asarray(codes)
+    if codes.ndim != 3:
+        raise ValueError(f"the class map must be (H, W, C), got {codes.shape}")
+    if int(per_band) < 1:
+        raise ValueError(f"per_band must be at least 1, got {per_band!r}")
+    size = codes.shape[0] * codes.shape[1]
+    take = min(int(per_band), size)
+    bands, picks, weights = [], [], []
+    for band in range(codes.shape[2]):
+        picks.append(np.sort(rng.choice(size, size=take, replace=False)))
+        bands.append(np.full(take, band))
+        weights.append(np.full(take, size / max(take, 1)))
+    return _picked(codes, bands, picks, weights)
+
+
+def sample_mixed(codes: np.ndarray, per_class: int, per_band: int,
+                 rng: np.random.Generator) -> dict[str, np.ndarray]:
+    """Both designs pooled: :func:`sample_uniform` (``per_band``) then
+    :func:`sample_pixels` (``per_class``), each weight halved. Either design
+    alone counts the pixels without bias, so their mean does too, while the
+    stratified half keeps rare classes (cores, saturated pixels) sampled. A
+    pixel may come twice, once per design."""
+    uniform = sample_uniform(codes, per_band, rng)
+    stratified = sample_pixels(codes, per_class, rng)
+    out = {key: np.concatenate([uniform[key], stratified[key]]) for key in uniform}
+    out["weight"] = 0.5 * out["weight"]
+    return out
 
 
 # --------------------------------------------------------------------------- #

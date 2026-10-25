@@ -296,6 +296,35 @@ def test_sample_pixels_is_stratified_and_reproducible():
         np.testing.assert_array_equal(again[key], picked[key])
     other = ka.sample_pixels(codes, 4, np.random.default_rng(8))
     assert not all(np.array_equal(other[k], picked[k]) for k in ("y", "x"))
+    # Weights count the pixels each sample stands for: a band's weights sum
+    # to its pixel count.
+    for band in (0, 1):
+        assert picked["weight"][picked["band"] == band].sum() == pytest.approx(10 * 12)
+    assert picked["weight"][(picked["band"] == 0) & (picked["code"] == 3)].tolist() == [1.0, 1.0]
+
+
+def test_sample_uniform_takes_classes_as_often_as_they_cover_the_field():
+    codes = np.zeros((40, 50, 2), np.int8)
+    codes[:10, :, 0] = 1                                 # a quarter of band 0
+    picked = ka.sample_uniform(codes, 800, np.random.default_rng(1))
+    assert picked["band"].tolist() == [0] * 800 + [1] * 800
+    np.testing.assert_array_equal(codes[picked["y"], picked["x"], picked["band"]], picked["code"])
+    assert np.mean(picked["code"][picked["band"] == 0] == 1) == pytest.approx(0.25, abs=0.05)
+    assert len(set(zip(picked["y"][:800].tolist(), picked["x"][:800].tolist(), strict=True))) == 800
+    np.testing.assert_allclose(picked["weight"], 2000 / 800)
+    everything = ka.sample_uniform(codes[:3, :3], 100, np.random.default_rng(1))
+    assert everything["band"].size == 2 * 9 and np.all(everything["weight"] == 1.0)
+    with pytest.raises(ValueError, match="per_band"):
+        ka.sample_uniform(codes, 0, np.random.default_rng(1))
+
+
+def test_sample_mixed_pools_both_designs_with_halved_weights():
+    codes = np.zeros((40, 50, 1), np.int8)
+    codes[0, :3, 0] = 1                                  # a rare class: 3 pixels
+    picked = ka.sample_mixed(codes, 5, 100, np.random.default_rng(2))
+    assert picked["band"].size == 100 + 5 + 3
+    assert picked["weight"].sum() == pytest.approx(40 * 50)
+    assert (picked["code"] == 1).sum() >= 3              # the stratified half keeps it
 
 
 def test_aggregate_means_classes_and_brightness_bins():
