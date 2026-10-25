@@ -101,23 +101,40 @@ def get_run(run_id: str) -> dict[str, Any]:
         raise KeyError(f"unknown knee-attribution run {run_id!r}") from exc
 
 
+#: A record's summary by path, kept while its (mtime, size) holds: a mixed
+#: run's record is tens of MB, so the list parses each one once.
+_SUMMARIES: dict[Path, tuple[tuple[int, int], dict[str, Any]]] = {}
+
+
+def _summary(path: Path) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+        key = (stat.st_mtime_ns, stat.st_size)
+        hit = _SUMMARIES.get(path)
+        if hit and hit[0] == key:
+            return hit[1]
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    params = record.get("params") or {}
+    row = {"id": record.get("id"), "created": record.get("created"),
+           "finished": record.get("finished"), "status": record.get("status"),
+           "models": params.get("models", []), "synthetic": params.get("synthetic", 0),
+           "tiles": params.get("tiles", []), "per_class": params.get("per_class"),
+           "sampling": params.get("sampling", "class"), "per_band": params.get("per_band"),
+           "seed": params.get("seed"), "version": record.get("version")}
+    _SUMMARIES[path] = (key, row)
+    return row
+
+
 def list_runs(limit: int = 200) -> list[dict[str, Any]]:
-    """Run summaries, newest first (no samples)."""
+    """Run summaries, newest first (no samples; each record parsed once
+    while it is unchanged)."""
     folder = root()
     if not folder.is_dir():
         return []
-    out = []
-    for path in sorted(folder.glob("*.json"), reverse=True)[:limit]:
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        params = record.get("params") or {}
-        out.append({"id": record.get("id"), "created": record.get("created"),
-                    "finished": record.get("finished"), "status": record.get("status"),
-                    "models": params.get("models", []), "synthetic": params.get("synthetic", 0),
-                    "tiles": params.get("tiles", []), "per_class": params.get("per_class")})
-    return out
+    rows = (_summary(path) for path in sorted(folder.glob("*.json"), reverse=True)[:limit])
+    return [dict(row) for row in rows if row is not None]
 
 
 # --------------------------------------------------------------------------- #

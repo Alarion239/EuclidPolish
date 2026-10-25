@@ -13,12 +13,14 @@
      noise σ line;
    - one colour per knee value on a sequential ramp (faint knee → bright
      knee), the same value the same colour in every panel;
-   - the run form: defaults, validation, the confirm's estimate and the
-     POSTed fields; the field image URL (the backend's slug rule). */
+   - the run form: defaults, validation (the sampling and its samples per
+     band too), the confirm's estimate and the POSTed fields; the field
+     image URL (the backend's slug rule). */
 import { viridis } from "../../colors";
 import { formatNumber, formatPow10 } from "../../format";
 import type {
   ClassShares, KneeAggregate, KneeField, KneeModelChoice, KneeModelResult, KneeRunParams, KneeRunRecord, KneeRunSummary, KneeSamples,
+  KneeSampling,
 } from "./kneesApi";
 import { memberNumber } from "./model";
 
@@ -49,6 +51,13 @@ export const MAX_OVERLAY = 4;
  *  samples per class). Measured on an M4 CPU: ~19 s per field at 24 per class. */
 export const SECONDS_PER_FIELD = 2;
 export const SECONDS_PER_CLASS_SAMPLE = 0.7;
+/** Per sampled pixel (all four bands count): with the ablation check, and
+ *  the gradient alone (measured: 1024 per band + 48 per class ≈ 52 s/field). */
+export const SECONDS_PER_SAMPLE = { ablation: 0.025, gradient: 0.009 };
+/** How pixels are sampled: per class, uniformly, or both pooled. */
+export const SAMPLINGS: readonly KneeSampling[] = ["class", "uniform", "mixed"];
+export const DEFAULT_PER_BAND = 1024;
+export const MAX_PER_BAND = 8192;
 
 /* ── normalisation ─────────────────────────────────────────────────────── */
 
@@ -81,6 +90,8 @@ export function normaliseRuns(raw: unknown): KneeRunSummary[] {
     id: str(r.id), created: r.created == null ? null : str(r.created), finished: r.finished == null ? null : str(r.finished),
     status: str(r.status, "done"), models: strs(r.models), synthetic: numOr(r.synthetic, 0), tiles: strs(r.tiles),
     per_class: numOrNull(r.per_class),
+    sampling: r.sampling == null ? "class" : str(r.sampling), per_band: numOrNull(r.per_band),
+    seed: numOrNull(r.seed), version: numOrNull(r.version),
   }));
 }
 
@@ -523,7 +534,11 @@ export function defaultModelPick(models: readonly KneeModelChoice[], n = 3): str
   return newest(universal.length ? universal : avail);
 }
 
-export type RunForm = { models: string[]; synthetic: string; tiles: string[]; perClass: string; seed: string };
+export type RunForm = {
+  models: string[]; synthetic: string; tiles: string[]; perClass: string; seed: string;
+  /** Absent: per class (the default), with the ablation check. */
+  sampling?: KneeSampling; perBand?: string; ablation?: boolean;
+};
 export const DEFAULT_FORM: Omit<RunForm, "models" | "tiles"> = { synthetic: "20", perClass: String(DEFAULT_PER_CLASS), seed: "0" };
 
 const wholeIn = (raw: string, lo: number, hi: number): number | null => {
@@ -535,7 +550,9 @@ const wholeIn = (raw: string, lo: number, hi: number): number | null => {
 
 export type RunCheck = {
   ok: boolean; synthetic: number | null; perClass: number | null; seed: number | null;
-  errors: Partial<Record<"models" | "synthetic" | "perClass" | "seed" | "fields", string>>;
+  /** Null under class sampling (no uniform draw). */
+  perBand: number | null;
+  errors: Partial<Record<"models" | "synthetic" | "perClass" | "perBand" | "seed" | "fields", string>>;
 };
 
 /** Validate the form (the backend's ranges): ok when every number is a whole
@@ -544,26 +561,50 @@ export function checkRunForm(f: RunForm): RunCheck {
   const synthetic = wholeIn(f.synthetic, 0, MAX_SYNTHETIC);
   const perClass = wholeIn(f.perClass, 1, MAX_PER_CLASS);
   const seed = wholeIn(f.seed, 0, MAX_SEED);
+  const uniform = !!f.sampling && f.sampling !== "class";
+  const perBand = uniform ? wholeIn(f.perBand ?? "", 1, MAX_PER_BAND) : null;
   const errors: RunCheck["errors"] = {};
+  if (uniform && perBand == null) errors.perBand = `A whole number from 1 to ${MAX_PER_BAND}`;
   if (!f.models.length) errors.models = "Pick at least one model";
   if (synthetic == null) errors.synthetic = `A whole number from 0 to ${MAX_SYNTHETIC}`;
   if (perClass == null) errors.perClass = `A whole number from 1 to ${MAX_PER_CLASS}`;
   if (seed == null) errors.seed = "A whole number ≥ 0";
   if (synthetic === 0 && !f.tiles.length) errors.fields = "Pick synthetic test fields or real tiles";
-  return { ok: Object.keys(errors).length === 0, synthetic, perClass, seed, errors };
+  return { ok: Object.keys(errors).length === 0, synthetic, perClass, seed, perBand, errors };
 }
 
-/** The POSTed form fields (POST /api/knee-attribution). */
-export function runFormData(f: { models: readonly string[]; synthetic: number; tiles: readonly string[]; perClass: number; seed: number }): Record<string, string> {
-  return {
+/** The POSTed form fields (POST /api/knee-attribution): the sampling and
+ *  its samples per band only off the default (per class), `ablation=0`
+ *  only when the check is off. */
+export function runFormData(f: {
+  models: readonly string[]; synthetic: number; tiles: readonly string[]; perClass: number; seed: number;
+  sampling?: KneeSampling; perBand?: number | null; ablation?: boolean;
+}): Record<string, string> {
+  const out: Record<string, string> = {
     models: f.models.join(","), synthetic: String(f.synthetic), tiles: f.tiles.join(","),
     per_class: String(f.perClass), seed: String(f.seed),
   };
+  if (f.sampling && f.sampling !== "class") {
+    out.sampling = f.sampling;
+    out.per_band = String(f.perBand ?? DEFAULT_PER_BAND);
+  }
+  if (f.ablation === false) out.ablation = "0";
+  return out;
 }
 
-/** "local job: 3 models × 22 fields, ~3 min" (~3 s per field per model). */
-export function estimateText(nModels: number, nFields: number, perClass = DEFAULT_PER_CLASS): string {
-  const perField = SECONDS_PER_FIELD + SECONDS_PER_CLASS_SAMPLE * Math.max(0, perClass);
+/** "local job: 3 models × 22 fields, ~3 min": per field and model a fixed
+ *  part plus the samples (per class: ~28 per class count; uniform: 4 bands ×
+ *  per band), each slower with the ablation check. */
+export function estimateText(nModels: number, nFields: number, perClass = DEFAULT_PER_CLASS,
+  opts: { sampling?: KneeSampling; perBand?: number | null; ablation?: boolean } = {}): string {
+  const ablation = opts.ablation !== false;
+  const sampling = opts.sampling ?? "class";
+  const classPart = sampling === "uniform" ? 0
+    : (ablation ? SECONDS_PER_CLASS_SAMPLE : SECONDS_PER_CLASS_SAMPLE * SECONDS_PER_SAMPLE.gradient / SECONDS_PER_SAMPLE.ablation)
+      * Math.max(0, perClass);
+  const uniformPart = sampling === "class" ? 0
+    : 4 * Math.max(0, opts.perBand ?? DEFAULT_PER_BAND) * (ablation ? SECONDS_PER_SAMPLE.ablation : SECONDS_PER_SAMPLE.gradient);
+  const perField = SECONDS_PER_FIELD + classPart + uniformPart;
   const s = perField * Math.max(0, nModels) * Math.max(0, nFields);
   const min = s / 60;
   const time = min < 90 ? `~${Math.max(1, Math.round(min))} min` : `~${+(min / 60).toPrecision(2)} h`;
@@ -611,3 +652,4 @@ export const parseSet = (v: string): FieldSet => (v === "real" ? "real" : "synth
 export const parseShare = (v: string): ShareKind => (SHARE_KINDS.includes(v as ShareKind) ? (v as ShareKind) : "gradient");
 export const parseLayer = (v: string): ImageLayer => (v === "lr" ? "lr" : "sr");
 export const parseInput = (v: string): KneeInput => ((KNEE_INPUTS as readonly string[]).includes(v) ? (v as KneeInput) : "all");
+export const parseSampling = (v: string): KneeSampling => ((SAMPLINGS as readonly string[]).includes(v) ? (v as KneeSampling) : "class");

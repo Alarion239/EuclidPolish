@@ -1,14 +1,17 @@
 """Knee-attribution routes (``/api/knee-attribution``, spec
 ``docs/superpowers/specs/2026-10-15-knee-attribution-design.md``): list and
 read runs, the multi-knee models a run can take, field images, and starting a
-run (a local job; nothing starts on a GET)."""
+run; the pixel types (``/api/knee-attribution/pixel-types``): the analyses
+and comparisons, their figures, and starting either. Every start is a local
+job; nothing starts on a GET."""
 
 from __future__ import annotations
 
-from flask import Response, jsonify, request
+from flask import Response, jsonify, request, send_file
 
 from euclid_polish.web import errors
 from euclid_polish.web.helpers import knee_attribution_runs as runs
+from euclid_polish.web.helpers import knee_pixel_types_report as pixel_types
 from euclid_polish.web.jobs import REGISTRY
 
 
@@ -63,3 +66,49 @@ def register(app):
             f"knee attribution · {len(params['models'])} model(s) × {n_fields} field(s)",
             target, kind="knee-attribution")
         return jsonify({"ok": True, "job_id": job_id, "run_id": run_id})
+
+    # ── pixel types ───────────────────────────────────────────────────────
+
+    @app.get("/api/knee-attribution/pixel-types")
+    def api_knee_pixel_types_list():
+        return jsonify(pixel_types.list_reports())
+
+    @app.get("/api/knee-attribution/pixel-types/file/<path:rel>")
+    def api_knee_pixel_types_file(rel: str):
+        folder, _, name = rel.rpartition("/")
+        try:
+            path = pixel_types.report_file(folder, name)
+        except KeyError as exc:
+            return _fail(str(exc.args[0] if exc.args else exc), 404)
+        # The console adds ?v=<the analysis' time>, so a re-analysis is a new URL.
+        return send_file(path, mimetype="image/png" if name.endswith(".png") else "application/json",
+                         conditional=True, max_age=3600)
+
+    @app.post("/api/knee-attribution/pixel-types/analyse")
+    def api_knee_pixel_types_analyse():
+        try:
+            params = pixel_types.parse_analyse_request(request.form)
+        except ValueError as exc:
+            return _fail(str(exc))
+
+        def target(cap):
+            return pixel_types.job_analyse(cap, **params)
+
+        job_id = REGISTRY.spawn(
+            f"knee pixel types · {len(params['models'])} model(s) of run {params['run_id']}",
+            target, kind="knee-pixel-types")
+        return jsonify({"ok": True, "job_id": job_id, "run_id": params["run_id"]})
+
+    @app.post("/api/knee-attribution/pixel-types/compare")
+    def api_knee_pixel_types_compare():
+        try:
+            params = pixel_types.parse_compare_request(request.form)
+        except ValueError as exc:
+            return _fail(str(exc))
+
+        def target(cap):
+            return pixel_types.job_compare(cap, **params)
+
+        a, b = (pixel_types.model_name(spec) for _, spec in (params["a"], params["b"]))
+        job_id = REGISTRY.spawn(f"knee pixel types · compare {a} vs {b}", target, kind="knee-pixel-types")
+        return jsonify({"ok": True, "job_id": job_id})

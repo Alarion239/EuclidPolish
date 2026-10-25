@@ -1,7 +1,8 @@
 /* Typed endpoints of Models › Knees (knee attribution; spec
    docs/superpowers/specs/2026-10-15-knee-attribution-design.md › API):
    the runs list, the multi-knee model catalogue, one run record, the field
-   images and the start of a run. Every payload is read through
+   images and the start of a run; the pixel types (§ Pixel types): the
+   analyses and comparisons, their figures and the start of either. Every payload is read through
    `normalise*` in ./knees.ts (the server's record may be partial while a run
    is still writing), so a missing array never breaks the view. The real-tile
    choices reuse Sky's tile catalogue client (../sky/results/api). */
@@ -16,7 +17,15 @@ export type KneeRunStatus = "done" | "failed" | "running" | "cancelled";
 export type KneeRunSummary = {
   id: string; created?: string | null; finished?: string | null; status: KneeRunStatus | string;
   models: string[]; synthetic: number; tiles: string[]; per_class?: number | null;
+  /** How the run sampled pixels (absent before version 4: per class). */
+  sampling?: KneeSampling | string | null; per_band?: number | null;
+  /** Runs with one seed sample the same uniform pixels of a field. */
+  seed?: number | null; version?: number | null;
 };
+
+/** Per class (`per_class` of each class present), uniform (`per_band`
+ *  pixels per band) or both pooled (weights halved). */
+export type KneeSampling = "class" | "uniform" | "mixed";
 
 /** One multi-knee catalogue model (GET /api/knee-attribution/models). */
 export type KneeModelChoice = {
@@ -118,6 +127,29 @@ export type KneeRunRecord = {
 /** POST /api/knee-attribution's reply. */
 export type KneeRunStart = { ok: boolean; job_id?: string; run_id?: string; error?: string };
 
+/** One finished pixel-types analysis (GET /api/knee-attribution/pixel-types):
+ *  one model of one run; `files` its figures (`knee_map_synthetic.png`,
+ *  `groups_learned_real_VIS.png`, …) and `summary.json`. */
+export type PixelAnalysis = {
+  /** `<run id>/<model slug>`. */
+  folder: string; run_id: string; model: string; created: string;
+  kinds: ("synthetic" | "real")[]; files: string[];
+  params: Partial<{ sampling: string; per_band: number; per_class: number; seed: number; synthetic: number; tiles: string[] }>;
+};
+
+/** One finished comparison: model B against model A on the same pixels. */
+export type PixelComparison = {
+  /** `compare_<A>_vs_<B>[_<tag>]`. */
+  folder: string;
+  /** name → spec, A first. */
+  models: Record<string, string>;
+  /** name → run id. */
+  runs: Record<string, string>;
+  created: string; tag: string; kinds: ("synthetic" | "real")[]; files: string[];
+};
+
+export type PixelReports = { analyses: PixelAnalysis[]; comparisons: PixelComparison[] };
+
 /* ── URLs ──────────────────────────────────────────────────────────────── */
 
 const enc = encodeURIComponent;
@@ -131,6 +163,16 @@ export const kneeUrl = {
   /** A field image by slugs (when the record carries no `image` URL). */
   field: (id: string, modelSlug: string, refSlug: string) =>
     `/api/knee-attribution/${enc(id)}/field/${enc(modelSlug)}/${enc(refSlug)}.png`,
+  /** The pixel-types analyses and comparisons. */
+  pixelTypes: () => "/api/knee-attribution/pixel-types",
+  /** One figure or summary of an analysis/comparison folder; `v` (the
+   *  folder's time) makes a re-analysis a new URL. */
+  pixelFile: (folder: string, name: string, v?: string) =>
+    `/api/knee-attribution/pixel-types/file/${folder.split("/").map(enc).join("/")}/${enc(name)}${v ? `?v=${enc(v)}` : ""}`,
+  /** POST: analyse a run (form: run_id, models?). */
+  pixelAnalyse: () => "/api/knee-attribution/pixel-types/analyse",
+  /** POST: compare two models (form: a, b = `<run id>|<spec>`, tag?). */
+  pixelCompare: () => "/api/knee-attribution/pixel-types/compare",
   /** Sky's real-tile catalogue: the sources and one source's tiles. */
   sources: () => SKY_URLS.sources,
   tiles: (source: string) => SKY_URLS.list(source),
@@ -156,5 +198,12 @@ export const useTileSources = (enabled: boolean) =>
 /** One source's tiles (null: idle, e.g. the source has none). */
 export const useTileList = (source: string | null) =>
   useResource<TileList>(source ? kneeUrl.tiles(source) : null, [source], { ttl: MIN });
+
+/** The pixel-types analyses and comparisons; `poll` (ms) while a job runs. */
+export const usePixelReports = (enabled: boolean, poll?: number) =>
+  useResource<unknown>(enabled ? kneeUrl.pixelTypes() : null, [], { ttl: 30_000, poll });
+/** One analysis' or comparison's summary.json (null folder: idle). */
+export const usePixelSummary = (folder: string | null, v?: string) =>
+  useResource<unknown>(folder ? kneeUrl.pixelFile(folder, "summary.json", v) : null, [folder, v], { ttl: 5 * MIN });
 
 export type { SourcesPayload, TileList };

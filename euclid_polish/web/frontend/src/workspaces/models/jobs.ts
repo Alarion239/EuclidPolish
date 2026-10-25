@@ -2,7 +2,7 @@
    and these tabs never start the same job twice), the
    confirmed starters of the loop's local jobs (evaluate, PSNR vs knee,
    member PSNR, the universal models' score, spectra and pull, a
-   knee-attribution run), the confirmed production switch (an instant POST,
+   knee-attribution run, a pixel-types analysis or comparison), the confirmed production switch (an instant POST,
    no job) and an end-of-job effect. Jobs start through
    `startJob` (app/RunActions), which confirms, registers the job under its
    key and toasts the start; the shell toasts the end. */
@@ -34,6 +34,8 @@ export const JOB = {
   universalScore: "ensemble:universal-score",
   universalPull: "ensemble:universal-pull",
   kneeAttribution: "models:knee-attribution",
+  /** A pixel-types analysis or comparison (one at a time: both load the run's fields). */
+  kneePixelTypes: "models:knee-pixel-types",
   gatesArchive: "ensemble:gates-archive",
   gatesRestore: "ensemble:gates-restore",
 } as const;
@@ -194,6 +196,32 @@ export function startKneeAttribution(fields: Record<string, string>, estimate: s
       title: "Run knee attribution?",
       message: `${estimate.charAt(0).toUpperCase()}${estimate.slice(1)}. Loads each model (TensorFlow) and back-propagates every sampled pixel through it on this machine (no FASRC); it writes a new run and changes nothing else.`,
       confirmLabel: "Run",
+    },
+  });
+}
+
+/** Analyse a run's pixel types (confirmed): `fields` = {run_id, models?}. */
+export function startPixelTypes(fields: Record<string, string>, estimate: string) {
+  return startJob({
+    key: JOB.kneePixelTypes, url: kneeUrl.pixelAnalyse(), label: "Pixel types",
+    data: fields,
+    question: {
+      title: "Analyse the pixel types?",
+      message: `${estimate.charAt(0).toUpperCase()}${estimate.slice(1)}. Reads the run's samples and stored fields and draws the figures on this machine (no model is loaded); it rewrites this run's pixel-types folder and changes nothing else.`,
+      confirmLabel: "Analyse",
+    },
+  });
+}
+
+/** Compare two models on the same pixels (confirmed): `fields` = {a, b, tag?}. */
+export function startPixelCompare(fields: Record<string, string>, what: string) {
+  return startJob({
+    key: JOB.kneePixelTypes, url: kneeUrl.pixelCompare(), label: "Pixel types: compare",
+    data: fields,
+    question: {
+      title: `Compare ${what}?`,
+      message: "Local job, ~2 min. Pairs the pixels both runs sampled and draws the comparison on this machine (no model is loaded); it writes one comparison folder and changes nothing else.",
+      confirmLabel: "Compare",
     },
   });
 }

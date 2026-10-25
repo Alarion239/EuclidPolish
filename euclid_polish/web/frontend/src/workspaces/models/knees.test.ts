@@ -104,7 +104,10 @@ describe("normalising the payloads", () => {
     expect(normaliseRuns(runs()).map((r) => [r.id, r.status, r.models.length])).toEqual([[RUN_ID, "done", 2], ["20261014-090000-def456", "failed", 1]]);
     expect(normaliseRuns({})).toEqual([]);
     expect(normaliseRuns({ runs: [{ status: "done" }, { id: "a" }] })).toEqual([
-      { id: "a", created: null, finished: null, status: "done", models: [], synthetic: 0, tiles: [], per_class: null }]);
+      { id: "a", created: null, finished: null, status: "done", models: [], synthetic: 0, tiles: [], per_class: null,
+        sampling: "class", per_band: null, seed: null, version: null }]);
+    expect(normaliseRuns({ runs: [{ id: "b", sampling: "mixed", per_band: 1024, seed: 3, version: 5 }] })[0])
+      .toMatchObject({ sampling: "mixed", per_band: 1024, seed: 3, version: 5 });
     const models = normaliseModels(catalogue());
     expect(models).toHaveLength(7);
     expect(models.find((m) => m.spec === "member:member_178")).toMatchObject({ available: false, reason: "a single-knee model (nothing to split over knees)" });
@@ -361,6 +364,12 @@ describe("the run form", () => {
     expect(checkRunForm({ models: ["m"], synthetic: "0", tiles: [], perClass: "24", seed: "0" }).errors.fields).toBeTruthy();
     expect(checkRunForm({ models: ["m"], synthetic: "0", tiles: ["poster/p"], perClass: "24", seed: "0" }).ok).toBe(true);
     expect(checkRunForm({ models: ["m"], synthetic: "2.5", tiles: [], perClass: "24", seed: "0" }).errors.synthetic).toBeTruthy();
+    // a uniform draw needs its samples per band; per class ignores them
+    const mixed = { models: ["m"], synthetic: "5", tiles: [], perClass: "48", seed: "0", sampling: "mixed" as const };
+    expect(checkRunForm({ ...mixed, perBand: "1024" })).toMatchObject({ ok: true, perBand: 1024 });
+    expect(checkRunForm({ ...mixed, perBand: "0" }).errors.perBand).toBeTruthy();
+    expect(checkRunForm({ ...mixed, perBand: "9000" }).errors.perBand).toBeTruthy();
+    expect(checkRunForm({ ...mixed, sampling: "class", perBand: "0" })).toMatchObject({ ok: true, perBand: null });
   });
 
   it("posts comma lists and numbers, and estimates ~3 s per field per model", () => {
@@ -371,6 +380,19 @@ describe("the run form", () => {
     expect(estimateText(4, 34)).toBe("local job: 4 models × 34 fields, ~43 min");
     expect(estimateText(4, 100, 8)).toBe("local job: 4 models × 100 fields, ~51 min");
     expect(estimateText(30, 100)).toBe("local job: 30 models × 100 fields, ~16 h");
+  });
+
+  it("posts the sampling off the default and the ablation only when off, and costs the uniform draw", () => {
+    const base = { models: ["universal:member_249"], synthetic: 30, tiles: [], perClass: 48, seed: 0 };
+    expect(runFormData({ ...base, sampling: "class", perBand: 1024, ablation: true })).toEqual({
+      models: "universal:member_249", synthetic: "30", tiles: "", per_class: "48", seed: "0" });
+    expect(runFormData({ ...base, sampling: "mixed", perBand: 1024, ablation: false })).toEqual({
+      models: "universal:member_249", synthetic: "30", tiles: "", per_class: "48", seed: "0", sampling: "mixed", per_band: "1024",
+      ablation: "0" });
+    // measured: 1024 per band + 48 per class without the ablation ≈ 52 s per field (37 fields: 32 min)
+    expect(estimateText(1, 37, 48, { sampling: "mixed", perBand: 1024, ablation: false })).toBe("local job: 1 model × 37 fields, ~31 min");
+    expect(estimateText(1, 10, 48, { sampling: "uniform", perBand: 1024, ablation: false })).toBe("local job: 1 model × 10 fields, ~6 min");
+    expect(estimateText(1, 10, 24, { sampling: "class", ablation: true })).toBe(estimateText(1, 10, 24));
   });
 });
 

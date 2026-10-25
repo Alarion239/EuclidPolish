@@ -239,3 +239,13 @@ def test_record_is_valid_json_without_nan(tiny, monkeypatch, tmp_path):
     text = (tmp_path / "knee_attribution" / "20261015-000002-abcdef.json").read_text()
     json.loads(text)                                      # strict JSON (allow_nan=False wrote it)
     assert "NaN" not in text
+
+
+def test_the_runs_list_follows_a_rewritten_record(tiny):
+    record = {"version": 5, "id": "20261015-000009-abcdef", "status": "running", "params": {"models": ["m"], "seed": 3},
+              "models": {}, "errors": {}}
+    runs._write(record)
+    assert runs.list_runs()[0]["status"] == "running"
+    assert runs.list_runs()[0]["seed"] == 3                     # from the cache, still the record's
+    runs._write(dict(record, status="done", finished="2026-10-15T00:00:09+00:00"))
+    assert runs.list_runs()[0]["status"] == "done"

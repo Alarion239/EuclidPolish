@@ -12,7 +12,12 @@
  * band on the record's image, with the field's noise σ; the run panel
  * preselects the newest universal models, asks with the estimate and POSTs
  * the right form; no runs → the explanation and an open run panel; a failed
- * run → its errors; a cancelled run → what it kept. */
+ * run → its errors; a cancelled run → what it kept. The pixel types view
+ * (?view=pixel-types) shows the newest analysis' figure and band facts,
+ * follows its figure chips, band and grouping, the comparison's figures, and
+ * starts an analysis or a comparison only after a confirm (different seeds
+ * refused); the run panel's mixed sampling posts its samples per band and
+ * turns the ablation off. */
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -400,5 +405,115 @@ describe("knees tab", () => {
     expect(await screen.findByText("1 part of this run failed")).toBeTruthy();
     expect(screen.getByText("#222 › test/9")).toBeTruthy();
     await waitFor(() => expect(panels()).toHaveLength(2));
+  });
+});
+
+/* ── pixel types ───────────────────────────────────────────────────────── */
+
+const ANALYSED = "2026-10-25T07:40:00+00:00";
+const FOLDER = `${RUN_ID}/universal__member_222`;
+const COMPARE = "compare_member_221_vs_member_222";
+const pixelReports = () => ({
+  analyses: [{
+    folder: FOLDER, run_id: RUN_ID, model: "universal:member_222", created: ANALYSED, kinds: ["synthetic", "real"],
+    params: { synthetic: 2, tiles: ["poster/target_181255"], sampling: "mixed", per_band: 1024, seed: 0 },
+    files: ["knee_map_synthetic.png", "knee_map_real.png", "groups_learned_synthetic_VIS.png", "groups_synthetic_VIS.png",
+      "groups_learned_synthetic_H_E.png", "types_synthetic_VIS.png", "look_around_synthetic.png", "summary.json"],
+  }],
+  comparisons: [{
+    folder: COMPARE, models: { member_221: "universal:member_221", member_222: "universal:member_222" },
+    runs: { member_221: RUN_ID, member_222: RUN_ID }, created: ANALYSED, tag: "", kinds: ["synthetic"],
+    files: ["compare_knee_synthetic.png", "compare_share_diff_synthetic.png", "compare_pairs_synthetic_VIS.png", "summary.json"],
+  }],
+});
+const fileUrl = (folder: string, name: string) =>
+  `/api/knee-attribution/pixel-types/file/${folder.split("/").map(encodeURIComponent).join("/")}/${name}?v=${encodeURIComponent(ANALYSED)}`;
+const figureSrcs = () => [...document.querySelectorAll<HTMLImageElement>(".kn-pt__figure img")].map((i) => i.getAttribute("src"));
+const chip = (group: string, name: string) => within(screen.getByRole("radiogroup", { name: group })).getByRole("radio", { name });
+
+describe("knees tab › pixel types", () => {
+  beforeEach(() => {
+    routes["GET /api/knee-attribution/pixel-types"] = () => ({ body: pixelReports() });
+    routes[`GET ${fileUrl(FOLDER, "summary.json")}`] = () => ({
+      body: { synthetic: { VIS: { n: 36921, noise_sigma_e: 20.31, blank_fraction: 0, types: [{}, {}, {}, {}] } } },
+    });
+    routes["POST /api/knee-attribution/pixel-types/analyse"] = () => ({ body: { ok: true, job_id: "pt1", run_id: RUN_ID } });
+    routes["POST /api/knee-attribution/pixel-types/compare"] = () => ({ body: { ok: true, job_id: "pt2" } });
+    routes["GET /api/jobs/pt1"] = () => ({ body: { job_id: "pt1", status: "running", label: "Pixel types", progress: null, log: "", log_truncated: false, duration: 1, error: null } });
+    routes["GET /api/jobs/pt2"] = () => ({ body: { job_id: "pt2", status: "running", label: "Pixel types: compare", progress: null, log: "", log_truncated: false, duration: 1, error: null } });
+  });
+
+  it("shows the newest analysis' groups and band facts, follows the chips, and only GETs", async () => {
+    show("/models/knees?view=pixel-types");
+    await waitFor(() => expect(figureSrcs()).toContain(fileUrl(FOLDER, "groups_learned_synthetic_VIS.png")));
+    expect(figureSrcs()).toContain(fileUrl(COMPARE, "compare_knee_synthetic.png"));
+    expect(await screen.findByText(/36,921/)).toBeTruthy();
+    expect(document.querySelector(".ui-summary")?.textContent).toMatch(/#222, synthetic fields, VIS: 36,921 sampled pixels, noise σ = 20\.3 e⁻ per pixel; 4 knee types\./);
+    // the grouping: by the knee itself
+    fireEvent.click(chip("Group by", "Knee"));
+    await waitFor(() => expect(figureSrcs()).toContain(fileUrl(FOLDER, "groups_synthetic_VIS.png")));
+    expect(lastLocation).toContain("pg=raw");
+    // a band without the figure is disabled; H has it
+    expect((chip("Pixel types band", "Y") as HTMLButtonElement).disabled).toBe(true);
+    // a whole-field figure: the band toggle is off
+    fireEvent.click(chip("Pixel types figure", "Knee vs brightness"));
+    await waitFor(() => expect(figureSrcs()).toContain(fileUrl(FOLDER, "knee_map_synthetic.png")));
+    expect((chip("Pixel types figure", "Chain rule") as HTMLButtonElement).disabled).toBe(true);    // not drawn
+    expect(posts()).toHaveLength(0);
+    expect(gets("/api/knee-attribution/pixel-types")).toHaveLength(1);
+    expect(gets(`/api/knee-attribution/${RUN_ID}`)).toHaveLength(0);    // no run record in this view
+  });
+
+  it("Analyse… asks with the estimate and POSTs the run", async () => {
+    show("/models/knees?view=pixel-types");
+    fireEvent.click(await screen.findByRole("button", { name: "Re-analyse…" }));      // #222 of the run is analysed
+    const dlg = await screen.findByRole("alertdialog", { name: "Analyse the pixel types?" });
+    expect(dlg.textContent).toContain("Local job: 2 models, ~4 min.");
+    await answer("Analyse the pixel types?", "Analyse");
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(posts()[0]).toMatchObject({ url: "/api/knee-attribution/pixel-types/analyse", form: { run_id: RUN_ID } });
+  });
+
+  it("Compare… POSTs the two models; runs of different seeds are refused", async () => {
+    routes["GET /api/knee-attribution"] = () => ({ body: { runs: [
+      { ...runs().runs[0], seed: 0, sampling: "mixed", version: 5 },
+      { id: "20261020-080000-aaaaaa", created: "2026-10-20T08:00:00Z", status: "done", models: ["universal:member_238"], synthetic: 30,
+        tiles: [], per_class: 48, seed: 7, sampling: "mixed", version: 5 },
+    ] } });
+    show("/models/knees?view=pixel-types");
+    const button = await screen.findByRole("button", { name: "Compare…" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Model B" }), { target: { value: "20261020-080000-aaaaaa|universal:member_238" } });
+    expect((await screen.findByRole("alert")).textContent).toMatch(/different seeds \(0 and 7\)/);
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByRole("combobox", { name: "Model B" }), { target: { value: `${RUN_ID}|universal:member_222` } });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Compare…" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Compare…" }));
+    await answer("Compare #222 against #221?", "Compare");
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(posts()[0]).toMatchObject({ url: "/api/knee-attribution/pixel-types/compare",
+      form: { a: `${RUN_ID}|universal:member_221`, b: `${RUN_ID}|universal:member_222` } });
+  });
+
+  it("explains an empty pixel-types folder and still offers to analyse", async () => {
+    routes["GET /api/knee-attribution/pixel-types"] = () => ({ body: { analyses: [], comparisons: [] } });
+    show("/models/knees?view=pixel-types");
+    expect(await screen.findByText("No pixel-types analysis yet")).toBeTruthy();
+    expect(screen.getByText("No comparison yet")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Analyse…" })).toBeTruthy();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it("run panel: mixed sampling posts its samples per band and turns the ablation off", async () => {
+    show();
+    await waitFor(() => expect(panels()).toHaveLength(2));
+    fireEvent.click(screen.getByRole("button", { name: "New run" }));
+    await screen.findByRole("group", { name: "Models to run" });
+    fireEvent.click(chip("Sampling", "Mixed"));
+    expect((screen.getByRole("checkbox", { name: "Ablation check" }) as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByRole("spinbutton", { name: "Samples per band" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Run…" }));
+    await answer("Run knee attribution?", "Run");
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(posts()[0].form).toMatchObject({ sampling: "mixed", per_band: "1024", ablation: "0", per_class: "24" });
   });
 });

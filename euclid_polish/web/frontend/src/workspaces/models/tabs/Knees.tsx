@@ -1,6 +1,9 @@
 /* Models › Knees (`/models/knees`): knee attribution — which asinh knees a
    multi-knee model relies on, for which pixels (spec
-   docs/superpowers/specs/2026-10-15-knee-attribution-design.md). From the top:
+   docs/superpowers/specs/2026-10-15-knee-attribution-design.md). Two views
+   (?view=): the attribution below, and the pixel types (`pixel-types`:
+   ../attribution/PixelTypes — which kinds of pixel a model reads through
+   which knee, and two models compared on the same pixels). From the top:
    - the run panel (collapsible; open when there is no run yet): models,
      synthetic test fields, real tiles, samples per class, seed; Run asks
      first with the cost, then the job's progress;
@@ -51,11 +54,18 @@ import {
 import { ClassBars, type DrawnModel } from "../attribution/ClassBars";
 import { CrossBand } from "../attribution/CrossBand";
 import { FieldExplorer } from "../attribution/FieldExplorer";
+import { PixelTypes } from "../attribution/PixelTypes";
 import { EMPTY_DRAFT, RunPanel, type RunDraft } from "../attribution/RunPanel";
 import "../models.css";
 import "../attribution/knees.css";
 
 const SET_LABEL: Record<FieldSet, string> = { synthetic: "Synthetic", real: "Real" };
+type KneeView = "attribution" | "pixel-types";
+const parseView = (v: string): KneeView => (v === "pixel-types" ? "pixel-types" : "attribution");
+const VIEW_TITLE: Record<KneeView, string> = {
+  attribution: "Each knee's share of the sensitivity, by pixel class and brightness, per run",
+  "pixel-types": "Which kinds of pixel a model reads through which knee (stamps, groups, types), and two models compared",
+};
 const INPUT_LABEL: Record<KneeInput, string> = { all: "All (σ-weighted)", VIS: "VIS", Y: "Y", J: "J", H: "H" };
 const INPUT_TITLE: Record<KneeInput, string> = {
   all: "Every input band, each band's terms weighted by its noise σ", VIS: "The VIS input's own split over the knees",
@@ -145,12 +155,14 @@ export default function Knees() {
   const [setParam, setSet] = useUrlState<FieldSet>("set", "synthetic", { parse: parseSet });
   const [splitParam, setSplit] = useUrlState<ShareKind>("split", "gradient", { parse: parseShare });
   const [inputParam, setInput] = useUrlState<KneeInput>("input", "all", { parse: parseInput });
+  const [view, setView] = useUrlState<KneeView>("view", "attribution", { parse: parseView });
   const [panelOpen, setPanelOpen] = useState<boolean | null>(null);
   const [draft, setDraft] = useState<RunDraft>(EMPTY_DRAFT);
 
   const runId = runParam && (!runsRes.data || runs.some((r) => r.id === runParam)) ? runParam : runs[0]?.id ?? null;
   const summary = runs.find((r) => r.id === runId) ?? null;
-  const recRes = useKneeRun(runId, summary?.status === "running" || jobRunning ? POLL : undefined);
+  // the pixel types read their own figures: no run record (tens of MB for a mixed run)
+  const recRes = useKneeRun(view === "pixel-types" ? null : runId, summary?.status === "running" || jobRunning ? POLL : undefined);
   const rec: KneeRunRecord | null = useMemo(() => normaliseRecord(recRes.data), [recRes.data]);
   const status = rec?.status ?? summary?.status ?? null;
 
@@ -166,6 +178,8 @@ export default function Knees() {
   usePageActions([
     { id: "knees-run", label: "Knees: set up a knee-attribution run…", group: "Models", keywords: ["knee", "attribution", "multi-knee", "gradient"],
       run: () => setPanelOpen(true) },
+    { id: "knees-pixel-types", label: "Knees: pixel types", group: "Models", keywords: ["knee", "pixel", "types", "stamps", "compare"],
+      run: () => setView("pixel-types") },
   ]);
 
   const shown = useMemo(() => overlayModels(rec, picked), [rec, picked]);
@@ -196,8 +210,30 @@ export default function Knees() {
   );
   const jobs = (job.job || job.error) && <div className="mdl-jobs"><JobProgress job={job.job} error={job.error} /></div>;
 
+  const viewSwitch = (
+    <div className="mdl-row kn-view">
+      <Segmented<KneeView> aria-label="Knees view" value={view} onChange={setView}
+        options={(["attribution", "pixel-types"] as const).map((v) => ({
+          value: v, label: v === "attribution" ? "Attribution" : "Pixel types", title: VIEW_TITLE[v],
+        }))} />
+    </div>
+  );
+  if (view === "pixel-types") {
+    return (
+      <Page className="mdl-page kn-page">
+        {viewSwitch}
+        {runPanel}
+        {jobs}
+        <LoadState loading={runsRes.loading} error={runsRes.error} onRetry={runsRes.reload}>
+          <PixelTypes runs={runs} />
+        </LoadState>
+      </Page>
+    );
+  }
+
   return (
     <Page className="mdl-page kn-page">
+      {viewSwitch}
       {runPanel}
       {jobs}
       <LoadState loading={runsRes.loading} error={runsRes.error} onRetry={runsRes.reload}

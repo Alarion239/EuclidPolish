@@ -2,28 +2,42 @@
    (the catalogue's GET /api/knee-attribution/models; unavailable ones listed
    with their reason, the newest universal models preselected), the number of
    synthetic test fields, real tiles (Sky's tile catalogue: the poster galaxy,
-   the NEXUS tiles and the cached Q1 tiles, with a filter box), samples per
-   class and the seed. Run states the cost ("local job: N models × M fields,
+   the NEXUS tiles and the cached Q1 tiles, with a filter box), the sampling
+   (per class; uniform; or mixed, both pooled — what the pixel types want:
+   true prevalences and, under one seed, the same pixels in every run), the
+   samples per class and per band, the ablation check and the seed. Run states the cost ("local job: N models × M fields,
    ~X min") and asks first (jobs.ts startKneeAttribution).
    The panel's body is mounted only while it is open, so a closed panel reads
    nothing; opening it only GETs. The form state lives in the caller, so it
    survives closing the panel. */
 import { useMemo, type Dispatch, type SetStateAction } from "react";
 import { formatCount } from "../../../format";
-import { Button, Caption, Checkbox, Field, Input, NumberField, Section, Skeleton } from "../../../ui";
+import { Button, Caption, Checkbox, Field, Input, NumberField, Section, Segmented, Skeleton } from "../../../ui";
 import {
-  KNEE_TILE_SOURCES, useKneeModels, useTileList, useTileSources, type KneeModelChoice, type TileList,
+  KNEE_TILE_SOURCES, useKneeModels, useTileList, useTileSources, type KneeModelChoice, type KneeSampling, type TileList,
 } from "../kneesApi";
 import {
-  checkRunForm, DEFAULT_PER_CLASS, defaultModelPick, estimateText, kneeLabel, MAX_PER_CLASS, MAX_SYNTHETIC, modelShort, normaliseModels, runFormData,
-  type RunForm,
+  checkRunForm, DEFAULT_PER_BAND, DEFAULT_PER_CLASS, defaultModelPick, estimateText, kneeLabel, MAX_PER_BAND, MAX_PER_CLASS, MAX_SYNTHETIC,
+  modelShort, normaliseModels, runFormData, SAMPLINGS, type RunForm,
 } from "../knees";
 import { startKneeAttribution } from "../jobs";
 
 /** The panel's form state (`models: null` = the default pick until the user
  *  changes it). */
-export type RunDraft = Omit<RunForm, "models"> & { models: string[] | null; filter: string };
-export const EMPTY_DRAFT: RunDraft = { models: null, synthetic: "20", tiles: [], perClass: String(DEFAULT_PER_CLASS), seed: "0", filter: "" };
+export type RunDraft = Omit<RunForm, "models" | "sampling" | "perBand" | "ablation"> & {
+  models: string[] | null; filter: string; sampling: KneeSampling; perBand: string; ablation: boolean;
+};
+export const EMPTY_DRAFT: RunDraft = {
+  models: null, synthetic: "20", tiles: [], perClass: String(DEFAULT_PER_CLASS), seed: "0", filter: "",
+  sampling: "class", perBand: String(DEFAULT_PER_BAND), ablation: true,
+};
+
+const SAMPLING_LABEL: Record<KneeSampling, string> = { class: "Per class", uniform: "Uniform", mixed: "Mixed" };
+const SAMPLING_TITLE: Record<KneeSampling, string> = {
+  class: "The same number of pixels of each class present: the class bars and curves",
+  uniform: "Random pixels per band, classes as common as they are: true prevalences",
+  mixed: "Both pooled (weights halved): true prevalences and the rare bright classes; what the pixel types want",
+};
 
 const plural = (n: number, one: string, many = `${one}s`) => `${formatCount(n)} ${n === 1 ? one : many}`;
 const MAX_TILE_ROWS = 300;
@@ -55,14 +69,23 @@ function RunBody({ draft, setDraft, busy, onStarted }: {
   const toggleTile = (ref: string, on: boolean) =>
     setDraft((d) => ({ ...d, tiles: on ? [...d.tiles.filter((t) => t !== ref), ref] : d.tiles.filter((t) => t !== ref) }));
 
-  const form: RunForm = { models: picked, synthetic: draft.synthetic, tiles: draft.tiles, perClass: draft.perClass, seed: draft.seed };
+  const form: RunForm = {
+    models: picked, synthetic: draft.synthetic, tiles: draft.tiles, perClass: draft.perClass, seed: draft.seed,
+    sampling: draft.sampling, perBand: draft.perBand, ablation: draft.ablation,
+  };
   const check = checkRunForm(form);
   const nFields = (check.synthetic ?? 0) + draft.tiles.length;
-  const estimate = estimateText(picked.length, nFields, check.perClass ?? DEFAULT_PER_CLASS);
+  const estimate = estimateText(picked.length, nFields, check.perClass ?? DEFAULT_PER_CLASS,
+    { sampling: draft.sampling, perBand: check.perBand, ablation: draft.ablation });
+  const uniform = draft.sampling !== "class";
+  // the pixel types read the gradient alone: a uniform draw turns the
+  // (4× slower) ablation check off, per class turns it back on
+  const setSampling = (sampling: KneeSampling) => set({ sampling, ablation: sampling === "class" });
   const run = async () => {
     if (!check.ok || check.synthetic == null || check.perClass == null || check.seed == null) return;
     const id = await startKneeAttribution(runFormData({
       models: picked, synthetic: check.synthetic, tiles: draft.tiles, perClass: check.perClass, seed: check.seed,
+      sampling: draft.sampling, perBand: check.perBand, ablation: draft.ablation,
     }), estimate);
     if (id) onStarted(id);
   };
@@ -80,16 +103,33 @@ function RunBody({ draft, setDraft, busy, onStarted }: {
         ) : <p className="mdl-note">No multi-knee model in the catalogue (a universal model or a member trained at several knees).</p>}
         {check.errors.models && models.length > 0 && <p className="mdl-note mdl-warn" role="alert">{check.errors.models}</p>}
       </fieldset>
+      <div className="kn-run__sampling">
+        <span className="kn-run__legend">Sampling</span>
+        <Segmented<KneeSampling> size="sm" aria-label="Sampling" value={draft.sampling} onChange={setSampling}
+          options={SAMPLINGS.map((v) => ({ value: v, label: SAMPLING_LABEL[v], title: SAMPLING_TITLE[v] }))} />
+        <span className="mdl-note">{SAMPLING_TITLE[draft.sampling]}</span>
+      </div>
       <div className="kn-run__numbers">
         <Field label="Synthetic test fields" description={`0–${MAX_SYNTHETIC}, the universal scores' test fields`} error={check.errors.synthetic}>
           <NumberField size="sm" value={draft.synthetic} onChange={(v) => set({ synthetic: v })} min={0} max={MAX_SYNTHETIC} step={1} />
         </Field>
-        <Field label="Samples per class" description="per field and band" error={check.errors.perClass}>
-          <NumberField size="sm" value={draft.perClass} onChange={(v) => set({ perClass: v })} min={1} max={MAX_PER_CLASS} step={1} />
-        </Field>
-        <Field label="Seed" error={check.errors.seed}>
+        {draft.sampling !== "uniform" && (
+          <Field label="Samples per class" description="per field and band" error={check.errors.perClass}>
+            <NumberField size="sm" value={draft.perClass} onChange={(v) => set({ perClass: v })} min={1} max={MAX_PER_CLASS} step={1} />
+          </Field>
+        )}
+        {uniform && (
+          <Field label="Samples per band" description="random pixels per field and band" error={check.errors.perBand}>
+            <NumberField size="sm" value={draft.perBand} onChange={(v) => set({ perBand: v })} min={1} max={MAX_PER_BAND} step={1} />
+          </Field>
+        )}
+        <Field label="Seed" description="runs with one seed sample the same uniform pixels" error={check.errors.seed}>
           <NumberField size="sm" value={draft.seed} onChange={(v) => set({ seed: v })} min={0} step={1} />
         </Field>
+        <Checkbox checked={draft.ablation} onChange={(on) => set({ ablation: on })}
+          title="Each knee's channels replaced by their window mean: the ablation bars (about 4× the time)">
+          Ablation check
+        </Checkbox>
       </div>
       <TilePicker selected={draft.tiles} filter={draft.filter} onFilter={(v) => set({ filter: v })} onToggle={toggleTile}
         onClear={() => set({ tiles: [] })} />
