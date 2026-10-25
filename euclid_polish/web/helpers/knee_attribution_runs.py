@@ -20,6 +20,7 @@ import json
 import os
 import re
 import uuid
+import zlib
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,7 +42,7 @@ from euclid_polish.web.helpers import ensemble_viz as ev
 from euclid_polish.web.jobs import JobCancelled
 
 #: 4: uniform sampling, per-sample weights and own-band knee splits, the
-#: synthetic truth in the field images; 3: adds the local (3×3 LR) splits;
+#: synthetic truth in the field images, one sampling stream per field; 3: adds the local (3×3 LR) splits;
 #: 2: shares weighted by each input band's noise σ (1 weighted per electron).
 RECORD_VERSION = 4
 _RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
@@ -263,6 +264,13 @@ def parse_request(form: Mapping[str, Any]) -> dict[str, Any]:
 # The job
 # --------------------------------------------------------------------------- #
 
+def field_rng(seed: int, ref: str) -> np.random.Generator:
+    """One field's sampling stream, from the seed and the field alone: every
+    model of a run (and any run with the same seed) draws the same uniform
+    pixels of a field, so models can be compared pixel by pixel."""
+    return np.random.default_rng([int(seed), zlib.crc32(str(ref).encode("utf-8"))])
+
+
 def _round(values: np.ndarray, digits: int) -> list:
     return np.round(np.asarray(values, np.float64), digits).tolist()
 
@@ -395,14 +403,13 @@ def _run_models(cap, record: dict[str, Any], run_id: str, models: Sequence[str],
     n_fields = len(indices) + len(tiles)
     total = max(1, len(models) * n_fields)
     done = 0
-    for m_i, spec in enumerate(models):
+    for spec in models:
         try:
             net, member = _load(spec)
         except Exception as exc:  # noqa: BLE001 — one model never stops the others
             record["errors"][spec] = f"{type(exc).__name__}: {exc}"
             done += n_fields
             continue
-        rng = np.random.default_rng([int(seed), m_i])
         entry: dict[str, Any] = {"knees": list(net.knees), "bands": list(Config.LR_INPUT_BAND_NAMES),
                                  "depth": net.depth, "aggregate": {}, "fields": []}
         parts: dict[str, list[dict[str, np.ndarray]]] = {"synthetic": [], "real": []}
@@ -413,7 +420,7 @@ def _run_models(cap, record: dict[str, Any], run_id: str, models: Sequence[str],
             try:
                 field, part = _one_field(run_id, spec, net, member, ref, "synthetic", lr_e,
                                          galaxy=galaxy, star=star, per_class=per_class,
-                                         rng=rng, ablation=ablation, sampling=sampling,
+                                         rng=field_rng(seed, ref), ablation=ablation, sampling=sampling,
                                          per_band=per_band)
                 entry["fields"].append(field)
                 parts["synthetic"].append(part)
@@ -425,8 +432,8 @@ def _run_models(cap, record: dict[str, Any], run_id: str, models: Sequence[str],
             cap.tick(done, total, f"{spec}: {ref}")
             try:
                 field, part = _one_field(run_id, spec, net, member, ref, "real", _real_lr(ref),
-                                         per_class=per_class, rng=rng, ablation=ablation,
-                                         sampling=sampling, per_band=per_band)
+                                         per_class=per_class, rng=field_rng(seed, ref),
+                                         ablation=ablation, sampling=sampling, per_band=per_band)
                 entry["fields"].append(field)
                 parts["real"].append(part)
             except Exception as exc:  # noqa: BLE001

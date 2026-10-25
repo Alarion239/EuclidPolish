@@ -150,6 +150,26 @@ def test_a_uniform_run_samples_every_band_alike_and_keeps_the_truth(tiny, monkey
     np.testing.assert_allclose(truth, galaxy + star, rtol=1e-3)
 
 
+def test_every_model_samples_the_same_uniform_pixels_of_a_field(tiny, monkeypatch):
+    lr, galaxy, star = _synthetic_field()
+    monkeypatch.setattr(runs, "synthetic_indices", lambda n: [7][:n])
+    monkeypatch.setattr(runs, "_synthetic_fields",
+                        lambda indices: iter([("test/7", lr, galaxy, star)]))
+    monkeypatch.setattr(runs, "_real_lr", lambda ref: lr)
+    runs.job_knee_attribution(_Cap(), run_id="20261015-000005-abcdef",
+                              models=["universal:member_1", "universal:member_2"], synthetic=1,
+                              tiles=["poster/t1", "nexus/t2"], per_class=3, seed=4, ablation=False,
+                              sampling="mixed", per_band=10)
+    record = runs.get_run("20261015-000005-abcdef")
+    first, second = (record["models"][m]["fields"] for m in ("universal:member_1", "universal:member_2"))
+    for a, b in zip(first, second, strict=True):
+        assert a["ref"] == b["ref"]
+        for key in ("band", "y", "x"):
+            assert a["samples"][key][:40] == b["samples"][key][:40]      # the uniform draw
+    # Fields draw from their own streams.
+    assert first[1]["samples"]["y"][:40] != first[2]["samples"]["y"][:40]
+
+
 def test_a_failing_model_is_recorded_not_fatal(tiny, monkeypatch):
     def load(spec):
         raise ValueError("boom")
