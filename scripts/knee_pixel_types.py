@@ -806,15 +806,21 @@ def compare_pairs(path: Path, prepared: dict, band: int, kind: str) -> dict:
     return summary
 
 
-def compare(run_ids: list[str], out_root: Path) -> None:
+def compare(run_ids: list[str], out_root: Path, pair: list[str] | None = None) -> None:
+    """Compare the models of ``run_ids`` (the first two, or the ``pair`` of
+    model names, e.g. ``member_244,member_245``, in that order)."""
     prepared, knees = {}, None
     for run_id in run_ids:
         record = runs.get_run(run_id)
         for spec, entry in record["models"].items():
+            if pair and spec.split(":")[-1] not in pair:
+                continue
             name = spec.split(":")[-1]
             name = name if name not in prepared else f"{name}#{run_id[-6:]}"
             prepared[name] = {"run_id": run_id, "spec": spec, "entry": entry}
             knees = np.asarray(entry["knees"], np.float64)
+    if pair:
+        prepared = {name: prepared[name] for name in pair if name in prepared}
     names = list(prepared)
     out = out_root / ("compare_" + "_vs_".join(names))
     out.mkdir(parents=True, exist_ok=True)
@@ -852,10 +858,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--types", type=int, default=8, help="k of the knee types")
     parser.add_argument("--only", help="analyse only this model spec of the run")
-    parser.add_argument("--compare", help="two run ids (one model each, same seed): compare them")
+    parser.add_argument("--compare", help="run ids (same seed) whose models to compare")
+    parser.add_argument("--pair", help="the two model names to compare, e.g. member_244,member_245")
     args = parser.parse_args()
     if args.compare:
-        compare([r.strip() for r in args.compare.split(",") if r.strip()], runs.root() / "pixel_types")
+        pair = [m.strip() for m in args.pair.split(",")] if args.pair else None
+        compare([r.strip() for r in args.compare.split(",") if r.strip()], runs.root() / "pixel_types", pair)
         return
 
     run_id = args.run_id or run_attribution(args)
