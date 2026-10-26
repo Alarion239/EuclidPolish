@@ -112,6 +112,19 @@ def knee_tilt_weights(knees, tilt: float, n_bands: int) -> list[float]:
     return [w / mean for w in per_knee for _ in range(int(n_bands))]
 
 
+def knee_channel_weights(knee_weights, n_bands: int) -> list[float]:
+    """Per-channel weights of a knee-major tensor (channel ``k·n_bands + c``)
+    from one weight per scored knee, repeated for every band and normalised
+    to a mean of 1 — e.g. under a loss floor, where every knee far below the
+    floor scores the same relative error, ``[3, 1, …]`` on the lowest knee
+    stands for the three identical sub-noise channels of 1e-3/1e-2/0.1 e⁻."""
+    per_knee = [float(w) for w in knee_weights]
+    if not per_knee or min(per_knee) <= 0.0 or not all(math.isfinite(w) for w in per_knee):
+        raise ValueError(f"loss knee weights must be positive and finite, got {per_knee}")
+    mean = sum(per_knee) / len(per_knee)
+    return [w / mean for w in per_knee for _ in range(int(n_bands))]
+
+
 def channel_balanced_loss(name: str, weights=None):
     """``name``'s loss per output channel, combined by the geometric mean over
     channels (weighted by ``weights``, one per channel, when given — see

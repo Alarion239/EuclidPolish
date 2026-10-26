@@ -191,6 +191,11 @@ class MemberTrainSpec:
     #: knee ``k`` weighing ``(k / k_ref)**knee_tilt`` (< 0: more weight on
     #: the small knees); 0 = equal. Recorded in origin.json; continue keeps it.
     knee_tilt: float = 0.0
+    #: Balanced multi-knee member: one loss weight per scored knee (e.g.
+    #: ``[3, 1, 1, 1, 1, 1]`` keeps the weight of three sub-noise knees on a
+    #: grid that dropped two of them); ``None`` = equal. Recorded in
+    #: origin.json; continue keeps it.
+    loss_knee_weights: tuple[float, ...] | None = None
     #: Learned-knee member: train on one Lupton asinh magnitude per band
     #: (softened at its per-pixel sky scatter) instead of the knee grid
     #: (``training.losses.lupton_loss``). Recorded in origin.json; continue
@@ -516,6 +521,8 @@ class EnsembleModel:
                         origin["loss_floor"] = float(spec.loss_floor)
                     if spec.knee_tilt:
                         origin["knee_tilt"] = float(spec.knee_tilt)
+                    if spec.loss_knee_weights:
+                        origin["loss_knee_weights"] = [float(w) for w in spec.loss_knee_weights]
                     if spec.lupton:
                         origin["lupton_loss"] = True
                     output_knee = getattr(m, "_output_knee", spec.output_knee)
@@ -556,6 +563,8 @@ class EnsembleModel:
                     member_train_kwargs["loss_floor"] = spec.loss_floor
                 if spec.knee_tilt:
                     member_train_kwargs["knee_tilt"] = float(spec.knee_tilt)
+                if spec.loss_knee_weights:
+                    member_train_kwargs["loss_knee_weights"] = tuple(spec.loss_knee_weights)
                 if spec.lupton:
                     member_train_kwargs["lupton"] = True
             if spec.brightness_consistency:

@@ -136,8 +136,9 @@ describe("train form", () => {
   it("builds the multi-knee member spec the step consumes", () => {
     const spec = buildSpec([newRow({ kneeMode: "multi", outputKnee: "10", learnKnee: false }), newRow({ knee: "100", boot: "" })], "add");
     expect(spec[0]).toEqual({ loss: "l2", bootstrap: 0.7, asinh_knees: [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000],
-      output_knee: 10, knee_loss: "balanced", num_res_blocks: 32, icnr: true });
-    expect(spec[1]).toEqual({ loss: "l2", num_res_blocks: 32, icnr: true });
+      output_knee: 10, knee_loss: "balanced", num_res_blocks: 32 });              // ICNR off by default
+    expect(spec[1]).toEqual({ loss: "l2", num_res_blocks: 32 });
+    expect(buildSpec([newRow({ icnr: true })], "add")[0]).toMatchObject({ icnr: true });    // still on request
     expect(buildSpec([newRow()], "fork")[0]).not.toHaveProperty("num_res_blocks");
   });
 

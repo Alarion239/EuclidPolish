@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import os
 import shutil
 import sys
@@ -242,6 +243,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "k_ref their geometric mean (< 0: more weight on the "
                         "small knees, faint light; > 0: on the large ones, "
                         "bright cores). 0 = equal. Member-spec key: knee_tilt.")
+    p.add_argument("--loss-knee-weights", default=None,
+                   help="Balanced multi-knee member: comma-separated loss weight "
+                        "per scored knee, normalised to a mean of 1 (times the "
+                        "tilt's when both are set). E.g. 3,1,1,1,1,1 on knees "
+                        "0.1…1e4 under a loss floor keeps the weight the three "
+                        "identical sub-noise knees 1e-3/1e-2/0.1 had. Member-"
+                        "spec key: loss_knee_weights (list).")
     p.add_argument("--lupton-loss", action="store_true",
                    help="Learned-knee member: train on one Lupton asinh "
                         "magnitude per band, softened at its per-pixel sky "
@@ -478,7 +486,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "saturation_mask_prob",
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
-               "loss_knees", "loss_floor", "knee_tilt", "lupton_loss",
+               "loss_knees", "loss_floor", "knee_tilt", "loss_knee_weights", "lupton_loss",
                "brightness_consistency", "noise_texture_jitter",
                "isotropy_penalty", "isotropy_knee", "isotropy_scales",
                "output_knee", "learn_output_knee", "xla", "bf16"}
@@ -525,6 +533,27 @@ def _knee_tilt(value) -> float:
         print(f"✗ knee_tilt must be within [-2, 2], got {value!r}")
         raise SystemExit(2)
     return tilt
+
+
+def _loss_knee_weights(value, scored: tuple[float, ...] | None) -> tuple[float, ...] | None:
+    """``loss_knee_weights`` (comma string or list) → a tuple of positive
+    finite weights, one per scored knee when those are known (a fork's knees
+    come from its source and are checked when the model is built)."""
+    if value in (None, "", []):
+        return None
+    try:
+        items = value.split(",") if isinstance(value, str) else list(value)
+        weights = tuple(float(w) for w in items if str(w).strip() != "")
+    except (TypeError, ValueError) as exc:
+        print(f"✗ loss_knee_weights must be a list of numbers, got {value!r}")
+        raise SystemExit(2) from exc
+    if not weights or min(weights) <= 0.0 or not all(math.isfinite(w) for w in weights):
+        print(f"✗ loss_knee_weights must be positive and finite, got {value!r}")
+        raise SystemExit(2)
+    if scored and len(weights) != len(scored):
+        print(f"✗ loss_knee_weights needs one weight per scored knee ({len(scored)}), got {len(weights)}")
+        raise SystemExit(2)
+    return weights
 
 
 def _isotropy(penalty, knee) -> tuple[float, float | None]:
@@ -671,8 +700,10 @@ def _diversity_kwargs(args, over: dict) -> dict:
         raise SystemExit(2)
     if lupton and (over.get("loss_knees", args.loss_knees)
                    or over.get("loss_floor", args.loss_floor)
-                   or over.get("knee_tilt", args.knee_tilt)):
-        print("✗ lupton_loss replaces the knee grid: no loss_knees, loss_floor or knee_tilt with it")
+                   or over.get("knee_tilt", args.knee_tilt)
+                   or over.get("loss_knee_weights", args.loss_knee_weights)):
+        print("✗ lupton_loss replaces the knee grid: no loss_knees, loss_floor, knee_tilt or "
+              "loss_knee_weights with it")
         raise SystemExit(2)
     if brightness and not bool(over.get("forward_onthefly", args.forward_onthefly)):
         print("✗ brightness_consistency needs the live (on-the-fly) forward model")
@@ -691,6 +722,9 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "loss_knees": _loss_knees(over.get("loss_knees", args.loss_knees), knees),
             "loss_floor": _loss_floor(over.get("loss_floor", args.loss_floor)),
             "knee_tilt": _knee_tilt(over.get("knee_tilt", args.knee_tilt)),
+            "loss_knee_weights": _loss_knee_weights(
+                over.get("loss_knee_weights", args.loss_knee_weights),
+                _loss_knees(over.get("loss_knees", args.loss_knees), knees) or knees),
             "lupton": lupton,
             "brightness_consistency": brightness,
             "noise_texture_jitter": _flag(over.get("noise_texture_jitter", args.noise_texture_jitter),
@@ -770,6 +804,8 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
         identity["loss_floor"] = float(origin["loss_floor"])
     if origin.get("knee_tilt") and "knee_tilt" not in override:
         identity["knee_tilt"] = float(origin["knee_tilt"])
+    if origin.get("loss_knee_weights") and "loss_knee_weights" not in override:
+        identity["loss_knee_weights"] = tuple(float(w) for w in origin["loss_knee_weights"])
     if origin.get("lupton_loss") is True and "lupton_loss" not in override:
         identity["lupton"] = True
     if origin.get("brightness_consistency") is True and "brightness_consistency" not in override:
@@ -1051,6 +1087,8 @@ def main() -> int:
                 knobs += f" loss_floor={s.loss_floor:g}σ"
             if s.knee_tilt:
                 knobs += f" knee_tilt={s.knee_tilt:+g}"
+            if s.loss_knee_weights:
+                knobs += " loss_knee_weights=" + ",".join(f"{w:g}" for w in s.loss_knee_weights)
             if s.lupton:
                 knobs += " lupton_loss"
             if s.brightness_consistency:

@@ -65,14 +65,17 @@ export type TrainForm = {
 
 export const newRow = (from?: Partial<SpecRow>): SpecRow => ({
   loss: "l2", blocks: "32", kneeMode: "single", knee: "100", knees: DEFAULT_MULTI_KNEES,
-  outputKnee: DEFAULT_LEARNED_KNEE, learnKnee: true, kneeLoss: "balanced", noise: "0", boot: "0.7", icnr: true,
+  // ICNR off since 2026-10-25 (user: "if we can live without it we would
+  // prefer to"); the isotropy penalty's 2–3 px band already polices the
+  // pixel-shuffle checkerboard ICNR was for. Tick it per member to bring it back.
+  outputKnee: DEFAULT_LEARNED_KNEE, learnKnee: true, kneeLoss: "balanced", noise: "0", boot: "0.7", icnr: false,
   ...from,
   seed: "",               // never cloned — two members with one seed are one model
 });
 
 /** The recipe of every batch since 2026-09-20 (memory: L2, bootstrap 0.7,
- *  32 blocks, ICNR, 70k steps, live forward; saturation 0.5 and PSF warp α 5
- *  are System › Config's). */
+ *  32 blocks, 70k steps, live forward — ICNR too until 2026-10-25;
+ *  saturation 0.5 and PSF warp α 5 are System › Config's). */
 export const RECIPE_GEOMETRY: Geometry = {
   batch_size: "4", hr_crop_size: "256", crops_per_field: "8", forward_onthefly: true,
   psf_subset: "64", target_psf_fwhm_arcsec: "0.066", xla: false, bf16: false,

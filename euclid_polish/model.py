@@ -75,6 +75,7 @@ from euclid_polish.training.losses import (
     KNEE_LOSS_MODES,
     build_loss,
     channel_balanced_loss,
+    knee_channel_weights,
     knee_expanded_loss,
     knee_floored_loss,
     knee_stretched_loss,
@@ -506,7 +507,7 @@ class Model:
     def _member_loss(self, loss_norm: str, knee_loss: str = "plain",
                      loss_knees: Sequence[float] | None = None,
                      loss_floor: float | None = None, knee_tilt: float = 0.0,
-                     lupton: bool = False):
+                     lupton: bool = False, loss_knee_weights: Sequence[float] | None = None):
         """The reconstruction loss this member trains under. A multi-knee
         member's ``knee_loss``: ``plain`` = the loss over all channels at
         once; ``balanced`` = every channel (band x knee) weighted equally. A
@@ -520,6 +521,9 @@ class Model:
         ``knee_tilt``: tilt the balanced loss across the scored knees, knee
         ``k`` weighing ``(k / k_ref)**knee_tilt``
         (:func:`~euclid_polish.training.losses.knee_tilt_weights`); 0 = equal.
+        ``loss_knee_weights``: one weight per scored knee of the balanced
+        loss (:func:`~euclid_polish.training.losses.knee_channel_weights`;
+        times the tilt's when both are set); ``None`` = equal.
         ``lupton``: instead of the knee grid, one Lupton asinh magnitude per
         band softened at its per-pixel sky scatter
         (:func:`~euclid_polish.training.losses.lupton_loss`); a learned-knee
@@ -529,9 +533,9 @@ class Model:
             if not self._learn_output_knee:
                 raise ValueError("lupton loss needs a learned-output-knee member "
                                  "(one that outputs electrons)")
-            if loss_knees or loss_floor or knee_tilt:
+            if loss_knees or loss_floor or knee_tilt or loss_knee_weights:
                 raise ValueError("lupton loss replaces the knee grid: no loss_knees, "
-                                 "loss_floor or knee_tilt with it")
+                                 "loss_floor, knee_tilt or loss_knee_weights with it")
             return lupton_loss(build_loss(loss_norm), self._asinh_knees,
                                loss_floor_e(1.0, self._scale), Config.NUM_HR_CHANNELS)
         if knee_loss not in KNEE_LOSS_MODES:
@@ -544,6 +548,15 @@ class Model:
         weights = (knee_tilt_weights(subset or self._asinh_knees, float(knee_tilt),
                                      Config.NUM_HR_CHANNELS)
                    if knee_tilt else None)
+        if loss_knee_weights:
+            if not (self._asinh_knees and knee_loss == "balanced"):
+                raise ValueError("loss_knee_weights needs a multi-knee member with knee_loss='balanced'")
+            n_scored = len(subset or self._asinh_knees)
+            if len(loss_knee_weights) != n_scored:
+                raise ValueError(f"loss_knee_weights needs one weight per scored knee ({n_scored}), "
+                                 f"got {len(loss_knee_weights)}")
+            per_knee = knee_channel_weights(loss_knee_weights, Config.NUM_HR_CHANNELS)
+            weights = per_knee if weights is None else [a * b for a, b in zip(weights, per_knee, strict=True)]
         loss = (channel_balanced_loss(loss_norm, weights)
                 if self._asinh_knees and knee_loss == "balanced"
                 else build_loss(loss_norm))
@@ -608,6 +621,7 @@ class Model:
         loss_floor: float | None = None,
         knee_tilt: float = 0.0,
         lupton: bool = False,
+        loss_knee_weights: Sequence[float] | None = None,
         brightness_consistency: bool = False,
         noise_texture_jitter: bool = False,
         isotropy_penalty: float = 0.0,
@@ -802,7 +816,12 @@ class Model:
             provenance_fields["isotropy_knee"] = knee
             provenance_fields["isotropy_scales"] = [list(scale) for scale in scales]
         loss = self._member_loss(loss_norm, knee_loss, loss_knees, loss_floor, knee_tilt,
-                                 lupton=bool(lupton))
+                                 lupton=bool(lupton), loss_knee_weights=loss_knee_weights)
+        if loss_knee_weights:
+            provenance_fields["loss_knee_weights"] = [float(w) for w in loss_knee_weights]
+            scored = tuple(loss_knees) if loss_knees else self._asinh_knees
+            print("  loss knee weights: " + ", ".join(
+                f"{q:g} e⁻ {float(w):g}" for q, w in zip(scored, loss_knee_weights, strict=True)))
         if lupton:
             provenance_fields["lupton_loss"] = True
             print("  Lupton loss: asinh(x / s) per band, s (e⁻/HR px) = " + ", ".join(
