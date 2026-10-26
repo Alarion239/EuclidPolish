@@ -81,8 +81,26 @@ describe("model specs", () => {
     // universal models right after production, so Compare's first viewer tiers reach them
     expect(sortSpecs(["member:member_196", "universal:member_211", "mean", "gate:a", "production", "universal:member_206", "mystery"]))
       .toEqual(["production", "universal:member_206", "universal:member_211", "mean", "gate:a", "member:member_196", "mystery"]);
-    expect([specRank("production"), specRank("universal:member_211"), specRank("mean"), specRank("rbf"),
-      specRank("gate:x"), specRank("member:member_1"), specRank("other")]).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect([specRank("production"), specRank("universal:member_211"), specRank("milestone:member_257@200000"),
+      specRank("mean"), specRank("rbf"), specRank("gate:x"), specRank("member:member_1"), specRank("other")])
+      .toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(sortSpecs(["milestone:member_257@2000000", "milestone:member_257@200000", "member:member_1",
+      "milestone:member_257@1000000", "production"])).toEqual([
+      "production", "milestone:member_257@200000", "milestone:member_257@1000000", "milestone:member_257@2000000",
+      "member:member_1"]);
+  });
+
+  it("names a milestone by its member and step", () => {
+    expect(specShort("milestone:member_257@200000")).toBe("257@0.2M");
+    expect(specShort("milestone:member_257@15000000")).toBe("257@15M");
+    expect(specWords("milestone:member_257@1000000")).toBe("milestone 257 @ 1M");
+    expect(specWords("milestone:member_257@50000")).toBe("milestone 257 @ 50k");
+    expect(groupModels([
+      { spec: "milestone:member_257@200000", kind: "milestone", label: "Milestone 257 @ 0.2M", available: true },
+      { spec: "universal:member_249", kind: "universal", label: "Universal 249", available: true },
+    ]).map((g) => [g.id, g.items.map((i) => i.spec)])).toEqual([
+      ["universal", ["universal:member_249"]], ["milestone", ["milestone:member_257@200000"]],
+    ]);
   });
   it("shortens specs", () => {
     expect(specShort("member:member_196")).toBe("m196");

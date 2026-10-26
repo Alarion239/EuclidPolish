@@ -3,7 +3,10 @@
 FASRC, score each on the universal scores' test fields (the synthetic
 knee-PSNR curves of Models › Universal) and measure its four-band JWST
 resolution (``scripts/jwst_resolution.py``, spec ``milestone:<member>@<N>``),
-oldest first, until ``--last`` is done (or ``--max-hours`` pass).
+oldest first, until ``--last`` is done (or ``--max-hours`` pass). Each new
+milestone is also run on the poster galaxy, in a fresh Sky › Compare
+comparison of every milestone so far beside ``--poster-refs`` (outputs already
+in the store are reused), so the Compare tab opens on the latest one.
 
     python scripts/process_milestones.py --member member_257 --watch --last 15000000 \\
         --res-dir data/jwst_euclid_overlap/milestones
@@ -22,7 +25,7 @@ import sys
 import time
 
 from euclid_polish.web import remote
-from euclid_polish.web.helpers import milestones
+from euclid_polish.web.helpers import experiments, milestones, real_tiles
 
 BANDS = ("H_E", "J_E", "Y_E", "VIS")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -76,6 +79,22 @@ def process(member: str, step: int, res_dir: str, cache: str) -> None:
         say(f"  {band}: ½-coherence (Euclid-noise stretch) {arcsec}″")
 
 
+def poster_comparison(member: str, refs: list[str], res_dir: str) -> None:
+    """Every measured milestone of ``member`` (and ``refs``) on the poster
+    galaxy, as one comparison; only outputs not in the store are computed."""
+    steps = sorted(done_steps(member, res_dir))
+    specs = [*refs, *(milestones.spec_for(member, step) for step in steps)]
+    tiles = [(entry.source, entry.id) for entry in real_tiles.list_entries("poster")]
+    say(f"  poster: {len(tiles)} tile(s) × {len(specs)} model(s)")
+    last = steps[-1] if steps else 0
+    record = experiments.run_experiment(
+        tiles, specs, label=f"Poster galaxy · {member} milestones to {last:,} steps", log=lambda _m: None)
+    counts = record.get("counts", {})
+    errors = f" errors: {record['errors']}" if record.get("errors") else ""
+    say(f"  poster: {record['id']} {record['status']} (computed {counts.get('outputs_computed')}, "
+        f"reused {counts.get('outputs_reused')}){errors}")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--member", required=True, help="member_NNN")
@@ -86,7 +105,11 @@ def main() -> int:
     p.add_argument("--last", type=int, default=None, help="stop once this milestone step is done")
     p.add_argument("--poll", type=int, default=900, help="seconds between polls (--watch)")
     p.add_argument("--max-hours", type=float, default=80.0)
+    p.add_argument("--poster-refs", default="universal:member_249,universal:member_218,universal:member_227",
+                   help="models shown beside the milestones in the poster comparison ('' for none)")
+    p.add_argument("--no-poster", action="store_true", help="skip the poster comparison")
     args = p.parse_args()
+    refs = [spec.strip() for spec in args.poster_refs.split(",") if spec.strip()]
     started = time.time()
     while True:
         try:
@@ -103,6 +126,11 @@ def main() -> int:
                 process(args.member, step, args.res_dir, args.cache)
             except Exception as exc:  # noqa: BLE001 — one milestone never stops the rest
                 say(f"{args.member} @ {step:,} failed: {type(exc).__name__}: {exc}")
+        if todo and not args.no_poster:
+            try:
+                poster_comparison(args.member, refs, args.res_dir)
+            except Exception as exc:  # noqa: BLE001 — the poster never stops the measurements
+                say(f"poster comparison failed: {type(exc).__name__}: {exc}")
         finished = args.last is not None and args.last in done_steps(args.member, args.res_dir)
         if finished or not args.watch:
             say("done" if finished else "processed what was there")

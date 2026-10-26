@@ -29,11 +29,17 @@ A **model spec** names one way of turning a real LR tile into an SR image:
                       disk
 ====================  ========================================================
 
+and ``milestone:<name>@<N>``: one milestone checkpoint of a long run, e.g.
+``milestone:member_257@2000000`` — the state a member kept at step N
+(:mod:`~euclid_polish.web.helpers.milestones`), listed once pulled; it runs as
+an ensemble of one from its own ensemble dir and is addressed by the label
+``257@2000000`` (never a member label).
+
 Catalogue order: production, mean, rbf, the members, the gate variants, the
-universal models. A universal model or an active member that is one (195/196
-— its kind stays ``member``) carries ``details`` read from its
-``origin.json`` and ``training_log.csv`` (:func:`member_details`; cached by
-file stamp, never a TensorFlow read).
+universal models, the milestones (by member, then step). A universal model or
+an active member that is one (195/196 — its kind stays ``member``) carries
+``details`` read from its ``origin.json`` and ``training_log.csv``
+(:func:`member_details`; cached by file stamp, never a TensorFlow read).
 
 Members are always run through :class:`~euclid_polish.ensemble.EnsembleModel`
 (ensemble-only rule: a single model is an ensemble of one) and addressed by
@@ -85,13 +91,14 @@ from euclid_polish.eval.combiner import (
     load_combiner,
 )
 from euclid_polish.eval.spatial_gate import SpatialGateCombiner, load_spatial_gate
-from euclid_polish.web.helpers import atomic_files
+from euclid_polish.web.helpers import atomic_files, milestones
 
 SPEC_PRODUCTION = "production"
 SPEC_MEAN = "mean"
 SPEC_RBF = "rbf"
 MEMBER_PREFIX = "member:"
 GATE_PREFIX = "gate:"
+MILESTONE_PREFIX = "milestone:"
 UNIVERSAL_PREFIX = "universal:"
 GATE_DIR_PREFIX = "spatial_gate_"
 PRODUCTION_KIND = ACTIVE_COMBINER_KINDS[0]
@@ -103,6 +110,8 @@ SR_FACTOR = int(Config.DEFAULT_REBIN_FACTOR)
 _MEMBER_DIGITS = re.compile(r"^\d{1,6}$")
 _VARIANT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
+_MILESTONE_SPEC = re.compile(r"^(?:member_)?(\d{1,6})@(\d{1,12})$")
+_MILESTONE_LABEL = re.compile(r"^(\d{1,6})@(\d{1,12})$")
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +154,39 @@ def member_fingerprints(labels: Iterable[str]) -> dict[str, str | None]:
     """Checkpoint identity of each member or universal model — both live in
     ``<ensemble>/member_NNN`` (``None`` without a checkpoint)."""
     base = ensemble_dir()
-    return {label: member_fingerprint(os.path.join(base, member_name(label)))
+    return {label: (member_fingerprint(milestone_dir(label)) if is_milestone_label(label)
+                    else member_fingerprint(os.path.join(base, member_name(label))))
             for label in labels}
+
+
+def milestone_label(member: str, step: int) -> str:
+    """``("member_257", 2000000)`` → ``"257@2000000"``."""
+    return f"{str(member).removeprefix('member_')}@{int(step)}"
+
+
+def is_milestone_label(label: str) -> bool:
+    return bool(_MILESTONE_LABEL.fullmatch(str(label)))
+
+
+def milestone_of(label: str) -> tuple[str, int]:
+    """``"257@2000000"`` → ``("member_257", 2000000)``."""
+    match = _MILESTONE_LABEL.fullmatch(str(label))
+    if not match:
+        raise ValueError(f"not a milestone label: {label!r}")
+    return f"member_{match.group(1)}", int(match.group(2))
+
+
+def milestone_dir(label: str) -> str:
+    """The pulled checkpoint dir of a milestone label."""
+    member, step = milestone_of(label)
+    return str(milestones.local_root() / member / "milestones" / milestones.step_dirname(step))
+
+
+def _step_text(step: int) -> str:
+    """``200000`` → ``0.2M``, ``15000000`` → ``15M``, ``50000`` → ``50k``."""
+    if step >= 100_000:
+        return f"{step / 1e6:.2f}".rstrip("0").rstrip(".") + "M"
+    return f"{step // 1000}k" if step >= 1000 else str(step)
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +357,11 @@ def canonical_spec(raw: str) -> str:
         return _numbered_spec(raw, text, MEMBER_PREFIX)
     if lower.startswith(UNIVERSAL_PREFIX):
         return _numbered_spec(raw, text, UNIVERSAL_PREFIX)
+    if lower.startswith(MILESTONE_PREFIX):
+        match = _MILESTONE_SPEC.fullmatch(text[len(MILESTONE_PREFIX):].strip())
+        if not match:
+            raise ValueError(f"bad milestone spec {raw!r} (use milestone:member_<N>@<step>)")
+        return f"{MILESTONE_PREFIX}member_{match.group(1)}@{int(match.group(2))}"
     if lower.startswith(GATE_PREFIX):
         name = text[len(GATE_PREFIX):].strip().removeprefix(GATE_DIR_PREFIX)
         if name == PRODUCTION_ARTIFACT_DIR.removeprefix(GATE_DIR_PREFIX):
@@ -326,7 +371,7 @@ def canonical_spec(raw: str) -> str:
         return f"{GATE_PREFIX}{name}"
     raise ValueError(
         f"unknown model spec {raw!r}: use production, mean, rbf, "
-        "member:<name>, gate:<variant> or universal:<name>")
+        "member:<name>, gate:<variant>, universal:<name> or milestone:<name>@<step>")
 
 
 def parse_specs(raw: str | Iterable[str]) -> list[str]:
@@ -344,28 +389,34 @@ def parse_specs(raw: str | Iterable[str]) -> list[str]:
 
 def spec_slug(spec: str) -> str:
     """Filesystem-safe name of a canonical spec (``gate:26m`` → ``gate-26m``,
-    ``universal:member_211`` → ``universal-member_211``)."""
-    return canonical_spec(spec).replace(":", "-")
+    ``universal:member_211`` → ``universal-member_211``,
+    ``milestone:member_257@200000`` → ``milestone-member_257-200000``)."""
+    return canonical_spec(spec).replace(":", "-").replace("@", "-")
 
 
 _PREFIX_KINDS = ((MEMBER_PREFIX, "member"), (GATE_PREFIX, "gate"),
-                 (UNIVERSAL_PREFIX, "universal"))
+                 (UNIVERSAL_PREFIX, "universal"), (MILESTONE_PREFIX, "milestone"))
 
 
 def spec_kind(spec: str) -> str:
     """The kind of a canonical spec (``production`` | ``mean`` | ``rbf`` |
-    ``member`` | ``gate`` | ``universal``); an unknown spec is its own kind."""
+    ``member`` | ``gate`` | ``universal`` | ``milestone``); an unknown spec is
+    its own kind."""
     text = str(spec)
     return next((kind for prefix, kind in _PREFIX_KINDS if text.startswith(prefix)), text)
 
 
 def spec_member_label(spec: str) -> str | None:
-    """The ``NN·psnr`` label a ``member:`` / ``universal:`` spec runs
-    (``None`` for every other spec, a malformed one included)."""
+    """The ``NN·psnr`` label a ``member:`` / ``universal:`` spec runs, the
+    ``NN@step`` label of a ``milestone:`` spec (``None`` for every other
+    spec, a malformed one included)."""
     try:
         text = canonical_spec(spec)
     except ValueError:
         return None
+    if text.startswith(MILESTONE_PREFIX):
+        member, step = text[len(MILESTONE_PREFIX):].split("@")
+        return milestone_label(member, int(step))
     for prefix in (MEMBER_PREFIX, UNIVERSAL_PREFIX):
         if text.startswith(prefix):
             return member_label(text[len(prefix):])
@@ -379,6 +430,9 @@ def spec_label(spec: str) -> str:
     label = spec_member_label(spec)
     if label is None:
         return canonical_spec(spec)
+    if is_milestone_label(label):
+        member, step = milestone_of(label)
+        return f"Milestone {member.removeprefix('member_')} @ {_step_text(step)}"
     if spec_kind(canonical_spec(spec)) == "universal":
         return f"Universal {label.split('·')[0]}"
     return f"Member {label}"
@@ -416,7 +470,7 @@ def spec_fingerprint(kind: str, *, combiner_kind: str | None = None,
     if len(fps) != len(labels) or any(not fp for fp in fps):
         return None
     pairs = [f"{label}={fp}" for label, fp in zip(labels, fps, strict=True)]
-    if kind in ("member", "universal"):
+    if kind in ("member", "universal", "milestone"):
         return _hash(kind, labels[0], fps[0]) if len(labels) == 1 else None
     if kind == "mean":
         return _hash("mean", *pairs) if labels else None
@@ -434,7 +488,7 @@ class ModelSpec:
     """One runnable (or explained-unavailable) model spec."""
 
     spec: str
-    kind: str                       # production | mean | member | gate | rbf | universal
+    kind: str                       # production | mean | member | gate | rbf | universal | milestone
     label: str
     member_labels: tuple[str, ...]  # the members it was built for (staleness key)
     reads: tuple[str, ...]          # the members it actually runs
@@ -599,8 +653,8 @@ def production_model_name() -> str | None:
 
 def is_single_model(spec: ModelSpec) -> bool:
     """Whether ``spec`` runs one model and no combiner (a member, a universal
-    model, or production when it is a universal model)."""
-    return spec.kind in ("member", "universal") or (
+    model, a milestone, or production when it is a universal model)."""
+    return spec.kind in ("member", "universal", "milestone") or (
         spec.kind == "production" and spec.combiner_dir is None and len(spec.reads) == 1)
 
 
@@ -702,7 +756,30 @@ def list_specs() -> list[ModelSpec]:
                          if reason is None else None),
             member_fingerprints=(fp,),
             details=member_details(label, ensemble_registry.UNIVERSAL_CLASS)))
+    specs.extend(_milestone_specs())
     return specs
+
+
+def _milestone_specs() -> list[ModelSpec]:
+    """One spec per pulled milestone (:func:`milestones.local_steps`), by
+    member then step; ``details`` = the member's recipe and the step."""
+    out = []
+    for member in milestones.local_members():
+        origin = _origin(str(milestones.local_root() / member)) or {}
+        for step in milestones.local_steps(member):
+            label = milestone_label(member, step)
+            fp = member_fingerprint(milestone_dir(label))
+            spec = f"{MILESTONE_PREFIX}{member}@{step}"
+            out.append(ModelSpec(
+                spec, "milestone", spec_label(spec), (label,), (label,), fp is not None,
+                reason=None if fp else "milestone has no checkpoint",
+                fingerprint=spec_fingerprint("milestone", member_labels=(label,),
+                                             member_fingerprints=(fp,)),
+                member_fingerprints=(fp,),
+                details={"milestone": True, "member": member, "step": step,
+                         "target_steps": _int(origin.get("target_steps")),
+                         "num_res_blocks": _int(origin.get("num_res_blocks"))}))
+    return out
 
 
 def resolve_spec(spec: str, specs: Sequence[ModelSpec] | None = None) -> ModelSpec:
@@ -836,6 +913,7 @@ class EnsembleMemberRunner:
         self._factory = factory
         self._labels = None if labels is None else list(dict.fromkeys(labels))
         self._ensemble = None
+        self._milestones: dict[str, Any] = {}
 
     @staticmethod
     def _runnable(labels: Sequence[str]) -> tuple[list[str], set[str]]:
@@ -857,7 +935,19 @@ class EnsembleMemberRunner:
             self._ensemble = self._factory(self._base_dir or ensemble_dir(), **kwargs)
         return self._ensemble
 
+    def _milestone(self, label: str):
+        """A milestone as an ensemble of one, from its own ensemble dir."""
+        if label not in self._milestones:
+            member, step = milestone_of(label)
+            self._milestones[label] = self._factory(
+                milestones.materialize(member, step), labels=[member],
+                include_universal=True, starless=False)
+        return self._milestones[label]
+
     def predict(self, lr_e: np.ndarray, label: str) -> np.ndarray:
+        if is_milestone_label(label):
+            stack = self._milestone(label).member_arrays(np.asarray(lr_e, np.float32))
+            return np.asarray(stack[0], np.float32)
         labels = list(self.ensemble.member_labels)
         if (label not in labels and self._labels is not None
                 and self._runnable([label])[0]):
@@ -1102,6 +1192,8 @@ __all__ = [
     "spec_kind",
     "spec_label",
     "spec_member_label",
+    "milestone_label",
+    "is_milestone_label",
     "spec_slug",
     "sr_header",
     "training_log_summary",

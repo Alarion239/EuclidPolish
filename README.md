@@ -652,7 +652,8 @@ Models › Images' Generate SR) load the model through `eval.ensemble_infer.load
 The test-set **Evaluate** job instead runs every active starfull member, caches their cubes and
 applies combiners from that cache. Real tiles (Sky, Figures › Plates) pick a model spec
 (`production`, `mean`, `member:<name>`, `gate:<variant>`, `universal:<name>` — a pulled universal
-multi-knee model, never an ensemble member) from `web/helpers/model_catalog.py`;
+multi-knee model, never an ensemble member — or `milestone:<name>@<step>`, a long run's milestone
+checkpoint pulled by `scripts/process_milestones.py`) from `web/helpers/model_catalog.py`;
 there `production` has no mean fallback.
 
 **The spatial gate** (`eval/spatial_gate.py`) is a small convolutional network. Its input is each

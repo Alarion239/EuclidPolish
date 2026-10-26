@@ -75,6 +75,14 @@ def _member_root(member: str) -> Path:
     return local_root() / member
 
 
+def local_members() -> list[str]:
+    """The members with milestones pulled, in number order."""
+    root = local_root()
+    names = [p.name for p in root.iterdir() if p.is_dir() and re.fullmatch(r"member_\d+", p.name)] \
+        if root.is_dir() else []
+    return sorted(names, key=lambda name: int(name.removeprefix("member_")))
+
+
 def local_steps(member: str) -> list[int]:
     """The milestones pulled for ``member`` whose checkpoint is complete."""
     folder = _member_root(member) / "milestones"

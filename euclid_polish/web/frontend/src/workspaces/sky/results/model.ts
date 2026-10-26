@@ -57,22 +57,39 @@ export function deltaMagText(ratio: unknown): string {
 /* ── model specs ───────────────────────────────────────────────────────── */
 
 const UNIVERSAL_PREFIX = "universal:";
+const MILESTONE_PREFIX = "milestone:";
 
 /** A standalone universal model's spec (`universal:member_211`). An active
  *  member that is universal too keeps its `member:` spec. */
 export const isUniversalSpec = (spec: string): boolean => spec.startsWith(UNIVERSAL_PREFIX);
 
+/** A long run's milestone checkpoint (`milestone:member_257@2000000`). */
+export const isMilestoneSpec = (spec: string): boolean => spec.startsWith(MILESTONE_PREFIX);
+
+/** `milestone:member_257@2000000` → { member: "257", step: 2000000 } (null otherwise). */
+export function milestoneParts(spec: string): { member: string; step: number } | null {
+  const m = /^milestone:(?:member_)?(\d+)@(\d+)$/.exec(spec);
+  return m ? { member: m[1], step: Number(m[2]) } : null;
+}
+
+/** A milestone's step, short: 200000 → "0.2M", 15000000 → "15M", 50000 → "50k". */
+export function milestoneStepText(step: number): string {
+  if (step >= 100_000) return `${Number((step / 1e6).toFixed(2))}M`;
+  return step >= 1000 ? `${Math.floor(step / 1000)}k` : String(step);
+}
+
 /** Sort key: production, universal models (right after production, so
- *  Compare's first viewer tiers reach them), mean, rbf, gate variants,
- *  members (then natural). */
+ *  Compare's first viewer tiers reach them), milestones, mean, rbf, gate
+ *  variants, members (then natural). */
 export function specRank(spec: string): number {
   if (spec === "production") return 0;
   if (isUniversalSpec(spec)) return 1;
-  if (spec === "mean") return 2;
-  if (spec === "rbf") return 3;
-  if (spec.startsWith("gate:")) return 4;
-  if (spec.startsWith("member:")) return 5;
-  return 6;
+  if (isMilestoneSpec(spec)) return 2;
+  if (spec === "mean") return 3;
+  if (spec === "rbf") return 4;
+  if (spec.startsWith("gate:")) return 5;
+  if (spec.startsWith("member:")) return 6;
+  return 7;
 }
 
 const COLLATOR = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
@@ -87,8 +104,11 @@ const SPEC_WORDS: Record<string, string> = { production: "production", mean: "me
 const specNumber = (spec: string, prefix: string) => spec.slice(prefix.length).replace(/^member_/, "");
 
 /** A spec in words: `gate:p20` → "gate p20", `member:member_196` → "member 196",
- *  `universal:member_211` → "universal 211". */
+ *  `universal:member_211` → "universal 211", `milestone:member_257@200000` →
+ *  "milestone 257 @ 0.2M". */
 export function specWords(spec: string): string {
+  const milestone = milestoneParts(spec);
+  if (milestone) return `milestone ${milestone.member} @ ${milestoneStepText(milestone.step)}`;
   if (spec.startsWith("gate:")) return `gate ${spec.slice(5)}`;
   if (spec.startsWith("member:")) return `member ${specNumber(spec, "member:")}`;
   if (isUniversalSpec(spec)) return `universal ${specNumber(spec, UNIVERSAL_PREFIX)}`;
@@ -96,8 +116,10 @@ export function specWords(spec: string): string {
 }
 
 /** Compact label: `member:member_196` → `m196`, `universal:member_211` →
- *  `u211`, `gate:26m` → `gate 26m`. */
+ *  `u211`, `gate:26m` → `gate 26m`, `milestone:member_257@200000` → `257@0.2M`. */
 export function specShort(spec: string): string {
+  const milestone = milestoneParts(spec);
+  if (milestone) return `${milestone.member}@${milestoneStepText(milestone.step)}`;
   if (spec.startsWith("member:")) return `m${specNumber(spec, "member:")}`;
   if (isUniversalSpec(spec)) return `u${specNumber(spec, UNIVERSAL_PREFIX)}`;
   if (spec.startsWith("gate:")) return `gate ${spec.slice("gate:".length)}`;
@@ -118,13 +140,15 @@ export function productionUniversalSpec(models: readonly Pick<ModelSpecRow, "kin
 export type ModelGroup = { id: string; label: string; items: ModelSpecRow[] };
 
 /** The model catalogue grouped for pickers (spec §7.3): production, universal
- *  models, mean, rbf, gate variants, members — each group in catalogue order.
+ *  models, milestones, mean, rbf, gate variants, members — each group in
+ *  catalogue order.
  *  The universal group holds the kind `universal` rows AND the active members
  *  whose details say they are universal (those stay in Members too). */
 export function groupModels(models: readonly ModelSpecRow[]): ModelGroup[] {
   const groups: ModelGroup[] = [
     { id: "production", label: "Production", items: [] },
     { id: "universal", label: "Universal models", items: [] },
+    { id: "milestone", label: "Milestones", items: [] },
     { id: "mean", label: "Mean", items: [] },
     { id: "rbf", label: "RBF", items: [] },
     { id: "gate", label: "Gate variants", items: [] },

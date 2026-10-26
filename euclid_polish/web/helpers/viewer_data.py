@@ -2204,9 +2204,9 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
 
 _SPEC_ORDER = ("production", "mean", "rbf")
 #: Default tier order after the core specs: members, gate variants, universal
-#: models, then anything else.
+#: models, milestones, then anything else.
 _SPEC_PREFIX_ORDER = (model_catalog.MEMBER_PREFIX, model_catalog.GATE_PREFIX,
-                      model_catalog.UNIVERSAL_PREFIX)
+                      model_catalog.UNIVERSAL_PREFIX, model_catalog.MILESTONE_PREFIX)
 
 
 def _real_source(params: dict[str, str]) -> str:
@@ -2220,12 +2220,14 @@ def _real_source(params: dict[str, str]) -> str:
 def _real_default_specs(outputs: list[dict[str, Any]]) -> list[str]:
     seen = {spec for tile in outputs for spec in tile}
 
-    def order(spec: str) -> tuple[int, str]:
+    def order(spec: str) -> tuple[int, list]:
+        # natural order: milestone:member_257@200000 before …@1000000
+        natural = [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", spec)]
         if spec in _SPEC_ORDER:
-            return _SPEC_ORDER.index(spec), spec
+            return _SPEC_ORDER.index(spec), natural
         rank = next((i for i, prefix in enumerate(_SPEC_PREFIX_ORDER)
                      if spec.startswith(prefix)), len(_SPEC_PREFIX_ORDER))
-        return len(_SPEC_ORDER) + rank, spec
+        return len(_SPEC_ORDER) + rank, natural
 
     return sorted(seen, key=order)
 

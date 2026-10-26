@@ -112,3 +112,77 @@ def test_the_processor_counts_a_milestone_done_once_scored_and_measured_in_every
             models["milestone:member_257@500000"] = {}
         (res / f"resolution_{band}.json").write_text(json.dumps({"models": models}))
     assert pm.done_steps(member, str(res)) == {200000}
+
+
+def test_a_milestone_is_a_catalogue_spec_of_its_own(root):
+    from euclid_polish.web.helpers import model_catalog as mc
+
+    assert mc.canonical_spec("milestone:257@2000000") == "milestone:member_257@2000000"
+    assert mc.canonical_spec(" milestone:member_257@0200000 ") == "milestone:member_257@200000"
+    for bad in ("milestone:member_257", "milestone:x@1", "milestone:257@"):
+        with pytest.raises(ValueError, match="milestone"):
+            mc.canonical_spec(bad)
+    spec = "milestone:member_257@200000"
+    assert mc.spec_kind(spec) == "milestone" and mc.spec_slug(spec) == "milestone-member_257-200000"
+    assert mc.spec_member_label(spec) == "257@200000" and mc.is_milestone_label("257@200000")
+    assert not mc.is_milestone_label("257·psnr")
+    assert mc.spec_label(spec) == "Milestone 257 @ 0.2M"
+    assert mc.spec_label("milestone:member_257@15000000") == "Milestone 257 @ 15M"
+
+    assert mc._milestone_specs() == []
+    for step in (2000000, 200000):
+        _milestone(root, "member_257", step, step / 1e6)
+    (root / "member_257" / "origin.json").write_text(json.dumps({"target_steps": 15000000, "num_res_blocks": 16}))
+    specs = mc._milestone_specs()
+    assert [s.spec for s in specs] == ["milestone:member_257@200000", "milestone:member_257@2000000"]
+    first = specs[0]
+    assert first.kind == "milestone" and first.available and first.reads == ("257@200000",)
+    assert first.fingerprint and first.fingerprint != specs[1].fingerprint
+    assert first.details == {"milestone": True, "member": "member_257", "step": 200000,
+                             "target_steps": 15000000, "num_res_blocks": 16}
+    assert mc.is_single_model(first)
+    assert mc.member_fingerprints(["257@200000"])["257@200000"].startswith("ckpt-200000:")
+
+
+def test_the_runner_runs_a_milestone_from_its_own_ensemble_dir(root):
+    from euclid_polish.web.helpers import model_catalog as mc
+
+    _milestone(root, "member_257", 200000, 2.0)
+    built = []
+
+    class Fake:
+        def __init__(self, base, *, labels, include_universal, starless):
+            built.append((base, labels, include_universal, starless))
+
+        def member_arrays(self, lr):
+            return np.stack([np.full((8, 8, 4), 7.0, np.float32)])
+
+    runner = mc.EnsembleMemberRunner(factory=Fake, labels=["257@200000"])
+    out = runner.predict(np.ones((4, 4, 4), np.float32), "257@200000")
+    runner.predict(np.ones((4, 4, 4), np.float32), "257@200000")
+    assert out.shape == (8, 8, 4) and float(out[0, 0, 0]) == 7.0
+    assert len(built) == 1                                    # loaded once, reused
+    base, labels, include_universal, starless = built[0]
+    assert base.endswith("ensembles/step_000200000") and labels == ["member_257"]
+    assert include_universal and starless is False
+
+
+def test_the_processor_compares_every_measured_milestone_on_the_poster(monkeypatch):
+    from types import SimpleNamespace
+
+    from scripts import process_milestones as pm
+
+    monkeypatch.setattr(pm, "done_steps", lambda member, res_dir: {2000000, 200000})
+    monkeypatch.setattr(pm.real_tiles, "list_entries",
+                        lambda source: [SimpleNamespace(source=source, id="target_181255")])
+    seen = {}
+
+    def fake_run(tiles, specs, *, label, log):
+        seen.update(tiles=tiles, specs=specs, label=label)
+        return {"id": "x", "status": "done", "counts": {"outputs_computed": 1, "outputs_reused": 2}}
+
+    monkeypatch.setattr(pm.experiments, "run_experiment", fake_run)
+    pm.poster_comparison("member_257", ["universal:member_249"], "res")
+    assert seen["tiles"] == [("poster", "target_181255")]
+    assert seen["specs"] == ["universal:member_249", "milestone:member_257@200000", "milestone:member_257@2000000"]
+    assert "2,000,000" in seen["label"]

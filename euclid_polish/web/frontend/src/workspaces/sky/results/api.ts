@@ -81,8 +81,9 @@ export type TileCard = Omit<TileRow, "models"> & {
 /* ── GET /api/models ───────────────────────────────────────────────────── */
 
 /** `universal` = a standalone single-image multi-knee model (spec
- *  `universal:member_NNN`), registered locally but not an ensemble member. */
-export type ModelKind = "production" | "mean" | "rbf" | "member" | "gate" | "universal";
+ *  `universal:member_NNN`), registered locally but not an ensemble member;
+ *  `milestone` = a long run's milestone checkpoint (`milestone:member_NNN@STEP`). */
+export type ModelKind = "production" | "mean" | "rbf" | "member" | "gate" | "universal" | "milestone";
 
 /** What the server reads about a universal model (cheap reads of its
  *  origin.json and training_log.csv); any field may be missing. */
