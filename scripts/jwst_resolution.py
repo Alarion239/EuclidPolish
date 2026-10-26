@@ -13,7 +13,8 @@ images (quick release, deep epoch 5); the other bands — or any band with
 epoch-1 pointing 01, which covers the field), streamed row by row (tiles in
 mosaic row order, so the gzip plane is decompressed once). ``lr`` is the
 Euclid input band itself, upsampled ×2 (cubic spline, flux kept): Euclid's
-own resolution measured the same way.
+own resolution measured the same way. ``milestone:member_NNN@STEP`` runs a
+long run's milestone checkpoint (``euclid_polish/web/helpers/milestones.py``).
 
 Per tile the JWST image is resampled to the SR grid in the band's electrons
 and cached under ``--cache`` once; one field-wide sub-pixel shift (the median
@@ -46,7 +47,7 @@ from euclid_polish.config import Config
 from euclid_polish.ensemble import EnsembleModel
 from euclid_polish.eval import jwst_resolution as jr
 from euclid_polish.training.inference import scaled_wcs_header
-from euclid_polish.web.helpers import fits_plane, jwst_euclid, model_catalog
+from euclid_polish.web.helpers import fits_plane, jwst_euclid, milestones, model_catalog
 from euclid_polish.web.helpers import real_tiles as rt
 
 JWST_PIXEL_ARCSEC = 0.03
@@ -141,6 +142,10 @@ def _runner(spec: str, band: str):
     b = BANDS.index(band)
     if spec == "lr":
         return lambda lr: zoom(np.nan_to_num(lr[..., b].astype(np.float64)), 2, order=3) / 4.0
+    if spec.startswith("milestone:"):                 # a long run's kept state (helpers/milestones.py)
+        model = milestones.load(*milestones.parse_spec(spec))
+        return lambda lr: np.asarray(model.member_arrays(np.ascontiguousarray(lr, np.float32))[0],
+                                     np.float32)[..., b]
     item = model_catalog.resolve_spec(spec)
     if not item.available or len(item.reads) != 1:
         raise SystemExit(f"{spec}: not a runnable single model ({item.reason or 'a combiner'})")

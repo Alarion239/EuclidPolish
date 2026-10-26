@@ -917,17 +917,19 @@ def _field_measures(sr: np.ndarray, target_record, fwhm: float) -> tuple[np.ndar
 
 
 def _score_model(cap, name: str, d: str, identity: dict, records_dir: str, *,
-                 done: int, total: int) -> tuple[dict, np.ndarray, list[int], dict]:
+                 done: int, total: int, ensemble_dir: str | None = None
+                 ) -> tuple[dict, np.ndarray, list[int], dict]:
     """Score one universal model on the identity's test fields: ``(index
     entry, curves (F, K, C), fields, spectra record)`` — the spectra come
     from the same outputs and truths. The model loads as an ensemble of one
-    (the ensemble-only rule)."""
+    (the ensemble-only rule) from ``ensemble_dir`` (default the ensemble;
+    a milestone's own materialized dir, see :mod:`.milestones`)."""
     label = ensemble_registry.member_label(name)
     started = time.monotonic()
     fingerprint = member_fingerprint(d)           # before loading: a pull mid-score → stale
     logged = train_time(d)                        # the training this checkpoint had
     logged_steps = logged["steps"] if logged["steps"] is not None else ev._member_last_step(d)
-    model = EnsembleModel(ev.ensemble_dir(), labels=[label], include_universal=True,
+    model = EnsembleModel(ensemble_dir or ev.ensemble_dir(), labels=[label], include_universal=True,
                           starless=False)
     fwhm = float(identity["target_psf_fwhm_arcsec"])
     n_wanted = len(identity["indices"])
