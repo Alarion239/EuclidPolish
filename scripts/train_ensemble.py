@@ -338,6 +338,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "for 256² HR crops (about the pixels of one 510² "
                         "field while mixing parent exposures).")
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
+    p.add_argument("--milestones", default=None,
+                   help="Comma-separated steps whose state each member keeps for good "
+                        "(milestones/step_<N>/ in its checkpoint dir), e.g. "
+                        "200000,500000,1000000; each a multiple of --evaluate-every.")
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
     # LR schedule (warmup → cosine) + reduce-LR-on-plateau guard. Defaults from
     # Config; the WebUI System › Config page (/system/config) injects these on
@@ -533,6 +537,24 @@ def _knee_tilt(value) -> float:
         print(f"✗ knee_tilt must be within [-2, 2], got {value!r}")
         raise SystemExit(2)
     return tilt
+
+
+def _milestones(value, evaluate_every: int) -> tuple[int, ...]:
+    """``--milestones`` (comma string) → sorted distinct steps, each a
+    positive multiple of ``evaluate_every`` (else it would never be reached
+    at a validation); () when unset."""
+    if value in (None, ""):
+        return ()
+    try:
+        steps = sorted({int(float(s)) for s in str(value).split(",") if s.strip()})
+    except ValueError as exc:
+        print(f"✗ --milestones must be comma-separated steps, got {value!r}")
+        raise SystemExit(2) from exc
+    bad = [s for s in steps if s <= 0 or s % int(evaluate_every)]
+    if bad:
+        print(f"✗ --milestones {bad} are not positive multiples of --evaluate-every {evaluate_every}")
+        raise SystemExit(2)
+    return tuple(steps)
 
 
 def _loss_knee_weights(value, scored: tuple[float, ...] | None) -> tuple[float, ...] | None:
@@ -1237,6 +1259,7 @@ def main() -> int:
             lr, hr, specs,
             batch_size=args.batch_size,
             evaluate_every=args.evaluate_every,
+            milestones=_milestones(args.milestones, args.evaluate_every),
             step_callback=_step_cb, eval_callback=_eval_cb, warn_callback=_warn_cb,
             on_member=_on_member,
             # LR schedule + plateau guard (forwarded to each member's Model.train).

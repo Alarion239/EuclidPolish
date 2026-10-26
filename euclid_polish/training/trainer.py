@@ -668,6 +668,7 @@ class Trainer:
         eval_callback=None,
         warn_callback=None,
         compute_resume_baseline=True,
+        milestones=(),
     ):
         """
         Train the model.
@@ -715,7 +716,21 @@ class Trainer:
             old checkpoint's score is meaningless — the save-best threshold
             is reset and this run's first eval saves. No effect on a fresh
             run.
+        milestones : Sequence[int]
+            Steps whose state is kept for good, each in
+            ``milestones/step_<step>/`` (a checkpoint dir of its own, outside
+            the rotating tracks): a long run can then be judged along the way
+            (e.g. real-sky resolution against steps). Each must be a multiple
+            of ``evaluate_every``; it is saved at that validation, after the
+            gradient-spike check, so a rolled-back state is never kept (the
+            re-trained window saves it again). Steps beyond ``steps`` are
+            ignored.
         """
+        milestones = sorted({int(m) for m in milestones or ()})
+        if any(m <= 0 or m % int(evaluate_every) for m in milestones):
+            raise ValueError(f"milestones must be positive multiples of evaluate_every "
+                             f"({int(evaluate_every)}), got {milestones}")
+        self._milestones = set(milestones)
         # Reproducibility: apply the run's seed (if any) and record it on a
         # Process.training so the run can be replayed. Done first, before any
         # dataset iteration consumes randomness.
@@ -955,6 +970,9 @@ class Trainer:
             loss_value  = window["loss"]
             gnorm_avg   = window["gnorm_avg"]
             gnorm_peak  = window["gnorm_max"]
+            if step in self._milestones:
+                self._save_milestone(step)
+
             # An accepted, fully post-warmup window's peak joins the baseline
             # the next windows' spike bar is measured against. A warmup
             # window (never rolled back) seeds it with its pre-clip peak, the
@@ -1177,6 +1195,16 @@ class Trainer:
         pbar.close()
         self.final_checkpoint_manager.save()
         tqdm.write(f"  ✓ Checkpoint saved [final] → final/ (step {int(self.checkpoint.step.numpy())})")
+
+    def _save_milestone(self, step: int) -> str:
+        """Keep the state at ``step`` for good: ``milestones/step_<step>/``
+        under the checkpoint dir, a checkpoint dir of its own (``ckpt-<step>``
+        + its ``checkpoint`` index), so it loads like any member's."""
+        directory = os.path.join(self.checkpoint_manager.directory, "milestones", f"step_{int(step):09d}")
+        path = tf.train.CheckpointManager(self.checkpoint, directory=directory,
+                                          max_to_keep=1).save(checkpoint_number=int(step))
+        tqdm.write(f"  ✓ Milestone kept → {os.path.relpath(path, self.checkpoint_manager.directory)}")
+        return path
 
     @tf.function
     def train_step(self, lr, hr):

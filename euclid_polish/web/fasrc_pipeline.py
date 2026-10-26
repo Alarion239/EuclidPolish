@@ -1541,6 +1541,9 @@ class EnsembleTrainStep(FASRCPipelineStep):
         TaskParam("evaluate_every", "int", None,
                   f"Validation period in steps (blank = "
                   f"{Config.DEFAULT_EVALUATE_EVERY}).", min=1),
+        TaskParam("milestones", "str", None,
+                  "Comma-separated steps whose state each member keeps for good "
+                  "(milestones/step_N/), each a multiple of evaluate_every."),
         TaskParam("loss", "choice", "l1", "Run-wide loss.", choices=LOSS_NAMES),
         TaskParam("noise_aug", "float", 0.0,
                   "Extra read-noise augmentation (RN units).", min=0),
@@ -1814,6 +1817,11 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if evaluate_every:
             with contextlib.suppress(ValueError):
                 cmd += ["--evaluate-every", str(int(float(evaluate_every)))]
+        milestones = str(params.get("milestones", "") or "").replace(" ", "").strip(",")
+        if milestones:
+            if not all(part.isdigit() for part in milestones.split(",")):
+                raise ValueError("milestones must be comma-separated whole steps")
+            cmd += ["--milestones", milestones]
         target_fwhm = str(params.get("target_psf_fwhm_arcsec", "")).strip()
         if target_fwhm != "":
             with contextlib.suppress(ValueError):
