@@ -6,7 +6,10 @@ twice-sampled 4-band sky at 0.05″/pix. The approach follows POLISH
 ([Connor+ 2022](https://arxiv.org/abs/2111.03249)): train on **synthetic** Euclid scenes whose
 clean high-resolution truth is known, with a forward model that reproduces what Euclid's MER
 pipeline actually delivers. The backbone is WDSR ([Yu+ 2018](https://arxiv.org/abs/1808.08718)) built from WDSR-B residual blocks.
-The shipped model is an **ensemble** of WDSR members fused by a learned **spatial-gate combiner**.
+The shipped model is one **universal** WDSR network (member_238). It reads eight asinh knees,
+outputs through a learned per-band knee, and is named production by the member registry.
+Ensembles of members fused by a learned spatial-gate combiner were production until 2026-10-21;
+the code paths remain.
 
 The science goal is to recover structure below the Euclid PSF, especially to flag strong-lens
 candidates in the small-Einstein-radius population that a wide, low-resolution survey misses.
@@ -20,7 +23,7 @@ over one SSH ControlMaster.
 ## Contents
 
 1. [How it works](#1-how-it-works)
-2. [Current status](#2-current-status-2026-10-04)
+2. [Current status](#2-current-status-2026-10-28)
 3. [Getting started](#3-getting-started)
 4. [Repository layout](#4-repository-layout)
 5. [Photometry and units](#5-photometry-and-units)
@@ -52,9 +55,9 @@ flowchart LR
   subgraph Train["Train (FASRC: ensemble_train)"]
     T1[WDSR members<br/>on-the-fly forward model]
   end
-  subgraph Combine["Combine and evaluate (local)"]
-    C1[Spatial-gate combiner]
-    C2[Test-split metrics,<br/>real-sky SR, studies]
+  subgraph Combine["Score and select (local)"]
+    C1[Universal models scored<br/>registry production pointer]
+    C2[Test-split metrics, JWST resolution,<br/>real-sky SR, studies]
   end
   P1 & P2 --> G1
   P3 & P4 --> G2
@@ -67,35 +70,41 @@ flowchart LR
   turns it into the LR stack the MER pipeline would deliver. Both work in electrons.
 - **Train.** Each ensemble member is a WDSR network trained on synthetic pairs. In production the
   forward model is re-run on every visit to a field (fresh stars, PSF draw, noise and artifacts).
-- **Combine.** A small convolutional gate learns per-pixel, per-band convex weights over the
-  members. The combined SR is what every evaluator and real-sky product uses.
+- **Select.** Universal models are scored on the synthetic test split (knee-integrated PSNR)
+  and on real sky (resolution against JWST, flux against the MER catalogue). The registry's
+  `production` pointer names the model every evaluator and real-sky product runs (§9.1).
 
 **Input → output.** The network maps a 4-channel LR stack `(VIS, Y_E, J_E, H_E)` at 0.10″/pix,
-in raw electrons, to a 4-channel deconvolved sky at 0.05″/pix. Inside the model, each member's
-network works on an asinh stretch of those electrons at its own knee (§8.2). The target is the clean scene
-blurred to a 0.066″ FWHM Gaussian (§8.2), not a delta-sharp truth.
+in raw electrons, to a 4-channel deconvolved sky at 0.05″/pix. Inside the model, the input is
+stretched with asinh at one or more knees (production: eight, 10⁻³ to 10⁴ e⁻), and the output
+returns through a learned per-band knee (§8.2). The target is the clean scene blurred to a
+0.066″ FWHM Gaussian (§8.2), not a delta-sharp truth.
 
 ---
 
-## 2. Current status (2026-10-04)
+## 2. Current status (2026-10-28)
 
-These figures drift quickly; the console's **Home** and **Models › Leaderboard** pages show the
-live state.
+These figures drift quickly; the console's **Home**, **Models › Leaderboard** and
+**Models › Universal** pages show the live state. "Integrated PSNR" below is the knee-integrated
+PSNR (§9.3) averaged over the four bands, on the 100 synthetic test fields.
 
 | Item | State |
 |---|---|
-| Production model | 18 active STARFULL members (all L2 loss, ICNR, on-the-fly trained; continued to 95–100k steps on 2026-10-02) |
-| Production combiner | Spatial gate over all 18 members, linear (electron) mixing, ~48k parameters; promoted 2026-10-02 |
-| Headline (100 synthetic test fields) | VIS PSNR at the 100 e⁻ knee: gate 59.22 dB vs best member 58.94 dB. Knee-integrated VIS PSNR: gate 55.82 dB vs best member 54.74 dB |
-| Best single members | By knee-integrated PSNR, the multi-knee "option 2" member 196 (54.74 dB VIS, §8.2); at the 100 e⁻ knee, single-knee member 171 (58.94 dB) |
+| Production model | Universal member_238, set by the registry `production` pointer on 2026-10-21: depth 16, 8 input knees 10⁻³…10⁴ e⁻, learned per-band output knee, L2 balanced loss, residual-isotropy penalty λ = 0.5, no bootstrap, XLA + bf16, 1.9 M steps (8.3 GPU-hours) |
+| Headline | member_238: 62.13 dB integrated PSNR (VIS 56.52, Y 66.32, J 63.24, H 62.43). The archived production gate scored 61.13 dB on the earlier (pre-2026-10-20) test fields, where 238 scores 62.07 dB |
+| Highest synthetic score | member_227 (15.5 M steps, 66 GPU-hours): 62.81 dB, but it paints a pixel-axis grid onto faint real sky: the grid detector (z ≥ 3) flags 26.1% of real-sky tiles for 227 vs 3.2% for 238 |
+| Spatial gates | Every gate artifact archived to the lab notebook on 2026-10-21 (`gates-20261021-161735.zip`, restorable from Models › Combiner) |
+| Ensemble members | 18 active STARFULL members (170–204), kept for the plain mean and the Leaderboard; 50 registered universal models (206–256) |
 | Noise model | `euclid-q1-mer-noise-levels-dithered-bilinear-v5` |
 | Galaxy population | Euclid joint prior v15 (colour+SFR forest), 151.5 galaxies/arcmin² |
 | Stellar population | Gaia+Euclid prior v6, 5.08 stars/arcmin² |
-| Training records | train regenerated 2026-09-20; validate/test regenerated 2026-09-25 |
+| Training records | All splits regenerated 2026-10-20 with whole (unmasked) TNG frames and dust-box and periodic-box donors excluded (§6.4) |
 
-Known open problems: on very bright real galaxy cores the convex gate can inherit one member's
-blacked-out "holes". The synthetic test split does not detect this, so real-sky products (poster
-target, Q1 tiles) are checked separately.
+Known open problems: bright real galaxy cores can still come out with blacked-out "holes"
+(training never shows bright extended cores; 238 has the fewest of the scored models), and
+models paint faint synthetic texture onto smooth real light. The synthetic test split does not
+detect either, so real-sky products (poster target, Q1 tiles, NEXUS overlaps) are checked
+separately.
 
 ---
 
@@ -143,7 +152,7 @@ Large data never lives in git:
 | Path (gitignored) | Contents |
 |---|---|
 | `data/` | catalogs, cutouts, PSFs, population calibrations, TFRecords (`images/records_v2/`), evaluation cubes and figures (`vis/`), provenance records (`_prov/`), FASRC file cache (`_fasrc_cache/`) |
-| `ckpt/` | `ensemble/member_NN/` checkpoints, `ensemble_registry.json`, and the legacy single-model `wdsr/` |
+| `ckpt/` | `ensemble/member_NNN/` checkpoints (ensemble members and universal models alike) and `ensemble_registry.json`; `wdsr/` is only the legacy single-model anchor and need not exist |
 | `tracking/` | the lab notebook: campaigns and frozen model studies (mirrored to holylabs) |
 | `.timetravel/` | time-travel sandboxes |
 
@@ -168,17 +177,19 @@ EUCLID_POLISH_DISABLE_AUTO_SSH=1 python scripts/serve.py      # offline: no star
 
 # Synthetic data (what the synthetic_generate FASRC step runs). Needs the activated
 # population artifacts, the TNG atlas, tng_properties.csv and the radius manifest.
-python scripts/run_pipeline.py --skip-train --gen-workers 8 --image-size 252 \
+python scripts/run_pipeline.py --skip-train --gen-workers 8 --image-size 510 \
     --ntrain 64 --nvalid 16 --ntest 16 \
     --joint-galaxy-population-file data/population_comparison/calibrations/joint_galaxy_population_active.json \
     --star-prior-file data/population_comparison/calibrations/star_population_active.json
 
-# Ensemble members (what the ensemble_train FASRC step runs; see §8.6)
-python -u scripts/train_ensemble.py --mode add --count 2 --steps 70000 --loss l2 \
-    --bootstrap 0.7 --icnr --forward-onthefly 1 --batch-size 4 \
+# A universal model with production's recipe (what the ensemble_train FASRC step runs; see §8.6)
+python -u scripts/train_ensemble.py --mode add --count 1 --steps 1900000 --loss l2 --num-res-blocks 16 \
+    --asinh-knees 0.001,0.01,0.1,1,10,100,1000,10000 --output-knee 10 --learn-output-knee \
+    --knee-loss balanced --isotropy-penalty 0.5 --isotropy-knee 0.01 --xla --bf16 \
+    --forward-onthefly 1 --batch-size 4 \
     --star-prior-file data/population_comparison/calibrations/star_population_active.json
 
-# Fit and compare spatial-gate variants on cached member cubes (see §9.2)
+# Legacy: fit and compare spatial-gate variants on cached member cubes (see §9.2)
 python scripts/fit_spatial_gate.py fit --out-name spatial_gate_trial
 python scripts/fit_spatial_gate.py compare --gates spatial_gate_combiner spatial_gate_trial
 
@@ -195,7 +206,7 @@ python scripts/timetravel.py list
 
 ```bash
 EUCLID_POLISH_DISABLE_AUTO_SSH=1 NUMBA_DISABLE_JIT=1 MPLBACKEND=Agg PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-    python -m pytest -q                     # ~4,240 tests
+    python -m pytest -q                     # ~5,060 tests
 ruff check .                                # Python 3.12 target, line length 110 (pyproject.toml)
 
 cd euclid_polish/web/frontend
@@ -232,7 +243,7 @@ npm ci && npm run typecheck && npm run lint && npm test && npm run build
 | `euclid_polish/image/` | `Image` / `ImageSet` types and the TFRecord schema (`tfio.py`) |
 | `euclid_polish/model.py`, `training/` | the `Model` wrapper, WDSR network, trainer, losses, LR schedule, guards, on-the-fly forward |
 | `euclid_polish/ensemble.py`, `ensemble_registry.py` | `EnsembleModel` and the member registry with tombstones |
-| `euclid_polish/eval/` | ensemble inference, spatial gate, metrics, evaluation runners |
+| `euclid_polish/eval/` | ensemble inference, spatial gate, metrics (knee PSNR, spectra, knee attribution, JWST resolution, flux conservation), evaluation runners |
 | `euclid_polish/studies/` | frozen whole-ensemble studies for the paper |
 | `euclid_polish/provenance/`, `tracking/`, `observability/` | identity and lineage, lab notebook and time-travel, progress events and the resource advisor |
 | `euclid_polish/noise_assessment/` | standalone, read-only archive-noise diagnostic (not used by generation) |
@@ -341,7 +352,8 @@ no stars, because on-the-fly training draws a fresh star realization on every vi
 lenstronomy `LensModel(['SIE', 'SHEAR'])`, a random TNG deflector and source, σ_v from
 Faber–Jackson on the TNG stellar mass, Collett-2015-style redshift and geometry priors, and
 θ_E in (0.10, 3.5)″. Lens light uses physical-redshift rendering (100 pc/pixel atlas grid,
-compactness, Tolman dimming, a 28 mag/arcsec² surface-brightness cut) followed by
+compactness, Tolman dimming, a 28 mag/arcsec² VIS surface-brightness cut that rolls off over
+±0.2 dex, and a soft circular stamp window instead of a crop square) followed by
 class-conditioned empirical colours. The density is a `/config` knob: the `Config` default is
 16.5 lenses/arcmin², but recent production records used 0.02.
 
@@ -349,13 +361,23 @@ class-conditioned empirical colours. The density is a `/config` knob: the `Confi
 
 - `TNGAtlas` is a read-only, validated view of `data/tng_skirt/<id>/TNG<id>_O{1..5}_Euclid_{VIS,Y,J,H}.fits`
   (TNG50-SKIRT, [Baes+ 2024](https://arxiv.org/abs/2401.04224); Euclid-band images from
-  [Kovačić+ 2025](https://arxiv.org/abs/2501.14408)). A galaxy counts only when its `.done` marker and all 20 frames exist.
+  [Kovačić+ 2025](https://arxiv.org/abs/2501.14408)). A galaxy counts only when its `.done` marker and all 20 frames exist
+  (with `EUCLID_POLISH_TNG_REQUIRE_DUST_FREE=1`, as on FASRC, also its `_nodust` twins).
+- **Donor exclusions** (`Config.Tng`). A galaxy is no donor when more than 1% of its VIS light
+  lies outside its stars in any orientation (SKIRT's dust box; `MAX_OUTSIDE_STAR_FRACTION`,
+  `tng/box_light.py`), or when it sits within 113 kpc of a TNG50 periodic-box face, which cut its
+  light with a straight edge (`MIN_BOX_FACE_DISTANCE_KPC`, `tng/box_face.py`).
+- **Whole frames.** The dusty frames are used whole. A star mask that kept dusty light only where
+  the dust-free twin has light exists but is off since 2026-10-20 (`EUCLID_POLISH_TNG_STAR_MASK=1`
+  turns it on).
 - `TNGPropertyCatalog` reads `data/_tng_infographics/tng_properties.csv` (SFR, stellar and halo
   mass, size) from the TNG API.
 - `TNGRadiusManifest` holds each view's native VIS half-light radius. It is fingerprinted against
   the FITS files, so it is host-specific; `run_pipeline.py` validates or repairs it before starting
   workers.
-- `TNGRenderer` converts native MJy/sr on the 100 pc grid to electrons on the angular grid.
+- `TNGRenderer` converts native MJy/sr on the 100 pc grid to electrons on the angular grid. Every
+  stamp ends in a soft circular window around its 99.5%-light radius (+4 px), with an exponential
+  edge, rather than a bare crop square: hard edges taught low-knee members to draw straight lines.
 
 ### 6.5 Calibrating and activating the priors
 
@@ -443,7 +465,9 @@ observed = s + sqrt(sky_rms_e² + max(s, 0)) · scale_map · U
 - `U` is dithered unit noise: four exposures of white noise on the detector grid (0.10″ VIS, 0.30″
   NISP), each shifted to a sub-pixel offset, bilinearly resampled and averaged. This reproduces the
   pixel correlation of the delivered stacks: single-pixel scatter is ≈0.66× (VIS) and ≈0.22× (NISP)
-  of the aperture-level RMS.
+  of the aperture-level RMS. A member trained with `--noise-texture-jitter` instead draws 4–8
+  exposures plus a white share of up to 15% of the variance per scene and band, so it cannot fit
+  one texture (`Config.NOISE_TEXTURE_JITTER_*`).
 - `scale_map` combines a shared ±1% field depth with an independent per-band pointing seam
   (probability 0.10, depth step 1.10–1.45 either way).
 - The identity of this model is `Config.NOISE_MODEL = "euclid-q1-mer-noise-levels-dithered-bilinear-v5"`.
@@ -514,13 +538,18 @@ float32 electrons and can be negative. Each `tf.train.Example` carries `image`, 
 
 ### 8.1 Architecture (`training/models/wdsr.py`)
 
-- WDSR with WDSR-B residual blocks: a 3×3 entry conv, 32 residual blocks (1×1 conv with ×6 wide
-  activation + ReLU → linear 1×1 at 0.8× width → 3×3, 32 filters), a 3×3 conv and a 2× pixel shuffle. Weight-norm convolutions, no batch norm,
-  ≈0.6 M parameters.
+- WDSR with WDSR-B residual blocks: a 3×3 entry conv, `--num-res-blocks` residual blocks (default
+  32; 1×1 conv with ×6 wide activation + ReLU → linear 1×1 at 0.8× width → 3×3, 32 filters), a 3×3
+  conv and a 2× pixel shuffle. Weight-norm convolutions, no batch norm, ≈0.6 M parameters at depth
+  32. Production (238) is depth 16. At 200k steps, depth 32 (217) scored +0.25 dB over depth 16
+  (214) for 1.5× the GPU time, and depth 8 (216) −0.50 dB (214 drew 8 crops per field, the
+  other two 16).
 - **4 bands in, 4 bands out.** Each output band also has its own 5×5 residual skip (conv + pixel
   shuffle) that reads only that band; cross-band information flows through the shared trunk.
 - **ICNR** (`--icnr`) initialises the pre-shuffle convs as a checkerboard-free nearest-neighbour
-  upsampler (init only). All production members use it.
+  upsampler (init only). member_238 and the 18 gate members use it; the Train tab leaves it off
+  since 2026-10-25, because the isotropy penalty's 2–3 px band (§8.3) already polices the
+  pixel-shuffle checkerboard.
 
 ### 8.2 Objective and normalisation
 
@@ -531,22 +560,27 @@ float32 electrons and can be negative. Each `tf.train.Example` carries `image`, 
   synthetic only; no forward operator appears in the loss.
 - **asinh stretch.** Inputs and targets are stretched per band as `y = asinh(x / knee)`
   ([Lupton+ 1999](https://ui.adsabs.harvard.edu/abs/1999AJ....118.1406L)); the default knee is
-  `Config.STRETCH_SCALE_E = 100 e⁻`. The stretch is applied in the input pipelines
-  (`Model._build_*_pipeline` in `model.py`, using `training/augmentation.py`), after cropping, the
-  dihedral transform and any `--noise-aug`. `reconstruct()` returns
-  `sinh(y) · knee` electrons.
-- **Per-member knees.** `--asinh-knee` sets a single knee. `--asinh-knees 0.1,1,10,100,1000,10000`
-  makes a **multi-knee** member: input and target are stretched at every knee and stacked (4·K
-  channels).
+  `Config.STRETCH_SCALE_E = 100 e⁻`. Validation and record-mode batches are stretched in the
+  input pipelines (`Model._build_*_pipeline` in `model.py`, using `training/augmentation.py`),
+  after cropping, the dihedral transform and any `--noise-aug`. On-the-fly training batches leave
+  the pipeline in raw electrons and are stretched on the GPU inside the train step
+  (`Model.batch_stretch`). `reconstruct()` returns `sinh(y) · knee` electrons.
+- **Per-member knees.** `--asinh-knee` sets a single knee. `--asinh-knees` makes a **multi-knee**
+  member: input and target are stretched at every knee and stacked (4·K channels). New members
+  default to eight knees, `0.001,0.01,0.1,1,10,100,1000,10000` (Models › Train).
   - *Option 1* predicts one image per knee; inference (and so the combiner) uses the head nearest
     100 e⁻.
   - *Option 2* (`--output-knee 10`) predicts one 4-band image that is re-stretched at every knee
-    for the loss. Option-2 members are currently the best single members.
+    for the loss. The **universal** models are option-2 models (members 195 and 196 are option-2
+    members of the ensemble).
   - *Learned output knee* (`--learn-output-knee`, with option 2): the output knee becomes one
-    trainable value per band, starting at `--output-knee` and bounded to 0.1–10⁴ e⁻, and the
-    member outputs electrons. The knees are printed at every validation and live in the
-    checkpoint; `origin.json` records `learned_output_knee` instead of `output_knee`.
-  - `--knee-loss balanced` takes the geometric mean of the per-channel losses.
+    trainable value per band, starting at `--output-knee` (0.1 e⁻ when not given) and bounded to
+    0.01–10⁴ e⁻ (heads built before 2026-10-17 keep a 0.1 e⁻ floor), and the member outputs
+    electrons. The knees are printed at every validation and live in the checkpoint;
+    `origin.json` records `learned_output_knee` instead of `output_knee`. The learned knee keeps
+    falling with training length; it never converges.
+  - `--knee-loss balanced` takes the geometric mean of the per-channel losses. `--loss-knees`
+    scores only a subset of the knees a member reads.
 
 ### 8.3 Losses, schedule and guards
 
@@ -554,6 +588,22 @@ float32 electrons and can be negative. Each `tf.train.Example` carries `image`, 
   default is `l1`; the production recipe uses `l2`. BerHu is deprecated: old members still load,
   but it cannot be selected. A non-negativity penalty exists but is disabled
   (`Config.NONNEG_SR_WEIGHT = 0.0`, no flag).
+- **Residual-isotropy penalty** (`--isotropy-penalty λ`, `training/isotropy.py`; production
+  λ = 0.5). Over recent batches (an EMA with decay 0.99) the error, stretched at
+  `--isotropy-knee` (default 0.01 e⁻), must not prefer a direction in Fourier space, which a
+  pixel-axis grid does. `--isotropy-scales` sets the windows and period bands as
+  `window:shortest:longest[:weight]`; the default is `64:3:21:1, 64:2:3:0.003, 128:21:42:1`
+  (production's). Members 233–235 scored only `64:3:21`, and continue keeps a member's recorded
+  knee and scales.
+- **Other per-member loss options** (all also member-spec keys; off by default):
+  `--loss-floor f` (a floor inside the stretch, in units of the per-pixel sky scatter),
+  `--knee-tilt t` (knee k weighs `(k/k_ref)^t`), `--loss-knee-weights` (one weight per scored
+  knee), `--lupton-loss` (one Lupton asinh magnitude per band, softened at the sky scatter),
+  `--brightness-consistency` (`training/brightness.py`: the SR re-observed by Euclid must match the
+  truth within Euclid's noise at 1/2/4/8-pixel blocks) and `--noise-texture-jitter` (§7.3).
+- **Grid detector.** `training/grid_penalty.py` (`AxisExcess`) is a calibrated detector of the
+  pixel-axis grid in an SR. Nothing in the pipeline imports it yet (it is tested, not wired into
+  the trainer); the isotropy penalty is the loss that fights the grid.
 - **Optimiser.** Adam with warmup → cosine (`training/lr_schedule.py`): linear warmup over 2000
   steps to `LR_PEAK = 5e-4`, then cosine to `LR_FINAL = 2e-5`. Continuing a member recomputes the
   cosine over the new absolute total: a warm restart, so the LR jumps to that schedule's value at
@@ -561,9 +611,11 @@ float32 electrons and can be negative. Each `tf.train.Example` carries `image`, 
 - **Gradient clipping** at global norm 5.0 ([Pascanu+ 2013](https://arxiv.org/abs/1211.5063)).
 - **Gradient-spike guard.** After step 2000, a validation window whose peak pre-clip norm exceeds
   `max(50, 10 × the median of the last 5 window peaks)` rolls back to the latest PSNR-best
-  checkpoint. Two rollbacks halve the LR; more than 8 halvings abort the run.
+  checkpoint. Two rollbacks halve the LR; more than 8 halvings abort the run. Warmup windows
+  are never judged, but their peaks seed the baseline, so ordinary post-warmup gradients pass.
 - **Plateau guard.** A reduce-LR-on-plateau guard with degenerate-basin rollback exists but is
-  **off** by default (`Config.PLATEAU_LR_ENABLED = False`) and applies only to `l1`.
+  **off** by default (`Config.PLATEAU_LR_ENABLED = False`, `--plateau-lr-enabled 1` turns it on)
+  and applies only to `l1`.
 
 ### 8.4 Data paths and augmentation
 
@@ -575,7 +627,13 @@ float32 electrons and can be negative. Each `tf.train.Example` carries `image`, 
   `dirty_validate` share a noise model.
 - **Always:** a random dihedral transform (8 orientations).
 - **Optional:** extra LR noise (`--noise-aug`, in read-noise units) and a deterministic field
-  bootstrap (`--bootstrap 0.7`).
+  bootstrap (`--bootstrap 0.7`; universal models train without one).
+- **Step speed.** `--xla` compiles the train step and `--bf16` runs the residual blocks'
+  convolutions in bfloat16 (training only; checkpoints and inference stay float32). Both are
+  recorded in `origin.json` (`jit_compile`, `mixed_precision`) and kept on continue. The trainer
+  runs `Config.TRAIN_STEPS_PER_CALL = 25` steps per device call with device-side prefetch, and the
+  host pipeline prefetches `TRAIN_PREFETCH_BATCHES = 2` batches (`AUTOTUNE` ratcheted host memory
+  up until jobs ran out of memory). `scripts/benchmark_train_step.py` times a step on a GPU node.
 - **Validation** always uses the full `dirty_validate` fields against `hr_validate` (starfull) or
   `clean_validate`. PSNR uses a physical peak, a mag-17 reference star:
   `PSNR_PEAK_E ≈ 8.29×10⁶ e⁻`, `PSNR_PEAK_STRETCHED = asinh(PSNR_PEAK_E / 100) ≈ 12.02`. Multi-knee members instead score each
@@ -588,11 +646,15 @@ float32 electrons and can be negative. Each `tf.train.Example` carries `image`, 
 
 The **ensemble is the model**; a single network is an ensemble of one.
 
-- Members live in `<parent of EUCLID_POLISH_CKPT_DIR>/ensemble/member_NN/`. Each holds the PSNR-best
-  checkpoint track, a `loss_best/` track, `training_log.csv`, `origin.json` (the recipe, written once at creation:
-  seed, depth, knees, loss, data and forward knobs, regime, noise model and git commit) and
-  `provenance.json`.
-- `ensemble_registry.json` decides which members are active. Archiving a member zips it into the lab
+- Members live in `<parent of EUCLID_POLISH_CKPT_DIR>/ensemble/member_NNN/`. Each holds the PSNR-best
+  checkpoint track, a `loss_best/` track, the last step's state in `final/`, any
+  `milestones/step_<N>/` kept with `--milestones` (multiples of `--evaluate-every`),
+  `training_log.csv`, `origin.json` (the recipe, written once at creation: seed, depth, knees, loss,
+  data and forward knobs, regime, noise model and git commit) and `provenance.json`.
+- `ensemble_registry.json` holds `active` (the ensemble members), `universal` (the universal
+  models, run as standalone models, never by a gate), `archived`, and the `production` pointer: a
+  universal model's name, set from Models › Universal (`POST /ensemble/production`). Promoting a
+  gate makes the gate production again. Archiving a member zips it into the lab
   notebook, writes a tombstone, and deletes the member directory locally and on FASRC. A
   reappearing directory is never re-activated automatically, but Models › Members can restore a
   member from its zip. Member indices are never reused.
@@ -602,22 +664,30 @@ The **ensemble is the model**; a single network is an ensemble of one.
 ```python
 from euclid_polish.eval.ensemble_infer import load_eval_ensemble, sr_from_model
 
-model = load_eval_ensemble()          # production gate + the STARFULL members it reads (plain mean if no gate)
+model = load_eval_ensemble()          # the registry's production model (else the gate + its members, else the mean)
 lr_vis, sr, members = sr_from_model(model, lr_cube_electrons)   # (H, W, 4) → (2H, 2W, 4)
 ```
 
 ### 8.6 How to train
 
 The normal path is **Models › Train** in the console. It submits the `ensemble_train` FASRC step
-as a SLURM array, one member per task. The production recipe is L2, bootstrap 0.7, ICNR, 32 blocks,
-on-the-fly, batch 4, 256² × 8 crops, PSF bag 64, 70k steps, 16 CPUs / 32 GB / 3 h. PSF-warp,
-saturation and LR knobs come from System › Config.
+as a SLURM array, one member per task (the step's default is the `gpu` partition, 1 GPU, 16 CPUs,
+32 GB, 48 h; a switch sends it to the free `gpu_test` partition). The Train tab's new-member row
+starts from L2, depth 32, a single 100 e⁻ knee, bootstrap 0.7, ICNR off and 70k steps, with
+16 CPUs / 32 GB / 3 h; switching the row to multi-knee fills in the eight knees, a learned output
+knee starting at 0.1 e⁻ and the balanced knee loss. PSF-warp, saturation and LR knobs come from
+System › Config.
+
+Production (member_238) was trained with: L2, balanced loss over the eight knees, learned output
+knee starting at 10 e⁻, isotropy penalty λ = 0.5 at knee 0.01 e⁻ with the default scales, no
+bootstrap, depth 16, ICNR, XLA + bf16, on-the-fly, batch 4, 256² × 8 crops, PSF bag 64, PSF-warp
+α_max 5, saturation-mask probability 0.5, 1.9 M steps.
 
 ```bash
-python -u scripts/train_ensemble.py --mode add --count 2 --steps 70000 --loss l2 \
-    --bootstrap 0.7 --icnr --forward-onthefly 1 --batch-size 4 \
+python -u scripts/train_ensemble.py --mode add --count 2 --steps 200000 --loss l2 \
+    --forward-onthefly 1 --batch-size 4 --num-res-blocks 16 --xla --bf16 \
     --star-prior-file data/population_comparison/calibrations/star_population_active.json \
-    --member-spec '[{"asinh_knees":[0.1,1,10,100,1000,10000],"output_knee":10,"knee_loss":"balanced"},{"asinh_knee":30}]'
+    --member-spec '[{"asinh_knees":[0.001,0.01,0.1,1,10,100,1000,10000],"learn_output_knee":true,"knee_loss":"balanced","isotropy_penalty":0.5},{"asinh_knee":30}]'
 python -u scripts/train_ensemble.py --mode continue --members member_170 --target-steps 100000 \
     --forward-onthefly 1 --star-prior-file data/population_comparison/calibrations/star_population_active.json
 python -u scripts/train_ensemble.py --mode fork --fork-from member_196 --fork-track psnr --count 1 \
@@ -631,32 +701,39 @@ python -u scripts/train_ensemble.py --mode fork --fork-from member_196 --fork-tr
 - **Fork** copies the source's architecture, weights, knees and regime, and starts at step 0 with
   a fresh optimiser and schedule. Its loss, knee loss, bootstrap, data path and steps come from the
   run's flags, not from the source.
-- The CLI defaults (`--loss l1`, record mode, no ICNR, no bootstrap, `--steps 100000`) differ from the production recipe; pass the
-  recipe flags explicitly when training from the command line.
+- The CLI defaults (`--loss l1`, record mode, no ICNR, no bootstrap, depth 32, `--steps 100000`)
+  differ from both recipes; pass the recipe flags explicitly when training from the command line.
+- **Milestones.** `scripts/process_milestones.py` scores a long run's kept milestones (synthetic
+  knee-PSNR and JWST resolution per milestone); the console can then run one on real tiles as
+  `milestone:<name>@<step>` (`web/helpers/milestones.py`).
 
 ---
 
 ## 9. Combiner, evaluation and studies
 
-### 9.1 The production model: members + spatial gate
+### 9.1 The production model
 
 The real-target evaluators (grouped runs, `scripts/eval_catalog.py`, synthetic stamps, and
 Models › Images' Generate SR) load the model through `eval.ensemble_infer.load_eval_ensemble()`:
 
-1. It takes the registry-active **starfull** members.
-2. It loads the production combiner from `data/vis/ensemble/starfull/spatial_gate_combiner/`
-   (`combiner.json` + `combiner.npz`).
-3. It restores and runs only the members the gate reads.
-4. If no gate loads, production SR is the plain member mean, logged as a warning.
+1. If the registry's `production` pointer names a universal model (now member_238), that model
+   runs alone, as an ensemble of one; SRs record `combiner_kind` "universal" and its checkpoint as
+   their identity.
+2. Otherwise it takes the registry-active **starfull** members and the production gate from
+   `data/vis/ensemble/starfull/spatial_gate_combiner/` (`combiner.json` + `combiner.npz`), and
+   restores and runs only the members the gate reads.
+3. If no gate loads, production SR is the plain member mean, logged as a warning.
 
-The test-set **Evaluate** job instead runs every active starfull member, caches their cubes and
-applies combiners from that cache. Real tiles (Sky, Figures › Plates) pick a model spec
-(`production`, `mean`, `member:<name>`, `gate:<variant>`, `universal:<name>` — a pulled universal
-multi-knee model, never an ensemble member — or `milestone:<name>@<step>`, a long run's milestone
+The test-set **Evaluate** job instead runs every active starfull member, caches their cubes
+(keyed by member and checkpoint) and applies combiners from that cache; universal models are
+scored by their own job in Models › Universal. Real tiles (Sky, Figures › Plates) pick a model
+spec (`production`, `mean`, `member:<name>`, `gate:<variant>`, `universal:<name>` — a pulled
+universal model, never an ensemble member — or `milestone:<name>@<step>`, a long run's milestone
 checkpoint pulled by `scripts/process_milestones.py`) from `web/helpers/model_catalog.py`;
-there `production` has no mean fallback.
+there `production` follows the pointer and has no mean fallback.
 
-**The spatial gate** (`eval/spatial_gate.py`) is a small convolutional network. Its input is each
+**The spatial gate** (`eval/spatial_gate.py`), production until 2026-10-21 and now archived
+(Models › Combiner restores it), is a small convolutional network. Its input is each
 member's SR in per-band asinh space (with `--lr-input`, also the LR image and a mask of its zeroed
 pixels; off by default and in production). Its output is per-pixel, per-band softmax weights over
 the members. The SR is the members' convex weighted mean, so it never leaves the members' range.
@@ -685,7 +762,9 @@ python scripts/fit_spatial_gate.py compare --gates spatial_gate_combiner spatial
 - `--members used[:0.5%]` prunes to members whose peak weight in the production gate's cached held-out
   diagnostic reaches 0.5% in some band (`eval/gate_members.py`); members that joined after that fit
   are kept, and `--members 170,180` picks members explicitly.
-- The same code runs from **Models › Combiner**. Promotion backs up the current gate, refuses
+- The same code runs from **Models › Combiner**, which also archives every gate artifact into one
+  lab-notebook zip and restores it (`POST /ensemble/combiners/archive`, `/restore`). Promotion
+  makes the promoted gate production again; it backs up the current gate, refuses
   incomplete or still-running fits and (unless forced) gates that read inactive members, and
   re-scores the cached test cubes.
 - Do not edit `eval/spatial_gate_fit.py` while a fit is running: TensorFlow AutoGraph re-reads the
@@ -707,6 +786,30 @@ Synthetic scores use the held-out **test** split, computed on member cubes cache
   Members are highly correlated, so their spread is not a usable uncertainty estimate.
 - **Combiner comparison** (`eval/spatial_gate_compare.py`): per-band PSNR, MSE per brightness bin,
   star-halo and blackout-hole MSE, knee curves and gate usage per member.
+- **Universal spectra** (`eval/model_spectra.py`, Models › Spectra): per universal model, radial
+  power against the truth, coherence, amplitude transfer and the error's direction, on the 100
+  test fields. The universal score job writes them.
+- **Knee attribution** (`eval/knee_attribution.py`, `eval/knee_pixel_types.py`, Models › Knees):
+  an exact chain-rule split of each output pixel's sensitivity over the input knees and bands,
+  weighted by each input band's noise σ (measured from lag-4 differences, because resampled NISP
+  noise is correlated). `scripts/knee_pixel_types.py` (`--overview`, `--pair`) writes the
+  pixel-type reports.
+
+**Real-sky metrics** (no HR truth):
+
+- **Resolution against JWST** (`eval/jwst_resolution.py`, `scripts/jwst_resolution.py`): Fourier
+  ring correlation of the SR with NEXUS JWST imaging in matched bands (VIS–F090W, Y–F115W,
+  J–F150W, H–F200W) in 128-px round-Hann windows, reported as the period where the correlation
+  falls to ½. JWST is anti-aliased, resampled onto the SR grid from the WCS, converted to the
+  Euclid band's electrons, and registered to the Euclid input (never to a model). Windows with
+  too little JWST coverage or with a saturated star are skipped. The model spec `lr` runs the
+  Euclid input itself (cubic, block-aligned 2× upsampling) as the baseline. Model rankings need no
+  noise correction; absolute values are given raw and corrected for JWST's noise (estimated per
+  pixel from its highest rings).
+- **Flux against the MER catalogue** (`eval/flux_conservation.py`,
+  `scripts/flux_conservation.py`): SR and input fluxes in the catalogue's own apertures (Kron
+  VIS, reproduced with the position angle +90°, and n-FWHM apertures, which the catalogue measures
+  on ~1.2″ PSF-matched images), as pulls in catalogue errors.
 
 ### 9.4 Real-sky and grouped evaluation
 
@@ -727,11 +830,14 @@ Synthetic scores use the held-out **test** split, computed on member cubes cache
 
 - A **study** (`euclid_polish/studies/`, Models › Leaderboard → Freeze study) freezes the whole
   ensemble into `tracking/studies/<timestamp-slug>/`: member recipes and scores, the production
-  gate, PSNR-vs-knee curves, training curves, gate diagnostics and real-tile metrics. Attached
-  fields are stored on holylabs and fetched on demand. Browse and export in **Figures › Studies**.
-- `scripts/render_poster_combiner_triptych.py` runs the production gate on the poster target
-  `poster/target_181255_lr.fits`.
-- `paper_figures/build_figures.py` and `build_sr_result_prototype.py` build the manuscript figures.
+  model (a universal model is named as such), PSNR-vs-knee curves, training curves, gate
+  diagnostics and real-tile metrics. Attached fields are stored on holylabs and fetched on
+  demand. Browse and export in **Figures › Studies**.
+- `scripts/render_poster_combiner_triptych.py` runs a spatial gate on the poster target
+  `poster/target_181255_lr.fits`; it needs a gate on disk, so restore the archived gates first.
+- `paper_figures/build_figures.py` and `build_sr_result_prototype.py` build the manuscript figures;
+  `build_psf_noise_drafts.py` builds the draft four-band ePSF and noise/artifact figures, whose
+  text and captions are drafted in `paper_figures/drafts/psf_noise_section.tex`.
   Some panels read browser exports from `EUCLIDPOLISH_FIGURE_EXPORTS` (the default is a hard-coded absolute Downloads path, so set it on any other machine).
 
 ---
@@ -772,7 +878,7 @@ both read it; `spa_redirect_cases.json` pins identical legacy redirects on both 
 |---|---|---|
 | Home | `/` | production verdict, the research loop, running jobs, latest results |
 | Synthetic | `/synthetic/<tab>` | status, records, galaxies, stars, noise, psf, fields |
-| Models | `/models/<tab>` | leaderboard, universal, members, train, combiner, diagnostics, images |
+| Models | `/models/<tab>` | leaderboard, universal, knees, spectra, members, train, combiner, diagnostics, images |
 | Sky | `/sky/<tab>` | atlas (Aladin Lite), targets, compare |
 | Figures | `/figures/<tab>` | plates, sheet, studies |
 | Files | `/files` | FITS browser and inspector |
@@ -781,9 +887,12 @@ both read it; `spa_redirect_cases.json` pins identical legacy redirects on both 
 | System | `/system/<tab>` | connections, config, lineage, code, storage, appearance |
 
 **Models › Universal** sets the universal models (multi-knee members with ONE output image, a
-fixed or learned knee; pulled as standalone models, never read by the production gate) against
-the combiners by training time and training length: score them on the 100 test fields, pull the
-finished ones from FASRC, compare them on real fields in Sky › Compare.
+fixed or learned knee; pulled as standalone models, never read by a gate) against each other and
+the combiners by training time and training length: score them on the 100 test fields (the job
+also writes their spectra), pull the finished ones from FASRC, compare them on real fields in
+Sky › Compare, and make one production (it then carries a production badge and cannot be
+archived). **Models › Knees** runs and compares knee-attribution analyses; **Models › Spectra**
+shows the universal models' spectra (§9.3).
 
 Old URLs (`/app/...`, `/fasrc`, `/config`, `/tracking`, `/ensemble/...`) answer 308 to their new
 home. Two console rules: **opening a page never starts a job**, and **nothing is pinned over the
@@ -821,6 +930,10 @@ Every cluster job is a `FASRCPipelineStep` (`web/fasrc_pipeline.py`), listed by
 - **Runs › Resources** summarises past usage per step and recommends CPUs, GPUs, memory and time
   for a new run (memory and time: p90 + 20% over the most similar past runs; out-of-memory and
   timed-out runs set lower bounds).
+- **Stale-cube purge** (`web/helpers/stale_purge.py`, `purge_requests.py`). Archiving a member,
+  pulling a model, mirroring, or syncing records requests a purge. When no job runs, an idle-time
+  "Storage: delete stale cubes" job deletes exactly the cached cubes and SRs the writers would
+  discard anyway (made from other records or another checkpoint).
 
 ### 10.5 Frontend development
 
@@ -883,7 +996,10 @@ Older notes, specs and commit messages refer to things that are gone. The main o
 | Zoobot morphology and the CNN lens-finder | 2026-08-14 | — (grouped lens evaluation remains) |
 | RBF / cross-regime combiners as production | 2026-09-21 | spatial gate |
 | Classic Jinja console (templates + classic JS) | 2026-09-26 | React console (at `/` since 2026-07-19, when the `/app` prefix was dropped) |
-| Starless regime in the Models workspace | 2026-10-02 | starfull only (backend `--starless 1` remains) |
+| Starless regime in the Models workspace | 2026-10-02 | starfull only (backend `--starless 1` remains); the 12 starless members were archived 2026-10-07/08 |
+| Spatial gate as production | 2026-10-21 | universal member_238 via the registry `production` pointer; gates archived, restorable |
+| TNG star mask (dusty light kept only on stars) | 2026-10-20 | whole dusty frames; dust-box and periodic-box donors excluded (env opt-in remains) |
+| ICNR on by default for new members | 2026-10-25 | off in the Train tab; per-member opt-in |
 
 Still in the repository but **not** the production path (kept for old artifacts or pending
 removal):
