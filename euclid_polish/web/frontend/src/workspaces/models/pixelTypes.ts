@@ -108,11 +108,11 @@ export function normalisePixelReports(raw: unknown): PixelReports {
     folder: str(a.folder), run_id: str(a.run_id), model: str(a.model), created: str(a.created),
     kinds: kinds(a.kinds), files: strs(a.files), params: isObj(a.params) ? (a.params as PixelAnalysis["params"]) : {},
   }));
-  const comparisons = (Array.isArray(o.comparisons) ? o.comparisons : []).filter(isObj).filter((c) => c.folder != null).map((c) => ({
+  const asComparisons = (list: unknown) => (Array.isArray(list) ? list : []).filter(isObj).filter((c) => c.folder != null).map((c) => ({
     folder: str(c.folder), models: record(c.models), runs: record(c.runs), created: str(c.created), tag: str(c.tag),
     kinds: kinds(c.kinds), files: strs(c.files),
   }));
-  return { analyses, comparisons };
+  return { analyses, comparisons: asComparisons(o.comparisons), overviews: asComparisons(o.overviews) };
 }
 
 /* ── labels ────────────────────────────────────────────────────────────── */

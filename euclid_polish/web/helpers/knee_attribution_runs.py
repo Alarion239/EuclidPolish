@@ -37,7 +37,7 @@ from euclid_polish.image.collection import ImageSet
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.training.inference import infer_checkpoint_asinh_knees
 from euclid_polish.training.target_blur import blur_target_array
-from euclid_polish.web.helpers import atomic_files, model_catalog, real_tiles
+from euclid_polish.web.helpers import atomic_files, milestones, model_catalog, real_tiles
 from euclid_polish.web.helpers import ensemble_viz as ev
 from euclid_polish.web.jobs import JobCancelled
 
@@ -58,7 +58,7 @@ MAX_PER_BAND = 8192
 #: they are) or both pooled (``mixed``, weights halved).
 SAMPLINGS = ("class", "uniform", "mixed")
 #: Models a run accepts: multi-knee members, served as universal or member specs.
-_KINDS = ("universal", "member")
+_KINDS = ("universal", "member", "milestone")
 
 
 def root() -> Path:
@@ -142,15 +142,20 @@ def list_runs(limit: int = 200) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 
 def candidate_models() -> list[dict[str, Any]]:
-    """The catalogue's universal and member specs with their knees: available
-    when the catalogue runs them and they read several knees."""
+    """The catalogue's universal, member and milestone specs with their
+    knees: available when the catalogue runs them and they read several
+    knees (a milestone reads its member's knees)."""
     base = ev.ensemble_dir()
     out = []
     for item in model_catalog.list_specs():
         if item.kind not in _KINDS or len(item.reads) != 1:
             continue
-        name = ensemble_registry.member_name(item.reads[0])
-        knees = infer_checkpoint_asinh_knees(os.path.join(base, name))
+        if item.kind == "milestone":
+            member, _ = model_catalog.milestone_of(item.reads[0])
+            knees = infer_checkpoint_asinh_knees(str(milestones.local_root() / member))
+        else:
+            name = ensemble_registry.member_name(item.reads[0])
+            knees = infer_checkpoint_asinh_knees(os.path.join(base, name))
         details = dict(item.details or {})
         reason = item.reason
         if item.available and (not knees or len(knees) < 2):
@@ -169,8 +174,13 @@ def _load(spec: str):
     item = model_catalog.resolve_spec(spec)
     if item.kind not in _KINDS or len(item.reads) != 1:
         raise ValueError(f"{spec}: not a single multi-knee model")
-    model = EnsembleModel(ev.ensemble_dir(), labels=[item.reads[0]],
-                          include_universal=True, starless=False)
+    if item.kind == "milestone":                            # its own ensemble dir of one
+        member_name, step = model_catalog.milestone_of(item.reads[0])
+        model = EnsembleModel(milestones.materialize(member_name, step), labels=[member_name],
+                              include_universal=True, starless=False)
+    else:
+        model = EnsembleModel(ev.ensemble_dir(), labels=[item.reads[0]],
+                              include_universal=True, starless=False)
     member = model.members[0]
     return ka.KneeNet.from_member(member), member
 

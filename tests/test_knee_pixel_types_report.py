@@ -4,6 +4,7 @@ the routes (nothing starts on a GET)."""
 
 from __future__ import annotations
 
+import base64
 import json
 
 import numpy as np
@@ -60,7 +61,20 @@ def test_an_analysis_writes_figures_a_summary_and_is_listed(analysed_run):
     row = listing["analyses"][0]
     assert row["folder"] == f"{RUN}/universal__member_1" and row["model"] == "universal:member_1"
     assert row["kinds"] == ["synthetic", "real"] and "knee_map_synthetic.png" in row["files"]
-    assert listing["comparisons"] == []
+    assert listing["comparisons"] == [] and listing["overviews"] == []
+    # the console's native data: one view per field set, one stamp file per band
+    view = json.loads((folder / "view_synthetic.json").read_text())
+    assert view["model"] == "universal:member_1" and len(view["centres_log"]) == len(view["bin_labels"])
+    vis = view["bands"]["VIS"]
+    assert len(vis["curve"]) == len(view["bin_labels"]) and vis["sigma"] > 0
+    assert len(vis["heat"]["z"]) == len(vis["heat"]["x_edges"]) - 1
+    assert set(vis["features"]) == {"raw", "learned"} and vis["types"]
+    stamps = json.loads((folder / "stamps_synthetic_VIS.json").read_text())
+    side = stamps["side"]
+    row0 = next(r for rows in stamps["groups"].values() for r in rows)
+    cell = next(iter(row0["cells"].values()))
+    assert len(base64.b64decode(cell["sr"])) == side * side and len(cell["radial"]) == side // 2 + 1
+    assert len(stamps["types"]) == len(vis["types"])
 
 
 def test_a_comparison_pairs_two_models_of_a_run(analysed_run):
@@ -81,6 +95,20 @@ def test_a_comparison_pairs_two_models_of_a_run(analysed_run):
     assert row["folder"] == out["folder"] and row["models"] == {"member_1": "universal:member_1",
                                                                 "member_2": "universal:member_2"}
     assert row["tag"] == "t1"
+    view = json.loads((folder / "view_synthetic.json").read_text())
+    assert view["models"] == ["member_1", "member_2"] and set(view["curves"]["VIS"]) == {"member_1", "member_2"}
+    assert np.allclose(np.nan_to_num(np.asarray(view["share_diff"]["VIS"]["matrix"], dtype=float)), 0.0)
+    pairs = json.loads((folder / "pairs_synthetic_VIS.json").read_text())
+    assert pairs["models"] == ["member_1", "member_2"] and pairs["n"] > 0
+
+
+def test_an_overview_is_listed_with_its_curves(analysed_run):
+    out = report.overview([(RUN, "universal:member_1"), (RUN, "universal:member_2")], "series")
+    assert out.name == "overview_series"
+    row = report.list_reports()["overviews"][0]
+    assert row["folder"] == "overview_series" and row["tag"] == "series" and "synthetic" in row["kinds"]
+    view = json.loads(report.report_file("overview_series", "view_synthetic.json").read_text())
+    assert view["models"] == ["member_1", "member_2"] and "share_diff" not in view
 
 
 def test_report_files_are_guarded(analysed_run):

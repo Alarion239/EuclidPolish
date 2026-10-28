@@ -23,7 +23,7 @@ describe("pixel types model", () => {
     expect(r.analyses[0].kinds).toEqual(["synthetic", "real"]);
     expect(r.comparisons[0].tag).toBe("");
     expect(comparisonSpecs(r.comparisons[0])).toEqual(["universal:member_249", "universal:member_238"]);
-    expect(normalisePixelReports(null)).toEqual({ analyses: [], comparisons: [] });
+    expect(normalisePixelReports(null)).toEqual({ analyses: [], comparisons: [], overviews: [] });
   });
 
   it("names each figure's file by field set, band and grouping", () => {

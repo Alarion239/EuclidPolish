@@ -148,7 +148,11 @@ export type PixelComparison = {
   created: string; tag: string; kinds: ("synthetic" | "real")[]; files: string[];
 };
 
-export type PixelReports = { analyses: PixelAnalysis[]; comparisons: PixelComparison[] };
+export type PixelReports = {
+  analyses: PixelAnalysis[]; comparisons: PixelComparison[];
+  /** Several models' knee curves (e.g. one run's milestones), same shape as a comparison. */
+  overviews: PixelComparison[];
+};
 
 /* ── URLs ──────────────────────────────────────────────────────────────── */
 
@@ -202,6 +206,10 @@ export const useTileList = (source: string | null) =>
 /** The pixel-types analyses and comparisons; `poll` (ms) while a job runs. */
 export const usePixelReports = (enabled: boolean, poll?: number) =>
   useResource<unknown>(enabled ? kneeUrl.pixelTypes() : null, [], { ttl: 30_000, poll });
+/** One file (a native view, stamps, pairs) of an analysis or comparison
+ *  folder (null: idle). */
+export const usePixelFile = (folder: string | null, name: string | null, v?: string) =>
+  useResource<unknown>(folder && name ? kneeUrl.pixelFile(folder, name, v) : null, [folder, name, v], { ttl: 10 * MIN });
 /** One analysis' or comparison's summary.json (null folder: idle). */
 export const usePixelSummary = (folder: string | null, v?: string) =>
   useResource<unknown>(folder ? kneeUrl.pixelFile(folder, "summary.json", v) : null, [folder, v], { ttl: 5 * MIN });

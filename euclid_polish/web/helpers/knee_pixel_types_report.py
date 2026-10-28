@@ -40,6 +40,7 @@ safe whatever the backend.
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -621,6 +622,7 @@ def analyse_kind(run_id: str, spec: str, entry: dict, kind: str, out: Path, k: i
     mechanics(out / f"mechanics_{kind}.png", analysed, knees, kind, spec)
     look_around_figure(out / f"look_around_{kind}.png", analysed, kind, spec)
     types_by_brightness(out / f"types_by_brightness_{kind}.png", analysed, kind, spec)
+    write_analysis_views(out, analysed, knees, kind, spec)
     return summary
 
 
@@ -772,7 +774,7 @@ def compare_look_around(path: Path, prepared: dict, kind: str) -> dict:
     return out
 
 
-def compare_pairs(path: Path, prepared: dict, band: int, kind: str) -> dict:
+def compare_pairs(path: Path, prepared: dict, band: int, kind: str, view_path: Path | None = None) -> dict:
     """The same pixels in both models: within each brightness decade, the
     pixels B reads through a much LOWER / about the SAME / much HIGHER knee
     than A, as median stamps (SR of A, SR of B, scene)."""
@@ -798,7 +800,11 @@ def compare_pairs(path: Path, prepared: dict, band: int, kind: str) -> dict:
         summary["bins"].append({"label": _bin_label(i, kind), "n": s["n"], "delta_q20": s["q20"],
                                 "delta_median": s["median"], "delta_q80": s["q80"]})
     if not rows:
+        if view_path is not None:                           # the console says so instead of hiding the band
+            atomic_files.write_json(view_path, {"side": STAMP, "models": [a_name, b_name], "n": len(keys),
+                                                "rows": []}, allow_nan=False, separators=(",", ":"))
         return summary
+    view_rows = []
     fig, axes = _subplots(len(rows), 9, figsize=(11.7, 1.55 * len(rows) + 0.8), squeeze=False,
                              constrained_layout=True)
     for r, i in enumerate(rows):
@@ -808,6 +814,11 @@ def compare_pairs(path: Path, prepared: dict, band: int, kind: str) -> dict:
             cells.append((sel, kt.stack(st_a["sr"][sel]), kt.stack(st_b["sr"][sel]),
                           kt.stack(st_a["ref"][sel])))
         norm = _norm([x for c in cells for x in c[1:]])
+        params = _norm_params([x for c in cells for x in c[1:]])
+        view_rows.append({"bin": int(i), "label": _bin_label(i, kind), "norm": params, "cells": {
+            name: {"n": int(sel.sum()), "delta": _num(np.median(delta[sel])), "sr_a": _encode(sr_a, params),
+                   "sr_b": _encode(sr_b, params), "ref": _encode(ref, params)}
+            for name, (sel, sr_a, sr_b, ref) in zip(("lower", "same", "higher"), cells, strict=True)}})
         for g, (sel, sr_a, sr_b, ref) in enumerate(cells):
             head = f"{_bin_label(i, kind)}\n" if g == 0 else "\n"
             _show(axes[r, 3 * g], sr_a, norm, f"{head}{labels[g]} · n={int(sel.sum())}\n{a_name}")
@@ -819,7 +830,251 @@ def compare_pairs(path: Path, prepared: dict, band: int, kind: str) -> dict:
                  "brighter side up)",
                  fontsize=8)
     fig.savefig(path, dpi=120)
+    if view_path is not None:
+        atomic_files.write_json(view_path, {"side": STAMP, "models": [a_name, b_name], "n": len(keys),
+                                            "rows": view_rows}, allow_nan=False, separators=(",", ":"))
     return summary
+
+
+# --------------------------------------------------------------------------- #
+# browser-native data: what the console draws itself
+# --------------------------------------------------------------------------- #
+
+#: Brightness axis of the knee map's density (log₁₀ σ).
+HEAT_X = np.linspace(-3.0, 5.0, 49)
+#: Brightness axis of a knee type's histogram (log₁₀ σ).
+TYPE_HIST_X = np.linspace(-3.0, 5.0, 33)
+#: Radii (HR px) of a stamp's radial occupancy profile.
+RADIAL_PX = np.arange(0, STAMP // 2 + 1)
+
+
+def _num(v: Any, digits: int = 4) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return round(f, digits) if np.isfinite(f) else None
+
+
+def _nums(values: Any, digits: int = 4) -> list:
+    return [_num(v, digits) for v in np.asarray(values, np.float64).reshape(-1)]
+
+
+def _bin_centres_log() -> list[float]:
+    centres = 0.5 * (np.log10(EDGES[:-1]) + np.log10(EDGES[1:]))
+    centres[0] = -2.5
+    return [float(c) for c in centres]
+
+
+def _norm_params(images) -> list[float]:
+    """``[lo, hi, linear width]`` of one row of stamps: the asinh scale the
+    PNGs use, shared by every stamp of the row."""
+    finite = np.concatenate([np.asarray(i)[np.isfinite(i)] for i in images] or [np.zeros(1)])
+    finite = finite if finite.size else np.zeros(1)
+    lo, hi = np.percentile(finite, [0.5, 99.9])
+    return [round(min(float(lo), -0.3), 4), round(max(float(hi), 1.0), 4), 0.3]
+
+
+def _encode(image: np.ndarray, norm: Sequence[float]) -> str:
+    """A stamp as base64 bytes (one per pixel, row 0 = top: the scene's
+    brighter side, +row, is up as in the PNGs), asinh-scaled by ``norm``."""
+    lo, hi, lw = norm
+    a = np.asarray(image, np.float64)
+    with np.errstate(all="ignore"):
+        f0, f1 = np.arcsinh(lo / lw), np.arcsinh(hi / lw)
+        t = (np.arcsinh(a / lw) - f0) / max(f1 - f0, 1e-9)
+    t = np.where(np.isfinite(t), np.clip(t, 0.0, 1.0), 0.0)
+    return base64.b64encode(np.round(t * 255).astype(np.uint8)[::-1].tobytes()).decode("ascii")
+
+
+def _encode_occ(image: np.ndarray) -> str:
+    """An occupancy map (0–1) as base64 bytes, row 0 = top."""
+    t = np.where(np.isfinite(image), np.clip(image, 0.0, 1.0), 0.0)
+    return base64.b64encode(np.round(t * 255).astype(np.uint8)[::-1].tobytes()).decode("ascii")
+
+
+def _radial(image: np.ndarray) -> list:
+    """The mean of a map at each whole radius from the centre: alignment-free
+    (a dihedral move keeps every pixel's radius)."""
+    a = np.asarray(image, np.float64)
+    h, w = a.shape
+    yy, xx = np.mgrid[:h, :w]
+    r = np.rint(np.hypot(yy - h // 2, xx - w // 2)).astype(int)
+    out = []
+    for radius in RADIAL_PX:
+        ring = a[(r == radius) & np.isfinite(a)]
+        out.append(_num(ring.mean(), 4) if ring.size else None)
+    return out
+
+
+def _cell(stack: Mapping[str, Any], norm: Sequence[float]) -> dict:
+    return {"sr": _encode(stack["sr"], norm), "ref": _encode(stack["ref"], norm),
+            "occ": _encode_occ(stack["occ"]), "radial": _radial(stack["occ"])}
+
+
+def analysis_view(analysed: Mapping[str, dict], knees: np.ndarray, kind: str, spec: str) -> dict:
+    """One field set of one analysis, as the console draws it (no stamps):
+    per band the knee map (density, per-decade quantiles, chain-rule
+    baseline), the group measures, the knee types, the type mix, the
+    look-around and the chain-rule density."""
+    extra = ("star fraction", STAR_CLASSES) if kind == "synthetic" else ("blank fraction", ("blank",))
+    bands: dict[str, Any] = {}
+    for band, a in analysed.items():
+        logk = np.log10(np.asarray(knees, np.float64) / a["sigma"])
+        ok = np.isfinite(a["log_q"])
+        w = a["weight"]
+        x = np.log10(np.clip(a["bright"], 10 ** -2.95, 1e5))
+        y_edges = np.linspace(logk[0] - 0.1, logk[-1] + 0.1, 37)
+        heat, _, _ = np.histogram2d(x[ok], a["log_q"][ok], bins=[HEAT_X, y_edges], weights=w[ok])
+        curve = [{"q20": _num(st["q20"]), "median": _num(st["median"]), "q80": _num(st["q80"]),
+                  "mech": _num(a["mech_bins"][i]), "n": int(st["n"])} if st["n"] >= MIN_GROUP else None
+                 for i, st in enumerate(a["bins"])]
+        features: dict[str, Any] = {}
+        for variant in ("raw", "learned"):
+            per_group: dict[str, Any] = {}
+            for name in kt.GROUPS:
+                cols: dict[str, list] = {key: [] for key, _, _ in FEATURES}
+                cols["extra"] = []
+                for row in a["variants"][variant]["summary_bins"]:
+                    g = row["groups"].get(name)
+                    for key, _, _ in FEATURES:
+                        cols[key].append(_num(g.get(key)) if g else None)
+                    cols["extra"].append(_num(sum(g["classes"].get(c, 0.0) for c in extra[1])) if g else None)
+                per_group[name] = cols
+            features[variant] = per_group
+        types = []
+        n_types = len(a["type_stacks"])
+        bins_of = a["bin"]
+        for j, t in enumerate(a["type_stacks"]):
+            hist, _ = np.histogram(np.log10(np.clip(t["bright"], 10 ** -2.95, 1e5)), bins=TYPE_HIST_X,
+                                   weights=t["weights"])
+            total = hist.sum()
+            types.append({"index": j, "prevalence": _num(t["prevalence"], 5), "n": int(t["n"]),
+                          "mean_share": _nums(t["mean_share"]), "log_q": _num(t["log_q"]),
+                          "bright_median": _num(t["bright_median"]), "dist": _num(t["dist"], 1),
+                          "classes": {k: _num(v) for k, v in list(t["classes"].items())[:3]},
+                          "hist": _nums(hist / total if total > 0 else hist)})
+        mix = []
+        for b in range(len(EDGES) - 1):
+            sel = (bins_of == b) & (a["types"] >= 0)
+            total = a["weight"][sel].sum()
+            counts = np.bincount(a["types"][sel], weights=a["weight"][sel], minlength=n_types)[:n_types]
+            mix.append(_nums(counts / total) if total > 0 else None)
+        okm = ok & np.isfinite(a["log_q_mech"])
+        m_edges = np.linspace(logk[0] - 0.1, logk[-1] + 0.1, 37)
+        mech_heat, _, _ = np.histogram2d(a["log_q_mech"][okm], a["log_q"][okm], bins=[m_edges, m_edges],
+                                         weights=w[okm])
+        gap = kt.weighted_quantile(a["log_q"][okm] - a["log_q_mech"][okm], w[okm], (0.2, 0.5, 0.8))
+        bands[band] = {
+            "sigma": _num(a["sigma"]), "blank_fraction": _num(a["blank_fraction"], 5), "n": int(ok.sum()),
+            "logk": _nums(logk), "heat": {"x_edges": _nums(HEAT_X), "y_edges": _nums(y_edges),
+                                          "z": [[_num(v, 3) for v in row] for row in heat]},
+            "curve": curve, "features": features, "types": types, "type_mix": mix,
+            "look": {v: {str(b): _nums(r) for b, r in a["look"][v].items()} for v in a["look"]},
+            "mech": {"edges": _nums(m_edges), "z": [[_num(v, 3) for v in row] for row in mech_heat],
+                     "gap": _nums(gap)},
+        }
+    return {"kind": kind, "model": spec, "knees": [float(q) for q in knees],
+            "edges_sigma": _nums(EDGES), "centres_log": _bin_centres_log(),
+            "bin_labels": [_bin_label(i, kind) for i in range(len(EDGES) - 1)],
+            "radii": [float(r) for r in kt.LOOK_RADII], "type_hist_x": _nums(TYPE_HIST_X),
+            "features": [{"key": key, "label": label, "log": bool(log)} for key, label, log in FEATURES]
+            + [{"key": "extra", "label": extra[0], "log": False}],
+            "groups": list(kt.GROUPS), "bands": bands}
+
+
+def stamps_view(a: Mapping[str, Any], kind: str) -> dict:
+    """One band's median stamps: the groups (by the knee and by the
+    preference) and the knee types, each row on its own asinh scale."""
+    out: dict[str, Any] = {"side": STAMP, "radial_px": [int(r) for r in RADIAL_PX], "groups": {}, "types": []}
+    for variant in ("raw", "learned"):
+        rows = []
+        for i, cells in sorted(a["variants"][variant]["group_stacks"].items()):
+            if len(cells) != len(kt.GROUPS):
+                continue
+            norm = _norm_params([c["sr"] for c in cells.values()] + [c["ref"] for c in cells.values()])
+            rows.append({"bin": int(i), "label": _bin_label(i, kind), "norm": norm, "cells": {
+                name: _cell(c, norm) | {"n": int(c["n"]), "log_q": _num(c["log_q"]),
+                                        "learned": _num(c["learned"]), "dist": _num(c["dist"], 1)}
+                for name, c in cells.items()}})
+        out["groups"][variant] = rows
+    for t in a["type_stacks"]:
+        norm = _norm_params([t["sr"], t["ref"]])
+        out["types"].append(_cell(t, norm) | {"norm": norm})
+    return out
+
+
+def write_analysis_views(out: Path, analysed: Mapping[str, dict], knees: np.ndarray, kind: str,
+                         spec: str) -> None:
+    """``view_<kind>.json`` and ``stamps_<kind>_<band>.json`` of an analysis."""
+    atomic_files.write_json(out / f"view_{kind}.json", analysis_view(analysed, knees, kind, spec),
+                            allow_nan=False, separators=(",", ":"))
+    for band, a in analysed.items():
+        atomic_files.write_json(out / f"stamps_{kind}_{band}.json", stamps_view(a, kind),
+                                allow_nan=False, separators=(",", ":"))
+
+
+def curves_view(prepared: Mapping[str, dict]) -> dict:
+    """Per band and model: the effective knee's and the preference's
+    per-decade quantiles and the chain-rule baseline's median."""
+    bands: dict[str, Any] = {}
+    for c, band in enumerate(BANDS):
+        per_model = {}
+        for name, p in prepared.items():
+            s = p["samples"]
+            sel = (s["band"] == c) & ~s["blank"]
+            if not sel.any():
+                continue
+            bins = kt.brightness_bin(s["bright"][sel], EDGES)
+            w = s["weight"][sel]
+            eff = _bin_medians(s["log_q"][sel], bins, w)
+            pref = _bin_medians(s["log_q"][sel] - s["log_q_mech"][sel], bins, w)
+            mech = _bin_medians(s["log_q_mech"][sel], bins, w)
+            per_model[name] = {"knee": [None if q is None else _nums(q) for q in eff],
+                               "preference": [None if q is None else _nums(q) for q in pref],
+                               "mech": [None if q is None else _num(q[1]) for q in mech]}
+        bands[band] = per_model
+    return bands
+
+
+def _share_diff(a: Mapping[str, Any], b: Mapping[str, Any], c: int) -> tuple[np.ndarray, np.ndarray]:
+    """``(knees, B − A)``: the mean own-band local knee share per knee (the
+    union of both knee sets) × brightness decade; NaN for a thin decade."""
+    knees = np.unique(np.round(np.concatenate([a["knees"], b["knees"]]), 12))
+    n_bins = len(EDGES) - 1
+    means = []
+    for m in (a, b):
+        s = m["samples"]
+        sel = (s["band"] == c) & ~s["blank"]
+        bins = kt.brightness_bin(s["bright"][sel], EDGES)
+        cols = np.searchsorted(knees, np.round(m["knees"], 12))
+        block = np.full((len(knees), n_bins), np.nan)
+        for i in range(n_bins):
+            rows = bins == i
+            if rows.sum() >= MIN_GROUP:
+                block[:, i] = 0.0
+                block[cols, i] = np.average(s["share"][sel][rows], axis=0, weights=s["weight"][sel][rows])
+        means.append(block)
+    return knees, means[1] - means[0]
+
+
+def compare_view(prepared: Mapping[str, dict], kind: str, look: Mapping[str, Any]) -> dict:
+    """A comparison's (or an overview's) field set: the curves, the share
+    difference of the first two models and their look-around."""
+    names = list(prepared)
+    view: dict[str, Any] = {"kind": kind, "models": names, "centres_log": _bin_centres_log(),
+                            "bin_labels": [_bin_label(i, kind) for i in range(len(EDGES) - 1)],
+                            "radii": [float(r) for r in kt.LOOK_RADII], "curves": curves_view(prepared)}
+    if len(names) >= 2 and "knees" in prepared[names[0]]:
+        a, b = prepared[names[0]], prepared[names[1]]
+        diff = {}
+        for c, band in enumerate(BANDS):
+            knees, d = _share_diff(a, b, c)
+            diff[band] = {"knees": [float(q) for q in knees], "matrix": [_nums(row) for row in d]}
+        view["share_diff"] = diff
+    if look:
+        view["look"] = look
+    return view
 
 
 def model_name(spec: str) -> str:
@@ -869,8 +1124,12 @@ def compare_models(a: tuple[str, str], b: tuple[str, str], *, tag: str = "",
         compare_share_diff(out / f"compare_share_diff_{kind}.png", ready, kind)
         summary[f"look_around_{kind}"] = compare_look_around(out / f"compare_look_around_{kind}.png",
                                                              ready, kind)
-        summary[kind] = {BANDS[i]: compare_pairs(out / f"compare_pairs_{kind}_{BANDS[i]}.png", ready, i, kind)
+        summary[kind] = {BANDS[i]: compare_pairs(out / f"compare_pairs_{kind}_{BANDS[i]}.png", ready, i, kind,
+                                                 out / f"pairs_{kind}_{BANDS[i]}.json")
                          for i in range(len(BANDS))}
+        atomic_files.write_json(out / f"view_{kind}.json",
+                                compare_view(ready, kind, summary[f"look_around_{kind}"]),
+                                allow_nan=False, separators=(",", ":"))
     atomic_files.write_json(out / "summary.json", summary, allow_nan=False, default=float)
     return out
 
@@ -889,6 +1148,9 @@ def overview(models: Sequence[tuple[str, str]], tag: str, *, progress: Progress 
         entries[key] = (run_id, spec, record["models"][spec])
     out = report_root() / f"overview_{runs.slug(tag)}"
     out.mkdir(parents=True, exist_ok=True)
+    summary: dict[str, Any] = {"models": {name: spec for name, (_, spec, _) in entries.items()},
+                               "runs": {name: run_id for name, (run_id, _, _) in entries.items()},
+                               "created": datetime.now(UTC).isoformat(), "tag": tag}
     for kind in ("synthetic", "real"):
         progress(f"overview {tag}: {kind}")
         ready = {}
@@ -898,6 +1160,10 @@ def overview(models: Sequence[tuple[str, str]], tag: str, *, progress: Progress 
                 ready[name] = {"samples": got[0], "planes": got[1]}
         if len(ready) >= 2:
             compare_curves(out / f"overview_knee_{kind}.png", ready, kind)
+            atomic_files.write_json(out / f"view_{kind}.json", compare_view(ready, kind, {}),
+                                    allow_nan=False, separators=(",", ":"))
+            summary[kind] = True
+    atomic_files.write_json(out / "summary.json", summary, allow_nan=False, default=float)
     return out
 
 
@@ -962,19 +1228,19 @@ def _created(folder: Path, summary: Mapping[str, Any]) -> str:
 
 
 def list_reports() -> dict[str, list[dict[str, Any]]]:
-    """Every finished analysis and comparison (a folder with its
+    """Every finished analysis, comparison and overview (a folder with its
     ``summary.json``), newest first: ``{analyses: [{folder, run_id, model,
     created, kinds, files, params}], comparisons: [{folder, models, runs,
-    created, kinds, files, tag}]}``."""
+    created, kinds, files, tag}], overviews: [the same as a comparison]}``."""
     root = report_root()
-    analyses, comparisons = [], []
+    analyses, comparisons, overviews = [], [], []
     if root.is_dir():
         for top in sorted(root.iterdir()):
             if not top.is_dir():
                 continue
-            if top.name.startswith("compare_") and (top / "summary.json").is_file():
+            if top.name.startswith(("compare_", "overview_")) and (top / "summary.json").is_file():
                 s = _read_summary(top)
-                comparisons.append({
+                (comparisons if top.name.startswith("compare_") else overviews).append({
                     "folder": top.name, "models": s.get("models") or {}, "runs": s.get("runs") or {},
                     "created": _created(top, s), "tag": s.get("tag") or "",
                     "kinds": [k for k in ("synthetic", "real") if s.get(k)], "files": _files(top)})
@@ -990,7 +1256,8 @@ def list_reports() -> dict[str, list[dict[str, Any]]]:
                         "files": _files(sub), "params": s.get("params") or {}})
     analyses.sort(key=lambda r: r["created"], reverse=True)
     comparisons.sort(key=lambda r: r["created"], reverse=True)
-    return {"analyses": analyses, "comparisons": comparisons}
+    overviews.sort(key=lambda r: r["created"], reverse=True)
+    return {"analyses": analyses, "comparisons": comparisons, "overviews": overviews}
 
 
 def report_file(folder: str, name: str) -> Path:
@@ -999,7 +1266,7 @@ def report_file(folder: str, name: str) -> Path:
     for anything else or missing."""
     parts = str(folder).split("/")
     ok = ((len(parts) == 2 and _RUN_ID.match(parts[0]) and _SAFE.match(parts[1]))
-          or (len(parts) == 1 and parts[0].startswith("compare_") and _SAFE.match(parts[0])))
+          or (len(parts) == 1 and parts[0].startswith(("compare_", "overview_")) and _SAFE.match(parts[0])))
     if not ok or not _FILE.match(str(name)):
         raise KeyError("no such pixel-types file")
     root = report_root().resolve()

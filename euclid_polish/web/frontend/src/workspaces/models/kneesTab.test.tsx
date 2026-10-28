@@ -517,3 +517,65 @@ describe("knees tab › pixel types", () => {
     expect(posts()[0].form).toMatchObject({ sampling: "mixed", per_band: "1024", ablation: "0", per_class: "24" });
   });
 });
+
+/* ── pixel types, drawn natively ───────────────────────────────────────── */
+
+const stamp = () => btoa(String.fromCharCode(...new Array(41 * 41).fill(7)));
+const nativeView = () => ({
+  kind: "synthetic", model: "universal:member_222", knees: [0.1, 10, 1000], edges_sigma: [0.001, 0.01, 0.1, 1, 10],
+  centres_log: [-2.5, -1.5, -0.5, 0.5], bin_labels: ["< 0.01σ", "0.01–0.1σ", "0.1–1σ", "1–10σ"], radii: [0, 2, 4],
+  type_hist_x: [-3, 1, 5], features: [{ key: "nearest_source_px", label: "distance to nearest >1σ pixel (px)", log: false }],
+  groups: ["lower", "usual", "higher"],
+  bands: { VIS: {
+    sigma: 20.3, blank_fraction: 0, n: 3908, logk: [-2.3, -0.3, 1.7],
+    heat: { x_edges: [-3, 1, 5], y_edges: [-2.5, 0, 2], z: [[3, 0], [1, 5]] },
+    curve: [{ q20: -2.2, median: -2.1, q80: -2, mech: -2.4, n: 300 }, null, { q20: -1, median: -0.8, q80: -0.6, mech: -1.5, n: 50 }, null],
+    features: { raw: {}, learned: { lower: { nearest_source_px: [29, 20, 11, 0] }, usual: { nearest_source_px: [29, 19, 6, 0] }, higher: { nearest_source_px: [29, 10, 2, 0] } } },
+    types: [{ index: 0, prevalence: 0.8, n: 900, mean_share: [0.6, 0.3, 0.1], log_q: -2, bright_median: 0, dist: 29, classes: { sky: 0.9 }, hist: [1, 0] },
+      { index: 1, prevalence: 0.2, n: 300, mean_share: [0.1, 0.5, 0.4], log_q: 0, bright_median: 30, dist: 0, classes: { "galaxy core": 0.7 }, hist: [0, 1] }],
+    type_mix: [[1, 0], null, [0.5, 0.5], [0, 1]],
+    look: { raw: { "2": [0.2, 0.4, 0.5] }, learned: { "2": [0.1, 0.3, 0.4] } },
+    mech: { edges: [-2.5, 0, 2], z: [[1, 0], [0, 2]], gap: [0.2, 0.4, 0.6] },
+  } },
+});
+const nativeStamps = () => {
+  const cell = { sr: stamp(), ref: stamp(), occ: stamp(), radial: [1, 0.5, 0.2], n: 40, log_q: -2, learned: 0.4, dist: 12 };
+  return { side: 41, radial_px: [0, 1, 2], groups: { learned: [{ bin: 2, label: "0.1–1σ", norm: [-0.3, 3, 0.3],
+    cells: { lower: cell, usual: cell, higher: cell } }], raw: [] }, types: [cell, cell] };
+};
+
+describe("knees tab › pixel types, native", () => {
+  beforeEach(() => {
+    const reports = pixelReports();
+    reports.analyses[0].files = [...reports.analyses[0].files, "view_synthetic.json", "stamps_synthetic_VIS.json"];
+    routes["GET /api/knee-attribution/pixel-types"] = () => ({ body: reports });
+    routes[`GET ${fileUrl(FOLDER, "summary.json")}`] = () => ({ body: {} });
+    routes[`GET ${fileUrl(FOLDER, "view_synthetic.json")}`] = () => ({ body: nativeView() });
+    routes[`GET ${fileUrl(FOLDER, "stamps_synthetic_VIS.json")}`] = () => ({ body: nativeStamps() });
+  });
+
+  it("draws the groups as canvas stamps with the radial occupancy, keeping the PNG one click away", async () => {
+    show("/models/knees?view=pixel-types");
+    const table = await screen.findByRole("table", { name: "Pixel groups" });
+    expect(within(table).getAllByRole("img", { name: /0\.1–1σ, Lower knee: SR/ })).toHaveLength(1);
+    expect(table.querySelectorAll(".kn-stamp canvas")).toHaveLength(9);
+    expect(within(table).getAllByText(/n = 40 · q̄ = 0\.01σ \(\+0\.40 dex\) · d = 12 px/)).toHaveLength(3);
+    expect(screen.getByRole("figure", { name: "Source occupancy vs distance, 0.1–1σ" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open as PNG" }).getAttribute("href")).toBe(fileUrl(FOLDER, "groups_learned_synthetic_VIS.png"));
+    expect(figureSrcs()).not.toContain(fileUrl(FOLDER, "groups_learned_synthetic_VIS.png"));   // not the PNG
+    expect(posts()).toHaveLength(0);
+  });
+
+  it("draws the knee map, the types and the type mix from the view", async () => {
+    show("/models/knees?view=pixel-types&pf=map");
+    expect(await screen.findByRole("figure", { name: "Effective knee vs brightness, VIS" })).toBeTruthy();
+    fireEvent.click(chip("Pixel types figure", "Pixel types"));
+    const types = await screen.findByRole("list", { name: "Knee types, VIS" });
+    expect(within(types).getAllByRole("listitem")).toHaveLength(2);
+    expect(types.textContent).toMatch(/Type 0 · 80\.0% of pixels/);
+    expect(types.textContent).toMatch(/empty sky/);
+    fireEvent.click(chip("Pixel types figure", "Types by brightness"));
+    const mix = await screen.findByRole("table", { name: "Knee-type mix per brightness decade, VIS" });
+    expect(within(mix).getByText("no pixels")).toBeTruthy();
+  });
+});
