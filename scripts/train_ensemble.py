@@ -866,6 +866,8 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
             identity["galaxy_blur_fwhm_max"] = float(origin["galaxy_blur_fwhm_max"])
     if origin.get("isotropy_penalty") and "isotropy_penalty" not in override:
         identity["isotropy_penalty"] = float(origin["isotropy_penalty"])
+    if origin.get("isotropy_penalty"):
+        # Knee and scales stay the member's even when a spec re-weights the penalty.
         if "isotropy_knee" not in override and origin.get("isotropy_knee"):
             identity["isotropy_knee"] = float(origin["isotropy_knee"])
         if "isotropy_scales" not in override:

@@ -227,6 +227,9 @@ def test_member_spec_cli_and_continue_carry_the_knob(tmp_path):
     assert identity["isotropy_scales"] == LEGACY_SCALES          # recorded before the scales were
     kept = _continue_identity("member_312", str(d), {}, {"isotropy_penalty": 0.0})
     assert "isotropy_penalty" not in kept
+    reweighted = _continue_identity("member_312", str(d), {}, {"isotropy_penalty": 0.25})
+    assert "isotropy_penalty" not in reweighted                  # the spec's weight wins …
+    assert reweighted["isotropy_knee"] == 0.01 and reweighted["isotropy_scales"] == LEGACY_SCALES  # … not its knee/scales
     (d / "origin.json").write_text(json.dumps({"asinh_knees": list(KNEES), "isotropy_penalty": 0.5,
                                                "isotropy_knee": 0.01, "isotropy_scales": [[64, 2, 21]]}))
     assert _continue_identity("member_312", str(d), {}, {})["isotropy_scales"] == ((64.0, 2.0, 21.0, 1.0),)

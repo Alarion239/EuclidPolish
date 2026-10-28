@@ -202,6 +202,18 @@ def test_a_cancelled_run_says_so_and_keeps_its_finished_models(tiny, monkeypatch
     assert list(record["models"]) == ["universal:member_1"]
 
 
+def test_a_crashed_run_is_recorded_failed_not_running(tiny, monkeypatch):
+    def crash(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(runs, "_run_models", crash)
+    with pytest.raises(OSError):
+        runs.job_knee_attribution(_Cap(), run_id="20261015-000006-abcdef", models=["universal:member_9"],
+                                  synthetic=0, tiles=[], per_class=2, seed=0)
+    record = runs.get_run("20261015-000006-abcdef")
+    assert record["status"] == "failed" and record["finished"]
+    assert "disk full" in record["errors"]["_run"]
+
+
 def test_routes_list_read_and_start_without_starting_on_get(tiny, monkeypatch):
     from euclid_polish.web.app import create_app
     from euclid_polish.web.jobs import REGISTRY

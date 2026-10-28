@@ -417,6 +417,11 @@ def job_knee_attribution(cap, *, run_id: str, models: Sequence[str], synthetic: 
     except (JobCancelled, KeyboardInterrupt):
         record["status"] = "cancelled"
         raise
+    except Exception as exc:
+        # Never leave a dead run saying "running": reports refuse those forever.
+        record["status"] = "failed"
+        record["errors"]["_run"] = f"{type(exc).__name__}: {exc}"
+        raise
     else:
         record["status"] = "done" if record["models"] else "failed"
     finally:

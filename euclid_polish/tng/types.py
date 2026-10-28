@@ -8,8 +8,8 @@ The numerical renderer deliberately has two distinct image domains:
 
 The records in this module make that boundary explicit without subclassing
 ``numpy.ndarray`` or storing an open-ended compatibility metadata dictionary.
-They remain dependency-light: FITS I/O, atlas path resolution and arbitrary
-rotation are imported only inside the methods that perform those operations.
+FITS I/O, atlas path resolution and arbitrary rotation live in ``_image``
+and ``_paths``; constructing a record touches no file.
 """
 
 from __future__ import annotations
@@ -24,9 +24,16 @@ import numpy as np
 from euclid_polish.config import Config
 from euclid_polish.image import Image, Role
 from euclid_polish.photometry import electrons_to_ab_mag
+from euclid_polish.tng._image import (
+    _rotate_surface_brightness,
+    finish_view_read,
+    load_star_mask,
+    load_view_frames,
+    star_light_with_glow,
+)
+from euclid_polish.tng._paths import TNG_FITS_BANDS, dust_free_twin, resolve_fits_path
 from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 
-TNG_FITS_BANDS: tuple[str, ...] = ("VIS", "Y", "J", "H")
 TNG_MODEL_BANDS: tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES)
 #: Every atlas galaxy has these five viewing orientations.
 N_ORIENTATIONS = 5
@@ -61,12 +68,6 @@ def _four_positive(
     if not all(np.isfinite(value) and value > 0.0 for value in result):
         raise ValueError(f"{name} must contain finite positive values")
     return result  # type: ignore[return-value]
-
-
-def dust_free_twin(path: str | Path) -> Path:
-    """The atlas's dust-free twin of a dusty frame: ``…_<band>_nodust.fits``."""
-    path = Path(path)
-    return path.with_name(f"{path.stem}_nodust{path.suffix}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,9 +108,7 @@ class TNGView:
 
     def fits_path(self, fits_band: str) -> Path:
         """Resolve one atlas band, including the archive's zero-padded variant."""
-        from euclid_polish.tng.atlas import _resolve_fits_path
-
-        return _resolve_fits_path(
+        return resolve_fits_path(
             self.galaxy_dir,
             self.subhalo_id,
             self.orientation,
@@ -153,13 +152,6 @@ class TNGView:
 
         ``read`` is this view's :class:`euclid_polish.tng._image.ViewRead`
         when the caller already started reading its files."""
-        from euclid_polish.tng._image import (
-            finish_view_read,
-            load_star_mask,
-            load_view_frames,
-            star_light_with_glow,
-        )
-
         paths = list(self.fits_paths())
         if read is None:
             image, mask = load_view_frames(paths, TNG_MODEL_BANDS)
@@ -227,8 +219,6 @@ class TNGRotation:
         if self.angle_deg is not None:
             # TNG augmentation uses its validated cubic surface-brightness
             # rotation rather than a generic image interpolation policy.
-            from euclid_polish.tng._image import _rotate_surface_brightness
-
             return _rotate_surface_brightness(image, self.angle_deg)
         return image.rotated_quarter(self.quarter_turns)
 

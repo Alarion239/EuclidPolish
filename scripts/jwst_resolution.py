@@ -142,7 +142,8 @@ def _runner(spec: str, band: str):
     """``lr (h, w, 4) → SR band (2h, 2w)`` for a model spec, or the input itself."""
     b = BANDS.index(band)
     if spec == "lr":
-        return lambda lr: zoom(np.nan_to_num(lr[..., b].astype(np.float64)), 2, order=3) / 4.0
+        return lambda lr: zoom(np.nan_to_num(lr[..., b].astype(np.float64)), 2, order=3,
+                               grid_mode=True, mode="grid-mirror") / 4.0     # block-aligned, as the SR
     if spec.startswith("milestone:"):                 # a long run's kept state (helpers/milestones.py)
         model = milestones.load(*milestones.parse_spec(spec))
         return lambda lr: np.asarray(model.member_arrays(np.ascontiguousarray(lr, np.float32))[0],

@@ -93,6 +93,7 @@ _F = np.fft.fftfreq(WINDOW) * WINDOW
 _RING = np.rint(np.hypot(*np.meshgrid(_F, _F, indexing="ij"))).astype(int).ravel()
 _RINGS = np.arange(1, WINDOW // 2)
 _MEMBER = (_RING[None, :] == _RINGS[:, None]).astype(np.float64).T        # (w², rings)
+_RING_PIXELS = _MEMBER.sum(axis=0)                                         # pixels per ring
 
 
 def period_px() -> np.ndarray:
@@ -226,8 +227,9 @@ def summary(acc: RingCorrelation, *, noise_rings: int = 4) -> dict:
     with np.errstate(invalid="ignore", divide="ignore"):
         coherence = acc.sj / np.sqrt(acc.ss * acc.jj)
         gain = acc.sj / acc.jj
-        noise = float(np.mean(acc.jj[-noise_rings:]))
-        signal = np.clip(acc.jj - noise, 1e-30, None)
+        # The rings are sums over ~2πk pixels: estimate N per pixel, scale it per ring.
+        noise = float(np.mean(acc.jj[-noise_rings:] / _RING_PIXELS[-noise_rings:]))
+        signal = np.clip(acc.jj - noise * _RING_PIXELS, 1e-30, None)
         coherence_c = acc.sj / np.sqrt(acc.ss * signal)
         gain_c = acc.sj / signal
 

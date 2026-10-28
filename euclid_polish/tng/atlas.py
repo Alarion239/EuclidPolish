@@ -13,43 +13,16 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.tng import box_face
+from euclid_polish.tng._paths import ORIENTATIONS as _ORIENTATIONS
+from euclid_polish.tng._paths import TNG_FITS_BANDS, dust_free_twin
+from euclid_polish.tng._paths import resolve_fits_path as _resolve_fits_path
 from euclid_polish.tng.catalog import TNGPropertyCatalog
-from euclid_polish.tng.types import TNG_FITS_BANDS, TNGView, dust_free_twin
+from euclid_polish.tng.types import TNGView
 
 if TYPE_CHECKING:
     from euclid_polish.tng.radius_manifest import TNGRadiusManifest
 
 
-_ORIENTATIONS = range(1, 6)
-
-
-def _resolve_fits_path(
-    directory: Path,
-    subhalo_id: str,
-    orientation: int,
-    band: str,
-) -> Path:
-    if isinstance(orientation, bool) or not isinstance(orientation, int):
-        raise TypeError("orientation must be an integer in 1..5")
-    if orientation not in _ORIENTATIONS:
-        raise ValueError(f"orientation must be in 1..5, got {orientation!r}")
-    fits_band = str(band).strip().upper()
-    if fits_band not in TNG_FITS_BANDS:
-        raise ValueError(f"unknown TNG FITS band {band!r}")
-
-    unpadded = directory / (
-        f"TNG{subhalo_id}_O{orientation}_Euclid_{fits_band}.fits"
-    )
-    if unpadded.is_file():
-        return unpadded
-    try:
-        padded_id = f"{int(subhalo_id):06d}"
-    except ValueError:
-        return unpadded
-    padded = directory / (
-        f"TNG{padded_id}_O{orientation}_Euclid_{fits_band}.fits"
-    )
-    return padded if padded.is_file() else unpadded
 
 
 def _regular_file_names(directory: Path) -> frozenset[str]:

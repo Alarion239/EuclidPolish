@@ -26,8 +26,8 @@ from astropy.io import fits
 from numba import njit
 
 from euclid_polish.config import Config
+from euclid_polish.tng._paths import dust_free_twin
 from euclid_polish.tng.image import TNGSurfaceBrightnessImage
-from euclid_polish.tng.types import dust_free_twin
 
 # Generation already parallelises over one process per allocated CPU.  OpenCV
 # otherwise creates a thread pool in every worker and oversubscribes the outer

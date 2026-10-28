@@ -32,8 +32,8 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
+from euclid_polish.tng._paths import dust_free_twin
 from euclid_polish.tng.atlas import TNGGalaxy, _scan_complete_galaxies
-from euclid_polish.tng.types import dust_free_twin
 
 TABLE_VERSION = 1
 _ORIENTATIONS = range(1, 6)

@@ -102,3 +102,18 @@ def test_thin_coverage_gaps_share_one_apodized_mask():
     full_strict.add(sky, sky)
     full_loose.add(sky, sky)
     assert np.array_equal(full_strict.sj, full_loose.sj) and np.array_equal(full_strict.jj, full_loose.jj)
+
+
+def test_noise_correction_scales_jwst_white_noise_per_ring():
+    # JWST = SR + white noise: the raw coherence drops where the noise rises,
+    # the corrected one (noise per pixel × each ring's pixel count) stays ~1.
+    sky = _sky(3)
+    noisy = sky + np.random.default_rng(4).normal(scale=2.0, size=sky.shape)
+    out = _accumulate(sky, noisy)
+    period = np.array(out["period_px"])
+    mid = (period >= 4.0) & (period <= 13.0)
+    raw = np.array(out["coherence"])[mid]
+    corrected = np.array(out["coherence_noise_corrected"])[mid]
+    assert raw.min() < 0.9
+    # a ring-sum noise subtracted from every ring overshot this to ~2 (and 1e19 at σ = 5)
+    assert corrected.min() > 0.95 and corrected.max() < 1.15
