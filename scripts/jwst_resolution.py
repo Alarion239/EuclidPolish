@@ -56,8 +56,9 @@ BANDS = tuple(Config.LR_INPUT_BAND_NAMES)              # (VIS, Y_E, J_E, H_E)
 EDR_MOSAIC = "nexus_mosaics/edr_wide_ep1_01/wide_ep1_01_{filter}_i2d_data.fits.gz"
 
 
-def _entries(limit: int | None):
-    return [e for e in rt.list_entries("nexus") if e.extras.get("jwst_file")][:limit]
+def _entries(limit: int | None, ids: set[str] | None = None):
+    return [e for e in rt.list_entries("nexus")
+            if e.extras.get("jwst_file") and (ids is None or e.id in ids)][:limit]
 
 
 def _lr(cache: str, entry) -> np.ndarray:
@@ -175,13 +176,16 @@ def main() -> None:
     p.add_argument("--cache", required=True, help="per-tile cache directory")
     p.add_argument("--out", required=True, help="JSON report (merged into when it exists)")
     p.add_argument("--tiles", type=int, default=None, help="at most this many tiles")
+    p.add_argument("--tile-ids", default=None,
+                   help="comma list of NEXUS tile ids to measure on (e.g. the tiles of chosen galaxies)")
     p.add_argument("--min-coverage", type=float, default=0.95,
                    help="fraction of a window both images must cover (default 0.95)")
     p.add_argument("--knees", default="0.1,0.3,1,3,10,30,100,300,1000",
                    help="asinh knees of the scan, in multiples of the Euclid band's per-SR-pixel noise")
     args = p.parse_args()
     band, b = args.band, BANDS.index(args.band)
-    entries = _entries(args.tiles)
+    ids = {t.strip() for t in args.tile_ids.split(",") if t.strip()} if args.tile_ids else None
+    entries = _entries(args.tiles, ids)
     mosaic = args.mosaic
     if mosaic is None and band != "H_E":
         mosaic = os.path.join(str(jwst_euclid.overlap_root()),
