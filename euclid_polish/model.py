@@ -624,6 +624,8 @@ class Model:
         loss_knee_weights: Sequence[float] | None = None,
         brightness_consistency: bool = False,
         noise_texture_jitter: bool = False,
+        galaxy_blur_prob: float = Config.TRAIN_GALAXY_BLUR_PROB,
+        galaxy_blur_fwhm_max: float = Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
         isotropy_penalty: float = 0.0,
         isotropy_knee: float | None = None,
         isotropy_scales: Sequence[Sequence[float]] | None = None,
@@ -751,7 +753,12 @@ class Model:
                                       saturation_mask_prob),
                                   target_fwhm_arcsec=target_fwhm,
                                   star_prior_payload=star_prior_payload,
-                                  noise_texture_jitter=bool(noise_texture_jitter))
+                                  noise_texture_jitter=bool(noise_texture_jitter),
+                                  galaxy_blur_prob=float(galaxy_blur_prob),
+                                  galaxy_blur_fwhm_max_arcsec=float(galaxy_blur_fwhm_max))
+            if fwd.galaxy_blur_prob:
+                print(f"  galaxy pre-blur: p={fwd.galaxy_blur_prob:g}, FWHM ~ U(0, "
+                      f"{fwd.galaxy_blur_fwhm_max_arcsec:g})\" (stars stay sharp)")
             if fwd.noise_texture_jitter:
                 lo, hi = Config.NOISE_TEXTURE_JITTER_EXPOSURES
                 print(f"  noise texture: randomised ({lo}-{hi} dithered exposures, "
@@ -805,6 +812,9 @@ class Model:
             # Live training draws noise from the code's noise model; record it
             # the same way generated records do.
             provenance_fields["noise_model"] = Config.NOISE_MODEL
+        if galaxy_blur_prob and not forward_onthefly:
+            raise ValueError("galaxy_blur_prob needs the live (on-the-fly) "
+                             "forward model; record truths are fixed")
         if noise_texture_jitter and not forward_onthefly:
             raise ValueError("noise_texture_jitter needs the live (on-the-fly) "
                              "forward model; record noise is fixed")

@@ -53,6 +53,7 @@ from euclid_polish.provenance.defaults import default_store  # noqa: E402
 from euclid_polish.training.forward_onthefly import (  # noqa: E402
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
+    validate_galaxy_blur,
 )
 from euclid_polish.training.inference import checkpoint_step  # noqa: E402
 from euclid_polish.training.isotropy import DEFAULT_KNEE_E as DEFAULT_ISOTROPY_KNEE_E  # noqa: E402
@@ -268,6 +269,17 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "and band (dithered exposure count and a white share, "
                         "Config.NOISE_TEXTURE_JITTER_*), so the member cannot "
                         "fit one texture. Member-spec key: noise_texture_jitter.")
+    p.add_argument("--galaxy-blur-prob", type=float, default=Config.TRAIN_GALAXY_BLUR_PROB,
+                   help="Live training: share of field visits whose clean GALAXY "
+                        "light is smoothed by a Gaussian (FWHM ~ U(0, "
+                        "--galaxy-blur-fwhm-max) arcsec, all bands) before the "
+                        "stars are added and the field is observed; stars stay "
+                        "sharp. 0 = off. Member-spec key: galaxy_blur_prob.")
+    p.add_argument("--galaxy-blur-fwhm-max", type=float,
+                   default=Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
+                   help="Largest galaxy pre-blur FWHM in arcsec (default "
+                        f"{Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC:g}). Member-spec "
+                        "key: galaxy_blur_fwhm_max.")
     p.add_argument("--isotropy-penalty", type=float, default=0.0,
                    help="Learned-knee live member: weight λ of the residual-"
                         "isotropy penalty (euclid_polish.training.isotropy). "
@@ -492,6 +504,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
                "loss_knees", "loss_floor", "knee_tilt", "loss_knee_weights", "lupton_loss",
                "brightness_consistency", "noise_texture_jitter",
+               "galaxy_blur_prob", "galaxy_blur_fwhm_max",
                "isotropy_penalty", "isotropy_knee", "isotropy_scales",
                "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
@@ -727,6 +740,16 @@ def _diversity_kwargs(args, over: dict) -> dict:
         print("✗ lupton_loss replaces the knee grid: no loss_knees, loss_floor, knee_tilt or "
               "loss_knee_weights with it")
         raise SystemExit(2)
+    try:
+        galaxy_blur_prob, galaxy_blur_fwhm_max = validate_galaxy_blur(
+            over.get("galaxy_blur_prob", args.galaxy_blur_prob),
+            over.get("galaxy_blur_fwhm_max", args.galaxy_blur_fwhm_max))
+    except (TypeError, ValueError) as exc:
+        print(f"✗ {exc}")
+        raise SystemExit(2) from exc
+    if galaxy_blur_prob and not bool(over.get("forward_onthefly", args.forward_onthefly)):
+        print("✗ galaxy_blur_prob needs the live (on-the-fly) forward model")
+        raise SystemExit(2)
     if brightness and not bool(over.get("forward_onthefly", args.forward_onthefly)):
         print("✗ brightness_consistency needs the live (on-the-fly) forward model")
         raise SystemExit(2)
@@ -751,6 +774,8 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "brightness_consistency": brightness,
             "noise_texture_jitter": _flag(over.get("noise_texture_jitter", args.noise_texture_jitter),
                                           "noise_texture_jitter"),
+            "galaxy_blur_prob": galaxy_blur_prob,
+            "galaxy_blur_fwhm_max": galaxy_blur_fwhm_max,
             "isotropy_penalty": isotropy_penalty,
             "isotropy_knee": isotropy_knee,
             "isotropy_scales": isotropy_scales,
@@ -834,6 +859,11 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
         identity["brightness_consistency"] = True
     if origin.get("noise_texture_jitter") is True and "noise_texture_jitter" not in override:
         identity["noise_texture_jitter"] = True
+    if origin.get("galaxy_blur_prob"):
+        if "galaxy_blur_prob" not in override:
+            identity["galaxy_blur_prob"] = float(origin["galaxy_blur_prob"])
+        if "galaxy_blur_fwhm_max" not in override and origin.get("galaxy_blur_fwhm_max"):
+            identity["galaxy_blur_fwhm_max"] = float(origin["galaxy_blur_fwhm_max"])
     if origin.get("isotropy_penalty") and "isotropy_penalty" not in override:
         identity["isotropy_penalty"] = float(origin["isotropy_penalty"])
         if "isotropy_knee" not in override and origin.get("isotropy_knee"):
@@ -1123,6 +1153,8 @@ def main() -> int:
             knobs += f" noise_aug={s.noise_aug:g}"
         if s.noise_texture_jitter:
             knobs += " noise_texture=jittered"
+        if s.galaxy_blur_prob:
+            knobs += f" galaxy_blur=p{s.galaxy_blur_prob:g}/fwhm<={s.galaxy_blur_fwhm_max:g}\""
         if s.isotropy_penalty:
             knobs += (f" isotropy={s.isotropy_penalty:g}"
                       f"@{s.isotropy_knee or DEFAULT_ISOTROPY_KNEE_E:g}e"

@@ -69,6 +69,18 @@ DEFAULT_CROPS_PER_FIELD = 8
 DEFAULT_ONTHEFLY_HR_CROP_SIZE = 256
 
 
+def validate_galaxy_blur(prob: float, fwhm_max_arcsec: float) -> tuple[float, float]:
+    """Validate the galaxy pre-blur knobs: ``prob`` in [0, 1], the FWHM cap
+    in (0, Config.TARGET_PSF_FWHM_MAX_ARCSEC] arcsec."""
+    p, fwhm = float(prob), float(fwhm_max_arcsec)
+    if not 0.0 <= p <= 1.0:
+        raise ValueError(f"galaxy_blur_prob must be in [0, 1], got {prob!r}")
+    if not 0.0 < fwhm <= Config.TARGET_PSF_FWHM_MAX_ARCSEC:
+        raise ValueError("galaxy_blur_fwhm_max must be in (0, "
+                         f"{Config.TARGET_PSF_FWHM_MAX_ARCSEC:g}] arcsec, got {fwhm_max_arcsec!r}")
+    return p, fwhm
+
+
 def member_psf_sets(*, seed: int | None, psf_subset: int | None = None,
                     psf_dir: str = Config.EUCLID_PSF_DIR,
                     ) -> tuple[dict[str, PSFSet], str]:
@@ -127,8 +139,13 @@ class OnTheFlyForward:
         saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
         target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
         noise_texture_jitter: bool = False,
+        galaxy_blur_prob: float = Config.TRAIN_GALAXY_BLUR_PROB,
+        galaxy_blur_fwhm_max_arcsec: float = Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
+        # Galaxy pre-blur: smoother galaxies in the truth (stars untouched).
+        self.galaxy_blur_prob, self.galaxy_blur_fwhm_max_arcsec = validate_galaxy_blur(
+            galaxy_blur_prob, galaxy_blur_fwhm_max_arcsec)
         # Randomised noise texture (exposure count + white share per scene and
         # band, Config.NOISE_TEXTURE_JITTER_*): a member cannot fit one
         # texture, so real Euclid noise is not out of distribution.
@@ -220,6 +237,18 @@ class OnTheFlyForward:
             canvas, rng, n_stars=n_stars,
             stellar_prior=self.stellar_prior)
 
+    def _blur_galaxies(self, field: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """The clean galaxy field, smoothed on a ``galaxy_blur_prob`` share of visits.
+
+        One Gaussian (FWHM ~ Uniform(0, max) arcsec, the same in every band)
+        per visit, flux-conserving; called before the stars are drawn, so the
+        stars stay sharp.
+        """
+        if self.galaxy_blur_prob <= 0.0 or rng.random() >= self.galaxy_blur_prob:
+            return field
+        fwhm = float(rng.uniform(0.0, self.galaxy_blur_fwhm_max_arcsec))
+        return blur_target_array(field, fwhm, pixel_scale_arcsec=self.pixel_scale_arcsec)
+
     def crops(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         field = np.asarray(field, np.float32)
         if field.ndim != 3 or field.shape[-1] != len(Config.LR_INPUT_BAND_NAMES):
@@ -229,6 +258,7 @@ class OnTheFlyForward:
             raise ValueError(
                 f"field {field.shape[:2]} smaller than the HR crop {c}")
         rng = self._rng()
+        field = self._blur_galaxies(field, rng)
 
         # Keep stars on a separate sparse plane for target bookkeeping. They
         # share the scene's sampled, elastically deformed observation PSF. The

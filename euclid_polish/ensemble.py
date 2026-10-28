@@ -208,6 +208,12 @@ class MemberTrainSpec:
     #: Live training draws a randomised noise texture (exposure count + white
     #: share per scene and band). Recorded in origin.json; continue keeps it.
     noise_texture_jitter: bool = False
+    #: Live training smooths the clean galaxy field (not the stars) by a
+    #: Gaussian of FWHM ~ U(0, ``galaxy_blur_fwhm_max``) arcsec on a
+    #: ``galaxy_blur_prob`` share of visits. 0 = off. Recorded in origin.json;
+    #: continue keeps it.
+    galaxy_blur_prob: float = 0.0
+    galaxy_blur_fwhm_max: float = Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC
     #: Weight λ of the residual-isotropy penalty (``training.isotropy``): on
     #: average, the error stretched at ``isotropy_knee`` e⁻ (``None`` = the
     #: module default, 0.01) must not prefer a direction, at
@@ -542,6 +548,9 @@ class EnsembleModel:
                             "min_e": lo, "max_e": hi}
                 if spec.noise_texture_jitter:
                     origin["noise_texture_jitter"] = True
+                if spec.galaxy_blur_prob:
+                    origin["galaxy_blur_prob"] = float(spec.galaxy_blur_prob)
+                    origin["galaxy_blur_fwhm_max"] = float(spec.galaxy_blur_fwhm_max)
                 if spec.brightness_consistency:
                     origin["brightness_consistency"] = True
                 if spec.isotropy_penalty:
@@ -571,6 +580,9 @@ class EnsembleModel:
                 member_train_kwargs["brightness_consistency"] = True
             if spec.noise_texture_jitter:
                 member_train_kwargs["noise_texture_jitter"] = True
+            if spec.galaxy_blur_prob:
+                member_train_kwargs["galaxy_blur_prob"] = float(spec.galaxy_blur_prob)
+                member_train_kwargs["galaxy_blur_fwhm_max"] = float(spec.galaxy_blur_fwhm_max)
             if spec.isotropy_penalty:
                 member_train_kwargs["isotropy_penalty"] = float(spec.isotropy_penalty)
                 member_train_kwargs["isotropy_knee"] = spec.isotropy_knee

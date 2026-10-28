@@ -236,6 +236,13 @@ class Config:
     # This is the probability for sources just above the well.
     TRAIN_SATURATION_MASK_PROB = 0.2
     TRAIN_SATURATION_MASK_PROB_MAX = 0.5
+    # Galaxy pre-blur (live training only, off by default): with this
+    # probability per visit the clean GALAXY field is smoothed by a Gaussian
+    # of FWHM ~ Uniform(0, max) arcsec before the stars are added and the
+    # field is observed, so the truth holds smoother faint light than the TNG
+    # stamps alone. Stars stay point sources.
+    TRAIN_GALAXY_BLUR_PROB = 0.0
+    TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC = 0.4
     # The brightest cores are blacked out far more often. In 172 real archive
     # offset fields (2026-09-14), sources up to ~6x our well were masked ~23%
     # of the time and sources brighter than that 6 times out of 7. A source's
