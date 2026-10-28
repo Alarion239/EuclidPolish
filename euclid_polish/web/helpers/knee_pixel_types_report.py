@@ -1083,9 +1083,10 @@ def model_name(spec: str) -> str:
 
 
 def compare_folder(a: str, b: str, tag: str = "") -> str:
-    """The comparison's folder name: ``compare_<A>_vs_<B>[_<tag>]``."""
+    """The comparison's folder name: ``compare_<A>_vs_<B>[_<tag>]``, every
+    part path-safe (a milestone's ``member_257@200000`` → ``member_257__200000``)."""
     safe_tag = runs.slug(tag) if tag else ""
-    return f"compare_{a}_vs_{b}" + (f"_{safe_tag}" if safe_tag else "")
+    return f"compare_{runs.slug(a)}_vs_{runs.slug(b)}" + (f"_{safe_tag}" if safe_tag else "")
 
 
 def compare_models(a: tuple[str, str], b: tuple[str, str], *, tag: str = "",

@@ -122,6 +122,12 @@ def test_report_files_are_guarded(analysed_run):
             report.report_file(folder, name)
 
 
+def test_a_milestone_comparison_folder_is_path_safe():
+    folder = report.compare_folder("member_257@200000", "member_257@8000000", "training_length")
+    assert folder == "compare_member_257__200000_vs_member_257__8000000_training_length"
+    assert report._SAFE.match(folder)
+
+
 def test_requests_are_validated(analysed_run, monkeypatch):
     assert report.parse_analyse_request({"run_id": RUN}) == {
         "run_id": RUN, "models": ["universal:member_1", "universal:member_2"]}
