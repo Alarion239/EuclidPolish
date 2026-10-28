@@ -93,11 +93,16 @@ def apply_band_noise(
 # photon noise of the sources. The maps quote per-pixel noise as if pixels
 # were independent, which is the noise that adds up over an aperture.
 #
-# Texture: the MER pipeline interpolates every exposure onto the 0.10" grid
-# with bilinear weights at some sub-pixel offset, so neighbouring pixels share
-# noise. :func:`dithered_unit_noise` rebuilds exactly that, which gives the
-# lower single-pixel scatter and the neighbour correlation of a real stack
-# without fitting any correlation parameter.
+# Texture: the MER pipeline (CT_SWarp, RESAMPT=BILINEAR, COMBINET=MEDIAN in
+# every Q1 mosaic header) interpolates every exposure onto the 0.10" grid with
+# bilinear weights at some sub-pixel offset, so neighbouring pixels share
+# noise, and takes the per-pixel median of the exposures. The median picks a
+# different exposure pair in neighbouring pixels, so it keeps less of the
+# interpolation's correlation than a mean would. :func:`dithered_unit_noise`
+# rebuilds that without fitting any correlation parameter. Measured on empty
+# sky of 44 Q1 MER cutouts (2026-10-28), lag-1 correlation is 0.205 in VIS and
+# 0.80 in NISP; a 4-exposure median gives 0.21 and 0.82, the mean we used
+# before 0.24 and 0.86.
 
 
 def _detector_factor(band: BandConfig) -> int:
@@ -150,6 +155,56 @@ def _shifted_bilinear(
     return rows[:, x0] * (1.0 - wx) + rows[:, x0 + 1] * wx
 
 
+def _resampled_exposures(
+    shape: tuple[int, int],
+    factor: int,
+    n_exposures: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """``(n_exposures, h, w)``: unit white detector noise per exposure, each
+    shifted by its own sub-pixel offset and resampled bilinearly onto the
+    archive grid. Offsets are stratified along each axis so the exposures
+    spread over the detector pixel; a draw with all offsets at one phase
+    would leave a fixed period-``factor`` variance pattern."""
+    height, width = shape
+    pad = 2
+    detector_shape = (
+        math.ceil(height / factor) + 2 * pad,
+        math.ceil(width / factor) + 2 * pad,
+    )
+    offsets_y = (rng.permutation(n_exposures) + rng.random(n_exposures)) / n_exposures
+    offsets_x = (rng.permutation(n_exposures) + rng.random(n_exposures)) / n_exposures
+    layers = np.empty((n_exposures, height, width), dtype=np.float64)
+    for k, (offset_y, offset_x) in enumerate(zip(offsets_y, offsets_x, strict=True)):
+        white = rng.standard_normal(detector_shape)
+        layers[k] = _shifted_bilinear(
+            white, factor, float(offset_y), float(offset_x), (height, width), pad,
+        )
+    return layers
+
+
+@lru_cache(maxsize=64)
+def _median_stack_scale(factor: int, n_exposures: int) -> float:
+    """Large-area noise of a median stack relative to the mean of the same
+    exposures. Up to two exposures the median is the mean; beyond, the median
+    is the noisier estimator. Measured once, seeded, from the box sums of
+    paired median and mean stacks, so the box-edge losses cancel."""
+    if n_exposures <= 2:
+        return 1.0
+    rng = np.random.default_rng(20261028)
+    side, box = 384, 32
+
+    def box_var(stack: np.ndarray) -> float:
+        return float(np.var(stack.reshape(side // box, box, side // box, box).sum(axis=(1, 3))))
+
+    median_var = mean_var = 0.0
+    for _ in range(32):
+        layers = _resampled_exposures((side, side), factor, n_exposures, rng)
+        median_var += box_var(np.median(layers, axis=0))
+        mean_var += box_var(layers.mean(axis=0))
+    return math.sqrt(median_var / mean_var)
+
+
 def dithered_unit_noise(
     shape: tuple[int, int],
     band: BandConfig,
@@ -159,15 +214,16 @@ def dithered_unit_noise(
     """Noise with unit variance on large scales and the texture of a MER stack.
 
     ``band.n_exposures`` exposures of independent unit white noise are drawn
-    on the detector grid (0.10" VIS, 0.30" NISP). Each is shifted by its own
-    sub-pixel offset, resampled bilinearly onto the 0.10" archive grid, and
-    the exposures are averaged. Offsets are stratified along each axis so the
-    exposures spread over the detector pixel; a draw with all offsets at one
-    phase would leave a fixed period-``factor`` variance pattern.
+    on the detector grid (0.10" VIS, 0.30" NISP), each resampled bilinearly
+    onto the 0.10" archive grid at its own sub-pixel offset
+    (:func:`_resampled_exposures`), and combined by their per-pixel median,
+    as CT_SWarp builds the MER mosaics.
 
-    Dividing by ``factor * sqrt(n_exposures)`` makes the variance of a sum
-    over a large area equal to its pixel count. Single pixels have lower
-    variance, about (2/3)**2 in VIS and (2/9)**2 in NISP, because
+    Scaling a *mean* stack by ``sqrt(n_exposures) / factor`` makes the
+    variance of a sum over a large area equal to its pixel count; the median
+    is divided by :func:`_median_stack_scale` as well to keep that.
+    Single pixels have lower variance, about 0.71**2 in VIS and 0.23**2 in
+    NISP (empty Q1 sky: 0.67 and 0.23 of the MER RMS map), because
     interpolation shares each detector pixel's noise with its neighbours.
     """
     height, width = int(shape[0]), int(shape[1])
@@ -177,21 +233,9 @@ def dithered_unit_noise(
     if n_exposures < 1:
         raise ValueError(f"{band.name} needs at least one exposure")
     factor = _detector_factor(band)
-    pad = 2
-    detector_shape = (
-        math.ceil(height / factor) + 2 * pad,
-        math.ceil(width / factor) + 2 * pad,
-    )
-    offsets_y = (rng.permutation(n_exposures) + rng.random(n_exposures)) / n_exposures
-    offsets_x = (rng.permutation(n_exposures) + rng.random(n_exposures)) / n_exposures
-    total = np.zeros((height, width), dtype=np.float64)
-    for offset_y, offset_x in zip(offsets_y, offsets_x, strict=True):
-        white = rng.standard_normal(detector_shape)
-        total += _shifted_bilinear(
-            white, factor, float(offset_y), float(offset_x),
-            (height, width), pad,
-        )
-    return total / (factor * math.sqrt(n_exposures))
+    layers = _resampled_exposures((height, width), factor, n_exposures, rng)
+    scale = math.sqrt(n_exposures) / (factor * _median_stack_scale(factor, n_exposures))
+    return np.median(layers, axis=0) * scale
 
 
 @dataclass(frozen=True)
@@ -231,10 +275,30 @@ def jittered_unit_noise(
     return unit / math.sqrt(1.0 + extra)
 
 
+#: Exposure counts a scene's stack may have (:func:`coverage_exposures`).
+COVERAGE_EXPOSURES_RANGE = (2, 12)
+
+
+def coverage_exposures(band: BandConfig, sky_rms_e: float | None) -> int:
+    """Exposures behind a scene's noise level. The stack's variance falls as
+    one over the exposure count, so a scene at the band's median level
+    (``band.mer_rms_e``) has ``band.n_exposures``, a deeper one more and a
+    shallower one fewer, clipped to :data:`COVERAGE_EXPOSURES_RANGE`. Over
+    the measured Q1 levels this gives mostly 3-6 exposures, the counts seen
+    in the native-frame inventory, and with the median combine it reproduces
+    the empty-sky texture of Q1 MER (NISP lag-1/diagonal/lag-2 0.80/0.66/0.48
+    vs 0.80/0.67/0.50 measured; VIS lag-1 0.22 vs 0.205)."""
+    if sky_rms_e is None:
+        return int(band.n_exposures)
+    lo, hi = COVERAGE_EXPOSURES_RANGE
+    n = band.n_exposures * (band.mer_rms_e / float(sky_rms_e)) ** 2
+    return int(np.clip(np.rint(n), lo, hi))
+
+
 @lru_cache(maxsize=8)
 def pixel_scatter_factor(band: BandConfig) -> float:
     """Single-pixel standard deviation of the band's unit (dithered) noise:
-    ~2/3 in VIS, ~2/9 in NISP. ``band.mer_rms_e`` times this is the band's
+    ~0.71 in VIS, ~0.23 in NISP. ``band.mer_rms_e`` times this is the band's
     per-pixel sky scatter on the 0.10" archive grid."""
     return float(np.std(dithered_unit_noise((256, 256), band, np.random.default_rng(0))))
 
@@ -262,8 +326,9 @@ def apply_archive_noise(
 
     ``sky_rms_e`` is the sky level for this scene, normally one draw from the
     measured Q1 distribution; ``None`` uses the band's median,
-    ``band.mer_rms_e``. ``noise_texture`` randomises the stack's texture
-    (:func:`jittered_unit_noise`); ``None`` keeps the fixed texture.
+    ``band.mer_rms_e``. The level also sets how many exposures the stack
+    combines (:func:`coverage_exposures`). ``noise_texture`` randomises the
+    stack's texture (:func:`jittered_unit_noise`) instead.
 
     Sparse artifacts are survivors of the pipeline's rejection, so they are
     injected last on the archive grid and are never rescaled.
@@ -290,7 +355,8 @@ def apply_archive_noise(
 
     unit = (jittered_unit_noise(signal.shape, band, rng, noise_texture)
             if noise_texture is not None
-            else dithered_unit_noise(signal.shape, band, rng))
+            else dithered_unit_noise(signal.shape, band, rng,
+                                     n_exposures=coverage_exposures(band, sky_rms_e)))
     level = np.sqrt(
         sky_rms * sky_rms + np.clip(signal.astype(np.float64), 0.0, None)
     )

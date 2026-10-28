@@ -1,4 +1,5 @@
-"""Delivered-mosaic noise: Euclid's MER noise level with dither correlation."""
+"""Delivered-mosaic noise: Euclid's MER noise level with the texture of a
+dithered, bilinearly resampled, median-combined stack."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import pytest
 
 import euclid_polish.sky.observation.noise as noise_module
 from euclid_polish.config import Config
+from euclid_polish.sky.observation.mer_noise_levels import load_mer_noise_levels
 from euclid_polish.sky.observation.noise import (
     _shifted_bilinear,
     apply_archive_noise,
@@ -38,21 +40,100 @@ def test_each_detector_pixel_spreads_total_weight_factor_squared(factor):
         assert float(out.sum()) == pytest.approx(factor * factor, rel=1e-12)
 
 
+def _lag_correlations(field: np.ndarray) -> np.ndarray:
+    """Lag-1 (axis mean), diagonal and lag-2 (axis mean) correlation."""
+    x = field - field.mean()
+    variance = float(np.mean(x * x))
+
+    def lag(dy, dx):
+        return float(np.mean(x[: x.shape[0] - dy, : x.shape[1] - dx] * x[dy:, dx:])) / variance
+
+    return np.array([(lag(0, 1) + lag(1, 0)) / 2, lag(1, 1), (lag(0, 2) + lag(2, 0)) / 2])
+
+
 @pytest.mark.parametrize("band", BANDS, ids=BAND_IDS)
-def test_unit_noise_scatter_and_correlation_match_a_dithered_stack(band):
+def test_unit_noise_scatter_and_correlation_match_a_median_stack(band):
     rng = np.random.default_rng(5)
-    fields = [dithered_unit_noise((256, 256), band, rng) for _ in range(8)]
+    fields = [dithered_unit_noise((256, 256), band, rng) for _ in range(12)]
     pixel_sigma = float(np.median([field.std() for field in fields]))
-    lag1 = float(np.median([_lag1_correlation(field) for field in fields]))
+    lag1 = float(np.mean([_lag1_correlation(field) for field in fields]))
     if band.name == "VIS":
-        # Bilinear weights averaged over sub-pixel offsets keep (2/3)**2 of
-        # the variance in one pixel and share the rest with neighbours.
-        assert pixel_sigma == pytest.approx(2.0 / 3.0, rel=0.08)
-        assert 0.15 < lag1 < 0.35
+        # Bilinear weights share a third of each pixel's noise with its
+        # neighbours; the median of four exposures keeps less of it than a
+        # mean (lag-1 0.26).
+        assert pixel_sigma == pytest.approx(0.69, rel=0.06)
+        assert 0.20 < lag1 < 0.255
     else:
-        # A 0.30" detector pixel also spreads over 3x3 archive pixels.
-        assert pixel_sigma == pytest.approx(2.0 / 9.0, rel=0.10)
-        assert 0.75 < lag1 < 0.93
+        # A 0.30" detector pixel also spreads over 3x3 archive pixels; a mean
+        # of the exposures would keep lag-1 0.86.
+        assert pixel_sigma == pytest.approx(0.23, rel=0.06)
+        assert 0.80 < lag1 < 0.84
+
+
+def test_stack_is_the_median_of_its_exposures(monkeypatch):
+    """One exposure with a wild value cannot move a median of four."""
+    band = Config.BAND_Y_E
+    real = noise_module._resampled_exposures
+
+    def with_outlier(shape, factor, n_exposures, rng):
+        layers = real(shape, factor, n_exposures, rng)
+        layers[0, 10, 10] = 1.0e6
+        return layers
+
+    clean = dithered_unit_noise((32, 32), band, np.random.default_rng(1))
+    monkeypatch.setattr(noise_module, "_resampled_exposures", with_outlier)
+    hit = dithered_unit_noise((32, 32), band, np.random.default_rng(1))
+    assert abs(float(hit[10, 10])) < 2.0
+    np.testing.assert_array_equal(np.delete(hit.ravel(), 10 * 32 + 10),
+                                  np.delete(clean.ravel(), 10 * 32 + 10))
+
+
+def test_median_scale_is_one_up_to_two_exposures_and_above_one_beyond():
+    for factor in (1, 3):
+        assert noise_module._median_stack_scale(factor, 1) == 1.0
+        assert noise_module._median_stack_scale(factor, 2) == 1.0
+        assert 1.0 < noise_module._median_stack_scale(factor, 4) < 1.15
+
+
+def test_exposure_count_follows_the_scenes_noise_level():
+    band = Config.BAND_J_E
+    n = band.n_exposures
+    assert noise_module.coverage_exposures(band, None) == n
+    assert noise_module.coverage_exposures(band, band.mer_rms_e) == n
+    assert noise_module.coverage_exposures(band, band.mer_rms_e / np.sqrt(2.0)) == 2 * n
+    assert noise_module.coverage_exposures(band, band.mer_rms_e * 10.0) == 2       # clipped
+    assert noise_module.coverage_exposures(band, band.mer_rms_e / 10.0) == 12
+
+
+def test_archive_noise_stacks_the_exposures_its_level_implies(monkeypatch):
+    band = Config.BAND_H_E
+    seen = []
+    real = noise_module.dithered_unit_noise
+
+    def spy(shape, band_arg, rng, n_exposures=None):
+        seen.append(n_exposures)
+        return real(shape, band_arg, rng, n_exposures=n_exposures)
+
+    monkeypatch.setattr(noise_module, "dithered_unit_noise", spy)
+    signal = np.zeros((16, 16), dtype=np.float32)
+    apply_archive_noise(signal, band, np.random.default_rng(0))
+    apply_archive_noise(signal, band, np.random.default_rng(0), sky_rms_e=band.mer_rms_e / np.sqrt(2.0))
+    assert seen == [band.n_exposures, 2 * band.n_exposures]
+
+
+@pytest.mark.parametrize("band", [Config.BAND_VIS, Config.BAND_Y_E], ids=["VIS", "Y_E"])
+def test_texture_over_the_q1_levels_matches_real_mer_sky(band):
+    """Empty sky of 44 Q1 MER cutouts (2026-10-28): lag-1, diagonal and lag-2
+    correlation VIS 0.205 / 0.051 / 0.00, NISP 0.80 / 0.67 / 0.50."""
+    real = {"VIS": (0.205, 0.051, 0.0), "Y_E": (0.80, 0.673, 0.497)}[band.name]
+    levels = load_mer_noise_levels()
+    column = levels.levels_e[:, levels.bands.index(band.name)]
+    rng = np.random.default_rng(17)
+    signal = np.zeros((160, 160), dtype=np.float32)
+    draws = [apply_archive_noise(signal, band, rng, sky_rms_e=float(level))
+             for level in rng.choice(column, 60)]
+    measured = np.mean([_lag_correlations(field) for field in draws], axis=0)
+    np.testing.assert_allclose(measured, real, atol=0.03)
 
 
 @pytest.mark.parametrize("band", BANDS, ids=BAND_IDS)
@@ -70,7 +151,7 @@ def test_unit_noise_has_unit_variance_over_large_areas(band):
 
 @pytest.mark.parametrize("band", BANDS, ids=BAND_IDS)
 def test_blank_sky_pixel_scatter_matches_real_mosaics(band):
-    """Real Q1 mosaics: pixel scatter is ~0.66 of the MER map in VIS, ~0.24 in NISP."""
+    """Real Q1 mosaics: pixel scatter is 0.666 of the MER map in VIS, 0.23 in NISP."""
     noise = apply_archive_noise(
         np.zeros((256, 256), dtype=np.float32), band, np.random.default_rng(21),
     )

@@ -15,7 +15,11 @@ from euclid_polish.sky.observation.mer_noise_levels import (
     MERNoiseLevels,
     load_mer_noise_levels,
 )
-from euclid_polish.sky.observation.noise import apply_archive_noise
+from euclid_polish.sky.observation.noise import (
+    apply_archive_noise,
+    coverage_exposures,
+    dithered_unit_noise,
+)
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -75,13 +79,15 @@ def test_table_rejects_nonpositive_levels():
 
 
 def test_sky_level_override_scales_blank_sky_noise_exactly():
+    """Blank sky is the level times the unit stack of the exposures that
+    level implies (a shallower scene has fewer)."""
     blank = np.zeros((48, 48), dtype=np.float32)
     band = Config.BAND_Y_E
-    base = apply_archive_noise(blank, band, np.random.default_rng(6))
-    doubled = apply_archive_noise(
-        blank, band, np.random.default_rng(6), sky_rms_e=2.0 * band.mer_rms_e,
-    )
-    np.testing.assert_allclose(doubled, 2.0 * base, rtol=1e-5, atol=1e-6)
+    level = 2.0 * band.mer_rms_e
+    doubled = apply_archive_noise(blank, band, np.random.default_rng(6), sky_rms_e=level)
+    unit = dithered_unit_noise((48, 48), band, np.random.default_rng(6),
+                               n_exposures=coverage_exposures(band, level))
+    np.testing.assert_allclose(doubled, level * unit, rtol=1e-5, atol=1e-5)
 
 
 def _captured_sky_levels(monkeypatch, **config_kwargs) -> dict:

@@ -423,7 +423,7 @@ class Config:
     # :func:`euclid_polish.sky.observation.noise.apply_archive_noise`. It is
     # stamped into generation and training provenance; change it whenever
     # that model changes, so records made under another model are refused.
-    NOISE_MODEL = "euclid-q1-mer-noise-levels-dithered-bilinear-v5"
+    NOISE_MODEL = "euclid-q1-mer-noise-levels-dithered-bilinear-median-v6"
 
     # Canonical band ordering for the 4-channel network input AND the
     # 4-channel HR target (same bands, same order: the model maps the
@@ -870,12 +870,16 @@ class Config:
     # lag-1 correlation 0.77-0.79 and a 7-8.5 % variance plaid, our fixed
     # 4-exposure model 0.84-0.85 and 14-18 %; at equal strength an unfamiliar
     # (white) texture doubled member_227's faint-light dropouts and cost
-    # 3.8 dB. With 4-8 exposures and white up to 0.15 the drawn textures span
-    # lag-1 0.755-0.855 (median 0.80) and plaid 3.6-14.3 % (median 7.0 %):
-    # centred on real Euclid, our old texture at the top end, so a member
-    # cannot fit one texture.
-    NOISE_TEXTURE_JITTER_EXPOSURES = (4, 8)
-    NOISE_TEXTURE_JITTER_WHITE_MAX = 0.15
+    # 3.8 dB. That gap was the stack's combine: MER takes the per-pixel
+    # median of the exposures, the model averaged them until v6. With the
+    # median, 2-6 exposures and no white share span NISP lag-1 0.74-0.86
+    # (median 0.79; real Q1 0.80) and VIS 0.17-0.29 (median 0.22; real
+    # 0.205): centred on real Euclid, the old mean-stack texture at the top
+    # end, so a member cannot fit one texture. (4-8 exposures with white up
+    # to 0.15, the pre-v6 range, would now centre NISP at 0.72, whiter than
+    # the sky.)
+    NOISE_TEXTURE_JITTER_EXPOSURES = (2, 6)
+    NOISE_TEXTURE_JITTER_WHITE_MAX = 0.0
     # Stochastic spectral-drift tilt ε ~ N(0, σ0 + σ1·ln(1+z)), applied as
     # exp(ε·ln(λ_b/λ_H)): σ0 is the z=0 colour jitter, σ1 grows the spread
     # with redshift (the rest-UV extrapolation uncertainty). The parametric-k

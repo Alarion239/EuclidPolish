@@ -10,9 +10,10 @@ detector sampling and mosaic interpolation. Noise follows the detector:
       → fftconvolve with the band PSF sample (real ePSF / Gaussian fallback)
       → sum-rebin round(0.10 / 0.05) = 2× → 0.10″
       → MER noise, every band alike: Euclid's MER noise level plus source
-        photon noise, with the pixel correlation of four exposures shifted
-        and bilinearly resampled onto 0.10″ (from 0.10″ VIS, 0.30″ NISP
-        detector pixels), then sparse artifacts
+        photon noise, with the pixel correlation of the scene's exposures
+        (four at the median level) shifted, bilinearly resampled onto 0.10″
+        (from 0.10″ VIS, 0.30″ NISP detector pixels) and median-combined,
+        then sparse artifacts
       → LR (0.10″, e⁻)
 
 Bright-star saturation is then applied to the assembled dirty LR stack.
@@ -471,7 +472,8 @@ class ObservationSimulator:
                          if star_e is not None else None)
 
         # 3. Apply delivered-MER noise: Euclid's noise level with the pixel
-        #    correlation of a dithered bilinear stack, identical for all bands.
+        #    correlation of a dithered, bilinearly resampled, median-combined
+        #    stack, identical for all bands.
         if self.config.add_noise:
             texture = (
                 NoiseTextureJitter(

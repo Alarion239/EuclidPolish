@@ -95,7 +95,7 @@ PSNR (§9.3) averaged over the four bands, on the 100 synthetic test fields.
 | Highest synthetic score | member_227 (15.5 M steps, 66 GPU-hours): 62.81 dB, but it paints a pixel-axis grid onto faint real sky: the grid detector (z ≥ 3) flags 26.1% of real-sky tiles for 227 vs 3.2% for 238 |
 | Spatial gates | Every gate artifact archived to the lab notebook on 2026-10-21 (`gates-20261021-161735.zip`, restorable from Models › Combiner) |
 | Ensemble members | 18 active STARFULL members (170–204), kept for the plain mean and the Leaderboard; 50 registered universal models (206–256) |
-| Noise model | `euclid-q1-mer-noise-levels-dithered-bilinear-v5` |
+| Noise model | `euclid-q1-mer-noise-levels-dithered-bilinear-median-v6` in code (median-combined stack, 2026-10-28); the records and every trained model so far are v5 (mean-combined), so training refuses the v5 records until they are regenerated |
 | Galaxy population | Euclid joint prior v15 (colour+SFR forest), 151.5 galaxies/arcmin² |
 | Stellar population | Gaia+Euclid prior v6, 5.08 stars/arcmin² |
 | Training records | All splits regenerated 2026-10-20 with whole (unmasked) TNG frames and dust-box and periodic-box donors excluded (§6.4) |
@@ -462,15 +462,21 @@ observed = s + sqrt(sky_rms_e² + max(s, 0)) · scale_map · U
 - `sky_rms_e` is one row per scene from `sky/observation/mer_noise_levels.json`: Q1 MER RMS-map
   levels measured at 294 extragalactic positions in 25.6″ cutouts. Band medians are
   VIS 29.81, Y 9.40, J 9.90 and H 9.69 e⁻ per 0.10″ pixel.
-- `U` is dithered unit noise: four exposures of white noise on the detector grid (0.10″ VIS, 0.30″
-  NISP), each shifted to a sub-pixel offset, bilinearly resampled and averaged. This reproduces the
-  pixel correlation of the delivered stacks: single-pixel scatter is ≈0.66× (VIS) and ≈0.22× (NISP)
-  of the aperture-level RMS. A member trained with `--noise-texture-jitter` instead draws 4–8
-  exposures plus a white share of up to 15% of the variance per scene and band, so it cannot fit
-  one texture (`Config.NOISE_TEXTURE_JITTER_*`).
+- `U` is dithered unit noise: exposures of white noise on the detector grid (0.10″ VIS, 0.30″
+  NISP), each shifted to a sub-pixel offset, bilinearly resampled and combined by their per-pixel
+  **median**, as CT_SWarp builds the MER mosaics (`RESAMPT = BILINEAR`, `COMBINET = MEDIAN` in every
+  Q1 header). The exposure count follows the scene's level, four at the band median and more for
+  deeper sky (variance ∝ 1/n, clipped to 2–12). The median is rescaled so large areas keep the RMS
+  level. On empty sky of 44 Q1 MER cutouts this reproduces the measured texture: NISP lag-1,
+  diagonal and lag-2 correlation 0.80 / 0.66 / 0.48 (real 0.80 / 0.67 / 0.50), VIS lag-1 0.22
+  (real 0.205). Single-pixel scatter is ≈0.67× (VIS) and ≈0.23× (NISP) of the RMS. Up to v5 the
+  exposures were averaged, which made the noise too correlated (NISP lag-1 0.86, VIS 0.26); models
+  trained on it treat real sky's whiter noise as stronger noise and erase faint galaxy outskirts.
+  A member trained with `--noise-texture-jitter` instead draws 2–6 exposures per scene and band, so
+  it cannot fit one texture (`Config.NOISE_TEXTURE_JITTER_*`).
 - `scale_map` combines a shared ±1% field depth with an independent per-band pointing seam
   (probability 0.10, depth step 1.10–1.45 either way).
-- The identity of this model is `Config.NOISE_MODEL = "euclid-q1-mer-noise-levels-dithered-bilinear-v5"`.
+- The identity of this model is `Config.NOISE_MODEL = "euclid-q1-mer-noise-levels-dithered-bilinear-median-v6"`.
   Generation records it in the provenance of every record file. On-the-fly training refuses a
   `dirty_validate` made under a different `NOISE_MODEL`; record-mode training refuses a
   `dirty_train`/`dirty_validate` pair whose noise models differ. To refresh the table, run
