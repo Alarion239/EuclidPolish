@@ -75,6 +75,7 @@ def make_env(tmp_path: Path, monkeypatch, *, labels=LABELS, blackout_labels=None
     monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(tmp_path / "ckpt" / "wdsr"))
     monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
     monkeypatch.setattr(Config, "TRACKING_DIR", str(tmp_path / "tracking"))
+    monkeypatch.setattr(Config, "EUCLID_INFERENCE_DIR", str(tmp_path / "euclid_inference"))
     monkeypatch.setattr(ev, "infer_checkpoint_num_res_blocks", lambda d: 32)
     base = tmp_path / "ckpt" / "ensemble"
     for i, recipe in enumerate(RECIPES, start=1):       # always three active members

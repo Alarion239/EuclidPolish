@@ -263,6 +263,13 @@ def _redirect_writable_config_paths(
     monkeypatch.setattr(
         Config, "TRACKING_DIR", str(pkg_tmp / "tracking"), raising=False,
     )
+    # The inference tree holds the user's real milestones, knee-attribution
+    # runs and experiment outputs; reading them made listing endpoints slow
+    # and model lists name local members. Tests start from an empty tree.
+    monkeypatch.setattr(
+        Config, "EUCLID_INFERENCE_DIR", str(pkg_tmp / "euclid_inference"),
+        raising=False,
+    )
     # Same for time-travel sandboxes — never create a real git worktree
     # under ./.timetravel during a test run.
     monkeypatch.setattr(
