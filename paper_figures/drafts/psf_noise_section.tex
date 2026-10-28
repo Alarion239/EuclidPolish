@@ -1,0 +1,88 @@
+% Drop-in text for the PSF and Noise & Artifacts subsections.
+% Figures: paper_figures/drafts/*.pdf (built by paper_figures/build_psf_noise_drafts.py).
+% Numbers checked 2026-10-27 against data/euclid_psf/euclid_psf_clusters.json
+% (ePSF header FWHMs) and data/euclid_stars/stars.csv on FASRC (43,401 stars).
+% New citation needed: Lupton2004 (Lupton et al. 2004, PASP 116, 133) for the RGB stretch.
+
+\subsubsection{Measuring the PSF}
+To simulate Euclid observations of a synthetic sky we first need the Euclid point-spread function (PSF).
+The PSF describes how Euclid blurs a point source; it is shaped by diffraction (including the spikes from the spider of the secondary mirror), optical aberrations, detector effects and pointing jitter.
+Rather than adopting an instrument model, we measure the effective PSF (ePSF; \citealt{AndersonKing2000}) directly from bright point sources in the Q1 MER mosaics with \texttt{photutils}.
+Importantly, the ePSF also captures dithering and resampling, which matter most for NISP, whose $0.3''$ native pixels are resampled onto the $0.1''$ MER mosaic grid (Fig.~\ref{fig:psfs}, bottom row).
+We select $\sim$43{,}000 unmasked point-like sources with $16 < \mathrm{VIS} < 19$ from the MER catalogue, extract $51''$ cutouts in all four bands, and reject sources with saturated cores, keeping 17{,}905 stars that are usable in every band (Fig.~\ref{fig:psf_measurement}).
+To capture spatial variation we cluster them by sky position into 44 regions of 270--590 stars each (median 397) and build one ePSF per region and band, oversampled by a factor of two ($0.05''$ pixels; Fig.~\ref{fig:psf_variation}).
+Finally, a radial cosine taper takes each stamp smoothly to zero between $21''$ and $25''$ from its centre, so no square stamp edge is imprinted around bright stars (Fig.~\ref{fig:psf_profiles}c).
+Over the 44 regions the median FWHMs are $0.16''$ (VIS), $0.36''$ ($Y_E$), $0.36''$ ($J_E$) and $0.39''$ ($H_E$).%
+% Medians exclude 7 failed fits (6 in Y_E, 1 in H_E) at 0.08--0.10'', below the NISP
+% diffraction limit. Including them: 0.16 / 0.35 / 0.36 / 0.39''.
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=\linewidth]{images/psf_gallery.pdf}
+    \caption{Empirical ePSFs of one region (EDF-S, 496 stars) in the four Euclid bands.
+    \emph{Top:} the central $25''$ on a logarithmic stretch, normalised to the peak, showing the six diffraction spikes and, in $H_E$, the first Airy ring.
+    \emph{Bottom:} the central $2''$ on a linear stretch at the $0.05''$ ePSF sampling, with the native detector pixel grid overlaid ($0.1''$ for VIS, $0.3''$ for NISP) and a dashed circle of the median FWHM over all 44 regions.
+    The NISP core spans only a few native pixels, so its ePSF also encodes the dithering and resampling of the MER mosaics.}
+    \label{fig:psfs}
+\end{figure*}
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=\linewidth]{images/psf_measurement.pdf}
+    \caption{From individual stars to the ePSF.
+    Each row shows five Q1 stars ($16<\mathrm{VIS}<19$) in one band, normalised to their peak on a logarithmic stretch ($8''$ stamps).
+    Stars like these are aligned, oversampled by a factor of two and stacked into one ePSF per region; the right column shows the ePSF of the region in Fig.~\ref{fig:psfs}, built from 496 stars.
+    The stacked kernel recovers the wings that are lost in the noise of any single star.}
+    \label{fig:psf_measurement}
+\end{figure*}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{images/psf_rgb.pdf}
+    \caption{The chromatic Euclid PSF: the $H_E$, $Y_E{+}J_E$ and VIS ePSFs of Fig.~\ref{fig:psfs}, each normalised to unit flux, shown as red, green and blue with a colour-preserving arcsinh stretch \citep{Lupton2004}.
+    \emph{Left:} $25''$; \emph{right:} the central $2''$ (box).
+    The sharp VIS core sits inside the broader NISP halo.
+    A $0.05''$ Gaussian smoothing is applied for display.}
+    \label{fig:psf_rgb}
+\end{figure}
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=\linewidth]{images/psf_variation.pdf}
+    \caption{Spatial variation of the PSF.
+    \emph{Top left:} the 44 star regions in the three Q1 fields; markers sit at the region centroids (area proportional to the number of stars), cells show the nearest-centroid partition, and colour gives the VIS FWHM.
+    \emph{Top right:} FWHM of every region in each band; bars mark the medians.
+    Open symbols are fits below the NISP diffraction limit and are excluded from the medians quoted in the text.
+    \emph{Bottom:} the VIS ePSF of every region ($12''$, logarithmic stretch), grouped by field and framed by its FWHM colour.
+    Many regions show more than six spikes, likely because they combine stars observed at different roll angles.}
+    \label{fig:psf_variation}
+\end{figure*}
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=\linewidth]{images/psf_profiles.pdf}
+    \caption{Radial structure of the ePSFs.
+    (a) Azimuthally averaged profile of the mean ePSF in each band, normalised to the peak; shading spans the 16th--84th percentiles over the 44 regions, and dashed lines show the profiles before the edge taper (grey band).
+    Beyond $\sim$10$''$ the profiles flatten at $\sim$$2\times10^{-6}$ (VIS) and $\sim$$2\times10^{-5}$ (NISP) of the peak.
+    (b) Encircled energy of the tapered mean ePSFs.
+    (c) The radial cosine taper on the VIS ePSF at a deep stretch: the raw stamp (left half) carries a square edge, the tapered stamp (right half) does not. Circles mark where the taper begins and ends.}
+    \label{fig:psf_profiles}
+\end{figure*}
+
+\subsubsection{Noise \& Artifacts}
+% (paragraph still to be written)
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=\linewidth]{images/noise_artifacts.pdf}
+    \caption{The noise and artifact model.
+    \emph{Top:} an illustrative $25.6''$ scene (TNG50 galaxies and stars) taken from (a) the $0.05''$ truth through (b) convolution with the ePSFs and binning onto the $0.1''$ MER grid, (c) sky and source photon noise with the correlated texture of a dithered stack, (d) a pointing seam and the wing of a bright star outside the field, to (e) surviving detector artifacts and saturation blackout.
+    The composites show $H_E$, $Y_E{+}J_E$ and VIS as red, green and blue, each in units of its sky $\sigma$.
+    \emph{Bottom:} (f) unit-variance noise: white, and the stacked texture in VIS and $H_E$, where each $0.3''$ detector pixel is shared among $3\times3$ mosaic pixels;
+    (g) local VIS noise $\sigma$ of panel (d) relative to the sky, raised over bright sources by their photon noise and by a factor 1.38 across the seam (the off-field wing also shows);
+    (h) distribution of the sky noise measured in the Q1 MER noise maps at 294 tile positions, relative to each band's median (log scatter on the right);
+    (i) a $6''$ VIS zoom with cosmic-ray hits, hot and dead pixels and a masked trail marked;
+    (j) a simulated saturation blackout of a bright star (top) and a galaxy nucleus in Q1 that is blanked in $H_E$ but intact in VIS (bottom).
+    For visibility the demo scene forces the seam, the wing and the blackout, and boosts the rates of cosmic rays ($\times6$), hot pixels ($\times60$) and trails ($\times25$) over those used to generate the training data.}
+    \label{fig:noiseandartifacts}
+\end{figure*}
