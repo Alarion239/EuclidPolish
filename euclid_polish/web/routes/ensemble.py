@@ -22,6 +22,7 @@ from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
 from euclid_polish.web import errors
 from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.fasrc_pipeline import TaskParamError
+from euclid_polish.web.helpers import milestones
 from euclid_polish.web.helpers.ensemble_viz import (
     EVAL_EXTRA_BANDS,
     _evals_payload_path,
@@ -575,6 +576,13 @@ def register(app):
         with its score and share-weighted training time, and the universal
         models still only on FASRC (from the local job log). Local files only."""
         return jsonify(universal_payload(_mode_starless()))
+
+    @app.route("/ensemble/universal/milestones.json")
+    def ensemble_universal_milestones_json():
+        """Models › Universal › Milestones: each long run's measured
+        milestones (synthetic score per step, JWST resolution per band beside
+        the reference models). Local files only."""
+        return jsonify(milestones.report_payload())
 
     @app.route("/ensemble/universal/spectra.json")
     def ensemble_universal_spectra_json():

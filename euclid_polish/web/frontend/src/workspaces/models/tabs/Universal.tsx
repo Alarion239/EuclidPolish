@@ -57,7 +57,7 @@ import {
 } from "../../../ui";
 import {
   BAND_SHORT, BANDS, useExperimentDetails, useExperiments, useModelCatalog, useUniversal,
-  type UniversalCombiner, type UniversalFasrcRow,
+  type UniversalCombiner, type UniversalFasrcRow, type UniversalPayload,
 } from "../api";
 import { LoadState, openMember } from "../common";
 import { JOB, measureGateWeights, pullUniversal, scoreUniversal, setProduction, useOnJobEnd } from "../jobs";
@@ -73,6 +73,7 @@ import {
   type RealPick, type ShapedRow, type Weighting, type XAxis,
 } from "../universal";
 import { LogToNotebookButton } from "../../shared/LogToNotebook";
+import { MilestonesSection, type MilestoneReference } from "../MilestonesSection";
 import "../models.css";
 
 const tabPath = (tab: string) => pagePath("models", { tab });
@@ -637,6 +638,7 @@ export default function Universal() {
                 </Caption>
               )}
             </section>
+            <MilestonesSection references={milestoneRefs(data)} />
             <section className="mdl-stack mdl-stack--tight" aria-labelledby="uni-models-title">
               <h2 id="uni-models-title" className="mdl-h2">Models</h2>
               <DataTable rows={rows} columns={columns} rowKey={(r) => r.name} aria-label="Universal models" urlKey="u"
@@ -681,4 +683,22 @@ export default function Universal() {
       </LoadState>
     </Page>
   );
+}
+
+/** The milestone charts' reference lines: production, 249 (the long run's
+ *  recipe at 200k, with ICNR) and the best universal model. */
+function milestoneRefs(data: UniversalPayload): MilestoneReference[] {
+  const out: MilestoneReference[] = [];
+  if (data.production?.mean != null) {
+    out.push({ label: `production${data.production_model ? ` (#${data.production_model.replace("member_", "")})` : ""}`,
+      mean: data.production.mean, integrated: data.production.integrated });
+  }
+  const scored = data.models.filter((r) => r.score?.mean != null && !r.score.stale);
+  const best = [...scored].sort((a, b) => (b.score?.mean ?? 0) - (a.score?.mean ?? 0))[0];
+  for (const r of [scored.find((x) => x.name === "member_249"), best]) {
+    if (r && r.name !== data.production_model && !out.some((o) => o.label === `#${r.name.replace("member_", "")}`)) {
+      out.push({ label: `#${r.name.replace("member_", "")}`, mean: r.score?.mean ?? null, integrated: r.score?.integrated ?? null });
+    }
+  }
+  return out;
 }

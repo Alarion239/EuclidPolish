@@ -186,3 +186,29 @@ def test_the_processor_compares_every_measured_milestone_on_the_poster(monkeypat
     assert seen["tiles"] == [("poster", "target_181255")]
     assert seen["specs"] == ["universal:member_249", "milestone:member_257@200000", "milestone:member_257@2000000"]
     assert "2,000,000" in seen["label"]
+
+
+def test_the_console_payload_joins_scores_and_jwst_scans(tmp_path, monkeypatch):
+    scores, res = tmp_path / "scores", tmp_path / "res"
+    scores.mkdir()
+    res.mkdir()
+    monkeypatch.setattr(milestones, "scores_dir", lambda: scores)
+    monkeypatch.setattr(milestones, "resolution_dir", lambda: res)
+    (scores / "member_257.json").write_text(json.dumps({"identity": {}, "steps": {
+        "8000000": {"mean": 62.5, "integrated": [56.7, 66.6, 63.7, 62.9], "scored_hours": 37.3,
+                    "learned_knees": [0.06, 0.01, 0.02, 0.02], "scored_at": "2026-10-27T10:00:00+00:00"},
+        "200000": {"mean": 59.2, "integrated": [53.2, 63.2, 60.6, 59.7], "scored_hours": 0.9}}}))
+    scan = [{"multiple": 1.0, "sb": 25.7, "resolution_coherence": {"px": 22.1, "arcsec": 1.105}},
+            {"multiple": 3.0, "sb": 24.5, "resolution_coherence": None}]
+    (res / "resolution_H_E.json").write_text(json.dumps({"meta": {"jwst_filter": "F200W", "euclid_noise_sb": 25.7},
+        "models": {"milestone:member_257@8000000": {"knee_scan": scan}, "milestone:member_999@1": {"knee_scan": scan},
+                   "production": {"knee_scan": scan}}}))
+    out = milestones.report_payload()
+    (m,) = out["members"]
+    assert m["member"] == "member_257" and [r["step"] for r in m["steps"]] == [200000, 8000000]
+    assert m["steps"][1]["spec"] == "milestone:member_257@8000000" and m["steps"][1]["hours"] == 37.3
+    assert set(m["resolution"]) == {"H_E"}
+    models = m["resolution"]["H_E"]["models"]
+    assert set(models) == {"milestone:member_257@8000000", "production"}        # another run's milestones left out
+    assert models["production"] == [{"multiple": 1.0, "sb": 25.7, "arcsec": 1.105}]
+    assert m["resolution"]["H_E"]["jwst_filter"] == "F200W"

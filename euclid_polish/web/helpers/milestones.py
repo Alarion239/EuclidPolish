@@ -205,3 +205,68 @@ def score(cap, member: str, step: int) -> dict[str, Any]:
     atomic_files.write_json(store / f"{member}.json", index, indent=1)
     atomic_files.write_json(store / f"{member}@{int(step)}.spectra.json", record, default=float)
     return entry
+
+
+# --------------------------------------------------------------------------- #
+# the console: every measured milestone of every long run
+# --------------------------------------------------------------------------- #
+
+#: The bands of the JWST resolution reports, short → long wavelength.
+RESOLUTION_BANDS = ("VIS", "Y_E", "J_E", "H_E")
+
+
+def resolution_dir() -> Path:
+    """Where ``scripts/process_milestones.py --res-dir`` writes the four
+    JWST resolution reports (``resolution_<band>.json``)."""
+    return Path(Config.DATA_DIR) / "jwst_euclid_overlap" / "milestones"
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _knee_scan(model: dict[str, Any]) -> list[dict[str, float]]:
+    """A model's ½-coherence resolution (arcsec) against JWST at each
+    surface brightness of its knee scan."""
+    out = []
+    for e in model.get("knee_scan") or []:
+        res = e.get("resolution_coherence") or {}
+        if res.get("arcsec") is not None and e.get("sb") is not None:
+            out.append({"multiple": float(e.get("multiple", 0.0)), "sb": float(e["sb"]),
+                        "arcsec": float(res["arcsec"])})
+    return out
+
+
+def report_payload() -> dict[str, Any]:
+    """Models › Universal › Milestones: every member with scored milestones,
+    per step its synthetic score (∫PSNR per band and their mean, training
+    hours, learned output knees), and per band the JWST resolution knee
+    scans of its milestones beside the reference models measured in the same
+    reports (production, other universal models, the input). Local files
+    only."""
+    reports = {band: _read_json(resolution_dir() / f"resolution_{band}.json") for band in RESOLUTION_BANDS}
+    members = []
+    for path in sorted(scores_dir().glob("member_*.json")):
+        member = path.stem
+        steps = read_scores(member).get("steps") or {}
+        rows = []
+        for key in sorted(steps, key=int):
+            e = steps[key]
+            rows.append({"step": int(key), "spec": spec_for(member, int(key)), "mean": e.get("mean"),
+                         "integrated": e.get("integrated"), "hours": e.get("scored_hours"),
+                         "learned_knees": e.get("learned_knees"), "scored_at": e.get("scored_at")})
+        resolution = {}
+        for band, rep in reports.items():
+            models = {spec: _knee_scan(m) for spec, m in (rep.get("models") or {}).items()
+                      if not spec.startswith("milestone:") or spec.startswith(f"milestone:{member}@")}
+            if any(spec.startswith("milestone:") for spec in models):
+                meta = rep.get("meta") or {}
+                resolution[band] = {"jwst_filter": meta.get("jwst_filter"),
+                                    "noise_sb": meta.get("euclid_noise_sb"),
+                                    "models": {k: v for k, v in models.items() if v}}
+        if rows:
+            members.append({"member": member, "steps": rows, "resolution": resolution})
+    return {"members": members}
