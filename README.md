@@ -600,7 +600,10 @@ float32 electrons and can be negative. Each `tf.train.Example` carries `image`, 
   `--knee-tilt t` (knee k weighs `(k/k_ref)^t`), `--loss-knee-weights` (one weight per scored
   knee), `--lupton-loss` (one Lupton asinh magnitude per band, softened at the sky scatter),
   `--brightness-consistency` (`training/brightness.py`: the SR re-observed by Euclid must match the
-  truth within Euclid's noise at 1/2/4/8-pixel blocks) and `--noise-texture-jitter` (§7.3).
+  truth within Euclid's noise at 1/2/4/8-pixel blocks), `--noise-texture-jitter` (§7.3) and
+  `--galaxy-blur-prob p` (on-the-fly only: on a share p of visits the clean galaxies, never the
+  stars, are smoothed by a Gaussian of FWHM ~ U(0, `--galaxy-blur-fwhm-max`, default 0.4″) before
+  observation, so the truth holds smoother faint light than the TNG stamps alone).
 - **Grid detector.** `training/grid_penalty.py` (`AxisExcess`) is a calibrated detector of the
   pixel-axis grid in an SR. Nothing in the pipeline imports it yet (it is tested, not wired into
   the trainer); the isotropy penalty is the loss that fights the grid.
