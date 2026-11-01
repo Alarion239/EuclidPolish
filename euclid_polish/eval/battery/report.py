@@ -244,6 +244,15 @@ def table_rows(s: dict, infos: Sequence[ModelInfo]) -> list[tuple[str, str, list
                                  for b in ("Y", "J", "H")))
         add(sec, "half-light radius SR/input VIS / Y / J / H",
             lambda p: " / ".join(cells(p, b, "r50", ["all"], 2) for b in ("VIS", "Y", "J", "H")))
+        if any(_get(growth, p, "bands", "VIS", "all", "psf_r3") for p in specs):
+            add(sec, "SR ⊛ Euclid PSF: VIS F(<0.5″) / F(<1″) / F(<3″), all",
+                lambda p: " / ".join(cells(p, "VIS", k, ["all"]) for k in ("psf_r0.5", "psf_r1", "psf_r3")))
+            add(sec, f"SR ⊛ Euclid PSF: VIS F(<1″), mag {' / '.join(mags)}",
+                lambda p: cells(p, "VIS", "psf_r1", mags))
+            add(sec, "SR ⊛ Euclid PSF: Y / J / H F(<0.5″), all",
+                lambda p: " / ".join(cells(p, b, "psf_r0.5", ["all"]) for b in ("Y", "J", "H")))
+            add(sec, "SR ⊛ Euclid PSF: half-light radius/input VIS / Y / J / H",
+                lambda p: " / ".join(cells(p, b, "psf_r50", ["all"], 2) for b in ("VIS", "Y", "J", "H")))
         add(sec, "blank-sky SR − input VIS / Y / J / H (e⁻ per SR px)",
             lambda p: _band_list(_get(growth, p, "sky") or [None] * 4, 3))
     return rows

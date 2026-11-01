@@ -19,6 +19,12 @@ mean SR − input on blank sky (> 4 r_Kron from every MER source) from each SR
 pixel. Blank sky still holds undetected faint galaxies, so the truth sits
 between the raw and the sky-matched ratio.
 
+To separate light moved by the resolution from light lost, each SR is also
+seen with Euclid's PSF (:func:`euclid_psf`: every band smoothed by the Gaussian
+taking the SR's target PSF to the band's measured MER FWHM) and measured the
+same way: where it follows the input, the SR differs from the input only by
+resolution; what it misses at 3″ is lost.
+
 The geometry (rings, masks, input curves) is measured once (no model); each
 model adds its SR curves and blank-sky offsets.
 """
@@ -26,7 +32,10 @@ from __future__ import annotations
 
 import numpy as np
 from astropy.wcs import WCS
+from scipy.ndimage import gaussian_filter
 
+from euclid_polish.config import Config
+from euclid_polish.eval import flux_conservation as fc
 from euclid_polish.eval.battery.common import (
     MER_CATALOGUE,
     SHORT,
@@ -128,6 +137,20 @@ def spread(lr: np.ndarray) -> np.ndarray:
     return np.repeat(np.repeat(lr, 2, 0), 2, 1) / 4.0
 
 
+def euclid_sigma_px() -> np.ndarray:
+    """Per band (VIS, Y, J, H): σ in SR px of the Gaussian that takes the SR's
+    target PSF to Euclid's measured MER FWHM."""
+    native = np.array([fc.NATIVE_FWHM_ARCSEC[b] for b in fc.BANDS])
+    width = np.sqrt(np.maximum(native ** 2 - Config.TARGET_PSF_FWHM_ARCSEC ** 2, 0.0))
+    return width / (2.0 * np.sqrt(2.0 * np.log(2.0))) / SR_PIXEL_ARCSEC
+
+
+def euclid_psf(sr: np.ndarray) -> np.ndarray:
+    """An SR ``(h, w, 4)`` seen with Euclid's PSF (flux kept away from the edges)."""
+    return np.stack([gaussian_filter(sr[..., b], sigma, mode="constant")
+                     for b, sigma in enumerate(euclid_sigma_px())], -1)
+
+
 def _float(table, name) -> np.ndarray:
     col = table[name]
     return np.asarray(col.filled(np.nan) if hasattr(col, "filled") else col, np.float64)
@@ -187,30 +210,43 @@ def geometry(bt: Battery) -> dict[str, np.ndarray]:
     return bt.store.arrays(None, "growth_geometry")
 
 
+def _measure(bt: Battery, info: ModelInfo, geo: dict, transform, sky: bool) -> dict[str, np.ndarray]:
+    """The curves of ``transform(SR)`` for every galaxy of :func:`geometry`
+    and, with ``sky``, its tiles' blank-sky SR − input (e⁻ per SR px)."""
+    entries = {e.id: e for e in nexus_entries(bt.limits.tiles)}
+    blank = dict(zip(geo["blank_tiles"].tolist(), geo["blank"], strict=True))
+    cog = np.full(geo["lr"].shape, np.nan)
+    offsets = np.full((len(geo["tile"]), cog.shape[-1]), np.nan)
+    tiles = geo["tile"]
+    for tid in dict.fromkeys(tiles.tolist()):
+        raw = nexus_lr(entries[tid])
+        sr = transform(np.nan_to_num(np.asarray(bt.cache.get(info, nexus_key(tid), raw), np.float64)))
+        sel = np.flatnonzero(tiles == tid)
+        if sky:
+            lr = spread(np.where(np.isfinite(raw), raw, 0.0).astype(np.float64))
+            free = np.unpackbits(blank[tid])[:sr.shape[0] * sr.shape[1]].reshape(sr.shape[:2]).astype(bool)
+            if free.sum() >= MIN_BLANK_PX:
+                offsets[sel] = (sr[free] - lr[free]).mean(0)
+        for i in sel:
+            cog[i] = cumulative(geo["rings"][i], sr[centre(geo["x"][i], geo["y"][i])])
+    return {"cog": cog, **({"sky": offsets} if sky else {})}
+
+
 def run(bt: Battery, info: ModelInfo) -> dict:
     """The model's SR curves of every galaxy of :func:`geometry` and its
     tiles' blank-sky SR − input (e⁻ per SR px)."""
     geo = geometry(bt)
+    return bt.stage(info, "growth",
+                    lambda: ({"n_galaxies": len(geo["tile"])}, _measure(bt, info, geo, lambda sr: sr, True)))
 
-    def compute():
-        entries = {e.id: e for e in nexus_entries(bt.limits.tiles)}
-        blank = dict(zip(geo["blank_tiles"].tolist(), geo["blank"], strict=True))
-        cog = np.full(geo["lr"].shape, np.nan)
-        sky = np.full((len(geo["tile"]), cog.shape[-1]), np.nan)
-        tiles = geo["tile"]
-        for tid in dict.fromkeys(tiles.tolist()):
-            raw = nexus_lr(entries[tid])
-            sr = np.nan_to_num(np.asarray(bt.cache.get(info, nexus_key(tid), raw), np.float64))
-            lr = spread(np.where(np.isfinite(raw), raw, 0.0).astype(np.float64))
-            free = np.unpackbits(blank[tid])[:sr.shape[0] * sr.shape[1]].reshape(sr.shape[:2]).astype(bool)
-            sel = np.flatnonzero(tiles == tid)
-            if free.sum() >= MIN_BLANK_PX:
-                sky[sel] = (sr[free] - lr[free]).mean(0)
-            for i in sel:
-                cog[i] = cumulative(geo["rings"][i], sr[centre(geo["x"][i], geo["y"][i])])
-        return {"n_galaxies": len(tiles)}, {"cog": cog, "sky": sky}
 
-    return bt.stage(info, "growth", compute)
+def run_psf(bt: Battery, info: ModelInfo) -> dict:
+    """The curves of the model's SR seen with Euclid's PSF (:func:`euclid_psf`)."""
+    geo = geometry(bt)
+    return bt.stage(info, "growth_psf",
+                    lambda: ({"n_galaxies": len(geo["tile"]),
+                              "sigma_sr_px": [float(v) for v in euclid_sigma_px()]},
+                             _measure(bt, info, geo, euclid_psf, False)))
 
 
 # --------------------------------------------------------------------------- #
@@ -274,6 +310,17 @@ def summary(bt: Battery, infos: list[ModelInfo]) -> dict:
                                           "kron": boot_median(kron[sel]),
                                           "r50": boot_median(r50[sel])}
                                    for name, sel in selections.items()}
+        if bt.store.read(info, "growth_psf"):
+            psf = bt.store.arrays(info, "growth_psf")["cog"]
+            seen = psf / np.where(geo["lr"] > 0, geo["lr"], np.nan)
+            for b, band in enumerate(SHORT):
+                # sky-matched like the SR's r50 (blurring keeps the blank-sky level)
+                r50 = half_light(psf[:, :, b] - np.nan_to_num(model["sky"][:, b])[:, None]
+                                 * geo["area"]) / r50_lr[b]
+                for name, sel in selections.items():
+                    cell["bands"][band][name].update(
+                        {f"psf_r{r:g}": boot_median(seen[sel, _index(r), b]) for r in QUOTED_RADII})
+                    cell["bands"][band][name]["psf_r50"] = boot_median(r50[sel])
         out["models"][info.spec] = cell
         raw3[info.spec] = raw[:, _index(3.0), :]
     if infos and infos[0].spec in raw3:
@@ -287,19 +334,25 @@ def summary(bt: Battery, infos: list[ModelInfo]) -> dict:
     return out
 
 
-def median_curves(bt: Battery, infos: list[ModelInfo], sel: np.ndarray | None = None) -> dict:
-    """VIS median curves for the figure: per model raw and sky-matched
-    SR/input, and F(<r) / F_input(<3″) of the input and each model."""
+def median_curves(bt: Battery, infos: list[ModelInfo], sel: np.ndarray | None = None, band: int = 0) -> dict:
+    """Median curves of one band (VIS by default) for the figure: per model
+    raw, sky-matched and Euclid-PSF SR/input, and F(<r) / F_input(<3″) of
+    the input and each model."""
     geo = geometry(bt)
     sel = np.ones(len(geo["mag"]), bool) if sel is None else sel
-    norm = np.where(geo["lr"][sel, -1:, 0] > 0, geo["lr"][sel, -1:, 0], np.nan)
-    out = {"input": np.nanmedian(geo["lr"][sel, :, 0] / norm, 0), "models": {}}
+    norm = np.where(geo["lr"][sel, -1:, band] > 0, geo["lr"][sel, -1:, band], np.nan)
+    out = {"input": np.nanmedian(geo["lr"][sel, :, band] / norm, 0), "models": {}}
     for info in infos:
         if not bt.store.read(info, "growth"):
             continue
         model = bt.store.arrays(info, "growth")
         raw, matched = ratios(geo, model)
-        out["models"][info.spec] = {"raw": np.nanmedian(raw[sel, :, 0], 0),
-                                    "sky": np.nanmedian(matched[sel, :, 0], 0),
-                                    "norm": np.nanmedian(model["cog"][sel, :, 0] / norm, 0)}
+        cell = {"raw": np.nanmedian(raw[sel, :, band], 0), "sky": np.nanmedian(matched[sel, :, band], 0),
+                "norm": np.nanmedian(model["cog"][sel, :, band] / norm, 0)}
+        if bt.store.read(info, "growth_psf"):
+            psf = bt.store.arrays(info, "growth_psf")["cog"][sel, :, band]
+            lr = geo["lr"][sel, :, band]
+            cell["psf"] = np.nanmedian(psf / np.where(lr > 0, lr, np.nan), 0)
+            cell["psf_norm"] = np.nanmedian(psf / norm, 0)
+        out["models"][info.spec] = cell
     return out

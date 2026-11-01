@@ -8,7 +8,8 @@
   against MER (``scripts/plot_flux_conservation.py``'s layout);
 * ``outskirt_recovery.png`` — injected light recovered per r / r_Kron ring;
 * ``curve_of_growth.png`` — real galaxies' SR/input F(<r) against r (all
-  galaxies and VIS > 24) and the median VIS curve of growth;
+  galaxies and VIS > 24; raw, sky-matched and seen with Euclid's PSF) and
+  the median VIS curve of growth;
 * ``resolution_knee_scan.png`` — ½-coherence resolution against JWST at each
   surface brightness of the knee scan;
 * ``fields_synthetic_zooms.png`` / ``fields_synthetic_full.png`` — test
@@ -29,6 +30,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from scipy import ndimage
 
 from euclid_polish.eval import jwst_resolution as jr
@@ -312,35 +314,44 @@ def flux_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
 
 
 def growth_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
+    """Solid: the SR; dashed: sky-matched; dotted: the SR seen with Euclid's PSF."""
     if not any(bt.store.read(i, "growth") for i in infos):
         return None
     geo = growth.geometry(bt)
     r = growth.RADII
     panels = [(growth.median_curves(bt, infos), "all NEXUS galaxies"),
               (growth.median_curves(bt, infos, geo["mag"] >= 24.0), "VIS > 24 mag")]
-    fig = _figure(15.0, 4.4)
-    axes = fig.subplots(1, 3)
-    for ax, (curves, title) in zip(axes[:2], panels, strict=True):
+    panels.append((growth.median_curves(bt, infos, band=3), "H, all NEXUS galaxies"))
+    fig = _figure(20.0, 4.6)
+    axes = fig.subplots(1, 4)
+    styles = [("raw", "-", 1.8, "SR"), ("sky", "--", 1.2, "SR, sky-matched"),
+              ("psf", ":", 1.8, "SR ⊛ Euclid PSF")]
+    for ax, (curves, title) in zip(axes[[0, 1, 3]], panels, strict=True):
         for n, info in enumerate(infos):
-            cell = curves["models"].get(info.spec)
-            if cell is None:
-                continue
-            ax.plot(r, cell["raw"], color=f"C{n}", lw=1.8, label=f"{info.name}")
-            ax.plot(r, cell["sky"], "--", color=f"C{n}", lw=1.2, label=f"{info.name}, sky-matched")
+            cell = curves["models"].get(info.spec) or {}
+            for key, ls, lw, _label in styles:
+                if key in cell:
+                    ax.plot(r, cell[key], ls, color=f"C{n}", lw=lw)
         ax.axhline(1.0, color="k", lw=1)
-        ax.set(title=f"VIS F_SR(<r) / F_input(<r), {title}", xlabel="aperture radius (″)",
+        band = "" if title.startswith("H") else "VIS "
+        ax.set(title=f"{band}F_SR(<r) / F_input(<r), {title}", xlabel="aperture radius (″)",
                ylabel="median per galaxy", ylim=(0.6, 1.6))
-        ax.legend(fontsize=7, loc="upper right")
+    models = [Line2D([], [], color=f"C{n}", lw=1.8, label=info.name) for n, info in enumerate(infos)]
+    kinds = [Line2D([], [], color="0.3", ls=ls, lw=lw, label=label) for _k, ls, lw, label in styles]
+    axes[0].legend(handles=models, fontsize=8, loc="upper right", title="model", title_fontsize=8)
+    axes[1].legend(handles=kinds, fontsize=8, loc="upper right")
     curves = panels[0][0]
-    axes[2].plot(r, curves["input"], color="0.4", lw=2, ls=":", label="Euclid input")
+    axes[2].plot(r, curves["input"], color="k", lw=2.2, label="Euclid input")
     for n, info in enumerate(infos):
-        cell = curves["models"].get(info.spec)
-        if cell is not None:
-            axes[2].plot(r, cell["norm"], color=f"C{n}", lw=1.8, label=info.name)
+        cell = curves["models"].get(info.spec) or {}
+        if "norm" in cell:
+            axes[2].plot(r, cell["norm"], color=f"C{n}", lw=1.6, label=info.name)
+        if "psf_norm" in cell:
+            axes[2].plot(r, cell["psf_norm"], ":", color=f"C{n}", lw=1.8, label=f"{info.name} ⊛ Euclid PSF")
     axes[2].axhline(1.0, color="k", lw=1)
     axes[2].set(title=f"VIS curve of growth (n = {len(geo['mag'])})", xlabel="aperture radius (″)",
                 ylabel="median F(<r) / F_input(<3″)")
-    axes[2].legend(fontsize=8, loc="lower right")
+    axes[2].legend(fontsize=7, loc="lower right")
     fig.tight_layout()
     return _save(fig, path, dpi=100)
 
