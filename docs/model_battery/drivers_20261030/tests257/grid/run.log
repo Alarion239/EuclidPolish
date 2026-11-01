@@ -1,0 +1,71 @@
+  real white 0/199 0s
+  real white 50/199 14s
+  real white 100/199 29s
+  real white 150/199 46s
+  syn white 1/100 0s
+  syn white 51/100 21s
+done white in 107s
+  real jwst 0/199 1s
+  real jwst 50/199 33s
+  real jwst 100/199 52s
+  real jwst 150/199 70s
+done jwst in 92s
+  real lr 0/199 1s
+  real lr 50/199 20s
+  real lr 100/199 39s
+  real lr 150/199 58s
+  syn lr 1/100 0s
+  syn lr 51/100 16s
+done lr in 104s
+  syn truth 1/100 0s
+  syn truth 51/100 15s
+done truth in 30s
+  syn hr 1/100 0s
+  syn hr 51/100 15s
+done hr in 29s
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_227/ckpt-122 (nchan_in=32, nchan_out=4, learned output knees 0.633/0.18/0.228/0.225 e⁻).
+  real universal:member_227 0/199 3s
+  real universal:member_227 50/199 43s
+  real universal:member_227 100/199 83s
+  real universal:member_227 150/199 123s
+  syn universal:member_227 1/100 1s
+  syn universal:member_227 51/100 41s
+done universal:member_227 in 238s
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_238/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.206/0.0973/0.107/0.105 e⁻).
+  real universal:member_238 0/199 4s
+  real universal:member_238 50/199 39s
+  real universal:member_238 100/199 80s
+  real universal:member_238 150/199 122s
+  syn universal:member_238 1/100 1s
+  syn universal:member_238 51/100 32s
+done universal:member_238 in 232s
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000 (nchan_in=32, nchan_out=4, learned output knees 0.0872/0.016/0.0203/0.0208 e⁻).
+  real milestone:member_257@15000000 0/199 4s
+  real milestone:member_257@15000000 50/199 44s
+  real milestone:member_257@15000000 100/199 78s
+  real milestone:member_257@15000000 150/199 118s
+  syn milestone:member_257@15000000 1/100 1s
+  syn milestone:member_257@15000000 51/100 37s
+done milestone:member_257@15000000 in 229s
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_001000000/member_257/ckpt-1000000 (nchan_in=32, nchan_out=4, learned output knees 0.127/0.025/0.0309/0.0307 e⁻).
+  real milestone:member_257@1000000 0/199 4s
+  real milestone:member_257@1000000 50/199 43s
+  real milestone:member_257@1000000 100/199 81s
+  real milestone:member_257@1000000 150/199 117s
+  syn milestone:member_257@1000000 1/100 1s
+  syn milestone:member_257@1000000 51/100 35s
+done milestone:member_257@1000000 in 218s
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_008000000/member_257/ckpt-8000000 (nchan_in=32, nchan_out=4, learned output knees 0.0624/0.014/0.0167/0.0169 e⁻).
+  real milestone:member_257@8000000 0/199 3s
+  real milestone:member_257@8000000 50/199 39s
+  real milestone:member_257@8000000 100/199 74s
+  real milestone:member_257@8000000 150/199 109s
+  syn milestone:member_257@8000000 1/100 1s
+  syn milestone:member_257@8000000 51/100 39s
+done milestone:member_257@8000000 in 217s
+ALLDONE

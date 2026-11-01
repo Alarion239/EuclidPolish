@@ -1,0 +1,67 @@
+milestone ensemble dir data/euclid_inference/milestones/member_257/ensembles/step_015000000 checkpoint data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000 (nchan_in=32, nchan_out=4, learned output knees 0.0872/0.016/0.0203/0.0208 e⁻).
+milestone:member_257@15000000 grad 0 45 10s
+milestone:member_257@15000000 grad 1 45 18s
+milestone:member_257@15000000 grad 2 45 26s
+milestone:member_257@15000000 grad 3 45 35s
+milestone:member_257@15000000 grad 4 45 43s
+milestone:member_257@15000000 grad 5 45 51s
+milestone:member_257@15000000 grad 6 45 59s
+milestone:member_257@15000000 grad 7 45 67s
+milestone:member_257@15000000 grad 8 45 75s
+milestone:member_257@15000000 grad 9 45 83s
+milestone:member_257@15000000 grad 10 45 91s
+milestone:member_257@15000000 grad 11 45 100s
+milestone:member_257@15000000 grad 12 45 108s
+milestone:member_257@15000000 grad 13 45 117s
+milestone:member_257@15000000 grad 14 45 126s
+milestone:member_257@15000000 grad 15 45 134s
+milestone:member_257@15000000 grad 16 45 142s
+milestone:member_257@15000000 grad 17 45 150s
+milestone:member_257@15000000 grad 18 45 157s
+milestone:member_257@15000000 grad 19 45 167s
+milestone:member_257@15000000 grad 20 45 177s
+milestone:member_257@15000000 grad 21 45 188s
+milestone:member_257@15000000 grad 22 45 195s
+milestone:member_257@15000000 grad 23 45 204s
+milestone:member_257@15000000 grad 24 45 212s
+milestone:member_257@15000000 grad 25 45 220s
+milestone:member_257@15000000 grad 26 45 229s
+milestone:member_257@15000000 grad 27 45 235s
+milestone:member_257@15000000 grad 28 45 242s
+milestone:member_257@15000000 grad 29 45 248s
+milestone:member_257@15000000 grad 30 45 254s
+milestone:member_257@15000000 grad 31 45 259s
+milestone:member_257@15000000 grad 32 45 266s
+milestone:member_257@15000000 grad 33 45 273s
+milestone:member_257@15000000 grad 34 45 278s
+milestone:member_257@15000000 grad 35 45 284s
+milestone:member_257@15000000 grad 36 45 290s
+milestone:member_257@15000000 grad 37 45 296s
+milestone:member_257@15000000 grad 38 45 302s
+milestone:member_257@15000000 grad 39 45 308s
+milestone:member_257@15000000 grad 40 45 314s
+milestone:member_257@15000000 grad 41 45 320s
+milestone:member_257@15000000 grad 42 45 325s
+milestone:member_257@15000000 grad 43 45 331s
+milestone:member_257@15000000 grad 44 45 338s
+done milestone:member_257@15000000
+      350.58 real       716.82 user       121.24 sys
+          2158903296  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+             7909925  page reclaims
+               21654  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                  10  messages sent
+                  21  messages received
+                   0  signals received
+                8246  voluntary context switches
+             1908024  involuntary context switches
+       9007157004119  instructions retired
+       2808878572925  cycles elapsed
+          1813974304  peak memory footprint

@@ -1,0 +1,14 @@
+WARNING: AstropyDeprecationWarning: astropy.samp was deprecated in version 8.0 and will be removed in a future version; please use pyvo.samp instead. [astropy.samp]
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_249/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.622/0.158/0.194/0.17 e⁻).
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_218/ckpt-154 (nchan_in=24, nchan_out=4, learned output knees 3.77/1.35/1.68/1.72 e⁻).
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_227/ckpt-122 (nchan_in=32, nchan_out=4, learned output knees 0.633/0.18/0.228/0.225 e⁻).
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_238/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.206/0.0973/0.107/0.105 e⁻).
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_004000000/member_257/ckpt-4000000 (nchan_in=32, nchan_out=4, learned output knees 0.0599/0.0134/0.0156/0.0155 e⁻).
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_008000000/member_257/ckpt-8000000 (nchan_in=32, nchan_out=4, learned output knees 0.0624/0.014/0.0167/0.0169 e⁻).
+20261028-025144-a5ad20 done {'members_computed': 78, 'members_reused': 0, 'members_not_cached': 0, 'members_evicted': 0, 'outputs_computed': 78, 'outputs_reused': 0} {}

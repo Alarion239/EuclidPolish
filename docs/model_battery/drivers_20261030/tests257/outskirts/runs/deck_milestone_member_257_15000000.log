@@ -1,0 +1,62 @@
+milestone ensemble dir data/euclid_inference/milestones/member_257/ensembles/step_015000000 checkpoint data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000 (nchan_in=32, nchan_out=4, learned output knees 0.0872/0.016/0.0203/0.0208 e⁻).
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+done milestone:member_257@15000000
+      111.45 real       389.77 user        23.74 sys
+          1191837696  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              361981  page reclaims
+                4568  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                  10  messages sent
+                  21  messages received
+                   0  signals received
+                8415  voluntary context switches
+             1021578  involuntary context switches
+       5341190344906  instructions retired
+       1351342947683  cycles elapsed
+           702188136  peak memory footprint

@@ -1,0 +1,42 @@
+member_238 SR rebinned
+member_238 fit 0 4s
+member_238 fit 50 103s
+member_238 fit 100 216s
+member_238 fit 150 293s
+member_238 fit 200 408s
+member_238 fit 250 537s
+member_238 fit 300 652s
+member_238 fit 350 751s
+member_238 fit 400 882s
+member_238 kernel centre [0.213 0.082 0.025 0.01 ] sum [1. 1. 1. 1.] frac in r<=2 [0.825, 0.59, 0.605, 0.506]
+member_249 SR rebinned
+member_249 fit 0 9s
+member_249 fit 50 183s
+member_249 fit 100 310s
+member_249 fit 150 439s
+member_249 fit 200 578s
+member_249 fit 250 690s
+member_249 fit 300 818s
+member_249 fit 350 923s
+member_249 fit 400 1027s
+member_249 kernel centre [0.215 0.115 0.019 0.01 ] sum [1. 1. 1. 1.] frac in r<=2 [0.82, 0.54, 0.574, 0.466]
+done
+member_238 0
+member_238 50
+member_238 100
+member_238 150
+member_238 200
+member_238 250
+member_238 300
+member_238 350
+member_238 400
+member_249 0
+member_249 50
+member_249 100
+member_249 150
+member_249 200
+member_249 250
+member_249 300
+member_249 350
+member_249 400
+done

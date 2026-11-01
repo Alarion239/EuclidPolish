@@ -193,6 +193,9 @@ python -u scripts/train_ensemble.py --mode add --count 1 --steps 1900000 --loss 
 python scripts/fit_spatial_gate.py fit --out-name spatial_gate_trial
 python scripts/fit_spatial_gate.py compare --gates spatial_gate_combiner spatial_gate_trial
 
+# The model test battery: every synthetic and real-sky test, one comparison table (see §9.3)
+python scripts/model_battery.py production universal:member_NNN --out output/battery/NNN-vs-production
+
 # Provenance, lab notebook and time-travel (see §11)
 python scripts/prov.py show <id>
 python scripts/track.py status
@@ -819,6 +822,19 @@ Synthetic scores use the held-out **test** split, computed on member cubes cache
   `scripts/flux_conservation.py`): SR and input fluxes in the catalogue's own apertures (Kron
   VIS, reproduced with the position angle +90°, and n-FWHM apertures, which the catalogue measures
   on ~1.2″ PSF-matched images), as pulls in catalogue errors.
+
+**The model test battery** (`eval/battery/`, `scripts/model_battery.py SPEC [SPEC ...] --out DIR`)
+runs every test above that compares models, on any single models (`production`,
+`universal:member_NNN`, `milestone:member_NNN@STEP`): the synthetic ∫PSNR per field and knee and
+the error direction; the AxisExcess grid on real sky, synthetic fields and galaxy outskirts; the
+JWST resolution and P8–16 texture; bright-core holes (13 NEXUS galaxies, the poster); Kron VIS
+flux against MER and synthetic SR/truth flux; outskirt light injection and the real-sky gain
+profile; curves of growth of the NEXUS galaxies (SR/input F(<r) to 3″ per VIS magnitude, raw and
+blank-sky-matched, and half-light radii); and the field figures. It writes one table (`battery.md`, `battery.json`, the first model
+the baseline of paired comparisons) and `figures/`, caches each model's SR outputs so the tests
+share inference, loads one model at a time and writes nothing under `data/`. It reproduces the
+2026-10-29/30 comparison of 257 @ 15M with 238 (a reference check in the table); about 40 min per
+model on a laptop.
 
 ### 9.4 Real-sky and grouped evaluation
 

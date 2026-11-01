@@ -1,0 +1,118 @@
+WARNING: AstropyDeprecationWarning: astropy.samp was deprecated in version 8.0 and will be removed in a future version; please use pyvo.samp instead. [astropy.samp]
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_238/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.206/0.0973/0.107/0.105 e⁻).
+member_238 0 4s
+member_238 50 54s
+member_238 100 98s
+member_238 150 148s
+member_238 200 209s
+member_238 250 271s
+member_238 300 303s
+member_238 350 342s
+member_238 400 376s
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_249/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.622/0.158/0.194/0.17 e⁻).
+member_249 0 1s
+member_249 50 34s
+member_249 100 74s
+member_249 150 124s
+member_249 200 163s
+member_249 250 203s
+member_249 300 266s
+member_249 350 340s
+member_249 400 380s
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_238/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.206/0.0973/0.107/0.105 e⁻).
+member_238 grad 0 45 22s
+member_238 grad 1 45 36s
+member_238 grad 2 45 51s
+member_238 grad 3 45 72s
+member_238 grad 4 45 84s
+member_238 grad 5 45 96s
+member_238 grad 6 45 109s
+member_238 grad 7 45 121s
+member_238 grad 8 45 138s
+member_238 grad 9 45 153s
+member_238 grad 10 45 167s
+member_238 grad 11 45 178s
+member_238 grad 12 45 192s
+member_238 grad 13 45 210s
+member_238 grad 14 45 226s
+member_238 grad 15 45 241s
+member_238 grad 16 45 254s
+member_238 grad 17 45 269s
+member_238 grad 18 45 284s
+member_238 grad 19 45 298s
+member_238 grad 20 45 314s
+member_238 grad 21 45 341s
+member_238 grad 22 45 373s
+member_238 grad 23 45 402s
+member_238 grad 24 45 437s
+member_238 grad 25 45 472s
+member_238 grad 26 45 519s
+member_238 grad 27 45 546s
+member_238 grad 28 45 574s
+member_238 grad 29 45 598s
+member_238 grad 30 45 617s
+member_238 grad 31 45 635s
+member_238 grad 32 45 653s
+member_238 grad 33 45 672s
+member_238 grad 34 45 694s
+member_238 grad 35 45 716s
+member_238 grad 36 45 735s
+member_238 grad 37 45 759s
+member_238 grad 38 45 786s
+member_238 grad 39 45 814s
+member_238 grad 40 45 834s
+member_238 grad 41 45 857s
+member_238 grad 42 45 884s
+member_238 grad 43 45 906s
+member_238 grad 44 45 924s
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_249/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.622/0.158/0.194/0.17 e⁻).
+member_249 grad 0 45 33s
+member_249 grad 1 45 51s
+member_249 grad 2 45 68s
+member_249 grad 3 45 81s
+member_249 grad 4 45 92s
+member_249 grad 5 45 104s
+member_249 grad 6 45 116s
+member_249 grad 7 45 128s
+member_249 grad 8 45 144s
+member_249 grad 9 45 160s
+member_249 grad 10 45 178s
+member_249 grad 11 45 200s
+member_249 grad 12 45 225s
+member_249 grad 13 45 250s
+member_249 grad 14 45 272s
+member_249 grad 15 45 292s
+member_249 grad 16 45 315s
+member_249 grad 17 45 334s
+member_249 grad 18 45 359s
+member_249 grad 19 45 387s
+member_249 grad 20 45 412s
+member_249 grad 21 45 438s
+member_249 grad 22 45 464s
+member_249 grad 23 45 484s
+member_249 grad 24 45 507s
+member_249 grad 25 45 535s
+member_249 grad 26 45 566s
+member_249 grad 27 45 594s
+member_249 grad 28 45 614s
+member_249 grad 29 45 633s
+member_249 grad 30 45 652s
+member_249 grad 31 45 670s
+member_249 grad 32 45 685s
+member_249 grad 33 45 702s
+member_249 grad 34 45 718s
+member_249 grad 35 45 737s
+member_249 grad 36 45 757s
+member_249 grad 37 45 773s
+member_249 grad 38 45 787s
+member_249 grad 39 45 803s
+member_249 grad 40 45 818s
+member_249 grad 41 45 832s
+member_249 grad 42 45 848s
+member_249 grad 43 45 863s
+member_249 grad 44 45 876s
+done

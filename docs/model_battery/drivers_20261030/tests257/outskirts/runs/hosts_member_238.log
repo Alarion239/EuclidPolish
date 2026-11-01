@@ -1,0 +1,61 @@
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_238/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.206/0.0973/0.107/0.105 e⁻).
+member_238 0
+member_238 1
+member_238 2
+member_238 3
+member_238 4
+member_238 5
+member_238 6
+member_238 7
+member_238 8
+member_238 9
+member_238 10
+member_238 11
+member_238 12
+member_238 13
+member_238 14
+member_238 15
+member_238 16
+member_238 17
+member_238 18
+member_238 19
+member_238 20
+member_238 21
+member_238 22
+member_238 23
+member_238 24
+member_238 25
+member_238 26
+member_238 27
+member_238 28
+member_238 29
+member_238 30
+member_238 31
+member_238 32
+member_238 33
+member_238 34
+member_238 35
+member_238 36
+member_238 37
+member_238 38
+member_238 39
+done member_238
+      148.50 real       381.56 user        22.90 sys
+           917422080  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              669188  page reclaims
+                9712  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                  10  messages sent
+                  21  messages received
+                   0  signals received
+                8470  voluntary context switches
+              923039  involuntary context switches
+       5346611853464  instructions retired
+       1332741093356  cycles elapsed
+           706546160  peak memory footprint

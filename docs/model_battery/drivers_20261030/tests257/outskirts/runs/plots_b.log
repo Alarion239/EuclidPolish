@@ -1,0 +1,23 @@
+saved outskirt_recovery_257.png
+saved rv_recovery.png
+saved rv_dumbbell.png
+saved outskirt_hosts_257.png
+out dir /private/tmp/claude-502/-Users-alarion239-Desktop-EuclidPolish/6d444c86-12c6-4a7f-b4eb-7b73fa2e1c66/scratchpad/tests257/outskirts/plot/out
+        1.41 real         1.02 user         0.09 sys
+           185778176  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               13864  page reclaims
+                 117  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 518  voluntary context switches
+                 804  involuntary context switches
+         15139923739  instructions retired
+          4362530935  cycles elapsed
+           162907072  peak memory footprint

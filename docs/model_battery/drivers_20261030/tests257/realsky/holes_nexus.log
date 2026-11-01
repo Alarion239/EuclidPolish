@@ -1,0 +1,151 @@
+WARNING: AstropyDeprecationWarning: astropy.samp was deprecated in version 8.0 and will be removed in a future version; please use pyvo.samp instead. [astropy.samp]
+specs: [('production', ('238·psnr',), 'e7c5e88acff42ae2'), ('milestone:member_257@15000000', ('257@15000000',), 'dc60abc03126641e')]
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_238/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.206/0.0973/0.107/0.105 e⁻).
+[1/13] nexus/f200w-0070 production: hole mean 18.90% per band [4.92, 20.08, 23.27, 27.34] flux [1.024, 1.069, 1.014, 1.051] (1.9 s)
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000 (nchan_in=32, nchan_out=4, learned output knees 0.0872/0.016/0.0203/0.0208 e⁻).
+[1/13] nexus/f200w-0070 milestone:member_257@15000000: hole mean 20.03% per band [5.34, 21.51, 24.42, 28.84] flux [1.065, 1.149, 1.08, 1.078] (1.7 s)
+[2/13] nexus/f200w-0040 production: hole mean 7.41% per band [0.73, 7.6, 9.18, 12.14] flux [0.994, 0.913, 1.017, 1.011] (0.4 s)
+[2/13] nexus/f200w-0040 milestone:member_257@15000000: hole mean 6.77% per band [0.58, 7.18, 8.37, 10.94] flux [0.998, 0.926, 1.035, 1.023] (0.3 s)
+[3/13] nexus/f200w-0420 production: hole mean 9.65% per band [5.38, 11.64, 10.71, 10.87] flux [0.944, 0.889, 0.93, 0.942] (0.4 s)
+[3/13] nexus/f200w-0420 milestone:member_257@15000000: hole mean 9.67% per band [5.45, 11.64, 10.71, 10.87] flux [0.939, 0.881, 0.931, 0.921] (0.3 s)
+[4/13] nexus/f200w-0141 production: hole mean 3.29% per band [0.58, 3.19, 4.38, 5.03] flux [0.893, 0.908, 0.889, 0.947] (0.4 s)
+[4/13] nexus/f200w-0141 milestone:member_257@15000000: hole mean 4.17% per band [0.61, 4.07, 4.99, 6.99] flux [0.886, 0.892, 0.865, 0.904] (0.4 s)
+[5/13] nexus/f200w-0325 production: hole mean 4.53% per band [3.03, 6.76, 4.19, 4.15] flux [0.713, 0.908, 0.882, 0.704] (0.4 s)
+[5/13] nexus/f200w-0325 milestone:member_257@15000000: hole mean 3.84% per band [2.76, 5.88, 3.57, 3.15] flux [0.748, 0.946, 0.925, 0.734] (0.4 s)
+[6/13] nexus/f200w-0106 production: hole mean 1.23% per band [0.65, 0.92, 1.0, 2.34] flux [0.982, 0.989, 0.979, 1.003] (0.4 s)
+[6/13] nexus/f200w-0106 milestone:member_257@15000000: hole mean 1.68% per band [0.58, 1.19, 1.69, 3.26] flux [0.972, 0.977, 0.979, 0.989] (0.3 s)
+[7/13] nexus/f200w-0080 production: hole mean 5.28% per band [1.04, 3.38, 5.68, 11.02] flux [0.96, 0.995, 0.93, 0.971] (0.4 s)
+[7/13] nexus/f200w-0080 milestone:member_257@15000000: hole mean 4.81% per band [0.92, 3.61, 5.72, 8.99] flux [0.959, 1.006, 0.94, 0.971] (0.3 s)
+[8/13] nexus/f200w-0320 production: hole mean 34.53% per band [16.05, 35.68, 41.51, 44.89] flux [0.906, 1.062, 0.967, 0.924] (0.4 s)
+[8/13] nexus/f200w-0320 milestone:member_257@15000000: hole mean 34.29% per band [15.59, 35.48, 41.24, 44.85] flux [0.922, 1.143, 1.042, 0.966] (0.3 s)
+[9/13] nexus/f200w-0271 production: hole mean 15.90% per band [5.22, 19.09, 19.7, 19.59] flux [0.888, 0.773, 0.793, 0.919] (0.4 s)
+[9/13] nexus/f200w-0271 milestone:member_257@15000000: hole mean 15.13% per band [5.22, 18.13, 18.63, 18.55] flux [0.905, 0.783, 0.804, 0.924] (0.4 s)
+[10/13] nexus/f200w-0260 production: hole mean 21.95% per band [4.72, 23.04, 27.46, 32.57] flux [0.963, 0.981, 0.922, 1.016] (0.4 s)
+[10/13] nexus/f200w-0260 milestone:member_257@15000000: hole mean 21.85% per band [3.42, 23.2, 27.57, 33.22] flux [0.961, 0.97, 0.92, 0.995] (0.3 s)
+[11/13] nexus/f200w-0238 production: hole mean 16.80% per band [2.27, 20.28, 19.78, 24.88] flux [0.971, 0.877, 1.094, 0.967] (0.3 s)
+[11/13] nexus/f200w-0238 milestone:member_257@15000000: hole mean 16.30% per band [1.8, 19.39, 19.16, 24.85] flux [0.972, 0.883, 1.099, 0.972] (0.3 s)
+[12/13] nexus/f200w-0102 production: hole mean 7.01% per band [1.46, 7.95, 8.41, 10.22] flux [0.836, 0.85, 0.847, 0.859] (0.3 s)
+[12/13] nexus/f200w-0102 milestone:member_257@15000000: hole mean 7.34% per band [1.0, 9.02, 8.49, 10.87] flux [0.841, 0.853, 0.848, 0.843] (0.3 s)
+[13/13] nexus/f200w-0210 production: hole mean 3.66% per band [0.42, 3.38, 4.11, 6.72] flux [0.946, 0.947, 0.966, 1.007] (0.3 s)
+[13/13] nexus/f200w-0210 milestone:member_257@15000000: hole mean 3.32% per band [0.08, 3.11, 3.11, 6.99] flux [0.949, 0.931, 0.961, 0.971] (0.4 s)
+store check: {
+ "nexus/f200w-0070": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 18.903609831029186,
+   "fresh_hole_pct_mean": 18.903609831029186
+  }
+ },
+ "nexus/f200w-0040": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 7.411674347158218,
+   "fresh_hole_pct_mean": 7.411674347158218
+  }
+ },
+ "nexus/f200w-0420": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 9.648617511520737,
+   "fresh_hole_pct_mean": 9.648617511520737
+  }
+ },
+ "nexus/f200w-0141": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 3.293010752688172,
+   "fresh_hole_pct_mean": 3.293010752688172
+  }
+ },
+ "nexus/f200w-0325": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 4.531490015360983,
+   "fresh_hole_pct_mean": 4.531490015360983
+  }
+ },
+ "nexus/f200w-0106": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 1.2288786482334868,
+   "fresh_hole_pct_mean": 1.2288786482334868
+  }
+ },
+ "nexus/f200w-0080": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 5.2803379416282645,
+   "fresh_hole_pct_mean": 5.2803379416282645
+  }
+ },
+ "nexus/f200w-0320": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 34.53341013824884,
+   "fresh_hole_pct_mean": 34.53341013824884
+  }
+ },
+ "nexus/f200w-0271": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 15.898617511520737,
+   "fresh_hole_pct_mean": 15.898617511520737
+  }
+ },
+ "nexus/f200w-0260": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 21.947004608294932,
+   "fresh_hole_pct_mean": 21.947004608294932
+  }
+ },
+ "nexus/f200w-0238": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 16.801075268817204,
+   "fresh_hole_pct_mean": 16.801075268817204
+  }
+ },
+ "nexus/f200w-0102": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 7.008448540706605,
+   "fresh_hole_pct_mean": 7.008448540706605
+  }
+ },
+ "nexus/f200w-0210": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 3.6578341013824884,
+   "fresh_hole_pct_mean": 3.6578341013824884
+  }
+ }
+}

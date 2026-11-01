@@ -1,0 +1,62 @@
+milestone ensemble dir data/euclid_inference/milestones/member_257/ensembles/step_015000000 checkpoint data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000 (nchan_in=32, nchan_out=4, learned output knees 0.0872/0.016/0.0203/0.0208 e⁻).
+milestone:member_257@15000000 0
+milestone:member_257@15000000 1
+milestone:member_257@15000000 2
+milestone:member_257@15000000 3
+milestone:member_257@15000000 4
+milestone:member_257@15000000 5
+milestone:member_257@15000000 6
+milestone:member_257@15000000 7
+milestone:member_257@15000000 8
+milestone:member_257@15000000 9
+milestone:member_257@15000000 10
+milestone:member_257@15000000 11
+milestone:member_257@15000000 12
+milestone:member_257@15000000 13
+milestone:member_257@15000000 14
+milestone:member_257@15000000 15
+milestone:member_257@15000000 16
+milestone:member_257@15000000 17
+milestone:member_257@15000000 18
+milestone:member_257@15000000 19
+milestone:member_257@15000000 20
+milestone:member_257@15000000 21
+milestone:member_257@15000000 22
+milestone:member_257@15000000 23
+milestone:member_257@15000000 24
+milestone:member_257@15000000 25
+milestone:member_257@15000000 26
+milestone:member_257@15000000 27
+milestone:member_257@15000000 28
+milestone:member_257@15000000 29
+milestone:member_257@15000000 30
+milestone:member_257@15000000 31
+milestone:member_257@15000000 32
+milestone:member_257@15000000 33
+milestone:member_257@15000000 34
+milestone:member_257@15000000 35
+milestone:member_257@15000000 36
+milestone:member_257@15000000 37
+milestone:member_257@15000000 38
+milestone:member_257@15000000 39
+done milestone:member_257@15000000
+      136.40 real       382.52 user        22.11 sys
+          1196359680  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              465580  page reclaims
+               12397  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                  10  messages sent
+                  21  messages received
+                   0  signals received
+               12684  voluntary context switches
+              685851  involuntary context switches
+       5342786405555  instructions retired
+       1331981936670  cycles elapsed
+           698665552  peak memory footprint

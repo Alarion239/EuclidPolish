@@ -48,7 +48,9 @@ ignore_names = [
 # 110, not 88: the codebase was authored to ~100-108; 110 is the house width.
 line-length = 110
 target-version = "py312"
-extend-exclude = ["*.ipynb"]
+# docs/model_battery/drivers_20261030: the 2026-10-29/30 scratch drivers the
+# battery (euclid_polish/eval/battery) was built from, kept verbatim as provenance.
+extend-exclude = ["*.ipynb", "docs/model_battery/drivers_20261030"]
 
 [tool.ruff.lint]
 # E/W pycodestyle, F pyflakes, I import-sort, B bugbear, UP pyupgrade,

@@ -1,0 +1,3 @@
+WARNING: AstropyDeprecationWarning: astropy.samp was deprecated in version 8.0 and will be removed in a future version; please use pyvo.samp instead. [astropy.samp]
+H_E: 79 tiles; noise per SR px: JWST 0.5791, Euclid 0.5576 e⁻ (μ 25.696); registration {'field_shift_px': [-0.15, -0.05], 'tiles_measured': 44, 'spread_mad_px': [0.148, 0.074]}
+lr: 495 windows; ½-coherence linear 0.4662″, asinh_euclid 1.9436″, asinh_jwst 1.926″ — 7 s

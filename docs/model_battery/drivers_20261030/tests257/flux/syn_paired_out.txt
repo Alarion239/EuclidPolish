@@ -1,0 +1,8 @@
+/private/tmp/claude-502/-Users-alarion239-Desktop-EuclidPolish/6d444c86-12c6-4a7f-b4eb-7b73fa2e1c66/scratchpad/tests257/flux/syn_paired.py:14: RuntimeWarning: divide by zero encountered in divide
+  v = {"257@15M": np.array([r["milestone:member_257@15000000_big"] for r in new]) / tr,
+/private/tmp/claude-502/-Users-alarion239-Desktop-EuclidPolish/6d444c86-12c6-4a7f-b4eb-7b73fa2e1c66/scratchpad/tests257/flux/syn_paired.py:15: RuntimeWarning: divide by zero encountered in divide
+  "238": np.array([r["universal:member_238_big"] for r in new]) / tr,
+/private/tmp/claude-502/-Users-alarion239-Desktop-EuclidPolish/6d444c86-12c6-4a7f-b4eb-7b73fa2e1c66/scratchpad/tests257/flux/syn_paired.py:16: RuntimeWarning: divide by zero encountered in divide
+  "257@8M": np.array([r["milestone:member_257@8000000_big"] for r in old]) / tr}
+SR/truth 257@15M - 238: ['+0.004[+0.001,+0.005] 58%>0', '+0.005[+0.003,+0.007] 63%>0', '+0.019[+0.018,+0.022] 77%>0', '+0.038[+0.034,+0.041] 87%>0']
+SR/truth 257@15M - 257@8M: ['+0.003[+0.001,+0.004] 66%>0', '+0.000[-0.001,+0.001] 52%>0', '-0.003[-0.005,-0.002] 44%>0', '-0.011[-0.013,-0.010] 34%>0']

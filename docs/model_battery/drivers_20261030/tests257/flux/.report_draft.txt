@@ -1,0 +1,33 @@
+**Flux conservation: 257@15M vs production (238).** Outputs are in F = /private/tmp/claude-502/-Users-alarion239-Desktop-EuclidPolish/6d444c86-12c6-4a7f-b4eb-7b73fa2e1c66/scratchpad/tests257/flux. The repo and data/ were not touched.
+
+**1. Real sky: MER Kron VIS, 815 isolated NEXUS galaxies.** SR/input median [68% CI]; Δ = paired per-galaxy 257−238; pull = median (SR−MER)/σ.
+
+| VIS mag | n | 238 | 257@15M | Δ | pull 238 / 257 |
+|---|---|---|---|---|---|
+| 21–23 | 98 | 0.981 [.971,.993] | 0.978 [.966,.986] | −0.003±0.004 | −0.85 / −1.30 |
+| 23–24 | 229 | 0.935 [.930,.941] | 0.949 [.938,.956] | +0.011±0.002 | −1.31 / −1.11 |
+| 24–24.5 | 255 | 0.914 [.890,.922] | 0.929 [.909,.936] | +0.007±0.003 | −1.18 / −1.06 |
+| 24.5–25 | 219 | 0.905 [.894,.912] | 0.904 [.892,.913] | −0.001±0.003 | −1.13 / −1.12 |
+| 21–25 | 804 | 0.930 [.925,.934] | 0.936 [.931,.942] | +0.005±0.001 | −1.18 / −1.11 |
+
+238 reproduced the old production fluxes bit-for-bit. The old 257@8M run gave 0.975 (21–23) and 0.913 (24.5–25). The 4-FWHM apertures agree (257 keeps 1–2% more in VIS, Y and J). Plot: F/kron_vis_257_15M_vs_238.png (also shows the old 257@8M and 258@950k).
+
+**2. Synthetic: 900 isolated sources on the 100 v5 test fields, big Kron apertures (a≥18 px).**
+
+| truth mag | n | input/truth | SR/truth 238→257 | SR/input 238→257 | paired Δ SR/truth |
+|---|---|---|---|---|---|
+| 19–23 | 98 | 0.906 | 0.999→0.998 | 1.103→1.103 | +0.004 |
+| 23–24 | 153 | 0.908 | 0.987→0.991 | 1.084→1.088 | +0.005 |
+| 24–25 | 327 | 0.934 | 0.973→0.996 | 1.041→1.062 | +0.019 |
+| 25–26 | 271 | 0.938 | 0.953→0.988 | 0.996→1.041 | +0.038 |
+
+CIs are at most ±0.006 (±0.02 for SR/input at 25–26). The test set is the one syn_flux2.json used: identical sources, apertures, input and truth fluxes. 238 reproduced bit-for-bit. 257@8M gave 0.998 at 25–26, so the 15M model is 1.1% lower there.
+
+**Caveats**
+- The brief's "238 SR/input 0.999/0.973/0.953" values are actually SR/truth. Its SR/input is 1.103/1.041/0.996.
+
+- At 21–23 the pulls differ (−1.30 vs −0.85) only because those galaxies have high S/N. The flux difference is −0.3%.
+
+**Commands** (repo root, PYTHONPATH=repo): `scripts/flux_conservation.py --models milestone:member_257@15000000,universal:member_238 --out F/report_257_15M_238.json` (7.5 min), then F/kron_bins.py, F/kron_paired.py and scripts/plot_flux_conservation.py. Synthetic: `F/syn_flux.py F/syn_flux_257_15M_238.json` (a copy with only the model specs changed), then F/syn_bins.py and F/syn_paired.py.
+
+**Verdict.** On synthetic fields 257@15M keeps faint flux clearly better than 238. It stays within 1.2% of truth in every bin, while 238 is 2.7% short at 24–25 and 4.7% short at 25–26. On real sky the advantage almost disappears. Both models lose the same light against the input (about 2% bright, 5–9% at 23–24.5, about 10% at 24.5–25, pulls near −1.1σ). 257@15M keeps about 1% more only at 23–24.5, and +0.5% overall. A faithful deconvolution should give SR/input > 1 (truth/input is 1.07–1.10 on synthetic), so the real-sky faint deficit is a sim-to-real effect that longer training does not fix.

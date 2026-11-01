@@ -1,0 +1,74 @@
+fields loaded
+K_syn centre [0.2   0.04  0.035 0.03 ] frac r<=2 [0.871, 0.578, 0.533, 0.471]
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_238/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.206/0.0973/0.107/0.105 e⁻).
+member_238 SR done
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_249/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.622/0.158/0.194/0.17 e⁻).
+member_249 SR done
+done
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_238/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.206/0.0973/0.107/0.105 e⁻).
+member_238 gain 0
+member_238 gain 1
+member_238 gain 2
+member_238 gain 3
+member_238 gain 4
+member_238 gain 5
+member_238 gain 6
+member_238 gain 7
+member_238 gain 8
+member_238 gain 9
+member_238 gain 10
+member_238 gain 11
+member_238 gain 12
+member_238 gain 13
+member_238 gain 14
+member_238 gain 15
+member_238 gain 16
+member_238 gain 17
+member_238 gain 18
+member_238 gain 19
+member_238 gain 20
+member_238 gain 21
+member_238 gain 22
+member_238 gain 23
+member_238 gain 24
+member_238 gain 25
+member_238 gain 26
+member_238 gain 27
+member_238 gain 28
+member_238 gain 29
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_249/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.622/0.158/0.194/0.17 e⁻).
+member_249 gain 0
+member_249 gain 1
+member_249 gain 2
+member_249 gain 3
+member_249 gain 4
+member_249 gain 5
+member_249 gain 6
+member_249 gain 7
+member_249 gain 8
+member_249 gain 9
+member_249 gain 10
+member_249 gain 11
+member_249 gain 12
+member_249 gain 13
+member_249 gain 14
+member_249 gain 15
+member_249 gain 16
+member_249 gain 17
+member_249 gain 18
+member_249 gain 19
+member_249 gain 20
+member_249 gain 21
+member_249 gain 22
+member_249 gain 23
+member_249 gain 24
+member_249 gain 25
+member_249 gain 26
+member_249 gain 27
+member_249 gain 28
+member_249 gain 29
+done

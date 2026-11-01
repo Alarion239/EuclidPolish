@@ -1,0 +1,35 @@
+WARNING: AstropyDeprecationWarning: astropy.samp was deprecated in version 8.0 and will be removed in a future version; please use pyvo.samp instead. [astropy.samp]
+2026-10-27 22:32 pulled milestones 8,000,000
+2026-10-27 22:32 member_257 @ 8,000,000: scoring the synthetic test fields
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_008000000/member_257/ckpt-8000000 (nchan_in=32, nchan_out=4, learned output knees 0.0624/0.014/0.0167/0.0169 e⁻).
+2026-10-27 22:32:38.483432: I tensorflow/core/kernels/data/tf_record_dataset_op.cc:381] TFRecordDataset `buffer_size` is unspecified, default to 262144
+    25/100 member_257: field 25/100
+    50/100 member_257: field 50/100
+    75/100 member_257: field 75/100
+    100/100 member_257: field 100/100
+2026-10-27 22:33   ∫PSNR 62.477 dB (56.74 / 66.56 / 63.72 / 62.89)
+2026-10-27 22:38   H_E: ½-coherence (Euclid-noise stretch) 1.1048″
+2026-10-27 22:44   J_E: ½-coherence (Euclid-noise stretch) 1.2271″
+2026-10-27 22:49   Y_E: ½-coherence (Euclid-noise stretch) 1.2473″
+2026-10-27 22:56   VIS: ½-coherence (Euclid-noise stretch) 1.4259″
+2026-10-27 22:56   poster: 1 tile(s) × 9 model(s)
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_008000000/member_257/ckpt-8000000 (nchan_in=32, nchan_out=4, learned output knees 0.0624/0.014/0.0167/0.0169 e⁻).
+2026-10-27 22:56   poster: 20261028-025610-a05b5d done (computed 1, reused 8)
+2026-10-29 00:26 pulled milestones 15,000,000
+2026-10-29 00:26 member_257 @ 15,000,000: scoring the synthetic test fields
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000 (nchan_in=32, nchan_out=4, learned output knees 0.0872/0.016/0.0203/0.0208 e⁻).
+    25/100 member_257: field 25/100
+    50/100 member_257: field 50/100
+    75/100 member_257: field 75/100
+    100/100 member_257: field 100/100
+2026-10-29 00:27   ∫PSNR 62.819 dB (57.01 / 67.01 / 64.04 / 63.22)
+2026-10-29 00:31   H_E: ½-coherence (Euclid-noise stretch) 1.1107″
+2026-10-29 00:34   J_E: ½-coherence (Euclid-noise stretch) 1.2338″
+2026-10-29 00:37   Y_E: ½-coherence (Euclid-noise stretch) 1.25″
+2026-10-29 00:41   VIS: ½-coherence (Euclid-noise stretch) 1.4287″
+2026-10-29 00:41   poster: 1 tile(s) × 10 model(s)
+2026-10-29 00:41 poster comparison failed: DiskSpaceError: not enough disk space: the outputs need 0.06 GiB, 3.67 GiB is free and 5.00 GiB must stay free — delete cached outputs (POST /api/real/<source>/<id>/delete-outputs) or pick fewer tiles/models
+2026-10-29 00:41 done

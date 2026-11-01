@@ -1,0 +1,19 @@
+WARNING: AstropyDeprecationWarning: astropy.samp was deprecated in version 8.0 and will be removed in a future version; please use pyvo.samp instead. [astropy.samp]
+specs: [('production', ('238·psnr',), 'e7c5e88acff42ae2'), ('milestone:member_257@15000000', ('257@15000000',), 'dc60abc03126641e')]
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at ./ckpt/ensemble/member_238/ckpt-81 (nchan_in=32, nchan_out=4, learned output knees 0.206/0.0973/0.107/0.105 e⁻).
+[1/1] poster/target_181255 production: hole mean 3.11% per band [2.92, 2.39, 4.3, 2.85] flux [0.981, 1.092, 1.179, 1.263] (6.6 s)
+  note: checkpoint has num_res_blocks=16 (requested 32); using the checkpoint's.
+Model restored from checkpoint at data/euclid_inference/milestones/member_257/ensembles/step_015000000/member_257/ckpt-15000000 (nchan_in=32, nchan_out=4, learned output knees 0.0872/0.016/0.0203/0.0208 e⁻).
+[1/1] poster/target_181255 milestone:member_257@15000000: hole mean 2.59% per band [1.53, 2.93, 2.81, 3.09] flux [0.96, 1.064, 1.18, 1.248] (5.0 s)
+store check: {
+ "poster/target_181255": {
+  "production": {
+   "stored_file": "production.fits",
+   "max_abs_diff_e": 0.0,
+   "max_diff_over_p99.9": 0.0,
+   "stored_hole_pct_mean": 3.113675376692733,
+   "fresh_hole_pct_mean": 3.113675376692733
+  }
+ }
+}

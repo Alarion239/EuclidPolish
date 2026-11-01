@@ -1,0 +1,99 @@
+
+=== REAL protocol pz32: share of 64-px windows with z>=3 (z>=6); pooled over 4 bands [95% CI over tiles]; per band VIS/Y/J/H
+257@15M                z>=3   2.1% [  1.7,  2.5]  z>=6   0.7%   per band z>=3 2.3/2.1/2.0/1.9  z>=6 0.9/0.7/0.7/0.7  (n=28656)
+238 (prod)             z>=3   2.4% [  2.0,  2.9]  z>=6   0.8%   per band z>=3 2.2/2.6/2.4/2.4  z>=6 0.7/0.9/0.7/0.8  (n=28656)
+227                    z>=3  17.4% [ 16.6, 18.2]  z>=6   5.0%   per band z>=3 29.7/12.5/14.6/12.6  z>=6 8.8/3.4/4.2/3.5  (n=28656)
+257@1M                 z>=3   1.6% [  1.3,  1.9]  z>=6   0.4%   per band z>=3 1.6/1.6/1.6/1.5  z>=6 0.4/0.4/0.4/0.4  (n=28656)
+LR input (cubic x2)    z>=3   2.0% [  1.9,  2.2]  z>=6   0.1%   per band z>=3 0.8/2.5/2.3/2.5  z>=6 0.1/0.1/0.2/0.1  (n=28656)
+JWST F200W             z>=3   0.7% [  0.4,  0.9]  z>=6   0.2%   per band z>=3 0.7  z>=6 0.2  (n=4474)
+white noise            z>=3   0.4% [  0.3,  0.5]  z>=6   0.0%   per band z>=3 0.3/0.3/0.5/0.5  z>=6 0.0/0.0/0.0/0.0  (n=28656)
+
+=== SYN protocol pz0: share of 64-px windows with z>=3 (z>=6); pooled over 4 bands [95% CI over fields]; per band VIS/Y/J/H
+257@15M                z>=3   4.3% [  3.4,  5.3]  z>=6   1.8%   per band z>=3 4.1/4.5/4.6/4.1  z>=6 1.8/1.8/1.9/1.7  (n=19600)
+238 (prod)             z>=3   7.4% [  6.3,  8.5]  z>=6   3.2%   per band z>=3 7.5/7.3/7.4/7.3  z>=6 3.2/3.4/3.2/3.1  (n=19600)
+227                    z>=3  55.4% [ 53.9, 56.9]  z>=6  48.6%   per band z>=3 55.2/55.4/55.8/55.4  z>=6 48.3/48.5/48.7/49.0  (n=19600)
+truth (target PSF)     z>=3   2.0% [  1.7,  2.4]  z>=6   0.4%   per band z>=3 2.2/2.1/1.9/2.0  z>=6 0.5/0.4/0.4/0.4  (n=19600)
+HR record              z>=3   2.2% [  1.9,  2.6]  z>=6   0.4%   per band z>=3 2.4/2.3/2.2/2.1  z>=6 0.5/0.4/0.3/0.3  (n=19600)
+LR input (cubic x2)    z>=3   2.1% [  1.9,  2.3]  z>=6   0.2%   per band z>=3 0.6/2.9/2.5/2.5  z>=6 0.0/0.3/0.2/0.2  (n=19600)
+white noise            z>=3   0.5% [  0.4,  0.6]  z>=6   0.0%   per band z>=3 0.6/0.3/0.5/0.5  z>=6 0.0/0.0/0.0/0.0  (n=19600)
+
+=== SYN protocol pz32: share of 64-px windows with z>=3 (z>=6); pooled over 4 bands [95% CI over fields]; per band VIS/Y/J/H
+257@15M                z>=3   3.8% [  2.9,  4.7]  z>=6   1.5%   per band z>=3 3.9/3.8/3.9/3.6  z>=6 1.5/1.5/1.6/1.5  (n=14400)
+238 (prod)             z>=3   7.3% [  6.1,  8.5]  z>=6   3.2%   per band z>=3 7.5/7.2/7.4/7.0  z>=6 3.2/3.4/3.0/3.1  (n=14400)
+227                    z>=3  54.3% [ 52.1, 56.4]  z>=6  46.9%   per band z>=3 54.4/54.6/54.2/54.2  z>=6 46.9/46.8/46.8/47.1  (n=14400)
+truth (target PSF)     z>=3   2.1% [  1.7,  2.5]  z>=6   0.4%   per band z>=3 2.4/2.1/2.0/2.0  z>=6 0.5/0.4/0.4/0.4  (n=14400)
+HR record              z>=3   2.2% [  1.8,  2.6]  z>=6   0.4%   per band z>=3 2.6/2.2/2.1/2.0  z>=6 0.4/0.3/0.3/0.4  (n=14400)
+LR input (cubic x2)    z>=3   2.2% [  1.9,  2.5]  z>=6   0.2%   per band z>=3 1.0/2.7/3.0/2.2  z>=6 0.1/0.3/0.4/0.2  (n=14400)
+white noise            z>=3   0.5% [  0.4,  0.6]  z>=6   0.0%   per band z>=3 0.5/0.6/0.5/0.5  z>=6 0.0/0.0/0.0/0.0  (n=14400)
+
+=== REAL OUTSKIRT windows [clean] (stride-32 64-px windows inside the 32-px border; >=50% of the footprint with the smoothed LR VIS in [1,10] sigma_s and max <= 30 sigma_s): n = 518 in 110 tiles; sky windows (max <= 4 sigma_s) n = 11252
+model                  outskirt z>=3 pooled [CI]  per band VIS/Y/J/H | median z VIS/Y/J/H | z>=3 asinh(0.2 sig) pooled | amp/light VIS/Y/J/H (median) | amp/sigma_SR VIS/H | sky z>=3 pooled
+257@15M                 15.7% [ 12.3, 19.2]  16.0/16.0/15.4/15.4    | 0.06/0.05/0.06/0.05    |  19.4% | 0.22%/0.17%/0.19%/0.15%        | 0.001/0.001  |   0.2%  (n=518)
+                         z p90 VIS/Y/J/H 4.69/4.70/4.55/4.38;  amp/light in the z>=3 windows 1.3%/1.3%/1.1%/1.2%;  median amp (e-) VIS/H 0.0045/0.0006;  median light (e-/px) VIS/H 2.317/0.602
+238 (prod)              13.7% [ 10.0, 17.6]  13.9/13.5/13.7/13.7    | 0.07/0.08/0.07/0.06    |  19.3% | 0.11%/0.18%/0.15%/0.15%        | 0.001/0.001  |   0.9%  (n=518)
+                         z p90 VIS/Y/J/H 4.03/4.38/4.02/3.93;  amp/light in the z>=3 windows 1.4%/1.0%/0.8%/0.7%;  median amp (e-) VIS/H 0.0027/0.0005;  median light (e-/px) VIS/H 2.317/0.602
+227                     30.1% [ 23.3, 36.9]  29.2/31.3/30.3/29.7    | 0.35/0.34/0.35/0.28    |  37.1% | 0.35%/0.46%/0.34%/0.34%        | 0.002/0.003  |  26.0%  (n=518)
+                         z p90 VIS/Y/J/H 10.77/14.93/13.92/11.80;  amp/light in the z>=3 windows 0.6%/0.7%/0.6%/0.6%;  median amp (e-) VIS/H 0.0074/0.0015;  median light (e-/px) VIS/H 2.317/0.602
+257@1M                  11.0% [  8.5, 13.5]  10.8/11.0/11.4/10.6    | 0.12/0.09/0.08/0.08    |  13.6% | 0.39%/0.40%/0.25%/0.24%        | 0.002/0.003  |   0.2%  (n=518)
+                         z p90 VIS/Y/J/H 3.14/3.18/3.35/3.07;  amp/light in the z>=3 windows 2.0%/1.3%/1.5%/1.4%;  median amp (e-) VIS/H 0.0079/0.0013;  median light (e-/px) VIS/H 2.317/0.602
+LR input (cubic x2)      2.2% [  1.6,  2.8]  0.8/3.1/2.3/2.5        | -0.22/-0.08/-0.08/-0.07 |   2.3% | -14.54%/-6.18%/-3.76%/-2.21%   | -0.095/-0.045 |   1.9%  (n=518)
+                         z p90 VIS/Y/J/H 1.25/1.85/1.53/1.46;  amp/light in the z>=3 windows 59.4%/43.9%/24.5%/18.5%;  median amp (e-) VIS/H -0.4234/-0.0232;  median light (e-/px) VIS/H 2.317/0.602
+JWST F200W               1.4% [  0.3,  2.9]  1.4                    | -0.46                  |   0.0% | -11.51%                        | -0.150       |   0.1%  (n=285)
+
+=== REAL OUTSKIRT windows [strict] (stride-32 64-px windows inside the 32-px border; >=50% of the footprint with the smoothed LR VIS in [1,10] sigma_s and max <= 30 sigma_s): n = 187 in 74 tiles; sky windows (max <= 4 sigma_s) n = 11252
+model                  outskirt z>=3 pooled [CI]  per band VIS/Y/J/H | median z VIS/Y/J/H | z>=3 asinh(0.2 sig) pooled | amp/light VIS/Y/J/H (median) | amp/sigma_SR VIS/H | sky z>=3 pooled
+257@15M                 11.6% [  6.7, 17.5]  12.8/11.8/11.2/10.7    | 0.08/0.07/0.07/0.05    |  16.0% | 0.80%/1.19%/0.61%/0.51%        | 0.004/0.005  |   0.2%  (n=187)
+                         z p90 VIS/Y/J/H 3.97/3.63/3.43/3.07;  amp/light in the z>=3 windows 3.8%/2.9%/2.4%/3.4%;  median amp (e-) VIS/H 0.0161/0.0026;  median light (e-/px) VIS/H 2.496/0.641
+238 (prod)               9.2% [  4.8, 14.1]  8.6/9.6/8.6/10.2       | 0.06/0.09/0.06/0.03    |  14.0% | 0.82%/0.80%/0.28%/0.51%        | 0.003/0.004  |   0.9%  (n=187)
+                         z p90 VIS/Y/J/H 2.40/2.85/2.62/2.97;  amp/light in the z>=3 windows 3.8%/2.4%/1.6%/2.0%;  median amp (e-) VIS/H 0.0124/0.0022;  median light (e-/px) VIS/H 2.496/0.641
+227                     18.9% [ 12.4, 25.6]  18.7/19.3/17.6/19.8    | 0.14/0.12/0.09/0.08    |  24.1% | 0.68%/0.98%/0.49%/0.66%        | 0.003/0.004  |  26.0%  (n=187)
+                         z p90 VIS/Y/J/H 7.10/7.85/8.22/7.10;  amp/light in the z>=3 windows 1.7%/1.5%/1.0%/1.4%;  median amp (e-) VIS/H 0.0150/0.0019;  median light (e-/px) VIS/H 2.496/0.641
+257@1M                   7.8% [  4.9, 10.9]  7.0/7.0/8.6/8.6        | 0.10/0.06/0.03/0.06    |  11.8% | 0.58%/0.68%/0.16%/0.44%        | 0.003/0.005  |   0.2%  (n=187)
+                         z p90 VIS/Y/J/H 2.37/2.66/2.56/2.78;  amp/light in the z>=3 windows 3.3%/2.5%/2.2%/2.2%;  median amp (e-) VIS/H 0.0132/0.0025;  median light (e-/px) VIS/H 2.496/0.641
+LR input (cubic x2)      1.9% [  1.0,  2.9]  0.0/2.7/2.7/2.1        | -0.23/-0.12/-0.12/-0.21 |   1.9% | -14.50%/-8.50%/-4.43%/-5.26%   | -0.101/-0.085 |   1.9%  (n=187)
+                         z p90 VIS/Y/J/H 1.16/1.78/1.34/1.43;  amp/light in the z>=3 windows nan%/52.0%/26.6%/14.3%;  median amp (e-) VIS/H -0.4508/-0.0442;  median light (e-/px) VIS/H 2.496/0.641
+JWST F200W               2.1% [  0.5,  4.2]  2.1                    | -0.43                  |   0.0% | -13.28%                        | -0.160       |   0.1%  (n=187)
+
+=== REAL OUTSKIRT windows [lr-only] (stride-32 64-px windows inside the 32-px border; >=50% of the footprint with the smoothed LR VIS in [1,10] sigma_s and max <= 30 sigma_s): n = 1048 in 128 tiles; sky windows (max <= 4 sigma_s) n = 11252
+model                  outskirt z>=3 pooled [CI]  per band VIS/Y/J/H | median z VIS/Y/J/H | z>=3 asinh(0.2 sig) pooled | amp/light VIS/Y/J/H (median) | amp/sigma_SR VIS/H | sky z>=3 pooled
+257@15M                  9.8% [  7.4, 12.4]  9.9/10.0/9.6/9.6       | -0.07/-0.08/-0.07/-0.08 |  12.1% | -0.00%/0.01%/0.01%/-0.00%      | -0.000/-0.000 |   0.2%  (n=1048)
+                         z p90 VIS/Y/J/H 2.92/2.97/2.90/2.84;  amp/light in the z>=3 windows 1.3%/1.2%/1.0%/1.1%;  median amp (e-) VIS/H -0.0001/-0.0000;  median light (e-/px) VIS/H 1.973/0.420
+238 (prod)               9.5% [  7.2, 12.0]  9.1/9.5/9.6/9.6        | -0.02/-0.00/-0.03/-0.04 |  13.5% | -0.00%/0.02%/0.01%/0.01%       | -0.000/-0.000 |   0.9%  (n=1048)
+                         z p90 VIS/Y/J/H 2.70/2.93/2.84/2.90;  amp/light in the z>=3 windows 1.0%/0.6%/0.6%/0.6%;  median amp (e-) VIS/H -0.0000/-0.0000;  median light (e-/px) VIS/H 1.973/0.420
+227                     29.4% [ 24.9, 33.4]  31.7/29.9/28.7/27.3    | 0.51/0.48/0.50/0.37    |  34.4% | 0.03%/0.06%/0.07%/0.05%        | 0.000/0.000  |  26.0%  (n=1048)
+                         z p90 VIS/Y/J/H 10.09/12.51/11.59/10.40;  amp/light in the z>=3 windows 0.1%/0.2%/0.2%/0.2%;  median amp (e-) VIS/H 0.0005/0.0001;  median light (e-/px) VIS/H 1.973/0.420
+257@1M                   6.7% [  5.0,  8.5]  6.7/6.7/7.1/6.5        | 0.01/-0.01/-0.01/-0.02 |   8.7% | 0.01%/0.03%/0.03%/0.03%        | 0.000/-0.000 |   0.2%  (n=1048)
+                         z p90 VIS/Y/J/H 2.16/2.18/2.13/2.19;  amp/light in the z>=3 windows 1.6%/1.2%/1.4%/1.3%;  median amp (e-) VIS/H 0.0001/-0.0000;  median light (e-/px) VIS/H 1.973/0.420
+LR input (cubic x2)      2.5% [  1.8,  3.2]  1.0/3.1/2.8/3.2        | -0.23/-0.04/-0.03/-0.03 |   2.4% | -17.14%/-5.94%/-2.57%/-2.02%   | -0.094/-0.023 |   1.9%  (n=1048)
+                         z p90 VIS/Y/J/H 1.27/1.87/1.68/1.62;  amp/light in the z>=3 windows 51.9%/38.8%/29.0%/40.2%;  median amp (e-) VIS/H -0.4208/-0.0119;  median light (e-/px) VIS/H 1.973/0.420
+JWST F200W               1.0% [  0.3,  2.1]  1.0                    | -0.48                  |   0.0% | -13.21%                        | -0.137       |   0.1%  (n=580)
+
+=== SYN OUTSKIRT windows [truth-light] (stride-32 64-px windows inside the 32-px border; >=50% of the footprint with the smoothed LR VIS in [1,10] sigma_s and max <= 30 sigma_s): n = 211 in 43 fields; sky windows (max <= 4 sigma_s) n = 7350
+model                  outskirt z>=3 pooled [CI]  per band VIS/Y/J/H | median z VIS/Y/J/H | z>=3 asinh(0.2 sig) pooled | amp/light VIS/Y/J/H (median) | amp/sigma_SR VIS/H | sky z>=3 pooled
+257@15M                 26.3% [ 17.7, 35.7]  23.2/23.7/30.3/28.0    | 1.19/1.16/1.30/1.12    |  35.7% | 1.24%/1.28%/1.31%/1.26%        | 0.006/0.011  |   2.5%  (n=211)
+                         z p90 VIS/Y/J/H 5.40/5.89/6.42/6.17;  amp/light in the z>=3 windows 1.5%/1.5%/1.4%/1.4%;  median amp (e-) VIS/H 0.0313/0.0059;  median light (e-/px) VIS/H 2.554/0.544
+238 (prod)              19.8% [ 14.5, 25.4]  19.4/19.0/20.9/19.9    | 0.73/0.92/0.89/0.75    |  28.2% | 1.42%/1.34%/1.32%/1.33%        | 0.007/0.012  |   8.6%  (n=211)
+                         z p90 VIS/Y/J/H 4.51/4.53/4.24/4.31;  amp/light in the z>=3 windows 2.3%/1.8%/1.7%/1.5%;  median amp (e-) VIS/H 0.0372/0.0067;  median light (e-/px) VIS/H 2.554/0.544
+227                     40.9% [ 30.8, 49.8]  37.0/41.2/41.2/44.1    | 1.64/1.61/1.82/2.18    |  50.8% | 1.70%/1.58%/1.54%/1.55%        | 0.007/0.013  |  84.8%  (n=211)
+                         z p90 VIS/Y/J/H 8.17/10.28/10.41/8.76;  amp/light in the z>=3 windows 1.8%/1.7%/1.5%/1.6%;  median amp (e-) VIS/H 0.0377/0.0075;  median light (e-/px) VIS/H 2.554/0.544
+truth (target PSF)       1.5% [  0.0,  3.8]  2.8/1.4/0.9/0.9        | 0.03/0.03/0.03/0.03    |   3.6% | 0.65%/0.86%/1.04%/1.03%        | 0.003/0.004  |   1.7%  (n=211)
+                         z p90 VIS/Y/J/H 1.30/1.21/1.28/1.23;  amp/light in the z>=3 windows 14.4%/6.4%/72.4%/58.6%;  median amp (e-) VIS/H 0.0167/0.0024;  median light (e-/px) VIS/H 2.554/0.544
+HR record                1.7% [  0.0,  3.8]  2.4/1.9/1.4/0.9        | -0.03/-0.00/-0.00/-0.03 |   3.9% | -0.78%/-0.60%/-0.89%/-0.87%    | -0.004/-0.007 |   1.7%  (n=211)
+                         z p90 VIS/Y/J/H 1.24/1.21/1.19/1.21;  amp/light in the z>=3 windows 25.2%/78.1%/160.9%/66.8%;  median amp (e-) VIS/H -0.0213/-0.0039;  median light (e-/px) VIS/H 2.554/0.544
+LR input (cubic x2)      2.0% [  1.0,  3.2]  0.0/2.8/2.4/2.8        | -0.07/-0.16/0.06/-0.02 |   2.8% | -9.53%/-7.65%/3.42%/-0.68%     | -0.052/-0.012 |   2.3%  (n=211)
+                         z p90 VIS/Y/J/H 1.30/1.73/1.47/1.71;  amp/light in the z>=3 windows nan%/49.5%/37.1%/39.8%;  median amp (e-) VIS/H -0.2704/-0.0070;  median light (e-/px) VIS/H 2.554/0.544
+
+=== SYN OUTSKIRT windows [lr-only] (stride-32 64-px windows inside the 32-px border; >=50% of the footprint with the smoothed LR VIS in [1,10] sigma_s and max <= 30 sigma_s): n = 668 in 50 fields; sky windows (max <= 4 sigma_s) n = 7350
+model                  outskirt z>=3 pooled [CI]  per band VIS/Y/J/H | median z VIS/Y/J/H | z>=3 asinh(0.2 sig) pooled | amp/light VIS/Y/J/H (median) | amp/sigma_SR VIS/H | sky z>=3 pooled
+257@15M                 20.3% [ 10.2, 33.4]  18.4/19.8/21.7/21.3    | 0.24/0.19/0.17/0.17    |  25.0% | 0.22%/0.16%/0.14%/0.12%        | 0.001/0.003  |   2.5%  (n=668)
+                         z p90 VIS/Y/J/H 4.98/5.04/5.18/5.25;  amp/light in the z>=3 windows 1.1%/0.9%/1.0%/0.9%;  median amp (e-) VIS/H 0.0070/0.0017;  median light (e-/px) VIS/H 3.240/0.822
+238 (prod)              19.6% [ 11.8, 29.4]  19.3/20.2/20.2/18.7    | 0.29/0.20/0.21/0.20    |  24.8% | 0.11%/0.12%/0.09%/0.08%        | 0.001/0.002  |   8.6%  (n=668)
+                         z p90 VIS/Y/J/H 4.70/5.62/5.05/4.81;  amp/light in the z>=3 windows 0.9%/0.5%/0.4%/0.4%;  median amp (e-) VIS/H 0.0033/0.0010;  median light (e-/px) VIS/H 3.240/0.822
+227                     54.1% [ 45.9, 58.1]  53.6/55.2/53.6/54.0    | 3.48/4.04/3.60/3.63    |  61.2% | 0.61%/0.61%/0.59%/0.57%        | 0.003/0.007  |  84.8%  (n=668)
+                         z p90 VIS/Y/J/H 13.65/15.62/14.42/14.02;  amp/light in the z>=3 windows 0.2%/0.1%/0.5%/0.4%;  median amp (e-) VIS/H 0.0149/0.0038;  median light (e-/px) VIS/H 3.240/0.822
+truth (target PSF)       1.5% [  0.9,  2.5]  1.9/1.5/1.3/1.3        | 0.00/0.00/0.00/0.00    |   2.6% | 0.00%/0.00%/0.00%/0.00%        | 0.000/0.000  |   1.7%  (n=668)
+                         z p90 VIS/Y/J/H 1.28/1.21/1.19/1.18;  amp/light in the z>=3 windows 4.4%/3.5%/1.0%/0.4%;  median amp (e-) VIS/H 0.0000/0.0000;  median light (e-/px) VIS/H 3.240/0.822
+HR record                1.4% [  0.7,  2.3]  1.8/1.5/1.2/1.0        | 0.00/0.00/0.00/0.00    |   2.8% | 0.00%/0.00%/0.00%/0.00%        | 0.000/0.000  |   1.7%  (n=668)
+                         z p90 VIS/Y/J/H 1.27/1.23/1.28/1.19;  amp/light in the z>=3 windows 3.4%/3.7%/0.6%/0.5%;  median amp (e-) VIS/H 0.0000/0.0000;  median light (e-/px) VIS/H 3.240/0.822
+LR input (cubic x2)      2.2% [  1.7,  2.8]  1.0/2.8/1.8/3.1        | -0.14/-0.09/-0.03/-0.02 |   2.0% | -9.22%/-4.51%/-1.59%/-0.82%    | -0.067/-0.022 |   2.3%  (n=668)
+                         z p90 VIS/Y/J/H 1.23/1.69/1.59/1.75;  amp/light in the z>=3 windows 59.8%/31.8%/22.3%/22.9%;  median amp (e-) VIS/H -0.3456/-0.0122;  median light (e-/px) VIS/H 3.240/0.822
