@@ -491,8 +491,15 @@ def test_growth_summary_ratios_sky_matching_and_pairs(tmp_path, monkeypatch):
     assert s["models"][a.spec]["bands"]["VIS"]["all"]["psf_r50"]["median"] == pytest.approx(1.0)
     assert "psf_r3" not in s["models"][b.spec]["bands"]["VIS"]["all"]
     rows = {(sec, metric): cells for sec, metric, cells in report.table_rows({"growth": s}, [a, b])}
-    assert rows[(sec, "SR ⊛ Euclid PSF: VIS F(<0.5″) / F(<1″) / F(<3″), all")] == ["1.000 / 1.000 / 1.000",
-                                                                                 "– / – / –"]
+    assert rows[(sec, "SR ⊛ Euclid-FWHM Gaussian: VIS F(<0.5″) / F(<1″) / F(<3″), all")] == [
+        "1.000 / 1.000 / 1.000", "– / – / –"]
+    assert not any("ePSF" in metric for _s, metric in rows)
+    bt.store.write(b, "growth_epsf", {}, {"cog": 0.8 * geo["lr"]})
+    s = growth.summary(bt, [a, b])
+    assert s["models"][b.spec]["bands"]["H"]["all"]["epsf_r1"]["median"] == pytest.approx(0.8)
+    rows = {(sec, metric): cells for sec, metric, cells in report.table_rows({"growth": s}, [a, b])}
+    assert rows[(sec, "SR ⊛ Euclid ePSF, rebinned: Y / J / H F(<0.5″), all")] == [
+        "– / – / –", "0.800 / 0.800 / 0.800"]
 
 
 def test_growth_euclid_psf_keeps_flux_at_each_bands_width():
@@ -506,6 +513,34 @@ def test_growth_euclid_psf_keeps_flux_at_each_bands_width():
     yy = np.arange(81)[:, None] - 40.0
     variance = (seen * (yy ** 2)[..., None]).sum((0, 1)) / seen.sum((0, 1))
     np.testing.assert_allclose(np.sqrt(variance), sigma, rtol=0.02)
+
+
+def test_growth_forward_keeps_flux_and_spreads_like_the_input():
+    sr = np.zeros((40, 40, 4))
+    sr[20, 20] = 100.0
+    delta = np.zeros((5, 5))
+    delta[2, 2] = 1.0
+    box = np.ones((5, 5)) / 25.0
+    seen = growth.forward(sr, [delta, delta, box, box])
+    assert seen.shape == sr.shape
+    np.testing.assert_allclose(seen.sum((0, 1)), 100.0, rtol=1e-9)
+    np.testing.assert_allclose(seen[20:22, 20:22, 0], 25.0)               # a point → its LR pixel, spread
+    assert (seen[..., 2] > 1e-9).sum() == 36                              # SR px 18–22 → LR px 9–11 → 6 × 6
+
+
+def test_growth_nearest_cluster_on_the_sphere():
+    centroids = np.array([[269.0, 64.9], [270.0, 66.5], [60.3, -47.5]])
+    assert growth.nearest_cluster(centroids, 269.5, 65.2) == 0
+    assert growth.nearest_cluster(centroids, 61.0, -47.0) == 2
+    assert growth.nearest_cluster(np.array([[1.0, 0.0], [300.0, 0.0]]), 359.0, 0.0) == 0   # RA wraps
+
+
+def test_growth_epsf_stage_is_skipped_without_the_training_psfs(tmp_path, monkeypatch):
+    bt = _battery(tmp_path)
+    assert growth.epsf_paths(str(tmp_path / "none")) is None
+    monkeypatch.setattr(growth, "epsf_paths", lambda: None)
+    assert growth.run_epsf(bt, _info()) == {}
+    assert bt.store.read(_info(), "growth_epsf") is None
 
 
 def test_growth_half_light_and_kron_aperture():

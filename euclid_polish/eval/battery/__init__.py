@@ -14,7 +14,8 @@ comparison):
 4. :mod:`.holes` — bright-core holes on 13 NEXUS galaxies and the poster;
 5. / 6. :mod:`.flux` — Kron VIS SR/input against MER, and synthetic SR/truth;
 7. :mod:`.outskirts` — outskirt light injection and the real-sky gain profile;
-8. :mod:`.growth` — curves of growth of the NEXUS galaxies, SR against input;
+8. :mod:`.growth` — curves of growth of the NEXUS galaxies, SR (also re-imaged
+   through Euclid's PSF) against input;
 9. :mod:`.figures` — the tests' figures and the synthetic / real-sky fields.
 
 One model is in memory at a time; its SR outputs go to a cache every test

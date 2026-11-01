@@ -42,7 +42,7 @@ def _per_model(test: str) -> list[Callable[[Battery, ModelInfo], dict]]:
             "flux": [flux.run_kron],
             "synflux": [flux.run_synthetic],
             "outskirts": [outskirts.run_deck, outskirts.run_hosts, outskirts.run_gain],
-            "growth": [growth.run, growth.run_psf]}.get(test, [])
+            "growth": [growth.run, growth.run_psf, growth.run_epsf]}.get(test, [])
 
 
 def summaries(bt: Battery, infos: list[ModelInfo], tests: Sequence[str]) -> dict:

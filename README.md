@@ -830,7 +830,8 @@ the error direction; the AxisExcess grid on real sky, synthetic fields and galax
 JWST resolution and P8–16 texture; bright-core holes (13 NEXUS galaxies, the poster); Kron VIS
 flux against MER and synthetic SR/truth flux; outskirt light injection and the real-sky gain
 profile; curves of growth of the NEXUS galaxies (SR/input F(<r) to 3″ per VIS magnitude, raw and
-blank-sky-matched, and half-light radii); and the field figures. It writes one table (`battery.md`, `battery.json`, the first model
+blank-sky-matched, and half-light radii; also with the SR put back through the training ePSF,
+pulled from FASRC to `data/euclid_psf_training/`); and the field figures. It writes one table (`battery.md`, `battery.json`, the first model
 the baseline of paired comparisons) and `figures/`, caches each model's SR outputs so the tests
 share inference, loads one model at a time and writes nothing under `data/`. It reproduces the
 2026-10-29/30 comparison of 257 @ 15M with 238 (a reference check in the table); about 40 min per
