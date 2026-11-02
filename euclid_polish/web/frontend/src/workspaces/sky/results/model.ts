@@ -590,11 +590,9 @@ export function cardFiles(card: Pick<CardLike, "files">, specs: readonly string[
   return out;
 }
 
-/** "Run models…" preselection: production and the mean when missing or
- *  stale; both when both are current (a re-score). */
-export function defaultRunSpecs(models: Record<string, { state?: string | null } | undefined>): string[] {
-  const missing = ["production", "mean"].filter((s) => models[s]?.state !== "current");
-  return missing.length ? missing : ["production", "mean"];
+/** "Run models…" preselection: production (a re-score when it is current). */
+export function defaultRunSpecs(_models: Record<string, { state?: string | null } | undefined>): string[] {
+  return ["production"];
 }
 
 /* ── the tracking-log summary ──────────────────────────────────────────── */

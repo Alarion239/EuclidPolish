@@ -32,16 +32,17 @@ import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { formatDec, formatDeg, formatRA } from "../format";
 import { CopyButton } from "../ui";
 import { bandLabel, readoutTierNames } from "./barModel";
+import { shownBandIndex, type BandConstants } from "./color";
 import { useController, useSettings, useViewer } from "./hooks";
 import { cubeIsEmpty, formatValue, readoutLines, unitLabel } from "./readout";
 import type { ReadoutTier } from "./types";
 
 const fovText = (fov: number) => `${fov < 10 ? fov.toFixed(2) : fov.toFixed(1)}″`;
 
-/** The index of the band a tier's value is read in (the shown band, else the first). */
-function bandIndex(t: ReadoutTier, color: string): number {
-  const k = t.bands.indexOf(color);
-  return k >= 0 ? k : 0;
+/** The index of the band a tier's value is read in (the shown band, else
+ *  the filter matched to it, else the first). */
+function bandIndex(t: ReadoutTier, color: string, bands?: Record<string, BandConstants>): number {
+  return shownBandIndex(t.bands, color, bands);
 }
 
 /** Unique readout names of these tiers (a residual tier keeps its label). */
@@ -102,7 +103,8 @@ export function ReadoutBar() {
   const src = readout?.tiers.find((t) => t.tier === readout.tier);
   const sky = readout?.sky ?? null;
   const pos = sky ?? (obj && Number.isFinite(obj.ra) && Number.isFinite(obj.dec) ? { ra: obj.ra as number, dec: obj.dec as number } : null);
-  const band = src && src.bands.length > 1 ? src.bands[bandIndex(src, settings.color)] : "";
+  const colorBands = ctrl.s.meta?.color?.bands;
+  const band = src && src.bands.length > 1 ? src.bands[bandIndex(src, settings.color, colorBands)] : "";
   const full = readout?.tiers.map((t) => `${t.label}: ${t.values ? t.values.map((v, k) => `${t.bands[k] ?? `ch${k}`} ${formatValue(v)}`).join(", ") : "outside"} ${unitLabel(t.unit)}`).join("\n");
   // The status region is always mounted (announced when its text changes).
   const right = <>
@@ -137,7 +139,7 @@ export function ReadoutBar() {
               <span key={t.tier} className="cv-readout__item" data-src={t.tier === readout.tier || undefined}>
                 <b>{name(t.tier)}</b>{" "}
                 {blank ? <span className="cv-readout__hint">no data</span> : <>
-                  <span className="mono">{t.values ? formatValue(t.values[bandIndex(t, settings.color)] ?? NaN) : "—"}</span>
+                  <span className="mono">{t.values ? formatValue(t.values[bandIndex(t, settings.color, colorBands)] ?? NaN) : "—"}</span>
                   {t.values && t.unit && <span className="cv-readout__unit"> {unitLabel(t.unit)}</span>}
                 </>}
               </span>

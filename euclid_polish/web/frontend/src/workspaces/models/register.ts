@@ -1,20 +1,13 @@
-/* Registers the Models workspace's inspector kinds. The components are lazy
-   chunks, so importing this module is cheap; the workspace imports it (and
-   the shell may, so `member:member_196` opens from the palette anywhere).
-   - `member:<name>` — one member (member_196, 196 or 196·psnr);
-   - `combiner:<variant dir>` — one combiner variant (combinerVariant; an
-     older `combiner:starfull/<variant dir>` link still resolves). */
+/* Registers the Models workspace's inspector kind. The component is a lazy
+   chunk, so importing this module is cheap; the workspace imports it (and
+   the shell may, so `member:member_257` opens from the palette anywhere):
+   `member:<name>` — one universal model (member_257, 257 or 257·psnr). */
 import { lazy } from "react";
 import { registerInspector } from "../../app/inspector";
-import { combinerVariant, memberNumber } from "./model";
+import { memberNumber } from "./model";
 
 const MemberInspector = lazy(() => import("./MemberInspector"));
-const CombinerInspector = lazy(() => import("./CombinerInspector"));
 
 export const unregisterMemberInspector = registerInspector("member", MemberInspector, {
-  title: (id) => `Member #${memberNumber(id) ?? id}`,
-});
-
-export const unregisterCombinerInspector = registerInspector("combiner", CombinerInspector, {
-  title: (id) => `Combiner ${combinerVariant(id).replace(/^spatial_gate_/, "") || id}`,
+  title: (id) => `Model #${memberNumber(id) ?? id}`,
 });

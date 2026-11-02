@@ -2202,11 +2202,9 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
 # pair inference, poster), see ``real_tiles.tile_outputs``. Object ids are the
 # real-tile ids, so ``?id=`` works as for every collection.
 
-_SPEC_ORDER = ("production", "mean", "rbf")
-#: Default tier order after the core specs: members, gate variants, universal
-#: models, milestones, then anything else.
-_SPEC_PREFIX_ORDER = (model_catalog.MEMBER_PREFIX, model_catalog.GATE_PREFIX,
-                      model_catalog.UNIVERSAL_PREFIX, model_catalog.MILESTONE_PREFIX)
+_SPEC_ORDER = ("production",)
+#: Default tier order after production: universal models, milestones.
+_SPEC_PREFIX_ORDER = (model_catalog.UNIVERSAL_PREFIX, model_catalog.MILESTONE_PREFIX)
 
 
 def _real_source(params: dict[str, str]) -> str:
@@ -2218,7 +2216,10 @@ def _real_source(params: dict[str, str]) -> str:
 
 
 def _real_default_specs(outputs: list[dict[str, Any]]) -> list[str]:
-    seen = {spec for tile in outputs for spec in tile}
+    """The specs with an output on some tile that the panel lists: production
+    and the models from :data:`model_catalog.PANEL_FIRST_MODEL` on (older
+    outputs stay on disk; ``?models=`` still names any spec)."""
+    seen = {spec for tile in outputs for spec in tile if model_catalog.is_panel_spec(spec)}
 
     def order(spec: str) -> tuple[int, list]:
         # natural order: milestone:member_257@200000 before …@1000000
@@ -2311,7 +2312,9 @@ def _real_meta(params: dict[str, str]) -> dict[str, Any]:
     has_jwst = any(entry.has_jwst for entry in entries)
     tiers: list[dict[str, Any]] = [{"key": "lr", "label": "LR · Euclid", "unit": "e-"}]
     if has_jwst:
-        tiers.append({"key": "jwst", "label": "JWST (native)", "unit": "MJy/sr"})
+        label = ("NEXUS · the filter matched to the shown band (native)" if source == "nexus"
+                 else "JWST (native)")
+        tiers.append({"key": "jwst", "label": label, "unit": "MJy/sr"})
     for spec in specs:
         item = catalog.get(spec)
         records = [(outputs[spec], model_catalog.output_state(outputs[spec], current))
@@ -2337,6 +2340,7 @@ def _real_meta(params: dict[str, str]) -> dict[str, Any]:
         })
     return {
         "count": len(objects), "tiers": tiers, "default_tier": "lr",
+        **({"extra_color_bands": _nexus_color_bands()} if source == "nexus" and has_jwst else {}),
         "band_names": list(BAND_NAMES), "source": source, "models": specs,
         "transfer_groups": ["euclid", "jwst"] if has_jwst else ["euclid"],
         "missing_tier_labels": {f"m:{spec}": "Run this model (Sky › Compare)"
@@ -2362,6 +2366,36 @@ def _pixscale_of(header: Any, default: float) -> float:
         return default
 
 
+def _nexus_jwst_cube(planes: list[dict[str, Any]]):
+    """A NEXUS tile's NIRCam filters as ONE cube on the F200W tile grid (the
+    matched filters are resampled onto it), planes in Euclid band order
+    (F090W, F115W, F150W, F200W): the band switch shows the filter matched
+    to the shown Euclid band (colour-meta ``euclid_band``)."""
+    reference = planes[-1]                        # the field's own filter (jwst_file)
+    usable = [plane for plane in planes if plane["data"].shape == reference["data"].shape]
+    cube = np.stack([np.asarray(p["data"], np.float32) for p in usable], axis=-1)
+    names = [p["band"] for p in usable]
+    return cube, {
+        "label": f"NEXUS {'·'.join(names)} (native)", "asinh": 100.0,
+        "pixscale": _pixscale_of(reference["header"], 0.0), "bands": names,
+        "display_scale": _robust_display_scale(cube), "transfer_group": "jwst",
+        "unit": unit_from_header(reference["header"], default=reference["unit"]),
+        "wcs": celestial_wcs_keywords(reference["header"]),
+        "jwst_bands": names,
+    }
+
+
+def _nexus_color_bands() -> dict[str, dict[str, Any]]:
+    """Colour-meta entries of the NIRCam filters matched to the Euclid bands:
+    display-only (no invented AB zero point), each naming its ``euclid_band``."""
+    out = {}
+    for band, name in Config.JWST_PARTNER_FILTER.items():
+        described = _jwst_approx_color_band({"filter": name})
+        if described is not None:
+            out[name] = {**described[1], "euclid_band": band}
+    return out
+
+
 def _real_cube(index: int, tier: str, params: dict[str, str]):
     entry = _real_entry(index, params)
     if tier == "lr":
@@ -2379,6 +2413,8 @@ def _real_cube(index: int, tier: str, params: dict[str, str]):
         planes = real_tiles.jwst_planes(entry)
         if not planes:
             raise ViewerError(404, f"{entry.ref} has no JWST image")
+        if entry.source == "nexus":
+            return _nexus_jwst_cube(planes)
         wanted = (params.get("jwst_band") or "").strip().upper()
         plane = next((p for p in planes if p["band"].upper() == wanted), planes[0])
         cube = np.asarray(plane["data"], np.float32)[..., None]

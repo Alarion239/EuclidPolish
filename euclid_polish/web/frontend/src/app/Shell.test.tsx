@@ -111,8 +111,8 @@ const MOD: KeyboardEventInit = /Mac|iPod|iPhone|iPad/.test(navigator.platform) ?
 
 describe("Shell", () => {
   it("renders the rail with every workspace, the active one marked, and breadcrumbs", async () => {
-    mount("/models/combiner");
-    await screen.findByText("models:combiner");
+    mount("/models/spectra");
+    await screen.findByText("models:spectra");
     const rail = screen.getByRole("navigation", { name: "Workspaces" });
     for (const ws of MANIFEST.workspaces) expect(within(rail).getByText(ws.label)).toBeTruthy();
     // the approved "Loop console" order
@@ -123,8 +123,8 @@ describe("Shell", () => {
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumbs" });
     expect(crumbs.textContent).toContain("Models");
     expect(crumbs.textContent).not.toContain("starless");
-    expect(crumbs.textContent).toContain("Combiner");
-    expect(document.title).toBe("Combiner · Models · EuclidPolish");
+    expect(crumbs.textContent).toContain("Spectra");
+    expect(document.title).toBe("Spectra · Models · EuclidPolish");
   });
 
   it("renders the router-linked workspace tabs", async () => {
@@ -400,30 +400,29 @@ describe("Shell", () => {
       return this.classList.contains("ws__tabs-wrap") ? 420 : 0;
     });
     try {
-      const router = mount("/models/images");
-      await screen.findByText("models:images");
-      const strip = screen.getByRole("navigation", { name: "Models tabs" });
+      const router = mount("/synthetic/stars");
+      await screen.findByText("synthetic:stars");
+      const strip = screen.getByRole("navigation", { name: "Synthetic tabs" });
       const shown = () => within(strip).getAllByRole("link").map((a) => a.textContent);
-      // Leaderboard 116 + Universal 100 = 216, + the widest later tab (Diagnostics 116) fits
-      // 420 − More (60); Knees (68) does not; Images (76) is active and takes the reserved slot
-      await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Universal", "Images"]));
-      expect(within(strip).getByRole("link", { name: "Images" }).getAttribute("aria-current")).toBe("page");
+      // Status 76 + Records 84 + Galaxies 92 = 252, + the widest later tab (Fields 76) fits
+      // 420 − More (60); Stars (68) does not lead, but it is active and takes the reserved slot
+      await waitFor(() => expect(shown()).toEqual(["Status", "Records", "Galaxies", "Stars"]));
+      expect(within(strip).getByRole("link", { name: "Stars" }).getAttribute("aria-current")).toBe("page");
       const more = screen.getByRole("button", { name: /^More tabs: / });
       expect(strip.contains(more)).toBe(true);                   // inside the tabs landmark
-      expect(more.getAttribute("aria-label")).toBe("More tabs: Knees, Spectra, Members, Train, Combiner, Diagnostics");
+      expect(more.getAttribute("aria-label")).toBe("More tabs: Noise, PSF, Fields");
       fireEvent.pointerDown(more, { button: 0, ctrlKey: false, pointerType: "mouse" });
       const menu = await screen.findByRole("menu");
-      expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent))
-        .toEqual(["Knees", "Spectra", "Members", "Train", "Combiner", "Diagnostics"]);
+      expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Noise", "PSF", "Fields"]);
       // items are router links: a middle- or ⌘-click opens a new browser tab
-      const train = within(menu).getByRole("menuitem", { name: "Train" });
-      expect(train.tagName).toBe("A");
-      expect(train.getAttribute("href")).toBe("/models/train");
-      fireEvent.click(train);
-      await screen.findByText("models:train");
-      expect(router.state.location.pathname).toBe("/models/train");
+      const fields = within(menu).getByRole("menuitem", { name: "Fields" });
+      expect(fields.tagName).toBe("A");
+      expect(fields.getAttribute("href")).toBe("/synthetic/fields");
+      fireEvent.click(fields);
+      await screen.findByText("synthetic:fields");
+      expect(router.state.location.pathname).toBe("/synthetic/fields");
       // the new active tab takes the reserved slot; the leading tabs never move
-      await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Universal", "Train"]));
+      await waitFor(() => expect(shown()).toEqual(["Status", "Records", "Galaxies", "Fields"]));
       // no label is ever cut: every visible tab is a whole label
       for (const a of within(strip).getAllByRole("link")) expect(a.textContent?.length).toBeGreaterThan(2);
     } finally {
@@ -634,7 +633,7 @@ describe("Shell", () => {
     const selected = () => document.querySelector("[cmdk-item][aria-selected='true']")?.textContent ?? "";
     const items = () => [...document.querySelectorAll("[cmdk-item]")].map((e) => e.textContent ?? "");
     for (const [q, page] of [
-      ["code", "System › Code"], ["noise", "Synthetic › Noise"], ["members", "Models › Members"],
+      ["code", "System › Code"], ["noise", "Synthetic › Noise"], ["spectra", "Models › Spectra"],
       // an old page name still finds its new home
       ["git", "System › Code"], ["provenance", "System › Lineage"], ["experiments", "Sky › Compare"],
     ]) {
@@ -681,13 +680,13 @@ const ALERTS = {
 
 describe("Shell polish", () => {
   it("puts the full breadcrumb path in a tooltip so truncated crumbs stay readable", async () => {
-    mount("/models/leaderboard");
-    await screen.findByText("models:leaderboard");
+    mount("/models/universal");
+    await screen.findByText("models:universal");
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumbs" });
-    expect(crumbs.getAttribute("title")).toBe("Models › Leaderboard");
+    expect(crumbs.getAttribute("title")).toBe("Models › Universal");
     // every crumb is a truncating text element (CSS ellipsis)
     expect(crumbs.querySelectorAll(".crumbs__text")).toHaveLength(2);
-    expect(within(crumbs).getByText("Leaderboard").getAttribute("aria-current")).toBe("page");
+    expect(within(crumbs).getByText("Universal").getAttribute("aria-current")).toBe("page");
   });
 
   it("badges Home in the rail with the number of health alerts, worst tone", async () => {
@@ -714,22 +713,17 @@ describe("Shell polish", () => {
     const headings = [...document.querySelectorAll("[cmdk-group-heading]")].map((h) => h.textContent);
     expect(headings.indexOf("Sky")).toBeGreaterThanOrEqual(0);
     expect(headings.indexOf("Run a job")).toBeGreaterThan(headings.indexOf("Sky"));
-    expect(screen.getByText("Evaluate the ensemble")).toBeTruthy();
+    expect(screen.getByText("Measure disk usage per data root")).toBeTruthy();
   });
 
-  it("runs a job from the palette only after confirm, then tracks it in the tray", async () => {
-    routes["POST /ensemble/evaluate"] = () => ({ body: { job_id: "ev1" } });
+  it("runs a job from the palette, then tracks it in the tray", async () => {
+    routes["POST /api/system/disk-usage/refresh"] = () => ({ body: { ok: true, job_id: "du1" } });
     mount();
     await screen.findByText("sky:atlas");
     act(() => useShellUi.getState().openOnly("palette"));
-    fireEvent.click(await screen.findByText("Evaluate the ensemble"));
-    const dlg = await screen.findByRole("alertdialog", { name: "Evaluate the ensemble?" });
-    expect(calls.some((c) => c.url === "/ensemble/evaluate")).toBe(false);
-    fireEvent.click(within(dlg).getByRole("button", { name: "Evaluate" }));
-    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url === "/ensemble/evaluate")).toBe(true));
-    const post = calls.find((c) => c.url === "/ensemble/evaluate")!;
-    expect((post.body as FormData).get("mode")).toBe("starfull");
-    await waitFor(() => expect(useJobsStore.getState().keyed["run:evaluate"]).toBe("ev1"));
+    fireEvent.click(await screen.findByText("Measure disk usage per data root"));
+    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url === "/api/system/disk-usage/refresh")).toBe(true));
+    await waitFor(() => expect(useJobsStore.getState().keyed["run:disk-usage"]).toBe("du1"));
   });
 
   it("toasts a SLURM job that leaves the live list, with its final state", async () => {

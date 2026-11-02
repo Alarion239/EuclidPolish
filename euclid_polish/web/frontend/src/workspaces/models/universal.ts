@@ -1,33 +1,22 @@
 /* Pure logic of Models › Universal (unit-tested in universal.test.ts): the
-   toolbar's choices (x axis, metric, combiner weighting), the universal
-   models' rows (status, the chosen metric, hardware, Δ vs production and vs
-   the time-matched combiner), the combiners' training hours under a
-   weighting, the two plots' points and per-depth lines with their depth
-   colour slots, the nearest point to a click, the real-field facts of each
-   spec from the newest Sky › Compare run that scored THIS model, the
-   Sky › Compare deep link, what to score and what to pull, the summary and
-   the best universal model the Leaderboard names. No React, no DOM.
+   toolbar's choices (x axis, metric), the universal models' rows (status,
+   the chosen metric, hardware, Δ vs production), the two plots' points and
+   per-depth lines with their depth colour slots, the nearest point to a
+   click, the real-field facts of each spec from the newest Sky › Compare
+   run that scored THIS model, the Sky › Compare deep link, what to score
+   and what to pull, and the summary. No React, no DOM.
 
    Training time is the payload's: Σ duration_s of a model's training-log
-   windows (rolled-back ones included) in hours; a combiner's is Σ over the
-   members it reads of hours × that member's peak gate share ("max"), its
-   mean share ("mean"), or plain hours ("sum") — a lower bound ("partial")
-   when a member it reads has no training time.
-
-   A Δ is only ever taken between scores on the same fields, records and
-   target: Δ vs production when the payload is `comparable`, Δ vs the
-   time-matched combiner when THAT combiner is (`combinerComparable`) and its
-   score is current; a partial combiner is never time-matched. A stale model
-   score sits where it was made (`scored_hours` / `scored_steps`).
-
-   Production is the production gate, or — `production_model` — one of these
-   universal models: then `production` is its own score, never the gate's,
-   and the gate is the "former production gate" (production.ts). */
+   windows (rolled-back ones included) in hours. A Δ vs production is only
+   taken when production's score is on the same fields, records and target
+   (`production_comparable`). A stale model score sits where it was made
+   (`scored_hours` / `scored_steps`). Production is one of these models
+   (`production_model`); `production` is its own score. */
 import type {
-  CombinerMemberHours, ExperimentSummary, UniversalCombiner, UniversalFasrcRow, UniversalHardware, UniversalPayload, UniversalReference, UniversalRow,
+  ExperimentSummary, UniversalFasrcRow, UniversalHardware, UniversalPayload, UniversalReference, UniversalRow,
 } from "./api";
-import { benchmarkExperiment, kneeNum, memberNumber, variantLabel, type Bench } from "./model";
-import { gateName, universalLabel } from "./production";
+import { benchmarkExperiment, kneeNum, memberNumber, type Bench } from "./model";
+import { universalLabel } from "./production";
 
 /* ── toolbar choices (URL state) ───────────────────────────────────────── */
 
@@ -45,18 +34,10 @@ export const METRICS: readonly { value: Metric; label: string; axis: string }[] 
   { value: "H_E", label: "H", axis: "∫PSNR H [dB]" },
 ];
 
-export type Weighting = "max" | "mean" | "sum";
-export const WEIGHTINGS: readonly { value: Weighting; label: string; text: string }[] = [
-  { value: "max", label: "Max weight", text: "max-weighted" },
-  { value: "mean", label: "Mean weight", text: "mean-weighted" },
-  { value: "sum", label: "Every member", text: "summed over every member" },
-];
-
 const oneOf = <T extends string>(options: readonly { value: T }[]) =>
   (raw: string): T | undefined => (options.some((o) => o.value === raw) ? raw as T : undefined);
 export const parseXAxis = oneOf(X_AXES);
 export const parseMetric = oneOf(METRICS);
-export const parseWeighting = oneOf(WEIGHTINGS);
 
 /* ── values ────────────────────────────────────────────────────────────── */
 
@@ -83,53 +64,6 @@ export function metricValue(s: { integrated?: readonly (number | null)[] | null;
   return finite(v) ? v : null;
 }
 
-/** Σ over the members a combiner reads of hours × weight (the peak share for
- *  "max", the mean share for "mean", 1 for "sum"); null when a member has no
- *  hours or no weight (the sum would understate the combiner). */
-export function weightedHours(members: readonly CombinerMemberHours[], w: Weighting): number | null {
-  if (!members.length) return null;
-  let sum = 0;
-  for (const m of members) {
-    const k = w === "sum" ? 1 : w === "max" ? m.max_weight : m.mean_weight;
-    if (!finite(m.hours) || !finite(k)) return null;
-    sum += m.hours * k;
-  }
-  return sum;
-}
-
-/** A combiner's training hours under a weighting: the payload's, else the
- *  sum over its members (a lower bound when isPartial). */
-export function combinerHours(c: Pick<UniversalCombiner, "hours" | "members">, w: Weighting): number | null {
-  const v = c.hours?.[w];
-  return finite(v) ? v : weightedHours(c.members ?? [], w);
-}
-
-/** A member it reads has no training time: its hours are a lower bound. */
-export const isPartial = (c: Pick<UniversalCombiner, "missing_hours">): boolean => (c.missing_hours?.length ?? 0) > 0;
-
-/** A combiner's hours as text: "2.00 h", "≥ 2.00 h" when partial, "—". */
-export function combinerHoursText(c: Pick<UniversalCombiner, "hours" | "members" | "missing_hours">, w: Weighting, unit = true): string {
-  const v = combinerHours(c, w);
-  if (v == null) return "—";
-  const t = unit ? hoursText(v) : hoursText(v).replace(/ h$/, "");
-  return isPartial(c) ? `≥ ${t}` : t;
-}
-
-/** Whether a combiner's score is on the universal scores' fields, records
- *  and target: the server's flag; without one a knee-PSNR score follows the
- *  payload (`payloadComparable`) and a compare report's is not (it recorded
- *  no identity). */
-export function combinerComparable(c: Pick<UniversalCombiner, "comparable" | "score_source">, payloadComparable: boolean): boolean {
-  if (typeof c.comparable === "boolean") return c.comparable;
-  return c.score_source === "knee-psnr" ? payloadComparable : false;
-}
-
-/** "production gate" ("former production gate" while `productionModel`, a
- *  universal model, is production), else "gate p20s1". */
-export function combinerName(c: Pick<UniversalCombiner, "production" | "name" | "id">, productionModel: string | null = null): string {
-  return c.production ? gateName(productionModel) : `gate ${variantLabel(c.name || c.id)}`;
-}
-
 /** Trained on a MIG slice (gpu_test): drawn as a ring, not comparable compute. */
 export function isMig(hw: Partial<UniversalHardware> | null | undefined): boolean {
   return hw?.partition === "gpu_test" || /\bMIG\b/i.test(hw?.label ?? "");
@@ -149,48 +83,6 @@ export function universalStatus(r: Pick<UniversalRow, "fingerprint" | "score">):
   return r.score.stale ? "stale" : "scored";
 }
 
-/* ── combiners on the time axis ────────────────────────────────────────── */
-
-/** A scored combiner at its weighted training hours: `partial` (a lower
- *  bound: a member it reads has no hours), `stale` (its score predates its
- *  fit or its members' checkpoints), `comparable` (combinerComparable).
- *  combinerPoints lists production last, so it paints over (and a click on
- *  a shared spot opens) a variant at the same place — the variant it was
- *  promoted from sits exactly there. */
-export type CombinerPoint = {
-  id: string; name: string; production: boolean; hours: number; value: number;
-  partial: boolean; stale: boolean; comparable: boolean; combiner: UniversalCombiner;
-};
-
-export function combinerPoints(combiners: readonly UniversalCombiner[], w: Weighting, metric: Metric,
-  bands: readonly string[] = DEFAULT_BANDS, payloadComparable = true, productionModel: string | null = null): CombinerPoint[] {
-  const out: CombinerPoint[] = [];
-  for (const c of combiners) {
-    const hours = combinerHours(c, w);
-    const value = metricValue({ integrated: c.integrated, mean: c.mean }, metric, bands);
-    if (positive(hours) && value != null) {
-      out.push({ id: c.id, name: combinerName(c, productionModel), production: c.production, hours, value, partial: isPartial(c),
-        stale: !!c.stale, comparable: combinerComparable(c, payloadComparable), combiner: c });
-    }
-  }
-  return [...out.filter((p) => !p.production), ...out.filter((p) => p.production)];
-}
-
-/** The scored combiner nearest in log hours to `hours` (production on a
- *  tie); a partial one never (its hours are only a lower bound). */
-export function timeMatch(hours: number | null | undefined, points: readonly CombinerPoint[]): CombinerPoint | null {
-  if (!positive(hours) || !points.length) return null;
-  const lh = Math.log10(hours);
-  let best: CombinerPoint | null = null;
-  let bestD = Infinity;
-  for (const p of points) {
-    if (p.partial) continue;
-    const d = Math.abs(Math.log10(p.hours) - lh);
-    if (d < bestD - 1e-12 || (Math.abs(d - bestD) <= 1e-12 && p.production && !best?.production)) { best = p; bestD = d; }
-  }
-  return best;
-}
-
 /* ── the models' rows ──────────────────────────────────────────────────── */
 
 export type ShapedRow = UniversalRow & {
@@ -208,48 +100,34 @@ export type ShapedRow = UniversalRow & {
   stale: boolean;
   /** The chosen metric minus production's (null when not comparable). */
   vsProduction: number | null;
-  /** The scored combiner nearest in training hours (at `scoreHours`), and
-   *  the metric minus its — null when that combiner's score is on other
-   *  fields (`matchBlock` "other-fields") or stale ("stale"). */
-  match: CombinerPoint | null; vsMatch: number | null;
-  matchBlock: "other-fields" | "stale" | null;
 };
 
-/** Whether production's reference was scored on the same fields, records and
- *  target as the universal scores: the payload's `production_comparable`
- *  (a scored universal production, or the knee payload's `comparable`), then
- *  its `comparable` when it says; else read off
- *  the rows: the server gives `vs_production_db` only when comparable, so a
- *  scored model without one while production has a score means "not". */
-export function isComparable(p: Pick<UniversalPayload, "comparable" | "production_comparable" | "production" | "combiners" | "models" | "production_model"> | null | undefined): boolean {
+/** Whether production's score is on the same fields, records and target
+ *  as the universal scores: the payload's `production_comparable`; else
+ *  read off the rows: the server gives `vs_production_db` only when
+ *  comparable, so a scored model without one while production has a score
+ *  means "not". */
+export function isComparable(p: Pick<UniversalPayload, "production_comparable" | "production" | "models"> | null | undefined): boolean {
   if (typeof p?.production_comparable === "boolean") return p.production_comparable;
-  if (typeof p?.comparable === "boolean") return p.comparable;
   const models = p?.models ?? [];
   if (models.some((r) => finite(r.vs_production_db))) return true;
   const prod = metricValue(productionReference(p), "mean");
   return !(prod != null && models.some((r) => finite(r.score?.mean)));
 }
 
-/** The production reference: a universal production's own score (null until
- *  it is scored: never the gate's), else the knee-PSNR status, else the
- *  production combiner's score. */
-export function productionReference(p: Pick<UniversalPayload, "production" | "combiners" | "production_model"> | null | undefined): UniversalReference | null {
-  if (p?.production) return p.production;
-  if (p?.production_model) return null;
-  const c = p?.combiners?.find((x) => x.production);
-  return c && c.integrated ? { integrated: c.integrated, mean: c.mean, stale: c.stale } : null;
+/** The production model's own score (null until it is scored). */
+export function productionReference(p: Pick<UniversalPayload, "production"> | null | undefined): UniversalReference | null {
+  return p?.production ?? null;
 }
 
-/** The universal model that is production, by its label ("Universal 238"),
- *  or null while production is the gate. */
+/** The universal model that is production, by its label ("Universal 257"). */
 export function productionLabel(p: Pick<UniversalPayload, "production_model"> | null | undefined): string | null {
   return p?.production_model ? universalLabel(p.production_model) : null;
 }
 
-export function shapeRows(p: UniversalPayload, opts: { weighting: Weighting; metric: Metric }): ShapedRow[] {
+export function shapeRows(p: UniversalPayload, opts: { metric: Metric }): ShapedRow[] {
   const bands = bandsOf(p);
   const comparable = isComparable(p);
-  const points = combinerPoints(p.combiners ?? [], opts.weighting, opts.metric, bands, comparable, p.production_model ?? null);
   const prod = metricValue(productionReference(p), opts.metric, bands);
   return (p.models ?? []).map((r): ShapedRow => {
     const value = metricValue(r.score, opts.metric, bands);
@@ -259,8 +137,6 @@ export function shapeRows(p: UniversalPayload, opts: { weighting: Weighting; met
     const stepsDone = positive(r.steps) ? r.steps : null;
     const scoreHours = stale && positive(r.scored_hours) ? r.scored_hours : hours;
     const scoreSteps = !stale ? stepsDone : positive(r.scored_steps) ? r.scored_steps : positive(r.served_step) ? r.served_step : stepsDone;
-    const match = timeMatch(scoreHours, points);
-    const matchBlock = !match || value == null ? null : !match.comparable ? "other-fields" : match.stale ? "stale" : null;
     return {
       ...r,
       num: memberNumber(r.name) ?? r.name,
@@ -273,18 +149,14 @@ export function shapeRows(p: UniversalPayload, opts: { weighting: Weighting; met
       mig: isMig(r.hardware),
       vsProduction: !comparable ? null : value != null && prod != null ? value - prod
         : opts.metric === "mean" && finite(r.vs_production_db) ? r.vs_production_db : null,
-      match,
-      vsMatch: match && value != null && !matchBlock ? value - match.value : null,
-      matchBlock,
     };
   });
 }
 
 /* ── depth colours ─────────────────────────────────────────────────────── */
 
-/** The categorical slots a depth takes, skipping --cat-0 (the plain mean's
- *  blue, its y guide) and --cat-2 (the combiner's orange) in both themes, so
- *  no depth reads as the mean or a combiner. */
+/** The categorical slots a depth takes, skipping --cat-0 and --cat-2 (the
+ *  production line's colours elsewhere in the console) in both themes. */
 export const DEPTH_SLOTS: readonly number[] = [1, 3, 4, 5, 6, 7];
 
 /** The depths present, shallow to deep; unknown last. */
@@ -409,16 +281,6 @@ export function scoredFields(p: Pick<UniversalPayload, "identity" | "models"> | 
   return seen.length ? Math.max(...seen) : DEFAULT_FIELDS;
 }
 
-/** The gates whose weights can be measured now (the payload's
- *  `weights_pending`), named as the combiners table names them. */
-export function pendingWeights(p: Pick<UniversalPayload, "weights_pending" | "combiners" | "production_model"> | null | undefined): { id: string; name: string }[] {
-  const production = p?.production_model ?? null;
-  return (p?.weights_pending ?? []).map((id) => {
-    const c = p?.combiners?.find((x) => x.id === id);
-    return { id, name: c ? combinerName(c, production) : id === "production" ? gateName(production) : `gate ${variantLabel(id)}` };
-  });
-}
-
 /** "212, 213 and 2 more". */
 export function numbersText(names: readonly string[], max = 6): string {
   const nums = names.map((n) => memberNumber(n) ?? n);
@@ -500,15 +362,11 @@ export function compareHref(specs: readonly string[], production: string | null 
 /* ── summary ───────────────────────────────────────────────────────────── */
 
 /** The best universal model by the band mean (current scores; a stale one
- *  only when none is current), with production it is set against: the
- *  production gate (its band mean, its training hours under `weighting`) or
- *  the universal model that is production (its own score and hours). */
+ *  only when none is current), with production (its own score and hours). */
 export function universalSummary(rows: readonly ShapedRow[],
-  p: Pick<UniversalPayload, "production" | "combiners" | "models" | "comparable" | "production_model">, weighting: Weighting): {
+  p: Pick<UniversalPayload, "production" | "models" | "production_comparable" | "production_model">): {
   n: number; nScored: number; best: ShapedRow | null; bestStale: boolean;
-  /** `name` / `label`: the universal model that is production (null: the
-   *  gate); `partial`: its hours are a lower bound (a member it reads has none). */
-  production: { name: string | null; label: string | null; mean: number | null; hours: number | null; partial: boolean; stale: boolean } | null;
+  production: { name: string | null; label: string | null; mean: number | null; hours: number | null; stale: boolean } | null;
   /** The best's band mean minus production's (null when not comparable). */
   gain: number | null;
 } {
@@ -517,36 +375,18 @@ export function universalSummary(rows: readonly ShapedRow[],
   const current = pick("scored");
   const best = current ?? pick("stale");
   const ref = productionReference(p);
-  const universal = p.production_model ?? null;
-  const prodComb = universal ? null : p.combiners?.find((c) => c.production) ?? null;
+  const name = p.production_model ?? null;
   const prodMean = metricValue(ref, "mean");
-  const hours = universal ? rows.find((r) => r.name === universal)?.hours ?? null : prodComb ? combinerHours(prodComb, weighting) : null;
   return {
     n: rows.length,
     nScored: rows.filter((r) => r.status === "scored").length,
     best, bestStale: !current && !!best,
-    production: ref || prodComb || universal ? {
-      name: universal, label: universal ? universalLabel(universal) : null,
-      mean: prodMean, hours, partial: !!prodComb && isPartial(prodComb), stale: !!ref?.stale,
+    production: ref || name ? {
+      name, label: name ? universalLabel(name) : null,
+      mean: prodMean, hours: name ? rows.find((r) => r.name === name)?.hours ?? null : null, stale: !!ref?.stale,
     } : null,
     gain: best?.mean != null && prodMean != null && isComparable(p) ? best.mean - prodMean : null,
   };
-}
-
-/** The Leaderboard's "best universal model" row: the best CURRENT score,
- *  when the scores are on the Leaderboard's own fields (isComparable). */
-export function bestUniversal(p: UniversalPayload | null | undefined): { row: UniversalRow; mean: number; bands: (number | null)[] } | null {
-  if (!p || !isComparable(p)) return null;
-  let best: { row: UniversalRow; mean: number; bands: (number | null)[] } | null = null;
-  const bands = bandsOf(p);
-  for (const row of p?.models ?? []) {
-    if (universalStatus(row) !== "scored") continue;
-    const mean = metricValue(row.score, "mean", bands);
-    if (mean != null && (!best || mean > best.mean)) {
-      best = { row, mean, bands: bands.map((_, i) => { const v = row.score?.integrated?.[i]; return finite(v) ? v : null; }) };
-    }
-  }
-  return best;
 }
 
 /* ── formatting ────────────────────────────────────────────────────────── */
@@ -588,4 +428,3 @@ export function stepImplText(r: Pick<UniversalRow, "jit_compile" | "mixed_precis
   return "plain";
 }
 
-export const classText = (c: UniversalRow["class"]) => (c === "member" ? "ensemble member" : "universal");

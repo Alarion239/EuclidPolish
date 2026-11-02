@@ -25,28 +25,13 @@ const job = (id: string, patch: Partial<Job> = {}): Job => ({
   result: null, progress: { current: 0, total: 0, pct: 0, label: "" }, ...patch,
 });
 
-// 42 active members: 30 STARFULL + 12 starless (the carry-over bug showed 42).
-const STARFULL = Array.from({ length: 30 }, (_, i) => `member_${169 + i}`);
-
-const KNEE = {
-  available: true, stale: false, n_fields: 100, bands: ["VIS", "Y_E", "J_E", "H_E"], integration: { from_e: 0.1, to_e: 10000 },
-  models: [
-    { id: "member_0", kind: "member", label: "169·psnr", integrated: [54, 63, 60, 59] },
-    { id: "member_27", kind: "member", label: "196·psnr", integrated: [54.7435, 64.1229, 60.6616, 60.3038] },
-    { id: "ensemble_mean", kind: "mean", label: "ensemble mean", integrated: [53.9358, 62.9001, 60.143, 59.4462] },
-    { id: "spatial_gate", kind: "combiner", label: "spatial gate", integrated: [55.7978, 64.9395, 62.0264, 61.1288] },
-  ],
-};
-
 type CheckRow = { id: string; label: string; state: string; title: string; detail?: string | null; to?: string | null; facts?: Record<string, unknown> };
 const CHECKS: CheckRow[] = [
   { id: "disk", label: "Disk space", state: "ok", title: "200.0 GiB free on the data disk (56 % used)", to: "/system/storage" },
   { id: "real-sr", label: "Real SR products", state: "warn", title: "449 real SR products are stale", detail: "NEXUS tiles 445, Poster runs 4",
     to: "/sky/targets", facts: { current: 0, stale: 449, missing: 101 } },
-  { id: "combiner", label: "Production gate", state: "ok", title: "Production gate fitted for the current 30 members", facts: { members: 30 } },
-  { id: "evaluation", label: "Evaluation", state: "ok", title: "Evaluation current (30 members, test records)",
-    facts: { evaluated_at: ago(0.5), n_scored: 100 } },
-  { id: "knee", label: "Knee PSNR", state: "ok", title: "PSNR-vs-knee curves current" },
+  { id: "production", label: "Production model", state: "ok", title: "Production is Universal 257",
+    facts: { model: "universal:member_257", label: "Universal 257" } },
   { id: "records-noise", label: "Records noise model", state: "unknown", title: "Noise model of the local records unverified" },
   { id: "tracking", label: "Tracking log", state: "ok", title: "Tracking log up to date", facts: { last_entry: ago(0.1), unlogged: [] } },
 ];
@@ -74,8 +59,14 @@ const EXPERIMENTS = { experiments: [
 ] };
 
 const PLATES = { root: "output/nexus_comparisons", runs: [{ tag: "prod-0926", updated: ago(1), files: [], renders: [
-  { band: "VIS", model: "production", model_label: "Production · spatial gate", model_fingerprint: "d9ef", created: ago(1), sheet: "nexus_tiles_VIS.png", tiles: [] },
+  { band: "VIS", model: "production", model_label: "Production · Universal 257", model_fingerprint: "u257", created: ago(1), sheet: "nexus_tiles_VIS.png", tiles: [] },
 ] }] };
+
+/** GET /ensemble/universal.json: production (257) with its own score. */
+const UNIVERSAL = {
+  production_model: "member_257", production: { integrated: [57.01, 67.01, 64.04, 63.22], mean: 62.82, stale: false, model: "member_257" },
+  models: [{ name: "member_257", score: { scored_at: ago(0.125) } }, { name: "member_258", score: { scored_at: ago(2) } }],
+};
 
 const formOf = (body: BodyInit | null | undefined): Record<string, string> => {
   const out: Record<string, string> = {};
@@ -89,9 +80,8 @@ const stage = (id: string, label: string, state: string, reason: string, to: str
 const LOOP_OK = () => ({ computed_at: new Date().toISOString(), ttl_s: 60, counts: {}, errors: {}, stages: [
   stage("priors", "Priors", "current", "galaxies v15 · stars · noise v5", "/synthetic/status"),
   stage("records", "Records", "current", "built 2 d ago, after the priors", "/synthetic/records"),
-  stage("members", "Members", "current", "30 active", "/models/members"),
-  stage("evaluation", "Evaluation", "current", "evaluated 7 h ago", "/models/leaderboard"),
-  stage("gate", "Gate", "current", "fitted for the 30 members", "/models/combiner"),
+  stage("models", "Models", "current", "2 universal models", "/models/universal"),
+  stage("production", "Production", "current", "Universal 257", "/models/universal"),
   stage("real-sr", "Real SR", "stale", "449 stale", "/sky/targets?state=stale"),
   stage("figures", "Figures", "current", "made with this fit", "/figures/plates"),
 ] });
@@ -103,27 +93,17 @@ beforeEach(() => {
     "GET /api/fasrc/status": () => ({ body: { ssh_connected: true, last_error: null } }),
     "GET /api/jobs?summary=1": () => ({ body: [job("a", { status: "running", cancellable: true }), job("b")] }),
     "GET /api/fasrc/current-submission": () => ({ status: 503, body: { ok: false, error: "FASRC not connected", code: "fasrc_offline" } }),
-    "GET /api/system/production": () => ({ body: {
-      members: 30, starless_members: 12, stale: false, stale_reason: null, evaluated_at: ago(0.5),
-      eval_summary: {
-        ensemble_psnr: 58.3753, mean_member_psnr: 57.22, ensemble_gain_db: 1.155, n_scored: 100,
-        combiner_psnr: 99, // the RBF block: never the headline
-        spatial_gate_combiner_psnr: 59.2354, spatial_gate_combiner_vs_mean_db: 0.8601,
-        spatial_gate_combiner_vs_best_member_db: 0.2948,
-      } } }),
     "GET /api/models": () => ({ body: {
-      members: STARFULL.map((m) => `${m.slice(7)}·psnr`), production_kind: "spatial_gate",
-      models: [{ spec: "production", available: true, reason: null, combiner_kind: "spatial_gate", fingerprint: "d9ef",
-        label: "Production · spatial gate (convolutional, convex)",
-        details: { mix_space: "linear", fitted_at: new Date(Date.now() - 3 * 3600_000).toISOString() } }],
+      production_kind: "universal",
+      production: { kind: "universal", spec: "universal:member_257", name: "member_257", label: "Universal 257", available: true, reason: null },
+      models: [{ spec: "production", kind: "production", available: true, reason: null, fingerprint: "u257",
+        label: "Production · Universal 257", details: { universal: true, model_spec: "universal:member_257", member: "member_257" } }],
     } }),
-    "GET /ensemble/knee-psnr.json?mode=starfull": () => ({ body: KNEE }),
+    "GET /ensemble/universal.json?mode=starfull": () => ({ body: UNIVERSAL }),
     "GET /api/system/alerts": () => ({ body: alertsOf(CHECKS) }),
     "GET /api/experiments": () => ({ body: EXPERIMENTS }),
-    "GET /api/experiments/e-new": () => ({ body: { id: "e-new", fingerprints: { production: "d9ef" } } }),
+    "GET /api/experiments/e-new": () => ({ body: { id: "e-new", fingerprints: { production: "u257" } } }),
     "GET /api/realism/overview": () => ({ body: OVERVIEW }),
-    "GET /ensemble/members.json?mode=starfull": () => ({ body: {
-      members: STARFULL.map((name) => ({ name, status: "complete", timeout: false, step: 70000 })), archived: [{ name: "member_168" }] } }),
     "GET /ensemble/training-jobs.json": () => ({ body: { jobs: [] } }),
     "GET /api/figures/nexus-plates": () => ({ body: PLATES }),
     "GET /api/figures/real-sr": () => ({ body: { total: 1, items: [{ ref: "tile/ra1_dec2", source: "tile", id: "ra1_dec2",
@@ -134,7 +114,6 @@ beforeEach(() => {
       { id: "vr-cccccccccccccccccccccccc", label: "synthetic lens 7", regime: "synthetic", created_utc: ago(0.1), source: { collection: "sky" } },
     ] } }),
     "GET /poster/result/status": () => ({ body: { ok: true, available: false, png: null, fits: null } }),
-    "POST /ensemble/evaluate": () => ({ body: { job_id: "ev9" } }),
   };
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
@@ -176,145 +155,52 @@ const chipAt = async (label: string, state: string) => waitFor(() => {
 }, { timeout: 4000 });
 
 describe("Home · the production verdict", () => {
-  it("states the gate's integrated PSNR against the best member and the plain mean, then its real holes, in one sentence", async () => {
+  it("states the production model and its own integrated PSNR, then its real holes, in one sentence", async () => {
     show(<Dashboard />);
     const text = await summaryText(/real holes/);
-    expect(text).toMatch(/^Production gate 60\.97\u00a0dB integrated PSNR, \+1\.02\u00a0dB over the best member \(#196\) and \+1\.87\u00a0dB over the plain mean; real holes 20% in J, its worst band \(Sky › Compare, .+\)\.$/);
-    expect([...summary()!.querySelectorAll("strong")].map((n) => n.textContent)).toEqual(["60.97", "+1.02", "+1.87", "20%"]);
-    // every number keeps its unit: a non-breaking space before each "dB", never a plain one
-    expect(text.match(/\u00a0dB/g)).toHaveLength(3);
-    expect(text).not.toMatch(/ dB/);
-    expect(screen.queryByText(/99\.00/)).toBeNull();                       // the RBF block is never the headline
-    expect(within(summary()!).getByRole("link", { name: "integrated PSNR" }).getAttribute("href")).toBe("/models/leaderboard");
-    expect(within(summary()!).getByRole("link", { name: /Sky › Compare/ }).getAttribute("href")).toBe("/sky/compare?exp=e-new");
-  });
-
-  it("captions it with the members, the gate fit, the test fields and the knee range", async () => {
-    show(<Dashboard />);
-    await summaryText();
-    const cap = await waitFor(() => {
-      const el = document.querySelector(".home__caption") as HTMLElement | null;
-      if (!el?.textContent?.includes("knees")) throw new Error("no caption yet");
-      return el;
-    });
-    expect(cap.textContent).toBe("30 members · gate fitted 3 h ago · 100 test fields · knees 0.1–10⁴ e⁻");
-    expect(within(cap).getByRole("link", { name: "30 members" }).getAttribute("href")).toBe("/models/members");
-    expect(cap.textContent).not.toContain("42");                             // STARFULL regime labels, never all 42
-  });
-
-  it("never shows an older fit's real number: 'no real benchmark for this membership'", async () => {
-    routes["GET /api/experiments/e-new"] = () => ({ body: { id: "e-new", fingerprints: { production: "0ld0" } } });
-    show(<Dashboard />);
-    const text = await summaryText(/benchmark/);
-    expect(text).toMatch(/; no real benchmark for this membership \(the last run, .+, scored an earlier one\)\.$/);
-    expect(text).not.toContain("20%");
-    const s = summary()!;
-    expect(within(s).getByRole("link", { name: "no real benchmark for this membership" }).getAttribute("href")).toBe("/sky/compare?new=1");
-    expect(within(s).getAllByRole("link").at(-1)!.getAttribute("href")).toBe("/sky/compare?exp=e-new");   // the run, by date
-  });
-
-  it("falls back to the labelled test PSNR when no knee curves exist, and flags a stale evaluation", async () => {
-    routes["GET /api/system/production"] = () => ({ body: { members: 30, starless_members: 12, stale: true,
-      stale_reason: "The evaluation predates the current members", evaluated_at: ago(2), eval_summary: {
-        ensemble_psnr: 44.123, mean_member_psnr: 43.913, ensemble_gain_db: -0.4,
-      } } });
-    routes["GET /ensemble/knee-psnr.json?mode=starfull"] = () => ({ body: { available: false, stale: false } });
-    routes["GET /api/experiments"] = () => ({ body: { experiments: [] } });
-    show(<Dashboard />);
-    const text = await summaryText(/benchmark/);
-    expect(text).toBe("Plain mean 44.12\u00a0dB test PSNR, +0.21\u00a0dB over the mean member; no real benchmark yet (stale).");
-    expect(summary()!.querySelector("[data-tone=warn]")?.textContent).toBe("stale");
-  });
-
-  it("falls back to the ensemble status when the server predates the production endpoint", async () => {
-    routes["GET /api/system/production"] = () => ({ status: 404, body: { error: "The requested URL was not found on the server." } });
-    routes["GET /ensemble/knee-psnr.json?mode=starfull"] = () => ({ body: { available: false, stale: false } });
-    routes["GET /ensemble/status.json?mode=starfull"] = () => ({ body: {
-      eval_summary: { ensemble_psnr: 58.3753, spatial_gate_combiner_psnr: 59.2354, spatial_gate_combiner_vs_best_member_db: 0.2948 },
-      eval_summary_stale: false, members: STARFULL.map((name) => ({ name, starless: false })),
-    } });
-    show(<Dashboard />);
-    expect(await summaryText()).toMatch(/^Production gate 59\.24\u00a0dB test PSNR, \+0\.29\u00a0dB over the best member/);
-    expect(await screen.findByText(/predates \/api\/system\/production/)).toBeTruthy();
-  });
-
-  it("never waits on the heavy ensemble status", async () => {
-    show(<Dashboard />);
-    await summaryText();
-    expect(calls.some((c) => c.url.startsWith("/ensemble/status.json"))).toBe(false);
-    // the overview is read only for a universal production's score
-    expect(calls.some((c) => c.url.startsWith("/ensemble/overview.json"))).toBe(false);
-  });
-});
-
-describe("Home · a universal model as production", () => {
-  const PROD_MODEL = { name: "member_238", spec: "universal:member_238", label: "Universal 238",
-    integrated: [56, 65.5, 63, 64], mean: 62.13, scored_at: ago(0.125), stale: false };
-  beforeEach(() => {
-    routes["GET /api/models"] = () => ({ body: {
-      members: STARFULL.map((m) => `${m.slice(7)}·psnr`), production_kind: "universal",
-      production: { kind: "universal", spec: "universal:member_238", name: "member_238", label: "Universal 238", available: true, reason: null },
-      models: [{ spec: "production", kind: "production", available: true, reason: null, combiner_kind: null, fingerprint: "u238",
-        label: "Production · Universal 238", details: { universal: true, model_spec: "universal:member_238", member: "member_238" } }],
-    } });
-    routes["GET /ensemble/overview.json?mode=starfull"] = () => ({ body: { production_model: PROD_MODEL } });
-    routes["GET /api/experiments/e-new"] = () => ({ body: { id: "e-new", fingerprints: { production: "u238" } } });
-    routes["GET /api/system/loop"] = () => ({ body: { ...LOOP_OK(), stages: LOOP_OK().stages.map((s) => (s.id === "gate"
-      ? stage("gate", "Gate", "current", "production is Universal 238", "/models/universal") : s)) } });
-  });
-
-  it("states the universal model and its own integrated PSNR, then its real holes, never the gate's numbers", async () => {
-    show(<Dashboard />);
-    const text = await summaryText(/real holes/);
-    expect(text).toMatch(/^Production is Universal 238: 62\.13\u00a0dB integrated PSNR; real holes 20% in J, its worst band \(Sky › Compare, .+\)\.$/);
-    expect(text).not.toMatch(/60\.97|59\.24|best member|plain mean|gate/);
+    expect(text).toMatch(/^Production is Universal 257: 62\.82\u00a0dB integrated PSNR; real holes 20% in J, its worst band \(Sky › Compare, .+\)\.$/);
+    expect(text).not.toMatch(/best member|plain mean|gate/);
     expect(within(summary()!).getByRole("link", { name: "integrated PSNR" }).getAttribute("href")).toBe("/models/universal");
     const cap = await waitFor(() => {
       const el = document.querySelector(".home__caption") as HTMLElement | null;
       if (!el?.textContent?.includes("scored")) throw new Error("no caption yet");
       return el;
     });
-    expect(cap.textContent).toBe("one universal model, no gate · scored 3 h ago");
-    expect(within(cap).getByRole("link", { name: "one universal model, no gate" }).getAttribute("href")).toBe("/models/universal");
-    expect(cap.textContent).not.toMatch(/gate fitted|gate out of date|members/);
+    expect(cap.textContent).toBe("one universal model · scored 3 h ago");
+    expect(within(cap).getByRole("link", { name: "one universal model" }).getAttribute("href")).toBe("/models/universal");
+    // only the catalogue and the universal payload: no ensemble reads
+    expect(calls.some((c) => /\/ensemble\/(overview|knee-psnr|members|status)|\/api\/system\/production/.test(c.url))).toBe(false);
   });
 
-  it("reads the Gate chip as the production stage: Production, Universal 238, linking to Models › Universal", async () => {
-    show(<Dashboard />);
-    const chip = await chipAt("Production", "current");
-    expect(chip.textContent).toBe("ProductionUniversal 238");
-    expect(chip.getAttribute("href")).toBe("/models/universal");
-    expect(screen.queryByRole("link", { name: /^Gate: / })).toBeNull();
-  });
-
-  it("names the universal model when the newest real run scored an earlier production, and says when it is not scored yet", async () => {
-    routes["GET /api/experiments/e-new"] = () => ({ body: { id: "e-new", fingerprints: { production: "d9ef" } } });
+  it("names the production model when the newest real run scored an earlier one, and says when it is not scored yet", async () => {
+    routes["GET /api/experiments/e-new"] = () => ({ body: { id: "e-new", fingerprints: { production: "u238" } } });
     const view = show(<Dashboard />);
     expect(await summaryText(/benchmark/)).toMatch(
-      /^Production is Universal 238: 62\.13\u00a0dB integrated PSNR; no real benchmark for Universal 238 \(the last run, .+, scored an earlier one\)\.$/);
+      /^Production is Universal 257: 62\.82\u00a0dB integrated PSNR; no real benchmark for Universal 257 \(the last run, .+, scored an earlier one\)\.$/);
     view.unmount();
     queryClient.clear();
-    routes["GET /ensemble/overview.json?mode=starfull"] = () => ({ body: { production_model: { ...PROD_MODEL, integrated: null, mean: null, scored_at: null, stale: null } } });
+    routes["GET /ensemble/universal.json?mode=starfull"] = () => ({ body: { ...UNIVERSAL, production: null } });
     show(<Dashboard />);
-    expect(await summaryText(/not scored/)).toMatch(/^Production is Universal 238, not scored on the test fields yet; no real benchmark for Universal 238/);
+    expect(await summaryText(/not scored.*benchmark/)).toMatch(/^Production is Universal 257, not scored on the test fields yet; no real benchmark for Universal 257/);
   });
 });
 
 describe("Home · the Loop strip", () => {
-  it("shows the seven stages in loop order, each with a state dot and one reason, linking to its tab", async () => {
+  it("shows the six stages in loop order, each with a state dot and one reason, linking to its tab", async () => {
     show(<Dashboard />);
     const loop = await screen.findByRole("navigation", { name: "The loop" });
     await chipAt("Figures", "current");
     await chipAt("Priors", "current");
     const chips = within(loop).getAllByRole("link");
-    expect(chips.map((c) => c.getAttribute("aria-label")?.split(":")[0])).toEqual(["Priors", "Records", "Members", "Evaluation", "Gate", "Real SR", "Figures"]);
+    expect(chips.map((c) => c.getAttribute("aria-label")?.split(":")[0])).toEqual(["Priors", "Records", "Models", "Production", "Real SR", "Figures"]);
     expect(chips.map((c) => c.querySelector(".home-loop__dot")?.getAttribute("data-state")))
-      .toEqual(["current", "current", "current", "current", "current", "stale", "current"]);
+      .toEqual(["current", "current", "current", "current", "stale", "current"]);
     const real = chip("Real SR");
     expect(real.textContent).toBe("Real SR449 stale");
     expect(real.getAttribute("href")).toBe("/sky/targets?state=stale");
-    expect(chip("Gate").getAttribute("href")).toBe("/models/combiner");
-    expect(chip("Members").textContent).toBe("Members30 active");
+    expect(chip("Production").getAttribute("href")).toBe("/models/universal");
+    expect(chip("Production").textContent).toBe("ProductionUniversal 257");
+    expect(chip("Models").textContent).toBe("Models2 universal models");
     // no tiles, no badge, no job launchers
     expect(document.querySelector(".ui-kpi, .ui-stat")).toBeNull();
     expect(screen.queryByText(/\d alerts?$/)).toBeNull();
@@ -367,7 +253,7 @@ describe("Home · the Loop strip", () => {
   it("opens Notebook › Log prefilled from the unlogged results, appending nothing", async () => {
     routes["GET /api/system/alerts"] = () => ({ body: alertsOf(patchCheck("tracking", { state: "warn", title: "Results since the last tracking entry (2026-09-21)",
       facts: { last_entry: "2026-09-21T14:42:29+00:00", unlogged: [
-        { at: "2026-09-25T23:32:26+00:00", label: "evaluation" }, { at: "2026-09-25T22:30:13+00:00", label: "production gate fit" }] } })) });
+        { at: "2026-09-25T23:32:26+00:00", label: "universal scores" }, { at: "2026-09-25T22:30:13+00:00", label: "experiment" }] } })) });
     show(<Dashboard />);
     const chip = await screen.findByRole("button", { name: "No notebook entry since 09-21 · 2 results" });
     expect(within(chip.closest("li")!).getByRole("link", { name: "Notebook › Log" }).getAttribute("href")).toBe("/notebook/log");
@@ -378,7 +264,8 @@ describe("Home · the Loop strip", () => {
     const entry = location().searchParams.get("entry") ?? "";
     expect(location().searchParams.get("from")).toBe("Home");
     expect(entry).toContain("results since the last tracking entry (2026-09-21 14:42 UTC)");
-    expect(entry).toContain("- evaluation — 2026-09-25 23:32 UTC: test PSNR production gate 59.24 dB");
+    expect(entry).toContain("- universal scores — 2026-09-25 23:32 UTC: Universal 257 is production, ∫PSNR 62.82 dB");
+    expect(entry).toContain("- experiment — 2026-09-25 22:30 UTC: see Sky › Compare");
     expect(calls.some((c) => c.method === "POST")).toBe(false);
   });
 });
@@ -387,9 +274,8 @@ describe("Home · the staleness service", () => {
   const LOOP = { computed_at: new Date().toISOString(), ttl_s: 60, counts: {}, errors: {}, stages: [
     stage("priors", "Priors", "current", "galaxies v15 · stars · noise v5", "/synthetic/status"),
     stage("records", "Records", "current", "built 2 d ago, after the priors", "/synthetic/records"),
-    stage("members", "Members", "stale", "7 new on FASRC", "/models/members", "members 199–205 finished on FASRC and are not pulled"),
-    stage("evaluation", "Evaluation", "current", "evaluated 7 h ago", "/models/leaderboard"),
-    stage("gate", "Gate", "current", "fitted for the 30 members", "/models/combiner"),
+    stage("models", "Models", "stale", "7 new on FASRC", "/models/universal", "members 259–265 finished on FASRC and are not pulled"),
+    stage("production", "Production", "current", "Universal 257", "/models/universal"),
     stage("real-sr", "Real SR", "stale", "450 stale", "/sky/targets?state=stale"),
     stage("figures", "Figures", "stale", "NEXUS plates use a legacy SR", "/figures/plates?plate=nexus", "Made with minibatched convex all-asinh RBF."),
   ] };
@@ -397,8 +283,8 @@ describe("Home · the staleness service", () => {
   it("shows the server's verdicts and does not rebuild them in the browser", async () => {
     routes["GET /api/system/loop"] = () => ({ body: LOOP });
     show(<Dashboard />);
-    const members = await chipAt("Members", "stale");
-    expect(members.textContent).toBe("Members7 new on FASRC");
+    const models = await chipAt("Models", "stale");
+    expect(models.textContent).toBe("Models7 new on FASRC");
     expect(chip("Figures").textContent).toBe("FiguresNEXUS plates use a legacy SR");
     expect(chip("Figures").getAttribute("href")).toBe("/figures/plates?plate=nexus");
     expect(calls.some((c) => c.url === "/api/realism/overview" || c.url === "/ensemble/training-jobs.json")).toBe(false);
@@ -409,7 +295,7 @@ describe("Home · the staleness service", () => {
     routes["GET /api/system/loop?fresh=1"] = () => ({ body: LOOP });
     routes["GET /api/system/alerts?fresh=1"] = () => ({ body: alertsOf(CHECKS) });
     show(<Dashboard />);
-    await chipAt("Members", "stale");
+    await chipAt("Models", "stale");
     fireEvent.click(screen.getByRole("button", { name: "Refresh Home" }));
     await waitFor(() => expect(calls.some((c) => c.url === "/api/system/loop?fresh=1")).toBe(true));
     expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
@@ -432,25 +318,10 @@ describe("Home · running now", () => {
     expect(within(line).getByRole("link", { name: "Runs › Live" }).getAttribute("href")).toBe("/runs/live");
   });
 
-  it("raises the members that stopped short (TIMEOUT) with a Continue link", async () => {
-    routes["GET /api/jobs?summary=1"] = () => ({ body: [job("b")] });
-    routes["GET /ensemble/members.json?mode=starfull"] = () => ({ body: {
-      members: STARFULL.map((name, i) => ({ name, status: i < 2 ? "timeout" : "complete", timeout: i < 2, step: i < 2 ? 51000 : 70000 })), archived: [] } });
-    show(<Dashboard />);
-    const line = await waitFor(() => {
-      const el = document.querySelector(".home__running") as HTMLElement | null;
-      if (!el) throw new Error("not yet");
-      return el;
-    });
-    expect(line.textContent).toBe("Nothing running. 2 members stopped short of the target steps (TIMEOUT): Continue them. Runs › Live");
-    expect(within(line).getByRole("link", { name: "Continue them" }).getAttribute("href"))
-      .toBe("/models/train?mode=continue&members=member_169%2Cmember_170");
-  });
-
   it("says nothing when idle", async () => {
     routes["GET /api/jobs?summary=1"] = () => ({ body: [job("b")] });
     show(<Dashboard />);
-    await chipAt("Members", "current");
+    await chipAt("Models", "current");
     expect(document.querySelector(".home__running")).toBeNull();
   });
 });

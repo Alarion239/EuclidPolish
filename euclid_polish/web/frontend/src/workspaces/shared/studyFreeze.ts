@@ -117,9 +117,7 @@ export function blockFix(block: CandidateBlock): { label: string; to: string } |
   if (block.state === "current") return null;
   const models = (tab: string) => pagePath("models", { tab });
   switch (block.id) {
-    case "test_cubes": return { label: "Re-evaluate", to: models("leaderboard") };
-    case "gate": case "gate_diagnostic": case "compare": return { label: "Combiner", to: models("combiner") };
-    case "training_curves": return { label: "Members", to: models("members") };
+    case "test_cubes": case "training_curves": return { label: "Models › Universal", to: models("universal") };
     case "real": return { label: "Sky › Compare", to: "/sky/compare" };
     default: return null;
   }

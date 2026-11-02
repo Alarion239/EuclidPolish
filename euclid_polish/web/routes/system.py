@@ -11,17 +11,10 @@
     Measure every data root and the fetch cache's pinned / evictable split in
     a local job (one at a time, kind ``system-disk-usage``); the result is
     kept in memory and in a small JSON file so it survives a restart.
-``GET /api/system/production``
-    Home's production numbers without the heavy ensemble status: the scalar
-    keys of the STARFULL ``eval_summary.json`` (the production gate's
-    ``spatial_gate_*`` block included), when it was written, whether it is
-    stale (the evaluation check: members or test records changed) and the
-    active STARFULL / starless member counts.
 ``GET /api/system/alerts``
     The Home health checks, each ``ok | warn | bad | unknown``: free disk
-    space, real SR products vs the production model, the production gate vs
-    the STARFULL membership, the evaluation vs members and test records, the
-    PSNR-vs-knee curves, the training records' noise model vs
+    space, real SR products vs the production model, whether the production
+    model (one universal model) can run, the training records' noise model vs
     ``Config.NOISE_MODEL`` and results newer than the tracking log's last
     entry. Memoised for :data:`ALERTS_TTL_S` (``?fresh=1`` recomputes); a
     check that raises reads ``unknown`` with its error.
@@ -49,15 +42,13 @@ from typing import Any
 
 from flask import jsonify, request
 
-from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.image.collection import ImageSet
-from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.provenance.defaults import default_store as provenance_store
 from euclid_polish.tracking.store import TrackingStore
 from euclid_polish.web import errors, fasrc_fetcher
 from euclid_polish.web.helpers import experiments, model_catalog, sky_atlas, system_alerts
-from euclid_polish.web.helpers.ensemble_viz import knee_psnr_status
+from euclid_polish.web.helpers.ensemble_viz import universal_scores_dir
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.jobs import REGISTRY
 
@@ -469,145 +460,22 @@ def check_real_sr() -> dict[str, Any]:
             "to": "/sky/targets", "facts": facts}
 
 
-def check_combiner() -> dict[str, Any]:
-    """Is the production model runnable — a universal model the registry
-    names production, or the production gate fitted for the current STARFULL
-    members?"""
+def check_production() -> dict[str, Any]:
+    """Can the production model — the universal model the registry names
+    production — run?"""
     specs = model_catalog.list_specs()
     production = next((spec for spec in specs
                        if spec.spec == model_catalog.SPEC_PRODUCTION), None)
-    if production is None:
-        return {"state": "unknown", "title": "No production model in the catalogue",
-                "detail": None, "to": "/models/combiner"}
-    summary = model_catalog.production_summary(specs)
-    if summary["kind"] == "universal":
-        facts = {"model": summary["spec"], "label": summary["label"]}
-        if production.available:
-            return {"state": "ok", "title": f"Production is {summary['label']}",
-                    "detail": "A single universal model (no gate).",
-                    "to": "/models/universal", "facts": facts}
-        return {"state": "warn", "title": f"The production model {summary['label']} cannot run",
-                "detail": production.reason, "to": "/models/universal", "facts": facts}
+    summary = model_catalog.production_summary(specs) if production is not None else None
+    if production is None or summary is None or summary["kind"] != "universal":
+        return {"state": "warn", "title": "No universal model is production",
+                "detail": "Make one production on Models › Universal.", "to": "/models/universal"}
+    facts = {"model": summary["spec"], "label": summary["label"]}
     if production.available:
-        n = len(production.member_labels)
-        return {"state": "ok", "title": f"Production gate fitted for the current {n} members",
-                "detail": None, "to": "/models/combiner", "facts": {"members": n}}
-    return {"state": "warn", "title": "The production gate does not match the members",
-            "detail": production.reason, "to": "/models/combiner"}
-
-
-_EVALUATE_ACTION = {
-    "label": "Evaluate", "method": "POST", "url": "/ensemble/evaluate",
-    "params": {"mode": "starfull"},
-    "confirm": ("Run the STARFULL evaluation on the local test records? It loads every "
-                "active member (TensorFlow) and takes several minutes."),
-}
-
-
-def _records_match(records_fp: str, rdir: str, subset: str) -> bool | None:
-    """Whether the recorded ``kind:size:mtime_ns|…`` still matches the files
-    (``None`` when it cannot be compared)."""
-    parts = [part.split(":") for part in str(records_fp).split("|") if part]
-    if not parts or not rdir or not os.path.isdir(rdir):
-        return None
-    for fields in parts:
-        if len(fields) != 3:
-            return None
-        kind, size, mtime = fields
-        try:
-            st = os.stat(tfrecord_path(rdir, f"{kind}_{subset}"))
-        except OSError:
-            return False
-        if str(st.st_size) != size or str(st.st_mtime_ns) != mtime:
-            return False
-    return True
-
-
-def check_evaluation() -> dict[str, Any]:
-    """The STARFULL eval summary vs the active members and the test records."""
-    path = model_catalog.regime_dir() / "eval_summary.json"
-    try:
-        summary = json.loads(path.read_text())
-    except (OSError, ValueError):
-        summary = None
-    if not isinstance(summary, dict):
-        return {"state": "warn", "title": "The STARFULL ensemble is not evaluated yet",
-                "detail": "Evaluate it on the local test records to get the production numbers.",
-                "to": "/models/leaderboard", "action": _EVALUATE_ACTION}
-    recorded = [str(x) for x in (summary.get("member_labels")
-                                 or summary.get("per_member_labels") or [])]
-    active = model_catalog.active_member_labels()
-    evaluated_at = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(timespec="seconds")
-    facts = {"evaluated_members": len(recorded), "active_members": len(active),
-             "evaluated_at": evaluated_at, "n_scored": summary.get("n_scored")}
-    if set(recorded) != set(active):   # the same members in another order are still current
-        added = [label for label in active if label not in recorded]
-        removed = [label for label in recorded if label not in active]
-        change = ", ".join(filter(None, [
-            f"+{len(added)} new" if added else "", f"−{len(removed)} retired" if removed else ""]))
-        return {"state": "warn", "title": "The evaluation predates the current members",
-                "detail": (f"Evaluated {len(recorded)} members; {len(active)} are active now"
-                           f"{f' ({change})' if change else ''}."),
-                "to": "/models/leaderboard", "action": _EVALUATE_ACTION, "facts": facts}
-    identity = summary.get("eval_identity") or {}
-    subset = str(identity.get("subset") or "test")
-    match = (_records_match(identity["records_fp"], records_dir(), subset)
-             if identity.get("records_fp") else None)
-    if match is False:
-        return {"state": "warn", "title": "The evaluation predates the current test records",
-                "detail": (f"The {subset} records changed since the evaluation "
-                           f"({evaluated_at[:10]}); its numbers describe the old fields."),
-                "to": "/models/leaderboard", "action": _EVALUATE_ACTION, "facts": facts}
-    return {"state": "ok",
-            "title": f"Evaluation current ({len(active)} members, {subset} records)",
-            "detail": None if match else "The test records could not be compared.",
-            "to": "/models/leaderboard", "facts": facts}
-
-
-def starless_member_labels() -> list[str]:
-    """``NN·psnr`` labels of the registry-active starless (opt-in) members."""
-    return list(ensemble_registry.regime_labels(model_catalog.ensemble_dir(), True))
-
-
-def production_payload() -> dict[str, Any]:
-    """``GET /api/system/production`` (see the module docstring)."""
-    path = model_catalog.regime_dir() / "eval_summary.json"
-    try:
-        summary = json.loads(path.read_text())
-    except (OSError, ValueError):
-        summary = None
-    scalars = None
-    evaluated_at = None
-    stale, reason = False, None
-    if isinstance(summary, dict):
-        scalars = {key: value for key, value in summary.items()
-                   if value is None or isinstance(value, (bool, int, float, str))}
-        with contextlib.suppress(OSError):
-            evaluated_at = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(timespec="seconds")
-        check = check_evaluation()
-        stale = check["state"] != "ok"
-        reason = check["title"] if stale else None
-    return {
-        "eval_summary": scalars, "evaluated_at": evaluated_at, "stale": stale, "stale_reason": reason,
-        "members": len(model_catalog.active_member_labels()),
-        "starless_members": len(starless_member_labels()),
-    }
-
-
-def check_knee() -> dict[str, Any]:
-    status = knee_psnr_status(False) or {}
-    action = {"label": "Compute", "method": "POST", "url": "/ensemble/knee-psnr",
-              "params": {"mode": "starfull"},
-              "confirm": "Recompute the PSNR-vs-knee curves from the cached test cubes?"}
-    if not status.get("available"):
-        return {"state": "warn", "title": "PSNR-vs-knee curves not computed",
-                "detail": status.get("reason"), "to": "/models/leaderboard", "action": action}
-    if status.get("stale"):
-        return {"state": "warn", "title": "PSNR-vs-knee curves are stale",
-                "detail": "The cubes, members or combiners changed since they were computed.",
-                "to": "/models/leaderboard", "action": action}
-    return {"state": "ok", "title": "PSNR-vs-knee curves current", "detail": None,
-            "to": "/models/leaderboard"}
+        return {"state": "ok", "title": f"Production is {summary['label']}",
+                "detail": None, "to": "/models/universal", "facts": facts}
+    return {"state": "warn", "title": f"The production model {summary['label']} cannot run",
+            "detail": production.reason, "to": "/models/universal", "facts": facts}
 
 
 def _find_noise_model(value: Any) -> str | None:
@@ -700,15 +568,9 @@ def last_log_entry(text: str) -> datetime | None:
 
 def _tracked_results() -> list[tuple[str, float]]:
     """(label, mtime) of the results the notebook should mention."""
-    regime = model_catalog.regime_dir()
     out = []
-    for label, path in (
-        ("evaluation", regime / "eval_summary.json"),
-        ("production gate fit", regime / model_catalog.PRODUCTION_ARTIFACT_DIR / "combiner.npz"),
-        ("PSNR vs knee", regime / "ensemble_knee_psnr.json"),
-    ):
-        with contextlib.suppress(OSError):
-            out.append((label, path.stat().st_mtime))
+    with contextlib.suppress(OSError):
+        out.append(("universal scores", (Path(universal_scores_dir()) / "index.json").stat().st_mtime))
     root = experiment_records_root()
     with contextlib.suppress(OSError):
         newest = max((p.stat().st_mtime for p in Path(root).glob("*.json")), default=None)
@@ -741,17 +603,15 @@ def check_tracking() -> dict[str, Any]:
 
 
 CHECK_LABELS = {
-    "disk": "Disk space", "real-sr": "Real SR products", "combiner": "Production gate",
-    "evaluation": "Evaluation", "knee": "Knee PSNR", "records-noise": "Records noise model",
+    "disk": "Disk space", "real-sr": "Real SR products", "production": "Production model",
+    "records-noise": "Records noise model",
     "tracking": "Tracking log",
 }
 
 CHECKS: tuple[tuple[str, Callable[[], dict[str, Any]]], ...] = (
     ("disk", lambda: check_disk()),
     ("real-sr", lambda: check_real_sr()),
-    ("combiner", lambda: check_combiner()),
-    ("evaluation", lambda: check_evaluation()),
-    ("knee", lambda: check_knee()),
+    ("production", lambda: check_production()),
     ("records-noise", lambda: check_records_noise()),
     ("tracking", lambda: check_tracking()),
 )
@@ -815,11 +675,6 @@ def register(app):
     def api_system_disk_usage_refresh():
         """Measure every data root in a local job (one at a time)."""
         return jsonify({"ok": True, "job_id": spawn_disk_usage_refresh()})
-
-    @app.get("/api/system/production")
-    def api_system_production():
-        """Home's production numbers (the STARFULL eval summary headline)."""
-        return jsonify(production_payload())
 
     @app.get("/api/system/alerts")
     def api_system_alerts():

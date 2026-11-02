@@ -1287,8 +1287,14 @@ def nexus_fields() -> list[dict[str, Any]]:
             _nexus_tile_sr_is_current(directory, tile, combiner_artifact)
             for tile in tiles if isinstance(tile, Mapping)
         )
+        matched = {
+            name: sum(isinstance(tile, Mapping) and isinstance(
+                (tile.get("jwst_band_files") or {}).get(name), str) for tile in tiles)
+            for name in nexus_matched_filters(manifest)
+        }
         fields.append({
             **manifest,
+            "matched_band_counts": matched,
             "four_band_count": complete,
             "sr_count": sr_count,
             "current_sr_count": current_sr_count,
@@ -1472,6 +1478,200 @@ def _fill_nexus_field(
     if progress:
         progress(total * 4, total * 4, "NEXUS Euclid coverage cached")
     return manifest
+
+
+# ---------------------------------------------------------------------------
+# NEXUS filters matched to the Euclid bands (VIS–F090W, Y–F115W, J–F150W)
+# ---------------------------------------------------------------------------
+
+#: The early-release wide epoch-1 pointing-01 mosaics (they cover the deep
+#: field), under :func:`nexus_mosaic_root`; H's F200W is the field's own tile.
+NEXUS_EDR_MOSAIC = "edr_wide_ep1_01/wide_ep1_01_{filter}_i2d_data.fits.gz"
+#: Rows of the tile footprint's bounding box added on every side before resampling.
+_MATCHED_MARGIN = 2
+
+
+def nexus_edr_mosaic_path(filter_name: str) -> Path:
+    """The cached early-release mosaic of ``filter_name`` (e.g. F090W)."""
+    return nexus_mosaic_root() / NEXUS_EDR_MOSAIC.format(filter=filter_name.lower())
+
+
+def nexus_matched_filters(manifest: Mapping[str, Any]) -> list[str]:
+    """The NIRCam filters matched to the Euclid bands that a field does not
+    carry itself, in Euclid band order (F090W, F115W, F150W for F200W)."""
+    own = str(manifest.get("filter") or "").strip().upper()
+    return [name for name in dict.fromkeys(Config.JWST_PARTNER_FILTER[band]
+                                           for band in Config.LR_INPUT_BAND_NAMES)
+            if name != own]
+
+
+class _ForwardRows:
+    """``plane[y0:y1, x0:x1]`` windows for non-decreasing ``y0``, read strictly
+    forward: a gzip :class:`fits_plane.FitsPlane` reopens its stream on any
+    backward jump, and neighbouring tiles overlap in rows, so the rows a later
+    window can still need are kept here instead."""
+
+    def __init__(self, plane: Any) -> None:
+        self.plane = plane
+        self.chunks: list[tuple[int, np.ndarray]] = []    # (first row, full-width rows)
+        self.end = 0
+
+    def get(self, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
+        self.chunks = [(start, rows) for start, rows in self.chunks if start + len(rows) > y0]
+        if y1 > self.end:
+            start = max(self.end, y0)
+            self.chunks.append((start, self.plane[start:y1, :]))
+            self.end = y1
+        parts = [rows[max(0, y0 - start):y1 - start, x0:x1] for start, rows in self.chunks
+                 if start < y1 and start + len(rows) > y0]
+        return np.concatenate(parts, axis=0)
+
+
+def _grid_border(shape: Sequence[int]) -> tuple[np.ndarray, np.ndarray]:
+    """``(x, y)`` pixel positions of a grid's border (its footprint's edge)."""
+    h, w = int(shape[0]), int(shape[1])
+    xs = np.concatenate([np.arange(w), np.arange(w), np.zeros(h), np.full(h, w - 1)])
+    ys = np.concatenate([np.zeros(w), np.full(w, h - 1), np.arange(h), np.arange(h)])
+    return xs.astype(np.float64), ys.astype(np.float64)
+
+
+def _resample_bilinear(window: np.ndarray, y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """``window`` sampled bilinearly at ``(y, x)``; NaN where any of the four
+    neighbours is unobserved (non-finite or exactly 0, the mosaics' fill)."""
+    good = np.isfinite(window) & (window != 0)
+    values = map_coordinates(np.where(good, window, 0.0).astype(np.float64), [y, x],
+                             order=1, cval=0.0)
+    weight = map_coordinates(good.astype(np.float64), [y, x], order=1, cval=0.0)
+    out = np.full(y.shape, np.nan, np.float32)
+    covered = weight > 0.99
+    out[covered] = (values[covered] / weight[covered]).astype(np.float32)
+    return out
+
+
+def _matched_band_file(tile: Mapping[str, Any], filter_name: str) -> str:
+    index = int(tile.get("source_index", tile.get("index", 0)))
+    return f"tiles/jwst_{filter_name.lower()}_{index:04d}.fits"
+
+
+def _record_matched_bands(directory: Path, filter_name: str, mosaic: Path,
+                          files: Mapping[int, str], uncovered: Iterable[int]) -> None:
+    """Merge one filter's tile files into the field manifest, re-read just
+    before the write (another job may have updated its inference rows)."""
+    path = directory / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    for tile in manifest.get("tiles") or []:
+        if not isinstance(tile, dict):
+            continue
+        index = int(tile.get("source_index", tile.get("index", -1)))
+        band_files = dict(tile.get("jwst_band_files") or {})
+        if index in files:
+            band_files[filter_name] = files[index]
+        else:
+            band_files.pop(filter_name, None)
+        if band_files:
+            tile["jwst_band_files"] = band_files
+        else:
+            tile.pop("jwst_band_files", None)
+    manifest.setdefault("jwst_band_sources", {})[filter_name] = mosaic.name
+    manifest.setdefault("jwst_band_uncovered", {})[filter_name] = sorted(set(uncovered))
+    _write_json(path, manifest)
+
+
+def cache_nexus_matched_bands(field_id: str, *, progress: Any | None = None) -> dict[str, Any]:
+    """Add the NIRCam filters matched to VIS, Y and J to a NEXUS field.
+
+    For each filter (:func:`nexus_matched_filters`) the cached early-release
+    mosaic (:func:`nexus_edr_mosaic_path`) is streamed once, its tiles taken
+    in mosaic row order, and resampled bilinearly onto each tile's own
+    F200W grid (``jwst_file``: same 0.03″ pixels, no blur) as
+    ``tiles/jwst_<filter>_NNNN.fits`` in MJy/sr. A tile the mosaic does not
+    cover gets no file and is listed in the manifest's
+    ``jwst_band_uncovered``; the files are recorded per tile as
+    ``jwst_band_files``. Readable files are reused, so a rerun only fills
+    what is missing. Returns ``{filter: {written, existing, uncovered}}``."""
+    manifest = _read_nexus_field_manifest(field_id)
+    if manifest is None:
+        raise ValueError(f"no saved NEXUS field {field_id!r}")
+    directory = nexus_field_root() / field_id
+    tiles = [tile for tile in manifest.get("tiles") or []
+             if isinstance(tile, Mapping) and isinstance(tile.get("jwst_file"), str)
+             and _is_readable_fits(directory / str(tile["jwst_file"]))]
+    filters = nexus_matched_filters(manifest)
+    known_uncovered = manifest.get("jwst_band_uncovered") or {}
+    work: dict[str, list[Mapping[str, Any]]] = {}
+    for filter_name in filters:
+        skip = {int(index) for index in known_uncovered.get(filter_name) or []}
+        work[filter_name] = [
+            tile for tile in tiles
+            if int(tile.get("source_index", tile.get("index", 0))) not in skip
+            and not _is_readable_fits(directory / _matched_band_file(tile, filter_name))]
+    missing = [nexus_edr_mosaic_path(name) for name in filters
+               if work[name] and not nexus_edr_mosaic_path(name).is_file()]
+    if missing:
+        raise RuntimeError("NEXUS early-release mosaic not cached: "
+                           + ", ".join(os.fspath(path) for path in missing))
+    total = max(1, sum(len(todo) for todo in work.values()))
+    done = 0
+    summary: dict[str, Any] = {}
+    for filter_name in filters:
+        mosaic = nexus_edr_mosaic_path(filter_name)
+        todo = {int(tile.get("source_index", tile.get("index", 0))) for tile in work[filter_name]}
+        files: dict[int, str] = {}
+        uncovered = {int(index) for index in known_uncovered.get(filter_name) or []}
+        for tile in tiles:
+            index = int(tile.get("source_index", tile.get("index", 0)))
+            if index not in todo and index not in uncovered:
+                files[index] = _matched_band_file(tile, filter_name)
+        written = 0
+        if todo:
+            with fits_plane.open_plane(mosaic) as plane:
+                ny, nx = plane.shape
+                boxes = []
+                for tile in work[filter_name]:
+                    header = fits.getheader(directory / str(tile["jwst_file"]))
+                    tile_wcs = WCS(header).celestial
+                    shape = (int(header["NAXIS2"]), int(header["NAXIS1"]))
+                    bx, by = plane.wcs.world_to_pixel_values(
+                        *tile_wcs.pixel_to_world_values(*_grid_border(shape)))
+                    y0 = max(0, int(np.floor(np.min(by))) - _MATCHED_MARGIN)
+                    y1 = min(ny, int(np.ceil(np.max(by))) + _MATCHED_MARGIN + 1)
+                    x0 = max(0, int(np.floor(np.min(bx))) - _MATCHED_MARGIN)
+                    x1 = min(nx, int(np.ceil(np.max(bx))) + _MATCHED_MARGIN + 1)
+                    boxes.append(((y0, y1, x0, x1), tile, tile_wcs, shape))
+                rows = _ForwardRows(plane)
+                for (y0, y1, x0, x1), tile, tile_wcs, shape in sorted(boxes, key=lambda item: item[0][0]):
+                    index = int(tile.get("source_index", tile.get("index", 0)))
+                    done += 1
+                    if progress:
+                        progress(done - 1, total, f"NEXUS {filter_name} tile {index:04d}")
+                    data = None
+                    if y1 > y0 and x1 > x0:
+                        yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+                        mx, my = plane.wcs.world_to_pixel_values(
+                            *tile_wcs.pixel_to_world_values(xx, yy))
+                        data = _resample_bilinear(rows.get(y0, y1, x0, x1), my - y0, mx - x0)
+                    if data is None or not _has_signal(data):
+                        uncovered.add(index)
+                        continue
+                    relative = _matched_band_file(tile, filter_name)
+                    header = _primary_image_header(
+                        plane.header, tile_wcs, mosaic.name,
+                        f"NEXUS early-release {filter_name} resampled (bilinear) onto the F200W tile grid")
+                    header["BUNIT"] = str(plane.header.get("BUNIT") or "MJy/sr")
+                    header["FILTER"] = filter_name
+                    target = directory / relative
+                    with atomic_files.temporary_sibling(target, ".fits") as temporary:
+                        fits.PrimaryHDU(data, header=header).writeto(
+                            temporary, overwrite=True, output_verify="silentfix")
+                        os.replace(temporary, target)
+                    files[index] = relative
+                    written += 1
+        _record_matched_bands(directory, filter_name, mosaic, files, uncovered)
+        summary[filter_name] = {"written": written, "existing": len(files) - written,
+                                "uncovered": len(uncovered)}
+    if progress:
+        progress(total, total, "NEXUS matched bands cached")
+    return summary
 
 
 def _cache_nexus_tile_lr(directory: Path, tile: dict[str, Any]) -> tuple[np.ndarray, Any]:
@@ -2770,6 +2970,7 @@ def footprints_in_cone(ra: float, dec: float, radius_deg: float,
 __all__ = [
     "TileMembers",
     "align_to_target",
+    "cache_nexus_matched_bands",
     "choose_q1_tile",
     "coverage_fraction",
     "discover_jwst_overlap",
@@ -2802,8 +3003,10 @@ __all__ = [
     "download_nexus_pair",
     "download_nexus_field",
     "nexus_field_id",
+    "nexus_edr_mosaic_path",
     "nexus_field_root",
     "nexus_fields",
+    "nexus_matched_filters",
     "nexus_pair_id",
     "nexus_product_options",
     "saved_pairs",

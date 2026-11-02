@@ -2,7 +2,7 @@
 
 Page paths come from ``euclid_polish/web/spa_routes.json`` (contract C1);
 data endpoints that share a prefix with a legacy (now redirected) page URL
-(``/ensemble/status.json``, ``/inspect/preview.png``) must keep reaching
+(``/ensemble/members.json``, ``/inspect/preview.png``) must keep reaching
 their own handlers.
 """
 
@@ -103,7 +103,7 @@ def test_redirect_chain_ends_on_the_shell(client):
 
 
 def test_data_endpoint_under_a_page_prefix_stays_json(client):
-    response = client.get("/ensemble/status.json")
+    response = client.get("/ensemble/members.json")
     assert response.status_code == 200
     assert response.is_json
 

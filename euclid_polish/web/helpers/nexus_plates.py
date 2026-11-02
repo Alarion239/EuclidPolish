@@ -6,13 +6,16 @@ through the C9 ``real`` viewer collection (``source=nexus``), so a plate
 shows exactly the arrays the viewer shows: the registered four-band Euclid
 LR (``lr``), the SR of the chosen model spec (``m:<spec>``: production,
 mean, rbf, member:…, gate:…; the RBF-era cached SRs are ``m:rbf``) and the
-native NEXUS image (``jwst``). All panels cover the same 25.5″ tile.
+native NEXUS image (``jwst``) in the NIRCam filter matched to the band
+(VIS–F090W, Y–F115W, J–F150W, H–F200W: ``Config.JWST_PARTNER_FILTER``; the
+field's F200W where a matched filter is not cached). All panels cover the
+same 25.5″ tile.
 
 ``band`` = one Euclid band (every panel gets its own asinh display stretch)
 or ``temp`` (Euclid LR and SR in the viewer's "Temp" colour —
 :func:`eye_rgb` at the viewer's default knee — while NEXUS stays native
-grey). NEXUS is an external morphological reference in a different band and
-unit, not a photometric truth for the SR.
+grey, in VIS's filter). NEXUS is an external morphological reference in a
+different band and unit, not a photometric truth for the SR.
 
 A run is one output directory ``<root>/<tag>/`` holding per-tile PNGs
 ``nexus_tile<NNN>_<band>__<model slug>.png``, one contact sheet
@@ -237,10 +240,25 @@ def _asinh_display(data: np.ndarray) -> np.ndarray:
     return np.clip((stretched - lo) / (hi - lo), 0.0, 1.0)
 
 
-def _plane(cube: np.ndarray, info: Mapping[str, Any], band: str) -> np.ndarray:
+def _plane_index(info: Mapping[str, Any], band: str) -> int:
+    """The channel shown for ``band``: the band itself, else the NIRCam filter
+    matched to it (a NEXUS cube: VIS → F090W … H → F200W), else the first."""
     bands = [str(name) for name in info.get("bands", [])]
-    index = bands.index(band) if band in bands else 0
-    return cube[..., index]
+    for name in (band, Config.JWST_PARTNER_FILTER.get(band)):
+        if name in bands:
+            return bands.index(name)
+    return 0
+
+
+def _plane(cube: np.ndarray, info: Mapping[str, Any], band: str) -> np.ndarray:
+    return cube[..., _plane_index(info, band)]
+
+
+def shown_filter(info: Mapping[str, Any], band: str, fallback: str = "F200W") -> str:
+    """The NIRCam filter a plate's NEXUS panel shows for ``band`` (its
+    ``jwst`` tier ``info``); the temperature plate shows VIS's."""
+    bands = [str(name) for name in info.get("bands", [])]
+    return bands[_plane_index(info, "VIS" if band == "temp" else band)] if bands else fallback
 
 
 def panel_image(cube: np.ndarray, info: Mapping[str, Any], band: str) -> tuple[np.ndarray, dict[str, Any]]:
@@ -378,8 +396,7 @@ def render_plates(tiles: str | Sequence[Any], *, band: str = DEFAULT_BAND, model
         if progress:
             progress(step, total, f"tile {tile.source_index}")
         panels = _load_panels(tile, spec)
-        jwst_bands = panels[2][1].get("bands") or []
-        filter_name = str(jwst_bands[0]) if jwst_bands else filter_name
+        filter_name = shown_filter(panels[2][1], band, filter_name)
         sr_info = dict(panels[1][1])
         images = [panel_image(cube, info, band) for cube, info in panels]
         del panels
@@ -472,6 +489,7 @@ def export_render(tag: str, band: str, model: str, *, fmt: str = "png", dpi: int
     filter_name = str(record.get("filter") or "F200W")
     if tile is not None:
         panels = _load_panels(resolved[0], spec)
+        filter_name = shown_filter(panels[2][1], band, filter_name)
         images = [panel_image(cube, info, band) for cube, info in panels]
         del panels
         effective = export_dpi(13.5, 4.9, dpi)
@@ -483,6 +501,7 @@ def export_render(tag: str, band: str, model: str, *, fmt: str = "png", dpi: int
         rows = []
         for item in resolved:
             panels = _load_panels(item, spec)
+            filter_name = shown_filter(panels[2][1], band, filter_name)
             rows.append((item, [sheet_panel(*panel_image(cube, info, band), slot_px)
                                 for cube, info in panels]))
             del panels

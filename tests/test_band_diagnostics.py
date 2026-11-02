@@ -1,8 +1,8 @@
 """Models › Diagnostics beyond VIS: the Y/J/H evaluation payloads computed
-from the cached cubes (helpers/ensemble_viz.compute_band_evaluation_payloads),
-their cache-only route (``/ensemble/evals.json?band=``), the confirmed job that
-computes them, the band-aware pixel back-trace, and the angular power spectrum
-served as curves (``/api/evaluation/angular-power-spectrum.json``)."""
+from the cached cubes (helpers/ensemble_viz.compute_band_evaluation_payloads;
+their routes went with the panel clean-up, the helpers stay for the scripts)
+and the angular power spectrum served as curves
+(``/api/evaluation/angular-power-spectrum.json``)."""
 
 from __future__ import annotations
 
@@ -16,10 +16,8 @@ from euclid_polish.config import Config
 from euclid_polish.eval import power_spectrum
 from euclid_polish.web.app import create_app
 from euclid_polish.web.helpers import ensemble_viz as ev
-from euclid_polish.web.routes import ensemble as ensemble_routes
 from euclid_polish.web.routes import evaluation as evaluation_routes
 
-SAME_ORIGIN = {"Sec-Fetch-Site": "same-origin"}
 LABELS = ["196·psnr", "178·psnr", "170·psnr"]
 
 
@@ -100,38 +98,9 @@ def client():
         yield c
 
 
-def test_the_band_route_is_cache_only_and_the_job_is_explicit(client, cubes, monkeypatch):
-    tmp_path, _identity = cubes
-    monkeypatch.setattr(ensemble_routes, "_evals_payload_path", lambda starless: str(tmp_path / "ensemble_evals.json"))
-    missing = client.get("/ensemble/evals.json?mode=starfull&band=Y_E", headers=SAME_ORIGIN)
-    assert missing.status_code == 404 and "not computed yet" in missing.get_json()["error"]
-    assert client.get("/ensemble/evals.json?mode=starfull&band=K", headers=SAME_ORIGIN).status_code == 400
-    # the job refuses without an evaluation, then runs when there is one
-    refused = client.post("/ensemble/evals/bands", data={"mode": "starfull"})
-    assert refused.status_code == 400 and "evaluate the ensemble first" in refused.get_json()["error"]
-    (tmp_path / "ensemble_evals.json").write_text("{}")
-    started: list[str] = []
-
-    def spawn_exclusive(label, target, *, kind, key=None, per_key=False):
-        started.append(kind)
-        target(type("Cap", (), {"tick": staticmethod(lambda *a: None)})())
-        return type("Job", (), {"job_id": "b1"})(), True
-
-    monkeypatch.setattr(ensemble_routes.REGISTRY, "spawn_exclusive", spawn_exclusive)
-    body = client.post("/ensemble/evals/bands", data={"mode": "starfull"}).get_json()
-    assert body == {"ok": True, "job_id": "b1", "already_running": False} and started == ["ensemble-band-evals"]
-    served = client.get("/ensemble/evals.json?mode=starfull&band=Y_E", headers=SAME_ORIGIN).get_json()
-    assert served["band"] == "Y_E" and served["stale"] is False
-
-
-def test_the_pixel_trace_reads_the_bands_sidecar(client, cubes, monkeypatch):
-    seen: list[str] = []
-    monkeypatch.setattr(ensemble_routes, "pixel_trace",
-                        lambda starless, diag, i, j, model_kind=None, band="VIS": seen.append(band) or {"stamps": []})
-    assert client.get("/ensemble/pixel-trace.json?diag=std_err&i=1&j=2&band=J_E").status_code == 200
-    assert client.get("/ensemble/pixel-trace.json?diag=std_err&i=1&j=2").status_code == 200
-    assert client.get("/ensemble/pixel-trace.json?diag=std_err&i=1&j=2&band=K").status_code == 400
-    assert seen == ["J_E", "VIS"]
+def test_the_bands_sidecar_path():
+    # the /ensemble/evals.json?band= and /ensemble/pixel-trace.json routes went
+    # with the panel clean-up; the helpers (scripts) keep the per-band sidecars
     assert ev.diag_samples_path(False, "J_E").endswith("ensemble_diag_samples_J_E.json")
 
 

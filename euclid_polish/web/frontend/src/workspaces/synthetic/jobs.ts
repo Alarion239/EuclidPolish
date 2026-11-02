@@ -6,6 +6,7 @@ import { useEffect, useRef } from "react";
 import { isTerminal, useJob, type Job } from "../../api/jobs";
 import { invalidate } from "../../api/query";
 import { startJob } from "../../app/RunActions";
+import { confirm } from "../../ui";
 import type { ItemAction } from "./api";
 
 export const JOB = {
@@ -21,6 +22,7 @@ export const JOB = {
   archiveSync: "realism:archive-sync",
   trainingSync: "realism:training-sync",
   tngRadii: "realism:tng-radii",
+  generateSr: "data:generate-sr",
 } as const;
 export type JobKey = (typeof JOB)[keyof typeof JOB];
 
@@ -99,4 +101,20 @@ export function useRealismJob(key: JobKey, onEnd?: (job: Job) => void) {
     }
   }, [current]);
   return job;
+}
+
+/** Generate the production SR over the local synthetic records (the SR tier
+ *  of the Records viewer and the angular power spectrum). Asks first; a
+ *  danger confirm when the existing SR is deleted. */
+export async function generateSr(subsets: readonly string[], overwrite: boolean) {
+  const ok = await confirm({
+    title: `Generate the production SR for ${subsets.join(" + ")}?`,
+    message: `Runs the production model (TensorFlow) over the records${overwrite ? "; the existing SR of these splits is deleted first" : ""}.`,
+    confirmLabel: "Generate", tone: overwrite ? "danger" : "default",
+  });
+  if (!ok) return null;
+  return startJob({
+    key: JOB.generateSr, url: "/api/sky/generate-sr", label: "Generate SR",
+    data: { subsets: subsets.join(","), overwrite: overwrite ? "1" : "0" },
+  });
 }

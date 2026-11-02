@@ -9,6 +9,7 @@ import { useMemo, useRef, useState } from "react";
 import { linearTicks } from "../ticks";
 import { Button, Select } from "../ui";
 import { bandLabel } from "./barModel";
+import { shownBandIndex } from "./color";
 import { colormapGradient } from "./colormaps";
 import { useController, useSettings, useViewer } from "./hooks";
 import { formatValue, unitLabel } from "./readout";
@@ -34,7 +35,8 @@ export function HistogramPanel({ width = 640 }: { width?: number } = {}) {
   const rec = entry?.kind === "cube" ? entry.rec : null;
   const bands = rec ? (rec.bands.length === rec.c ? rec.bands : ctrl.s.meta?.band_names.slice(0, rec.c) ?? []) : [];
   const [bandPick, setBandPick] = useState<string | null>(null);
-  const band = bandPick && bands.includes(bandPick) ? bandPick : bands.includes(settings.color) ? settings.color : bands[0];
+  const band = bandPick && bands.includes(bandPick) ? bandPick
+    : bands[shownBandIndex(bands, settings.color, ctrl.s.meta?.color?.bands)];
   const k = Math.max(0, bands.indexOf(band));
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef<"black" | "white" | null>(null);

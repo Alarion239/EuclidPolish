@@ -16,7 +16,6 @@
    The split, viewer object/tiers/view, overlay, hidden types and the
    drawer are in the URL. */
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { useJob } from "../../../api/jobs";
 import { useResource } from "../../../api/query";
 import { openInspector } from "../../../app/inspector";
@@ -49,7 +48,8 @@ import type { GroupId } from "../../system/configFields";
 import { EditInConfig, GeneratePanel } from "../generate";
 import { useIncludeTraining } from "../header";
 import { censusRows, generatedSample, type CensusRow } from "../fields/model";
-import { censusHistogram, lensDensity, nearestRecord, recordArea, recordSrLink } from "../recordsModel";
+import { JOB, generateSr } from "../jobs";
+import { censusHistogram, lensDensity, nearestRecord, recordArea, recordSrAction } from "../recordsModel";
 import "../register";
 import "../data.css";
 import "../synthetic.css";
@@ -430,7 +430,8 @@ export default function Records() {
   const [rawSplit, setSplit] = useUrlState("split", "test");
   const split: Split = isSplit(rawSplit) ? rawSplit : "test";
   const sync = useJob("data:sky-sync");
-  const status = useSrStatus(sync.busy ? 3_000 : undefined);
+  const genSr = useJob(JOB.generateSr);
+  const status = useSrStatus(sync.busy || genSr.busy ? 3_000 : undefined);
   const s = status.data;
   const config = useResource<ConfigPayload>(URLS.config, [], { ttl: 5 * 60_000 });
   const { online } = useFasrcOnline();
@@ -537,12 +538,14 @@ export default function Records() {
             onReady={(a) => { api.current = a; }}
             onState={onViewerState} />
           {s && (() => {
-            const sr = recordSrLink(split, index, s.sr?.[split] ?? 0);
-            // Under the viewer (not in the bar, which stays one row): where the
-            // record's SR is, and the generation knobs that differ from their defaults.
+            const sr = recordSrAction(split, s.sr?.[split] ?? 0);
+            // Under the viewer (not in the bar, which stays one row): the
+            // split's production SR (its SR tier), and the generation knobs
+            // that differ from their defaults.
             return (
               <Caption className="dt-caption">
-                <Link to={sr.to}>{sr.label}</Link>
+                <Button size="sm" variant="ghost" disabled={!s.can_generate || genSr.busy} loading={genSr.busy}
+                  onClick={() => void generateSr([split], sr.overwrite)}>{sr.label}</Button>
                 <ConfigKnobsLink groups={RECORDS_CONFIG_GROUPS} className="syn-config-link" />
               </Caption>
             );

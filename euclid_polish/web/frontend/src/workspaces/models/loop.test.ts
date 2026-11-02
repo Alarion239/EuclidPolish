@@ -4,127 +4,9 @@
  * variant scope, the synthetic stamps and SR→HR recovery, Δm vs LR, the
  * running training batch and the Train submit label. */
 import { describe, expect, it } from "vitest";
-import type { Check, ExperimentSummary, MemberRow, TrainingJob, Variant } from "./api";
-import {
-  deltaMagText, gateShare, leaderboardBenchmark, lossFacets, runningBatches, stampSets, statusChecks, submitLabel,
-  variantScope, waitingOnFasrc, compareRunPath, benchmarkChoices, coherenceOrder, forwardModelFacts, lrScheduleText, universalJobMembers,
-  forkSource, knownUniversal,
-} from "./model";
-
-const check = (id: string, ok: boolean, action: string | null = null, tone: Check["tone"] = "warn"): Check =>
-  ({ id, ok, tone: ok ? "good" : tone, title: id, detail: `${id} detail`, action });
-
-const row = (n: number, patch: Partial<MemberRow> = {}): MemberRow => ({
-  name: `member_${n}`, label: `${n}·psnr`, origin: null, loss: "l2",
-  status: "complete", timeout: false, job: null, psnr: 61, ...patch,
-} as MemberRow);
-
-describe("leaderboard status line", () => {
-  it("lists only the failing checks, each fix offered once, and adds unscored members", () => {
-    const s = statusChecks([check("eval-members", false, "evaluate"), check("eval-gate", false, "evaluate"),
-      check("knee", true, "knee"), check("gate-members", false, "combiners", "info")],
-    [row(196), row(178, { psnr: null }), row(179, { psnr: null })]);
-    expect(s.map((c) => [c.id, c.fix])).toEqual([
-      ["eval-members", "evaluate"], ["eval-gate", null], ["gate-members", "combiners"], ["member-psnr", "member-psnr"],
-    ]);
-    expect(s[3].detail).toBe("2 members have no test PSNR yet: 178, 179.");
-  });
-
-  it("is empty when everything is current (the page says 'All current')", () => {
-    expect(statusChecks([check("knee", true, "knee")], [row(196)])).toEqual([]);
-    expect(statusChecks([], null)).toEqual([]);
-  });
-});
-
-describe("leaderboard real benchmark", () => {
-  const perBand = (vis: number, y: number, j: number, h: number) => ({
-    VIS: { hole_pct: vis }, Y_E: { hole_pct: y }, J_E: { hole_pct: j }, H_E: { hole_pct: h },
-  });
-  const agg = (vis: number, y: number, j: number, h: number, r = 1.1) => ({
-    n_tiles: 9, per_band: perBand(vis, y, j, h), summary: { hole_pct_mean: (vis + y + j + h) / 4, hole_pct_max: Math.max(vis, y, j, h), median_R: r },
-  });
-  const EXPS: ExperimentSummary[] = [
-    { id: "e-new", created: "2026-09-27T20:38:56Z", label: "seed vs pruning", tiles: ["t/a"],
-      summary: { production: agg(17, 18, 22, 20, 1.18), mean: agg(20, 25, 26, 30, 1.2), "member:member_196": agg(30, 20, 20, 20, 0.9) } },
-    { id: "e-old", created: "2026-09-26T02:00:00Z", label: "cached tile", tiles: ["t/b"], summary: { production: agg(1, 1, 1, 1) } },
-  ];
-  const CATALOG = { models: [
-    { spec: "production", fingerprint: "p1" }, { spec: "mean", fingerprint: "m1" }, { spec: "member:member_196", fingerprint: "x9" },
-  ] };
-
-  it("scores gate, mean and best member from the newest Compare run of this production, fresh specs only", () => {
-    const b = leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p1", mean: "m1", "member:member_196": "old" } }, CATALOG);
-    expect(b.state).toBe("current");
-    if (b.state !== "current") return;
-    expect(b.expId).toBe("e-new");
-    expect(b.label).toBe("seed vs pruning");
-    expect(b.facts("production")).toMatchObject({ worst: { short: "J", pct: 22 }, medianR: 1.18 });
-    expect(b.facts("mean")?.worst?.short).toBe("H");
-    expect(b.facts("member:member_196")).toBeNull();          // scored for an earlier checkpoint
-    expect(b.facts("gate:nope")).toBeNull();
-  });
-
-  it("says there is no real benchmark for this membership when production changed since", () => {
-    const b = leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p0" } }, CATALOG);
-    expect(b).toMatchObject({ state: "none", last: { expId: "e-new" } });
-    expect(b.state === "none" && b.reason).toBe("no real benchmark for this membership: the last Sky › Compare run of production scored an earlier one");
-    // a universal model is production: the reason names it, not a membership
-    const u = leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p0" } }, CATALOG, "Universal 238");
-    expect(u.state === "none" && u.reason).toBe("no real benchmark for Universal 238: the last Sky › Compare run of production scored an earlier model");
-  });
-
-  it("waits for the run's fingerprints, and has nothing without a run", () => {
-    expect(leaderboardBenchmark(EXPS, null, CATALOG).state).toBe("loading");
-    expect(leaderboardBenchmark(EXPS, { id: "e-new", fingerprints: { production: "p1" } }, null).state).toBe("loading");
-    expect(leaderboardBenchmark([], null, CATALOG)).toMatchObject({ state: "none", reason: "no real benchmark yet: no Sky › Compare run has scored production" });
-  });
-
-  it("links a Compare run by its id", () => {
-    expect(compareRunPath("20260927-203856-6cb6ad")).toBe("/sky/compare?exp=20260927-203856-6cb6ad");
-    expect(benchmarkChoices(EXPS)[0].value).toBe("e-new");
-  });
-});
+import { deltaMagText, runningBatches, submitLabel, forwardModelFacts, lrScheduleText, universalJobMembers } from "./model";
 
 describe("members waiting on FASRC", () => {
-  const job = (jobid: string, mode: string, state: string, names: string[], patch: Partial<TrainingJob> = {}): TrainingJob =>
-    ({ jobid, mode, state, member_names: names, params: { mode }, ...patch });
-  it("lists finished members not yet pulled (nor archived), never a legacy starless batch's", () => {
-    const w = waitingOnFasrc([
-      job("3", "add", "RUNNING", ["member_203"]),
-      job("2", "add", "COMPLETED", ["member_199", "member_200", "member_201"]),
-      job("1", "add", "TIMEOUT", ["member_198"]),
-      job("0", "add", "COMPLETED", ["member_150"], { params: { mode: "add", starless: "1" } }),
-    ], [row(199), row(198)], ["member_201"]);
-    expect(w.members).toEqual(["member_200"]);
-  });
-  it("skips per-member starless batches and batches that ended long ago", () => {
-    const now = Date.parse("2026-09-27T20:00:00Z");
-    const w = waitingOnFasrc([
-      job("5", "add", "COMPLETED", ["member_199"], { ended_at: "2026-09-26T10:00:00Z" }),
-      // a legacy batch whose spec flagged its members starless
-      job("6", "add", "TIMEOUT", ["member_128"], { ended_at: "2026-09-20T10:00:00Z",
-        params: { mode: "add", member_spec: JSON.stringify([{ loss: "l2", starless: true }]) } }),
-      job("8", "add", "COMPLETED", ["member_129"], { ended_at: "2026-09-20T10:00:00Z" }),
-      // finished in July and never pulled: not "new"
-      job("7", "add", "COMPLETED", ["member_137"], { ended_at: "2026-07-10T10:00:00Z" }),
-    ], [], ["member_129"], { now });
-    expect(w.members).toEqual(["member_199"]);
-  });
-
-  it("leaves new universal models to the Universal tab, and counts the registered ones as local", () => {
-    const knees = [0.1, 1, 10, 100, 1000, 10000];
-    const spec = JSON.stringify([
-      { loss: "l2", asinh_knees: knees, learn_output_knee: true, output_knee: 10, num_res_blocks: 16 },
-      { loss: "l2", asinh_knee: 10 },
-      { loss: "l2", asinh_knees: knees, output_knee: 10 },
-      { loss: "l2", asinh_knees: knees },
-    ]);
-    const jobs = [job("9", "add", "COMPLETED", ["member_211", "member_219", "member_220", "member_221"], { params: { mode: "add", member_spec: spec } })];
-    const w = waitingOnFasrc(jobs, [], []);
-    expect(w.members).toEqual(["member_219", "member_221"]);   // a single knee and a multi-head member stay ensemble members
-    expect(w.universal).toEqual(["member_211", "member_220"]);
-    expect(waitingOnFasrc(jobs, [], [], { universal: ["member_211"] }).universal).toEqual(["member_220"]);
-  });
 
   it("reads a member's universal recipe from the run-wide params too", () => {
     const j = (params: Record<string, unknown>) => ({ member_names: ["member_1", "member_2"], params });
@@ -137,84 +19,9 @@ describe("members waiting on FASRC", () => {
       .toEqual(["member_2"]);
     expect([...universalJobMembers(j({ member_spec: "not json" }))]).toEqual([]);
   });
-
-  it("treats a fork of a universal model as universal: it inherits its source's knees", () => {
-    const knees = [0.1, 1, 10, 100, 1000, 10000];
-    const add = job("10", "add", "COMPLETED", ["member_211"], { params: { mode: "add",
-      member_spec: JSON.stringify([{ loss: "l2", asinh_knees: knees, learn_output_knee: true, output_knee: 10 }]) } });
-    // the fork's own recipe names no knees (the Train tab sends none for a fork)
-    const fork = (id: string, names: string[], from: string) => job(id, "fork", "COMPLETED", names,
-      { params: { mode: "fork", fork_from: from, member_spec: JSON.stringify(names.map(() => ({ loss: "l1" }))) } });
-    expect([...universalJobMembers(fork("11", ["member_219"], "member_211"))]).toEqual([]);
-    expect([...universalJobMembers(fork("11", ["member_219"], "211"), new Set(["member_211"]))]).toEqual(["member_219"]);
-    expect(forkSource(fork("11", ["member_219"], "211·psnr"))).toBe("member_211");
-    expect(forkSource(add)).toBeNull();
-    // newest first, as the job log lists them: a fork of a fork of 211, and a fork of a single-knee member
-    const jobs = [fork("13", ["member_225"], "member_219"), fork("12", ["member_224"], "member_178"), fork("11", ["member_219"], "member_211"), add];
-    expect([...knownUniversal(jobs)].sort()).toEqual(["member_211", "member_219", "member_225"]);
-    const w = waitingOnFasrc(jobs, [row(178, { asinh_knee: 10 })], []);
-    expect(w.universal).toEqual(["member_211", "member_219", "member_225"]);
-    expect(w.members).toEqual(["member_224"]);
-    // a fork of an active member that is universal (196: fixed output knee), and of a registered universal model
-    const w2 = waitingOnFasrc([fork("14", ["member_226"], "member_196"), fork("15", ["member_227"], "member_216")],
-      [row(196, { asinh_knees: knees, output_knee: 10 })], [], { universal: ["member_216"] });
-    expect(w2).toMatchObject({ members: [], universal: ["member_226", "member_227"] });
-    // a cycle in the ledger never loops
-    expect([...knownUniversal([fork("16", ["member_300"], "member_301"), fork("17", ["member_301"], "member_300")])]).toEqual([]);
-  });
-
-  it("lists continued members whose finished job went past the local step", () => {
-    const w = waitingOnFasrc([job("4", "continue", "COMPLETED", ["member_178", "member_179"], { target_steps: 70000 })],
-      [row(178, { step: 52000 }), row(179, { step: 70000 })], []);
-    expect(w.continued).toEqual(["member_178"]);
-    expect(w.members).toEqual([]);
-  });
-});
-
-describe("gate share", () => {
-  it("is the peak share when the payload has one (what decides pruning), else the mean over bands", () => {
-    expect(gateShare({ gate_usage: { VIS: 0.0002, Y_E: 0.0001, J_E: 0.0001, H_E: 0.0001 }, gate_usage_peak: { value: 0.48, band: "VIS", bin: "core" } }))
-      .toMatchObject({ value: 0.48, mean: 0.000125, text: "<0.1% mean · 48% peak (VIS cores)" });
-    expect(gateShare({ gate_usage: { VIS: 0.1, Y_E: 0.3, J_E: null, H_E: 0.2 } })).toMatchObject({ value: expect.closeTo(0.2, 9), text: "20%" });
-    expect(gateShare({}).value).toBeNull();
-  });
-});
-
-describe("combiner variant scope", () => {
-  const v = (name: string, patch: Partial<Variant> = {}) => ({
-    name, kind: "gate", production: false, backup: false, membership: { current: true, missing: [], extra: [] }, ...patch,
-  }) as Variant;
-  const VARIANTS = [
-    v("spatial_gate_combiner", { production: true, membership: { current: false, missing: ["1"], extra: [] } }),
-    v("spatial_gate_p20"), v("spatial_gate_old", { membership: { current: false, missing: [], extra: ["2"] } }),
-    // every member it reads is still active, but 10 joined after its fit: an earlier membership
-    v("spatial_gate_20m", { membership: { current: true, missing: [], extra: ["member_21", "member_22"] } }),
-    v("spatial_gate_backup_20260927", { backup: true }), v("raw_rbf", { kind: "rbf" }),
-  ];
-  it("shows production and the variants fitted for the current membership; the rest behind history", () => {
-    const s = variantScope(VARIANTS, false);
-    expect(s.shown.map((x) => x.name)).toEqual(["spatial_gate_combiner", "spatial_gate_p20"]);
-    expect(s.hidden).toBe(3);
-    expect(variantScope(VARIANTS, true).shown.map((x) => x.name)).toEqual([
-      "spatial_gate_combiner", "spatial_gate_p20", "spatial_gate_old", "spatial_gate_20m", "spatial_gate_backup_20260927"]);
-  });
 });
 
 describe("synthetic stamps and SR → HR recovery", () => {
-  const e = (id: string, grade: string, lr: number, sr: number, patch: Record<string, unknown> = {}) => ({
-    id, grade, ok: "True", psnr_lr_hr: String(lr), psnr_sr_hr: String(sr), flux_ratio_sr_over_lr: "0.9",
-    lr_total_e: "100", sr_total_e: "90", state: "stale", n_members: 9, viewer_id: id, ...patch,
-  });
-  it("groups the synthetic stamps with medians, the SR gain and how many SR brought closer to truth", () => {
-    const sets = stampSets([
-      e("a", "syn-lens", 90, 100), e("b", "syn-lens", 92, 91), e("c", "syn-lens", 94, 104),
-      e("d", "syn-gal", 80, 85, { state: "current" }), e("x", "A", 0, 0), e("f", "syn-gal", 1, 2, { ok: "False" }),
-    ]);
-    expect(sets.map((s) => [s.grade, s.label, s.n])).toEqual([["syn-lens", "Syn lens", 3], ["syn-gal", "Syn gal", 1]]);
-    expect(sets[0]).toMatchObject({ medianLr: 92, medianSr: 100, gain: 10, improved: 2, stale: 3, madeBy: 9 });
-    expect(sets[0].points.map((p) => [p.x, p.y, p.id])).toEqual([[90, 100, "a"], [92, 91, "b"], [94, 104, "c"]]);
-    expect(sets[1]).toMatchObject({ stale: 0, improved: 1 });
-  });
 
   it("states SR's magnitude change vs LR, warn-toned beyond 0.1 mag", () => {
     expect(deltaMagText(100, 90)).toEqual({ text: "Δm +0.11 (flux ×0.90)", warn: true });
@@ -222,20 +29,6 @@ describe("synthetic stamps and SR → HR recovery", () => {
     expect(deltaMagText(100, 120)?.text).toBe("Δm −0.20 (flux ×1.20)");
     expect(deltaMagText(0, 5)).toBeNull();
     expect(deltaMagText(null, 5)).toBeNull();
-  });
-});
-
-describe("diagnostics shaping", () => {
-  it("orders the coherence dot plot by overall score, highest first, keeping missing last", () => {
-    const rows = coherenceOrder([
-      { id: "a", label: "a", overall: 0.5, sr: 0.1 }, { id: "b", label: "b", overall: null, sr: 0.3 }, { id: "c", label: "c", overall: 0.9, sr: 0.2 },
-    ]);
-    expect(rows.map((r) => r.id)).toEqual(["c", "a", "b"]);
-  });
-
-  it("facets the training loss by loss type (their scales differ)", () => {
-    const f = lossFacets([{ loss_norm: "l2", name: "m1" }, { loss_norm: "L1", name: "m2" }, { loss_norm: "l2", name: "m3" }, { loss_norm: "", name: "m4" }]);
-    expect(f.map((x) => [x.loss, x.curves.map((c) => c.name)])).toEqual([["l1", ["m2", "m4"]], ["l2", ["m1", "m3"]]]);
   });
 });
 

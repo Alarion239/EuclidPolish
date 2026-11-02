@@ -420,6 +420,22 @@ def _nexus_manifests() -> list[tuple[str, dict[str, Any]]]:
     return out
 
 
+def _nexus_jwst_bands(directory: Path, manifest: Mapping[str, Any],
+                      tile: Mapping[str, Any]) -> list[dict[str, str]]:
+    """``[{filter, file}]`` of a NEXUS tile's NIRCam images: the filters
+    matched to the Euclid bands in band order (VIS–F090W … H–F200W; the
+    field's own filter is ``jwst_file``, the others
+    ``jwst_euclid.cache_nexus_matched_bands``'s ``jwst_band_files``), then
+    the field's own filter when it matches no band (F444W)."""
+    own = str(manifest.get("filter") or "JWST")
+    files = {**{str(name): str(path) for name, path in (tile.get("jwst_band_files") or {}).items()},
+             own: str(tile.get("jwst_file"))}
+    order = [Config.JWST_PARTNER_FILTER[band] for band in BAND_NAMES]
+    order += [own] if own not in order else []
+    return [{"filter": name, "file": files[name]} for name in order
+            if name in files and (directory / files[name]).is_file()]
+
+
 def _nexus_entries() -> list[TileEntry]:
     entries = []
     for field_id, manifest in _nexus_manifests():
@@ -436,6 +452,7 @@ def _nexus_entries() -> list[TileEntry]:
                                    origin="nexus-field")
             identifier = jwst_euclid.nexus_tile_id(manifest, tile, position)
             index = int(tile.get("source_index", tile.get("index", position)))
+            jwst_bands = _nexus_jwst_bands(directory, manifest, tile) if has_jwst else []
             entries.append(TileEntry(
                 source="nexus", id=identifier,
                 label=f"NEXUS {manifest.get('filter') or ''} tile {index:04d}".strip(),
@@ -450,6 +467,7 @@ def _nexus_entries() -> list[TileEntry]:
                     "lr_file": lr_file if has_lr else None,
                     "vis_file": jwst_euclid._nexus_euclid_files(tile).get("VIS"),
                     "jwst_file": jwst_file if has_jwst else None,
+                    "jwst_bands": jwst_bands,
                     "euclid_tile_index": tile.get("euclid_tile_index"),
                     "legacy_sr": legacy,
                     "legacy_outputs": _legacy_outputs(legacy),
@@ -868,9 +886,14 @@ def jwst_planes(entry: TileEntry) -> list[dict[str, Any]]:
     """Native JWST images of a tile: ``[{band, data (H, W), header, unit}]``."""
     if entry.source == "nexus" and entry.extras.get("jwst_file"):
         directory = jwst_euclid.nexus_field_root() / str(entry.extras["field_id"])
-        data, header = _fits_cube(directory / str(entry.extras["jwst_file"]))
-        return [{"band": str(entry.extras.get("filter") or "JWST"), "data": data[..., 0],
-                 "header": header, "unit": "MJy/sr"}]
+        bands = entry.extras.get("jwst_bands") or [
+            {"filter": entry.extras.get("filter") or "JWST", "file": entry.extras["jwst_file"]}]
+        planes = []
+        for band in bands:
+            data, header = _fits_cube(directory / str(band["file"]))
+            planes.append({"band": str(band["filter"]), "data": data[..., 0],
+                           "header": header, "unit": "MJy/sr"})
+        return planes
     if entry.source == "pair":
         directory = jwst_euclid.pair_root() / entry.id
         planes = []

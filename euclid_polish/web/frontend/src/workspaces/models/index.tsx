@@ -1,11 +1,8 @@
-/* Models workspace, `/models/<tab>` (console regrouping, Team M): which
-   model is best on synthetic truth and on real data, how the members trained,
-   which model is production, and what SR looks like on synthetic fields.
-   Tabs: leaderboard, universal, knees, spectra, members, train, combiner,
-   diagnostics, images (./tabs).
+/* Models workspace, `/models/<tab>`: the universal models — how they score
+   on synthetic truth, which knees they read, their power spectra, and
+   training new ones. Tabs: universal, knees, spectra, train (./tabs).
    A bare `/models` returns to the last tab visited. Nothing sits beside the
-   tab strip (the Images member picker is a side panel of its page), so the
-   strip never reshapes. The inspector kinds `member` and `combiner` are
+   tab strip, so the strip never reshapes. The inspector kind `member` is
    registered by ./register.ts. */
 import { useState } from "react";
 import { useLocation } from "react-router-dom";
@@ -15,15 +12,10 @@ import "./register";
 import "./models.css";
 
 export const TABS = defineTabs("models", {
-  leaderboard: { load: () => import("./tabs/Leaderboard") },
   universal: { load: () => import("./tabs/Universal") },
   knees: { load: () => import("./tabs/Knees") },
   spectra: { load: () => import("./tabs/Spectra") },
-  members: { load: () => import("./tabs/Members") },
   train: { load: () => import("./tabs/Train") },
-  combiner: { load: () => import("./tabs/Combiner") },
-  diagnostics: { load: () => import("./tabs/Diagnostics") },
-  images: { load: () => import("./tabs/Images") },
 });
 
 /** The last tab this workspace showed (kept while it stays mounted). */

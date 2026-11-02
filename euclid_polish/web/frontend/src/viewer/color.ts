@@ -32,6 +32,9 @@ export type BandConstants = {
   e_per_mjy_sr_arcsec2?: number;
   /** A display-only band (JWST F###): no AB zero point, no magnitude. */
   display_only?: boolean;
+  /** The Euclid band a NIRCam filter is matched to (F090W → VIS): a
+   *  multi-filter JWST cube shows that filter while the band is shown. */
+  euclid_band?: string;
 };
 
 /** The served meta's `color` block. */
@@ -169,6 +172,15 @@ export function asinhTransfer(I: number, gain: number, Kc: number, norm: number)
 
 /** The channel names of a cube: its `X-Cube-Bands` when they match its
  *  channel count, else the collection's band order. */
+/** The channel of a cube shown for colour `color`: the band itself, else
+ *  the filter matched to it (`euclid_band`: a NEXUS cube shows F090W for
+ *  VIS), else the first channel. */
+export function shownBandIndex(names: readonly string[], color: string, bands?: Record<string, BandConstants>): number {
+  const k = names.indexOf(color);
+  if (k >= 0) return k;
+  return Math.max(0, names.findIndex((n) => bands?.[n]?.euclid_band === color));
+}
+
 export function cubeBandNames(rec: Pick<CubeLike, "bands" | "c">, colorMeta: Pick<ColorMeta, "band_names">): string[] {
   return Array.isArray(rec.bands) && rec.bands.length === rec.c
     ? rec.bands : colorMeta.band_names.slice(0, rec.c);
@@ -274,7 +286,7 @@ export function prepareCore(rec: CubeLike, colorMeta: ColorMeta, color: string, 
   } else {
     // A colour chosen for a different camera is never applied to this image.
     // For a one-filter JWST frame this resolves to its sole native channel.
-    const k = Math.max(0, names.indexOf(color));
+    const k = shownBandIndex(names, color, colorMeta.bands);
     const I = new Float32Array(npx);
     if (colorMeta.render_mode === "log") {
       let hi = -Infinity;

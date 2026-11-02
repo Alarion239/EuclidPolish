@@ -123,7 +123,6 @@ export default function Targets() {
   const chipCounts = useMemo(() => setCounts(sources.data, runs.data?.rows), [sources.data, runs.data]);
   const grades0 = useMemo(() => gradeCounts(runs.data?.rows ?? []), [runs.data]);
   const plan = useMemo(() => productionPlan(graded, grades0), [graded, grades0]);
-  const gate = /gate/.test(String(runs.data?.current?.combiner_kind ?? "")) ? "gate" : "production model";
   // A set speaks only once its own list has arrived: until then its
   // sentence is a loading line, never "none yet" (another set may already
   // be in). A set whose list failed says nothing here (the callout names it).
@@ -279,7 +278,7 @@ export default function Targets() {
               if (s) {
                 return (
                   <SummaryLine key={id} className="tg-sentence">
-                    {sentencePieces(s, gate).map((p, i) => (p.num ? <Num key={i} tone={p.warn ? "warn" : undefined}>{p.text}</Num> : <span key={i}>{p.text}</span>))}
+                    {sentencePieces(s).map((p, i) => (p.num ? <Num key={i} tone={p.warn ? "warn" : undefined}>{p.text}</Num> : <span key={i}>{p.text}</span>))}
                   </SummaryLine>
                 );
               }

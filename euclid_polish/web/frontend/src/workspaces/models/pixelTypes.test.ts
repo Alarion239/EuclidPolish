@@ -3,10 +3,7 @@
  * and whether two of them pair their pixels, and an analysis' band facts. */
 import { describe, expect, it } from "vitest";
 import type { KneeRunSummary } from "./kneesApi";
-import {
-  analyseEstimate, analysisLabel, bandFacts, bandsWithFile, compareFigure, comparisonLabel, comparisonSpecs, modelRefs,
-  normalisePixelReports, pairCheck, parseBasis, parseCompareFigure, parsePixelFigure, pixelFigure,
-} from "./pixelTypes";
+import { analyseEstimate, analysisLabel, bandFacts, comparisonLabel, comparisonSpecs, modelRefs, normalisePixelReports, pairCheck } from "./pixelTypes";
 
 const RUN = "20261025-070221-7a9c27";
 
@@ -24,23 +21,6 @@ describe("pixel types model", () => {
     expect(r.comparisons[0].tag).toBe("");
     expect(comparisonSpecs(r.comparisons[0])).toEqual(["universal:member_249", "universal:member_238"]);
     expect(normalisePixelReports(null)).toEqual({ analyses: [], comparisons: [], overviews: [] });
-  });
-
-  it("names each figure's file by field set, band and grouping", () => {
-    expect(pixelFigure("groups").file("synthetic", "VIS", "learned")).toBe("groups_learned_synthetic_VIS.png");
-    expect(pixelFigure("groups").file("real", "H_E", "raw")).toBe("groups_real_H_E.png");
-    expect(pixelFigure("features").file("synthetic", "VIS", "raw")).toBe("group_features_synthetic.png");
-    expect(pixelFigure("map").file("real", "Y_E", "learned")).toBe("knee_map_real.png");
-    expect(pixelFigure("types").file("synthetic", "J_E", "learned")).toBe("types_synthetic_J_E.png");
-    expect(compareFigure("pairs").file("synthetic", "H_E", "learned")).toBe("compare_pairs_synthetic_H_E.png");
-    expect(compareFigure("diff").file("real", "VIS", "learned")).toBe("compare_share_diff_real.png");
-    expect(parsePixelFigure("look")).toBe("look");
-    expect(parsePixelFigure("nope")).toBe("groups");
-    expect(parseCompareFigure("nope")).toBe("curves");
-    expect(parseBasis("raw")).toBe("raw");
-    expect(parseBasis("x")).toBe("learned");
-    const files = ["types_synthetic_VIS.png", "types_synthetic_H_E.png"];
-    expect(bandsWithFile(files, (b) => `types_synthetic_${b}.png`, ["VIS", "Y_E", "J_E", "H_E"])).toEqual(["VIS", "H_E"]);
   });
 
   it("labels analyses and comparisons", () => {

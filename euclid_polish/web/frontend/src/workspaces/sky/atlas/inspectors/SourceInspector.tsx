@@ -9,7 +9,7 @@ import { useMemo, type ReactNode } from "react";
 import { openInspector } from "../../../../app/inspector";
 import { useResource } from "../../../../api/query";
 import { Badge, Button, Callout, DefList, Section, Skeleton, type MenuItem } from "../../../../ui";
-import { cacheTileAt, discoverJwst, downloadPair, runNexusProduction } from "../actions";
+import { cacheNexusMatchedBands, cacheTileAt, discoverJwst, downloadPair, runNexusProduction } from "../actions";
 import { useFlyTo } from "../engineHooks";
 import { layerUrl } from "../layerData";
 import {
@@ -80,6 +80,9 @@ function LayerFeature({ layer, fid }: { layer: string; fid: string }) {
         {obsId && <Button size="sm" variant="primary" onClick={() => { void downloadPair({ obs_id: obsId }); }}>Download pair</Button>}
         {layer === "nexus-footprint" && (
           <Button size="sm" onClick={() => { void runNexusProduction(f.key); }}>Run production on stale tiles</Button>
+        )}
+        {layer === "nexus-footprint" && (
+          <Button size="sm" onClick={() => { void cacheNexusMatchedBands(f.key); }}>Cache F090W/F115W/F150W</Button>
         )}
         {layer === "q1-fields" && (
           <Button size="sm" onClick={() => { void discoverJwst({ fields: f.key, label: f.key }); }}>Discover JWST</Button>

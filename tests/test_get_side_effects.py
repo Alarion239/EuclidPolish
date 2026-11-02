@@ -16,7 +16,6 @@ from euclid_polish.eval import power_spectrum
 from euclid_polish.web import fasrc_fetcher, remote
 from euclid_polish.web.app import create_app
 from euclid_polish.web.fasrc_fetcher import FetchResult
-from euclid_polish.web.routes import ensemble as ensemble_routes
 
 CROSS_SITE = {"Sec-Fetch-Site": "cross-site"}
 SAME_SITE_OTHER_PORT = {"Sec-Fetch-Site": "same-site"}
@@ -112,35 +111,3 @@ def test_a_cross_site_get_never_renders_a_missing_figure(client, cached_spectrum
     assert "not rendered yet" in response.get_json()["error"]
     response = client.get("/api/evaluation/angular-power-spectrum", headers=SAME_ORIGIN)
     assert response.data == b"\x89PNG fresh" and len(cached_spectrum) == 1
-
-
-@pytest.fixture
-def evals_cache(tmp_path, monkeypatch):
-    path = tmp_path / "ensemble_evals.json"
-    computed: list[str] = []
-
-    def compute(starless):
-        computed.append("payload")
-        path.write_text('{"coherence": {}, "fresh": true}', encoding="utf-8")
-        return str(path)
-
-    def refresh(starless):
-        computed.append("diagnostics")
-        return str(path)
-
-    monkeypatch.setattr(ensemble_routes, "_evals_payload_path", lambda starless: str(path))
-    monkeypatch.setattr(ensemble_routes, "compute_evaluation_payload", compute)
-    monkeypatch.setattr(ensemble_routes, "refresh_evaluation_diagnostics", refresh)
-    return path, computed
-
-
-def test_a_cross_site_get_never_computes_the_evaluation_payload(client, evals_cache):
-    path, computed = evals_cache
-    response = client.get("/ensemble/evals.json", headers=CROSS_SITE)
-    assert response.status_code == 404 and computed == []
-    path.write_text('{"old": true}', encoding="utf-8")        # predates the diagnostics
-    response = client.get("/ensemble/evals.json", headers=CROSS_SITE)
-    assert response.status_code == 200 and response.get_json() == {"old": True}
-    assert computed == []                                     # served as cached
-    response = client.get("/ensemble/evals.json", headers=SAME_ORIGIN)
-    assert response.get_json()["fresh"] is True and "payload" in computed

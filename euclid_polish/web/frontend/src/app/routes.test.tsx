@@ -55,8 +55,8 @@ describe("buildRoutes", () => {
   });
 
   it("renders the right tab", async () => {
-    go("/models/combiner");
-    await landed("models:combiner");
+    go("/models/spectra");
+    await landed("models:spectra");
   });
 
   it("redirects a workspace root to its default tab, keeping query and hash", async () => {
@@ -74,8 +74,9 @@ describe("buildRoutes", () => {
   it("follows the query-aware rules exactly as Flask does, keeping the hash", async () => {
     for (const [from, to] of [
       ["/ensemble/starless/curves?layout=time&x=2", "/runs/history?x=2&step=ensemble_train"],
-      ["/ensemble/starfull/curves", "/models/members?view=curves"],
-      ["/models/starfull/combiner?inspect=member%3Amember_196", "/models/combiner?inspect=member%3Amember_196"],
+      ["/ensemble/starfull/curves", "/models/universal"],
+      ["/models/starfull/combiner?inspect=member%3Amember_196", "/models/universal?inspect=member%3Amember_196"],
+      ["/models/leaderboard?x=1", "/models/universal?x=1"],
       ["/models/starless/train?mode=continue", "/models/train?mode=continue"],
       ["/sky/results?source=tile&inspect=tile%3Aposter%2Fp1", "/sky/targets?set=cached&inspect=tile%3Aposter%2Fp1"],
       ["/realism/pixels?view=census", "/synthetic/records?section=census"],
@@ -176,7 +177,7 @@ describe("buildRoutes", () => {
   it("redirects a bare workspace path to `redirectTab` when given (a valid one only)", async () => {
     const tabs = defineTabs("models", Object.fromEntries(MANIFEST.workspaces.find((w) => w.id === "models")!.tabs
       .map((t) => [t, { load: async () => ({ default: () => <p>{`models:${t}`}</p> }) }])));
-    for (const [redirectTab, landing] of [["combiner", "combiner"], ["nope", "leaderboard"]] as const) {
+    for (const [redirectTab, landing] of [["spectra", "spectra"], ["nope", "universal"]] as const) {
       const components = { ...fakes, models: async () => ({ default: () => <Workspace id="models" tabs={tabs} redirectTab={redirectTab} /> }) };
       const router = createMemoryRouter(buildRoutes({ components }), { initialEntries: ["/models?x=1"], future: ROUTER_FUTURE });
       render(<RouterProvider router={router} future={{ v7_startTransition: true }} />);

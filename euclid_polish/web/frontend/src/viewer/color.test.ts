@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import golden from "./__fixtures__/color_golden.json";
 import {
   abFluxNorm, asinhTransfer, eyeTGrid, planckFnu, planckianXY, prepareCore, renderCubeImageData,
-  solarBalance, srgbGamma, transferCore, VIVID_WHITE, xyToLinearSrgb, type ColorMeta, type CubeLike,
+  shownBandIndex, solarBalance, srgbGamma, transferCore, VIVID_WHITE, xyToLinearSrgb, type ColorMeta, type CubeLike,
 } from "./color";
 
 type Special = number | string;
@@ -175,5 +175,35 @@ describe("vivid: H / (Y+J)/2 / VIS, each channel stretched on its own", () => {
   it("needs all four Euclid bands, else shows channel 0 like any unknown colour", () => {
     const one: CubeLike = { data: Float32Array.from([50, 500]), h: 1, w: 2, c: 1, bands: ["F200W"] };
     expect(prepareCore(one, G.color_meta, "vivid").mode).toBe("gray");
+  });
+});
+
+describe("a NEXUS cube shows the filter matched to the shown Euclid band", () => {
+  const NEXUS = ["F090W", "F115W", "F150W", "F200W"];
+  const meta: ColorMeta = {
+    ...G.color_meta,
+    bands: {
+      ...G.color_meta.bands,
+      F090W: { zeropoint_ab_e_total: 1, pivot_um: 0.9, display_only: true, euclid_band: "VIS" },
+      F115W: { zeropoint_ab_e_total: 1, pivot_um: 1.15, display_only: true, euclid_band: "Y_E" },
+      F150W: { zeropoint_ab_e_total: 1, pivot_um: 1.5, display_only: true, euclid_band: "J_E" },
+      F200W: { zeropoint_ab_e_total: 1, pivot_um: 2.0, display_only: true, euclid_band: "H_E" },
+    },
+  };
+  // one pixel, a distinct value per filter
+  const rec: CubeLike = { data: Float32Array.from([1, 2, 3, 4]), h: 1, w: 1, c: 4, bands: NEXUS };
+
+  it("picks F090W for VIS … F200W for H", () => {
+    expect(["VIS", "Y_E", "J_E", "H_E"].map((b) => prepareCore(rec, meta, b).I[0])).toEqual([1, 2, 3, 4]);
+  });
+  it("a filter by name still shows itself", () => {
+    expect(prepareCore(rec, meta, "F150W").I[0]).toBe(3);
+  });
+  it("shownBandIndex: the band, else the matched filter, else the first channel", () => {
+    expect(shownBandIndex(["VIS", "Y_E"], "Y_E", meta.bands)).toBe(1);
+    expect(shownBandIndex(NEXUS, "J_E", meta.bands)).toBe(2);
+    expect(shownBandIndex(["F200W"], "VIS", meta.bands)).toBe(0);     // a one-filter cube: its own channel
+    expect(shownBandIndex(NEXUS, "lupton", meta.bands)).toBe(0);
+    expect(shownBandIndex(NEXUS, "Y_E")).toBe(0);                     // no colour meta: the first
   });
 });

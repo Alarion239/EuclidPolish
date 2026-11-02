@@ -43,16 +43,6 @@ def _wait(job_id: str, timeout: float = 5.0) -> dict:
 # STARFULL is the default regime of every ensemble route
 # ---------------------------------------------------------------------------
 
-def test_ensemble_evaluate_defaults_to_starfull(client, monkeypatch):
-    seen = {}
-    monkeypatch.setattr(ensemble_routes, "job_ensemble_evaluate",
-                        lambda cap, **kw: seen.update(kw))
-    job_id = client.post("/ensemble/evaluate", data={"num_images": "2"}).get_json()["job_id"]
-    _wait(job_id)
-    assert seen["starless"] is False
-    assert REGISTRY.get(job_id).label.startswith("ensemble: evaluate starfull")
-
-
 def test_ensemble_evaluate_job_has_no_starless_default():
     """The job itself must not fall back to the starless regime: a caller
     that forgets ``starless`` fails loudly instead of evaluating the wrong
@@ -66,14 +56,14 @@ def test_ensemble_evaluate_job_has_no_starless_default():
 
 def test_ensemble_reads_default_to_starfull(client, monkeypatch):
     regimes = []
-    monkeypatch.setattr(ensemble_routes, "ensemble_status",
+    monkeypatch.setattr(ensemble_routes, "members_payload",
                         lambda starless: regimes.append(starless) or {})
-    monkeypatch.setattr(ensemble_routes, "pixel_trace",
-                        lambda starless, *a, **k: regimes.append(starless) or {})
-    client.get("/ensemble/status.json")
-    client.get("/ensemble/pixel-trace.json?diag=std_err&i=0&j=0")
+    monkeypatch.setattr(ensemble_routes, "universal_payload",
+                        lambda starless: regimes.append(starless) or {})
+    client.get("/ensemble/members.json")
+    client.get("/ensemble/universal.json")
     assert regimes == [False, False]
-    assert client.get("/ensemble/status.json?mode=starless").status_code == 200
+    assert client.get("/ensemble/members.json?mode=starless").status_code == 200
     assert regimes[-1] is True
 
 

@@ -32,10 +32,10 @@ const CANDIDATES: Candidates = {
     evaluated_at: "2026-09-28T08:00:00Z",
     blocks: [
       { id: "members", title: "Members", state: "current", detail: "3 active starfull members." },
-      { id: "test_cubes", title: "Test-set curves", state: "current", detail: "Current." },
-      { id: "compare", title: "Combiner comparison", state: "stale", detail: "It compared 2 members, 3 are active now." },
+      { id: "test_cubes", title: "Test-set curves", state: "stale", detail: "They predate the current checkpoints." },
+      { id: "compare", title: "Combiner comparison", state: "current", detail: "It compared the 3 active members." },
     ],
-    stale: ["compare"], numbers_bytes: 3 * MB,
+    stale: ["test_cubes"], numbers_bytes: 3 * MB,
   },
   fields: [
     ...Array.from({ length: 12 }, (_, i) => field(i)),
@@ -122,9 +122,9 @@ describe("pure rules", () => {
 describe("the dialog flow", () => {
   it("shows what will be frozen, with each block's state and where a stale one is fixed", async () => {
     open();
-    expect(await screen.findByText("Combiner comparison")).toBeTruthy();
-    expect(screen.getByText("It compared 2 members, 3 are active now.")).toBeTruthy();
-    expect(within(dialog()).getByRole("button", { name: "Combiner" })).toBeTruthy();       // the stale block's fix
+    expect(await screen.findByText("Test-set curves")).toBeTruthy();
+    expect(screen.getByText("They predate the current checkpoints.")).toBeTruthy();
+    expect(within(dialog()).getByRole("button", { name: "Models › Universal" })).toBeTruthy();       // the stale block's fix
     expect(screen.getByText("1 of 3 blocks is not current")).toBeTruthy();
     expect(within(dialog()).getByRole("button", { name: "Choose fields…" })).toBeTruthy();
     expect(within(dialog()).getByRole("button", { name: "Freeze without fields" })).toBeTruthy();

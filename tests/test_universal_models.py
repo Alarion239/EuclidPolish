@@ -1,10 +1,14 @@
 """Universal models (helpers/universal_models.py + the ensemble_viz read side):
 training time from the training log (rollbacks counted, never deduped), the
 job ledger's recipes and hardware, the FASRC-only rows, the payload of
-``GET /ensemble/universal.json`` (scores, combiners' share-weighted hours),
-the score job (Leaderboard metric, own store, reuse by fingerprint, gate
-weights per variant) and the pull job (registered BEFORE its rsync, never
-an ensemble member). Fakes only: no TensorFlow model, no SSH."""
+``GET /ensemble/universal.json`` (scores, production's own score), the
+panel's model-number cutoff, the score job (Leaderboard metric, own store,
+reuse by fingerprint) and the pull job (registered BEFORE its rsync, never
+an ensemble member). Fakes only: no TensorFlow model, no SSH.
+
+The fixtures number models below :data:`model_catalog.PANEL_FIRST_MODEL`
+(257); ``env`` lowers the cutoff to 0 so they are listed, and the cutoff
+tests raise it back."""
 from __future__ import annotations
 
 import json
@@ -30,7 +34,7 @@ from euclid_polish.tracking import default_store
 from euclid_polish.training.target_blur import blur_target_array
 from euclid_polish.web import fasrc_jobs
 from euclid_polish.web.helpers import ensemble_viz as ev
-from euclid_polish.web.helpers import purge_requests
+from euclid_polish.web.helpers import model_catalog, purge_requests
 from euclid_polish.web.helpers import universal_models as um
 from euclid_polish.web.helpers import universal_spectra as us
 from euclid_polish.web.remote import STATE
@@ -92,6 +96,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "_sky_records_local_dir", lambda: None)
     monkeypatch.setattr(ev, "infer_checkpoint_num_res_blocks", lambda d: 32)
     monkeypatch.setattr(fasrc_jobs, "JOBLOG", JobLog(str(tmp_path / "joblog.csv")))
+    monkeypatch.setattr(model_catalog, "PANEL_FIRST_MODEL", 0)   # the fixtures' 170–230 are listed
     return tmp_path
 
 
@@ -289,8 +294,10 @@ def test_fasrc_rows_list_only_universal_models_that_live_only_on_fasrc(env):
 def test_payload_answers_on_an_empty_ensemble(env):
     p = um.universal_payload()
     assert p["available"] is False and p["models"] == [] and p["fasrc"] == []
-    assert p["combiners"] == [] and p["identity"] is None and p["production"] is None
-    assert p["comparable"] is False
+    assert p["identity"] is None and p["production"] is None and p["production_model"] is None
+    assert p["production_comparable"] is False
+    # the gate-era keys are gone
+    assert not {"combiners", "mean_model", "comparable", "weights_pending"} & set(p)
     assert p["knees"] == list(KNEE_GRID_E) and p["bands"] == list(BANDS)
     assert p["integration"] == {"from_e": 0.1, "to_e": 10000.0}
     assert not os.path.exists(os.path.join(str(env), "vis", "ensemble", "starfull", "universal"))
@@ -320,7 +327,8 @@ def _diag(rows_usage, rows_source, rows_bins):
 def _world(env):
     """196 (active, fixed knee), 211 (registered universal, learned knee),
     170 (active, single knee), 150 (archived: hours from its zip), a scored
-    store, the knee payload, the production gate + payload, two variants."""
+    store, the knee payload (its identity is the scores'), the legacy
+    production gate + payload (the member inspector still reads them)."""
     base = ev.ensemble_dir()
     er.add_universal_entry(base, "211")                 # registered BEFORE its dir lands
     _member(base, 170, rows=[(1000, T0, 3600.0, False), (2000, T0 + 3600, 3600.0, False)])
@@ -381,84 +389,71 @@ def _world(env):
     with open(os.path.join(regime, "spatial_gate_combiner_evals.json"), "w") as f:
         json.dump({"available": True, "member_labels": ["170·psnr", "196·psnr"],
                    "band_names": list(BANDS), "gate_diagnostics": diag}, f)
-    _gate(regime, "spatial_gate_small", ["170·psnr", "150·psnr"], active=[0])
-    small = _diag([0.6, 0.4], [0.7, 0.3], [[0.5, 0.5], [0.4, 0.6]])
-    with open(os.path.join(regime, "spatial_gate_small_evals.json"), "w") as f:
-        json.dump({"artifact_fp": combiner_artifact_fingerprint(regime, "spatial_gate_small"),
-                   "gate_diagnostics": small}, f)
-    _gate(regime, "spatial_gate_old", ["150·psnr", "170·psnr"])
-    _gate(regime, "spatial_gate_backup_20260101-000000", ["170·psnr"])
-    with open(os.path.join(regime, "spatial_gate_comparison.json"), "w") as f:
-        json.dump({"id": "20990101-000000", "created": "2099-01-01T00:00:00+00:00",
-                   "knee": {"methods": {"gate:spatial_gate_small": {
-                       "integrated": [58, 59, 59, 60], "psnr": [[1] * 4] * 21}}}}, f)
     return base, regime, d211, prod
 
 
-def test_payload_joins_models_scores_hardware_and_combiner_hours(env):
-    _world(env)
+def test_payload_joins_models_scores_and_hardware(env):
+    base, _regime, _d211, _prod = _world(env)
     p = um.universal_payload()
     assert p["available"] is True
-    assert p["production"] == {"integrated": [60.0, 61.0, 62.0, 63.0], "mean": 61.5, "stale": True}
-    assert p["mean_model"]["mean"] == 60.5 and p["comparable"] is True
     assert p["identity"]["indices"] == [0, 1]
-    m196, m211 = p["models"]
-    assert m196["name"] == "member_196" and m196["class"] == "member"
-    assert m196["spec"] == "member:member_196" and m196["knee"] == "fixed"
-    assert m196["output_knee"] == 10.0 and m196["num_res_blocks"] == 32
-    assert m196["score"]["stale"] is True             # its checkpoint changed since
-    # a stale score keeps the step it was made at; legacy entries have no
-    # scoring-time training hours/steps
-    assert m196["learned_knees"] is None and m196["served_step"] == 1000
-    assert m196["scored_hours"] is None and m196["scored_steps"] is None
-    assert m196["vs_production_db"] == pytest.approx(-1.5)
-    assert m196["hardware"] == {"partition": "gpu", "label": "A100", "jobs": ["80"]}
-    assert m211["spec"] == "universal:member_211" and m211["class"] == "universal"
+    # only registered universal models: the active member 196 (universal by
+    # recipe) and the single-knee 170 are no rows
+    (m211,) = p["models"]
+    assert m211["name"] == "member_211" and m211["spec"] == "universal:member_211"
+    assert m211["class"] == "universal"
     assert m211["knee"] == "learned" and m211["output_knee"] is None
     assert m211["learned_knees"] == [5.0, 6.0, 7.0, 8.0] and m211["served_step"] == 3000
     assert m211["score"] == {"integrated": [61.0, 62.0, 62.0, 63.0], "mean": 62.0, "n_fields": 2,
                              "stale": False, "scored_at": "2026-10-13T00:00:00+00:00"}
-    assert m211["vs_production_db"] == pytest.approx(0.5)
     assert m211["train_hours"] == pytest.approx(2.5) and m211["train_rows"] == 3
     assert m211["steps"] == 4000 and m211["jit_compile"] and m211["mixed_precision"]
     assert m211["hardware"]["label"] == "mixed" and m211["hardware"]["jobs"] == ["82", "81"]
     assert m211["fingerprint"].startswith("ckpt-5:3:")
     assert [r["name"] for r in p["fasrc"]] == ["member_218"]
+    # no universal production: nothing to compare with
+    assert p["production"] is None and p["production_model"] is None
+    assert p["production_comparable"] is False and m211["vs_production_db"] is None
+    assert any("no universal model is production" in n for n in p["notes"])
+    assert not {"combiners", "mean_model", "comparable", "weights_pending"} & set(p)
 
-    ids = [c["id"] for c in p["combiners"]]
-    assert ids == ["production", "gate:old", "gate:small"]     # backups left out
-    prod, old, small = p["combiners"]
-    assert prod["spec"] == "production" and prod["score_source"] == "knee-psnr"
-    assert prod["integrated"] == [60, 61, 62, 63] and prod["stale"] is True
-    assert prod["comparable"] is True                 # the knee payload's identity
-    assert prod["weights_source"] == "production" and prod["fit_hours"] == pytest.approx(1.0)
-    by = {m["label"]: m for m in prod["members"]}
-    assert by["170·psnr"]["hours"] == pytest.approx(2.0) and by["196·psnr"]["hours"] == pytest.approx(1.0)
-    assert by["170·psnr"]["max_weight"] == pytest.approx(0.9)
-    assert by["196·psnr"]["max_weight"] == pytest.approx(0.8)
-    assert by["170·psnr"]["mean_weight"] == pytest.approx(0.75)
-    assert prod["hours"] == {"max": pytest.approx(2.6), "mean": pytest.approx(1.75),
-                             "sum": pytest.approx(3.0)}
-    # a pruned variant: only the member it reads counts; its knee row from the
-    # newest compare report that scored it
-    assert small["reads"] == ["170·psnr"] and small["score_source"] == "compare"
-    assert small["integrated"] == [58, 59, 59, 60] and small["mean"] == 59.0
-    assert small["stale"] is False and small["weights_source"] == "variant"
-    assert small["comparable"] is False               # a legacy report: no identity
-    assert small["hours"] == {"max": pytest.approx(2.0 * 0.7), "mean": pytest.approx(1.2),
-                              "sum": pytest.approx(2.0)}
-    # an unscored variant reading an archived member: hours from its zip,
-    # weights unavailable with the reason
-    assert old["integrated"] is None and old["score_source"] is None
-    assert old["weights_source"] is None and "validate" in old["weights_reason"]
-    assert old["hours"] == {"max": None, "mean": None, "sum": pytest.approx(2.5)}
-    assert old["missing_hours"] == [] and old["comparable"] is False
-    assert p["weights_pending"] == []                 # no validate cubes to measure on
-    assert any("stale" in n for n in p["notes"])
+    er.set_production(base, "211")
+    p = um.universal_payload()
+    assert p["production"] == {"integrated": [61.0, 62.0, 62.0, 63.0], "mean": 62.0,
+                               "stale": False, "model": "member_211"}
+    assert p["production_model"] == "member_211" and p["production_comparable"] is True
+    assert p["models"][0]["vs_production_db"] == pytest.approx(0.0)
+    assert not any("no universal model is production" in n for n in p["notes"])
+
+
+def test_vs_production_compares_with_the_production_models_own_score(env):
+    base, regime, _d211, _prod = _world(env)
+    er.add_universal_entry(base, "212")                 # registered BEFORE its dir lands
+    d212 = _member(base, 212, origin=FIXED, rows=[(1000, T0, 3600.0, False)])
+    path = os.path.join(regime, "universal", "index.json")
+    index = json.load(open(path))
+    index["models"]["member_212"] = {"fingerprint": member_fingerprint(d212),
+                                     "integrated": [59, 60, 60, 61], "mean": 60.0, "n_fields": 2,
+                                     "scored_at": "2026-10-01T00:00:00+00:00", "seconds": 9.0,
+                                     "learned_knees": None, "served_step": 1000}
+    json.dump(index, open(path, "w"))
+    er.set_production(base, "211")
+    rows = {m["name"]: m for m in um.universal_payload()["models"]}
+    assert list(rows) == ["member_211", "member_212"]
+    assert rows["member_212"]["vs_production_db"] == pytest.approx(-2.0)
+    assert rows["member_212"]["knee"] == "fixed" and rows["member_212"]["output_knee"] == 10.0
+    # production not scored yet: no reference, nothing comparable
+    del index["models"]["member_211"]
+    json.dump(index, open(path, "w"))
+    p = um.universal_payload()
+    assert p["production"] is None and p["production_model"] == "member_211"
+    assert p["production_comparable"] is False
+    assert all(m["vs_production_db"] is None for m in p["models"])
 
 
 def test_payload_flags_stale_scores_when_the_test_fields_change(env):
-    _base, regime, _d211, _prod = _world(env)
+    base, regime, _d211, _prod = _world(env)
+    er.set_production(base, "211")
     path = os.path.join(regime, "ensemble_knee_psnr.json")
     knee = json.load(open(path))
     knee["identity"]["indices"] = [0, 1, 2]
@@ -466,94 +461,33 @@ def test_payload_flags_stale_scores_when_the_test_fields_change(env):
     p = um.universal_payload()
     m211 = next(m for m in p["models"] if m["name"] == "member_211")
     assert m211["score"]["stale"] is True
-    assert m211["vs_production_db"] is None           # other fields than the knee payload
-    assert p["comparable"] is False
-    assert any("other fields" in n for n in p["notes"])
+    assert p["production"]["stale"] is True           # production's own score, on the old fields
+    assert any("stale" in n for n in p["notes"])
 
 
-def test_variant_weights_of_an_earlier_fit_are_not_used(env):
-    _base, regime, _d211, _prod = _world(env)
-    with open(os.path.join(regime, "spatial_gate_small_evals.json"), "w") as f:
-        json.dump({"artifact_fp": "old", "gate_diagnostics": {"available": True}}, f)
-    small = next(c for c in um.universal_payload()["combiners"] if c["id"] == "gate:small")
-    assert small["weights_source"] is None and "earlier fit" in small["weights_reason"]
-    assert small["hours"]["max"] is None and small["hours"]["sum"] == pytest.approx(2.0)
-
-
-def _compare_report(regime, *, created, identity=None, member_fps=None):
-    report = {"id": "20990101-000000", "created": created,
-              "knee": {"methods": {"gate:spatial_gate_small": {
-                  "integrated": [58, 59, 59, 60], "psnr": [[1] * 4] * 21}}}}
-    if identity is not None:
-        report["identity"] = identity
-    if member_fps is not None:
-        report["member_fps"] = member_fps
-    with open(os.path.join(regime, "spatial_gate_comparison.json"), "w") as f:
-        json.dump(report, f)
-
-
-def _small(env):
-    return next(c for c in um.universal_payload()["combiners"] if c["id"] == "gate:small")
-
-
-def test_a_compare_score_is_comparable_only_on_the_scores_identity(env):
-    base, regime, _d211, _prod = _world(env)
-    fps = {"170·psnr": member_fingerprint(os.path.join(base, "member_170"))}
-    same = {"records_fp": "fp", "subset": "test", "indices": [1, 0],
-            "target_psf_fwhm_arcsec": 0.066}
-    _compare_report(regime, created="2099-01-01T00:00:00+00:00", identity=same, member_fps=fps)
-    small = _small(env)
-    assert small["comparable"] is True and small["stale"] is False
-    for key, value in (("indices", [0, 1, 2]), ("records_fp", "other"),
-                       ("target_psf_fwhm_arcsec", 0.1)):
-        _compare_report(regime, created="2099-01-01T00:00:00+00:00",
-                        identity={**same, key: value}, member_fps=fps)
-        assert _small(env)["comparable"] is False, key
-
-
-def test_a_compare_score_goes_stale_when_a_member_it_read_is_retrained(env):
-    base, regime, _d211, _prod = _world(env)
-    d170 = os.path.join(base, "member_170")
-    _compare_report(regime, created="2099-01-01T00:00:00+00:00",
-                    member_fps={"170·psnr": member_fingerprint(d170)})
-    assert _small(env)["stale"] is False
-    # continued on FASRC and pulled: a new checkpoint, the report scored the old one
-    _member(base, 170, ckpt="ckpt-9")
-    assert _small(env)["stale"] is True
-
-
-def test_a_legacy_compare_score_goes_stale_when_a_read_checkpoint_is_newer(env):
-    base, regime, _d211, _prod = _world(env)
-    index = os.path.join(base, "member_170", "ckpt-5.index")
-    _compare_report(regime, created="2026-10-01T00:00:00+00:00")
-    old = time.mktime((2026, 9, 1, 0, 0, 0, 0, 0, 0))
-    os.utime(index, (old, old))
-    variant = next(v for v in ev.combiner_variants(False)["variants"]
-                   if v["name"] == "spatial_gate_small")
-    variant["fitted_at"] = None                       # isolate the checkpoint rule
-    hit = um._compare_knee_rows(regime)["gate:spatial_gate_small"]
-    assert hit["member_fps"] is None and hit["identity"] is None
-    fingerprint_of = um._fingerprint_resolver(base)
-    assert um._compare_stale(hit, variant, fingerprint_of) is False
-    new = time.mktime((2026, 10, 5, 0, 0, 0, 0, 0, 0))
-    os.utime(index, (new, new))
-    assert um._compare_stale(hit, variant, um._fingerprint_resolver(base)) is True
-
-
-def test_weights_pending_lists_variants_measurable_from_the_validate_cubes(env):
-    _base, regime, _d211, _prod = _world(env)
-    os.makedirs(os.path.join(regime, "cubes_validate"))
-    with open(os.path.join(regime, "cubes_validate", "viz_index.json"), "w") as f:
-        json.dump({"member_labels": ["150·psnr", "170·psnr", "196·psnr"]}, f)
+def test_the_panel_lists_only_models_from_the_first_model_on(env, monkeypatch):
+    """PANEL_FIRST_MODEL (257): older universal models stay registered and
+    resolvable but leave the payload, the FASRC rows and the score job's set."""
+    base = ev.ensemble_dir()
+    for n in (211, 257, 260):
+        er.add_universal_entry(base, str(n))
+        _member(base, n, origin=LEARNED)
+    _member(base, 196, origin=FIXED)                  # an active member, universal by recipe
+    er.load_registry(base)
+    _job("90", ["member_230"], spec=[SPEC_LEARNED])
+    _job("91", ["member_261"], spec=[SPEC_LEARNED])
+    assert list(um.universal_targets(base)) == ["member_211", "member_257", "member_260"]
+    monkeypatch.setattr(model_catalog, "PANEL_FIRST_MODEL", 257)
+    assert list(um.universal_targets(base)) == ["member_257", "member_260"]
+    assert all(cls == er.UNIVERSAL_CLASS for cls, _d in um.universal_targets(base).values())
     p = um.universal_payload()
-    old = next(c for c in p["combiners"] if c["id"] == "gate:old")
-    assert old["weights_source"] is None and "Measure gate weights" in old["weights_reason"]
-    # production keeps its own payload; small has current shares
-    assert p["weights_pending"] == ["gate:old"]
-    assert any("without measured weights" in n for n in p["notes"])
-    with open(os.path.join(regime, "cubes_validate", "viz_index.json"), "w") as f:
-        json.dump({"member_labels": ["170·psnr", "196·psnr"]}, f)
-    assert um.universal_payload()["weights_pending"] == []    # lacks 150: not measurable
+    assert [m["name"] for m in p["models"]] == ["member_257", "member_260"]
+    assert [r["name"] for r in p["fasrc"]] == ["member_261"]
+    with pytest.raises(RuntimeError, match="member_211"):
+        um.job_universal_score(_Cap(), members=["211"])
+    # a registered model below the cutoff that is not on disk is no "pull again" note
+    er.add_universal_entry(base, "240")
+    assert not any("member_240" in n for n in um.universal_payload()["notes"])
 
 
 def test_members_payload_and_member_detail_serve_registered_universal_models(env):
@@ -650,7 +584,9 @@ def _expected(lrs, hrs, scale, fields=(0, 1)):
 
 
 def _score_world(env):
+    """170 (active, single knee), 196 and 211 (registered universal models)."""
     base = ev.ensemble_dir()
+    er.add_universal_entry(base, "196")
     er.add_universal_entry(base, "211")
     _member(base, 170)
     _member(base, 196, origin=FIXED)
@@ -813,92 +749,24 @@ def test_the_spectra_payload_answers_on_an_empty_ensemble(env):
     assert any("not local" in note for note in payload["notes"])
 
 
-def _fake_gate_diagnostic(monkeypatch, calls):
-    def fake_diag(comb, *, starless):
-        calls.append(list(comb.member_labels))
-        return _diag([0.5, 0.5], [0.4, 0.6], [[0.3, 0.7], [0.9, 0.1]])
-
-    monkeypatch.setattr(ev, "_spatial_gate_weight_diagnostic", fake_diag)
-
-
-def test_score_job_measures_gate_weights_first_even_without_test_records(env, monkeypatch):
-    """Gate weights need only the validate cubes: measured before anything
-    else, so a missing test-record sync never blocks them; with nothing to
-    score the job succeeds, else it fails after measuring them."""
+def test_score_job_without_test_records_succeeds_when_every_score_is_current(env, monkeypatch):
+    """Every model scored (records present then), the records gone since:
+    nothing needs a score, so the job succeeds and leaves the scores as they
+    are; it never measures gate weights."""
     _base, regime = _score_world(env)
-    _gate(regime, "spatial_gate_a", ["170·psnr", "196·psnr"])
-    calls: list[list[str]] = []
-    _fake_gate_diagnostic(monkeypatch, calls)
-    with pytest.raises(RuntimeError, match="records"):
-        um.job_universal_score(_Cap())                 # 196, 211 unscored
-    assert calls == [["170·psnr", "196·psnr"]]
-    assert os.path.isfile(os.path.join(regime, "spatial_gate_a_evals.json"))
-    # every model scored (records present then), the records gone since
     _records(env, monkeypatch)
     um.job_universal_score(_Cap())
     monkeypatch.setattr(ev, "_sky_records_local_dir", lambda: None)
-    os.remove(os.path.join(regime, "spatial_gate_a_evals.json"))
     out = um.job_universal_score(_Cap())
     assert out["scored"] == [] and out["reused"] == ["member_196", "member_211"]
-    assert out["gates"]["computed"] == ["spatial_gate_a"] and out["failed"] == {}
+    assert out["failed"] == {} and "gates" not in out
     assert set(ev.read_universal_scores()["models"]) == {"member_196", "member_211"}
+    assert not any(name.endswith("_evals.json") for name in os.listdir(regime))
 
 
-def test_score_job_measures_gate_weights_with_nothing_to_score(env, monkeypatch):
-    regime = _regime(env)
-    _gate(regime, "spatial_gate_a", ["170·psnr", "196·psnr"])
-    calls: list[list[str]] = []
-    _fake_gate_diagnostic(monkeypatch, calls)
+def test_score_job_with_nothing_to_score(env):
     out = um.job_universal_score(_Cap())               # no universal model, no records
-    assert out["scored"] == [] and out["reused"] == []
-    assert out["gates"]["computed"] == ["spatial_gate_a"]
-
-
-def test_one_broken_gate_never_stops_the_weight_measurement(env, monkeypatch):
-    regime = _regime(env)
-    _gate(regime, "spatial_gate_a", ["170·psnr", "196·psnr"])
-    _gate(regime, "spatial_gate_b", ["170·psnr", "196·psnr"])
-
-    def flaky(comb, *, starless):
-        if flaky.n == 0:
-            flaky.n += 1
-            raise ValueError("corrupt cube")
-        return _diag([0.5, 0.5], [0.4, 0.6], [[0.3, 0.7], [0.9, 0.1]])
-
-    flaky.n = 0
-    monkeypatch.setattr(ev, "_spatial_gate_weight_diagnostic", flaky)
-    out = um.job_universal_score(_Cap())
-    assert out["gates"]["unavailable"] == {"spatial_gate_a": "ValueError: corrupt cube"}
-    assert out["gates"]["computed"] == ["spatial_gate_b"]
-
-
-def test_score_job_measures_missing_variant_gate_weights(env, monkeypatch):
-    _base, regime = _score_world(env)
-    _records(env, monkeypatch)
-    _gate(regime, "spatial_gate_combiner", ["170·psnr", "196·psnr"])
-    _gate(regime, "spatial_gate_a", ["170·psnr", "196·psnr"])
-    _gate(regime, "spatial_gate_b", ["170·psnr", "150·psnr"])
-    _gate(regime, "spatial_gate_backup_20260101-000000", ["170·psnr"])
-    calls: list[list[str]] = []
-
-    def fake_diag(comb, *, starless):
-        calls.append(list(comb.member_labels))
-        if "150·psnr" in comb.member_labels:
-            return {"available": False, "reason": "validation cube cache lacks members this gate reads"}
-        return _diag([0.5, 0.5], [0.4, 0.6], [[0.3, 0.7], [0.9, 0.1]])
-
-    monkeypatch.setattr(ev, "_spatial_gate_weight_diagnostic", fake_diag)
-    out = um.job_universal_score(_Cap(), members=["211"])
-    assert out["gates"]["computed"] == ["spatial_gate_a"]
-    assert out["gates"]["unavailable"] == {
-        "spatial_gate_b": "validation cube cache lacks members this gate reads"}
-    saved = json.load(open(os.path.join(regime, "spatial_gate_a_evals.json")))
-    assert saved["artifact_fp"] == combiner_artifact_fingerprint(regime, "spatial_gate_a")
-    assert saved["gate_diagnostics"]["artifact_fp"] == saved["artifact_fp"]
-    assert not os.path.exists(os.path.join(regime, "spatial_gate_b_evals.json"))
-    assert calls == [["170·psnr", "196·psnr"], ["170·psnr", "150·psnr"]]
-    again = um.job_universal_score(_Cap(), members=["211"])
-    assert again["gates"]["reused"] == ["spatial_gate_a"] and len(calls) == 3
+    assert out == {"scored": [], "reused": [], "failed": {}, "identity": None, "spectra": []}
 
 
 # ---- pull job ----------------------------------------------------------------- #

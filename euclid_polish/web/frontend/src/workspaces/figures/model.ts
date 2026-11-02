@@ -302,16 +302,16 @@ export function viewerLink(r: SavedResult): SourceLink | null {
     case "jwst-euclid":
       return id ? realtile(`pair/${id}`) : null;
     case "evaluation": {
-      // Synthetic stamps (HR truth) are synthetic validation: Models › Images.
+      // Synthetic stamps (HR truth) have no page of their own any more.
       const stamp = /^syn-(lens|gal)(?:$|[_-])/.exec(String(obj.grade ?? "")) ?? (id ? /^syn-(lens|gal)[_-]/.exec(id) : null);
-      if (stamp) return { to: `/models/images${q({ set: "stamps", g: `syn-${stamp[1]}`, id })}`, label: "Open in Models › Images" };
+      if (stamp) return null;
       // A real lens candidate or Q1 galaxy: its tile card in its target set.
       const grade = String(obj.grade ?? "");
       const set = /^[A-C]$/.test(grade) ? "lenses" : grade === "gal" ? "galaxies" : "lenses,galaxies";
       return { to: `/sky/targets${q({ set, ...(id ? { inspect: `tile:eval/${id}` } : pos("cev")) })}`, label: "Open in Sky › Targets" };
     }
     case "ensemble":
-      return { to: `/models/images${q(pos("ens"))}`, label: "Open in Models › Images" };
+      return null;
     case "sky":
       return { to: `/synthetic/records${q({ ...pos("sky"), subset: params.subset })}`, label: "Open in Records" };
     case "cutouts":

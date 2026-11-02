@@ -1,8 +1,7 @@
-/* "Run job X" from anywhere: the local jobs a user starts most often
- * (evaluate the ensemble, PSNR vs knee, member PSNR, disk usage,
- * the health checks) as palette actions under "Run a job", plus shortcuts
- * to the pages that own the knob-heavy runs (fit a gate variant, compare
- * models on real tiles, train members). The shell mounts <RunActions/> once;
+/* "Run job X" from anywhere: the local jobs a user starts most often (disk
+ * usage, the health checks) as palette actions under "Run a job", plus
+ * shortcuts to the pages that own the knob-heavy runs (compare models on
+ * real tiles, train universal models). The shell mounts <RunActions/> once;
  * Home's quick actions reuse `useRunJobs()`.
  *
  * TensorFlow-heavy runs ask first (confirm()). A started job is registered in
@@ -39,32 +38,6 @@ type RunSpec = {
 };
 
 const SPECS = {
-  evaluate: {
-    key: "run:evaluate", label: "Evaluate the ensemble", url: "/ensemble/evaluate",
-    data: { mode: "starfull" },
-    question: {
-      title: "Evaluate the ensemble?",
-      message: "Loads every active member (TensorFlow) and scores the local test records. It takes several minutes.",
-      confirmLabel: "Evaluate",
-    },
-  },
-  knee: {
-    key: "run:knee", label: "Compute PSNR vs knee", url: "/ensemble/knee-psnr",
-    data: { mode: "starfull" },
-    question: {
-      title: "Recompute PSNR vs knee?",
-      message: "Scores every member, the mean and each combiner at every asinh knee from the cached test cubes.",
-      confirmLabel: "Compute",
-    },
-  },
-  memberPsnr: {
-    key: "run:member-psnr", label: "Re-score the members' test PSNR", url: "/ensemble/member-psnr",
-    question: {
-      title: "Re-score the members' test PSNR?",
-      message: "Only changed or unscored members are evaluated (TensorFlow).",
-      confirmLabel: "Re-score",
-    },
-  },
   diskUsage: {
     key: "run:disk-usage", label: "Measure disk usage per data root", url: "/api/system/disk-usage/refresh",
   },
@@ -83,7 +56,7 @@ function runningId(key: string): string | null {
 const KEY_BY_URL = new Map<string, string>(Object.values(SPECS).map((s) => [s.url, s.key]));
 
 /** The one-at-a-time key of a run: a spec POSTing a shared runner's endpoint
- *  (e.g. a Home health-check fix hitting /ensemble/knee-psnr) shares that
+ *  (e.g. a Home health-check fix hitting the same endpoint) shares that
  *  runner's key, so the palette, Home's quick actions and the check rows can
  *  never start the same job twice. */
 export function jobKeyFor(spec: Pick<RunSpec, "key" | "url">): string {
@@ -139,9 +112,6 @@ export function useRunJobs(): Record<JobKey | "health", Runner> {
     run: async () => { await startJob(SPECS[k]); },
   });
   return {
-    evaluate: runner("evaluate"),
-    knee: runner("knee"),
-    memberPsnr: runner("memberPsnr"),
     diskUsage: runner("diskUsage"),
     health: { id: "health", label: "Re-run the health checks", busy: false, run: refreshHealth },
   };
@@ -153,21 +123,13 @@ export function RunActions() {
   const jobs = useRunJobs();
   const K = ["run job", "job", "run"];
   const actions: PageAction[] = [
-    { id: "run:evaluate", label: jobs.evaluate.label, group: RUN_GROUP, keywords: [...K, "evaluate", "psnr", "test"],
-      disabled: jobs.evaluate.busy, run: () => { void jobs.evaluate.run(); } },
-    { id: "run:knee", label: jobs.knee.label, group: RUN_GROUP, keywords: [...K, "knee", "integrated", "leaderboard"],
-      disabled: jobs.knee.busy, run: () => { void jobs.knee.run(); } },
-    { id: "run:member-psnr", label: jobs.memberPsnr.label, group: RUN_GROUP, keywords: [...K, "members", "psnr", "score"],
-      disabled: jobs.memberPsnr.busy, run: () => { void jobs.memberPsnr.run(); } },
     { id: "run:disk-usage", label: jobs.diskUsage.label, group: RUN_GROUP, keywords: [...K, "disk", "space", "storage", "du"],
       disabled: jobs.diskUsage.busy, run: () => { void jobs.diskUsage.run(); } },
     { id: "run:health", label: jobs.health.label, group: RUN_GROUP, keywords: [...K, "health", "alerts", "stale", "staleness"],
       run: () => { void jobs.health.run(); } },
-    { id: "run:fit-gate", label: "Fit a spatial-gate variant…", group: RUN_GROUP, keywords: [...K, "combiner", "gate", "fit"],
-      run: () => navigate(pagePath("models", { tab: "combiner" })) },
     { id: "run:experiment", label: "Compare models on real tiles…", group: RUN_GROUP, keywords: [...K, "experiment", "real", "holes"],
       run: () => navigate(pagePath("sky", { tab: "compare" })) },
-    { id: "run:train", label: "Train or continue members on FASRC…", group: RUN_GROUP, keywords: [...K, "train", "members", "slurm"],
+    { id: "run:train", label: "Train universal models on FASRC…", group: RUN_GROUP, keywords: [...K, "train", "universal", "slurm"],
       run: () => navigate(pagePath("models", { tab: "train" })) },
   ];
   usePageActions(actions);

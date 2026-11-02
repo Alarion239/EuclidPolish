@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FieldCensus, SourcesCensus } from "./dataApi";
-import { censusHistogram, lensDensity, nearestRecord, recordArea, recordSrLink } from "./recordsModel";
+import { censusHistogram, lensDensity, nearestRecord, recordArea } from "./recordsModel";
 
 const f = (field_index: number, total: number, star: number | null, lens = 0): FieldCensus => ({
   field_index, total_vis_e: total, brightest_star_mag: star, brightest_galaxy_mag: 22, n: 5, galaxy: 5, star: star == null ? 0 : 1,
@@ -38,17 +38,5 @@ describe("records census", () => {
     expect(lens.count).toBe(1);
     expect(lens.area).toBeCloseTo(4 * 0.180625, 6);
     expect(lens.density).toBeCloseTo(1 / (4 * 0.180625), 6);
-  });
-});
-
-describe("recordSrLink (the record's SR is one click away, in Models › Images)", () => {
-  it("opens this record on the records set when its split has an SR", () => {
-    expect(recordSrLink("test", 12, 100)).toEqual({
-      to: "/models/images?set=records&split=test&id=test%3A12", label: "Open its SR in Models › Images",
-    });
-  });
-  it("points at Generate SR when the split has none, and at the set without a record", () => {
-    expect(recordSrLink("validate", 3, 0)).toEqual({ to: "/models/images?set=records", label: "Generate its SR in Models › Images" });
-    expect(recordSrLink("test", null, 5).to).toBe("/models/images?set=records&split=test");
   });
 });

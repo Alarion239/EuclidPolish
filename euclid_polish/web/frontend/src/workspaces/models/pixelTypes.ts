@@ -195,8 +195,3 @@ export function bandFacts(summary: unknown, kind: FieldSet, band: KneeBand): Ban
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   return { n: num(b.n) ?? 0, sigma: num(b.noise_sigma_e), blank: num(b.blank_fraction), types: Array.isArray(b.types) ? b.types.length : 0 };
 }
-
-/** The bands whose figure (for a per-band figure) exists in `files`. */
-export function bandsWithFile(files: readonly string[], file: (band: KneeBand) => string, bands: readonly KneeBand[]): KneeBand[] {
-  return bands.filter((b) => files.includes(file(b)));
-}

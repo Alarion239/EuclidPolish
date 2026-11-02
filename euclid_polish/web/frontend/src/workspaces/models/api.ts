@@ -23,38 +23,6 @@ export type KneeInfo = {
   learned_output_knee?: boolean | null;
 };
 
-/* ── overview.json ─────────────────────────────────────────────────────── */
-export type Check = { id: string; ok: boolean; tone: "good" | "warn" | "bad" | "info"; title: string; detail: string; action?: string | null };
-export type Headline = {
-  metric?: string | null; knee_e?: number | null; n_scored?: number | null;
-  production: { psnr?: number | null; vs_mean_db?: number | null; vs_best_member_db?: number | null };
-  mean: { psnr?: number | null; vs_mean_member_db?: number | null };
-  best_member: { psnr?: number | null; label?: string | null; mean_member_psnr?: number | null };
-  knee: {
-    available: boolean; stale: boolean; n_fields?: number | null;
-    integration?: { from_e: number; to_e: number; weighting?: string } | null;
-    production?: number | null; production_bands?: number[] | null; mean?: number | null;
-    best_member?: number | null; best_member_label?: string | null;
-  };
-};
-/** The registered universal model the registry names production, with its
- *  universal score (Models › Universal's ∫PSNR: VIS Y J H and their mean;
- *  null until it is scored; `stale`: an earlier checkpoint or other fields). */
-export type ProductionModelScore = {
-  name: string; spec: string; label: string;
-  integrated?: (number | null)[] | null; mean?: number | null; scored_at?: string | null; stale?: boolean | null;
-};
-export type Overview = {
-  active_members: string[]; n_members: number; records_dir?: string | null;
-  eval_subset?: string; test_present: boolean; evaluated_at?: string | null;
-  summary: Record<string, unknown> | null; headline: Headline; checks: Check[];
-  production_gate: { available: boolean; n_members: number; mix_space?: string | null; fitted_at?: string | null; promoted_from?: string | null };
-  /** The universal model that is production (null or absent: production is
-   *  the gate). While it is set, `headline.production` and
-   *  `headline.knee.production` are still the gate's last numbers. */
-  production_model?: ProductionModelScore | null;
-};
-
 /* ── members.json / member/<name>.json ─────────────────────────────────── */
 export type MemberJob = {
   jobid: string; state?: string | null; submitted_at?: string | null; ended_at?: string | null;
@@ -110,11 +78,6 @@ export type MemberCurves = {
   psnr: Series2; band_psnr: Record<string, Series2>; loss_series: Series2; train_loss: Series2;
   gnorm: Series2; gnorm_max: Series2; step_time: Series2;
 };
-export type KneeModel = KneeInfo & {
-  id: string; kind: "member" | "mean" | "combiner"; label: string;
-  loss?: string | null; blocks?: number | null;
-  psnr: number[][]; integrated: number[];
-};
 export type MemberDetail = {
   name: string; label: string; active: boolean; archived: Tombstone | null;
   /** A registered universal model (standalone; Models › Universal). */
@@ -122,86 +85,7 @@ export type MemberDetail = {
   /** `universal` for a registered universal model and for an archived one
    *  (from its tombstone); `member` otherwise. */
   class?: "member" | "universal" | null;
-  /** A universal model: its score is on the knee payload's fields, records
-   *  and target, so the plain mean and gate curves are its references. */
-  comparable?: boolean | null;
   row: MemberRow | null; curves: MemberCurves | null;
-  knee: { knees: number[]; bands: string[]; stale: boolean; models: KneeModel[] } | null;
-  gate: {
-    stale: boolean; bands: string[]; brightness_names: string[];
-    usage: Record<string, number | null>; usage_source: Record<string, number | null>;
-    by_brightness: Record<string, (number | null)[]>; uniform: number;
-  } | null;
-};
-
-/* ── training-curves.json ──────────────────────────────────────────────── */
-export type Curve = MemberCurves & KneeInfo & {
-  /** training-curves.json lists every active member, a legacy starless one too (Curves drops it). */
-  name: string; label: string; starless: boolean; loss_norm: string; blocks?: number | null;
-  target_steps?: number | null; test_psnr?: number | null;
-  /** Not pulled yet: the curve comes live from its job's event stream on FASRC. */
-  remote?: boolean; jobid?: string; last_step?: number | null;
-  /** A remote member that reached its target steps (pull it to keep its curve). */
-  finished?: boolean;
-  /** A remote universal model (pulled on Models › Universal, never into the ensemble). */
-  universal?: boolean;
-};
-
-/** A member still training on FASRC (its curve grows while the page polls). */
-export const isTraining = (c: Curve) => !!c.remote && !c.finished;
-
-/* ── knee-psnr.json ────────────────────────────────────────────────────── */
-export type KneePayload = {
-  available?: boolean; stale?: boolean; reason?: string; n_fields?: number;
-  knees?: number[]; bands?: string[]; models?: KneeModel[];
-  integration?: { from_e: number; to_e: number; weighting?: string };
-};
-
-/* ── combiners.json / compare.json ─────────────────────────────────────── */
-export type HistoryRow = {
-  step: number; loss?: number | null; train_loss?: number | null; vis_psnr?: number | null;
-  band_psnr?: number[] | null; integrated_psnr?: number[] | null; vis_integrated_psnr?: number | null;
-};
-export type Variant = {
-  name: string; kind: "gate" | "rbf"; spec: string; production: boolean; backup: boolean;
-  member_labels: string[]; reads: string[]; n_members: number; n_reads: number; pruned: boolean;
-  mix_space?: string | null; use_lr: boolean; width?: number | null; fitted_at?: string | null;
-  fingerprint?: string | null;
-  /** current: every member it reads is active; extra: members that joined after the fit. */
-  membership: { current: boolean; missing: string[]; extra: string[]; missing_reads?: string[] };
-  /** Whether it can be promoted now, and why not (a read member left, an unfinished fit). */
-  promotion?: { ok: boolean; reason: string | null } | null;
-  applies_to_test_cubes: boolean;
-  fit: Record<string, unknown>;
-  selected?: HistoryRow | null; baseline?: HistoryRow | null; history: HistoryRow[];
-  test?: { source: string; report?: string | null; band_psnr?: NumArr | null; blackout_band_psnr?: NumArr | null } | null;
-  knee?: { source: "knee" | "compare"; stale?: boolean; report?: string | null; integrated?: number[] | null; psnr?: number[][] | null } | null;
-  eval?: { psnr?: number | null; vs_mean_db?: number | null; vs_best_member_db?: number | null };
-};
-export type ReportRef = { id: string; created?: string | null; methods?: string[] | null; n_fields?: Record<string, number> | null; gates_requested?: string[] | null };
-/** One gate archive: every `spatial_gate_*` artifact zipped into a tracking
- *  campaign (`models/gates-<UTC stamp>.zip`), restorable. */
-export type GateArchive = { name: string; campaign?: string | null; size_bytes?: number | null; archived_at?: string | null; n_items?: number | null };
-export type CombinersPayload = {
-  production: string; active_members: string[]; cube_members: string[];
-  variants: Variant[]; compare: ReportRef | null; reports: ReportRef[];
-  /** The universal model that is production (`member_238`); null or absent:
-   *  production is the gate. */
-  production_model?: string | null;
-  /** The gate archives, newest first (absent on older servers). */
-  archives?: GateArchive[] | null;
-};
-/** One method's scores on a field group (null: not scored, e.g. a report's
- *  empty blackout group when it was run without blackout fields). */
-export type GroupScores = { band_psnr: NumArr; bin_mse: NumArr; halo_mse: NumArr; hole_mse: NumArr };
-export type CompareReport = {
-  id?: string; created?: string; members: string[]; bands: string[]; brightness_names: string[];
-  methods: string[]; method_labels?: Record<string, string>; method_members?: Record<string, string[]>;
-  n_fields?: Record<string, number>;
-  groups: Record<string, Record<string, GroupScores>>;
-  usage?: Record<string, { labels: string[]; all_pixels: number[][]; source_pixels: number[][] }>;
-  knee?: { knees: number[]; n_fields: number; methods: Record<string, { psnr: number[][]; integrated: number[] }> };
-  timing_s?: Record<string, number | null>; members_needed?: Record<string, number>;
 };
 
 /* ── universal.json (the Universal tab) ─────────────────────────────────── */
@@ -235,26 +119,6 @@ export type UniversalRow = {
   vs_production_db: number | null;
   created_at?: string | null; commit?: string | null;
 };
-/** One member a combiner reads, with its training hours and its gate shares
- *  (peak = the largest over bands and brightness bins; mean = over bands). */
-export type CombinerMemberHours = { label: string; name: string; hours: number | null; max_weight: number | null; mean_weight: number | null };
-export type UniversalCombiner = {
-  id: string; name: string; label: string; spec: string; production: boolean;
-  reads: string[]; n_reads: number;
-  integrated: (number | null)[] | null; mean: number | null;
-  score_source: "knee-psnr" | "compare" | null; stale: boolean;
-  weights_source: "production" | "variant" | null; weights_reason: string | null;
-  /** Its score is on the universal scores' fields, records and target
-   *  (absent: a knee-PSNR score follows the payload's `comparable`, a compare
-   *  report's is not). */
-  comparable?: boolean | null;
-  members: CombinerMemberHours[];
-  /** Σ hours × max weight, Σ hours × mean weight, Σ hours (every member read),
-   *  over the members with known hours: a lower bound when `missing_hours`. */
-  hours: { max: number | null; mean: number | null; sum: number | null };
-  missing_hours: string[];
-  fit_hours: number | null;
-};
 /** A universal model trained on FASRC that is not here (not active, not
  *  archived; registered only when its pull left no checkpoint here). */
 export type UniversalFasrcRow = {
@@ -267,8 +131,7 @@ export type UniversalFasrcRow = {
   /** Registered as a universal model but with no checkpoint here: pull it again. */
   registered?: boolean;
 };
-/** A reference score: the knee payload's production gate or plain mean, or —
- *  while a universal model is production — that model's own score (`model`). */
+/** The production model's own score (`model`: its name). */
 export type UniversalReference = { integrated: (number | null)[]; mean: number | null; stale: boolean; model?: string | null };
 export type UniversalPayload = {
   available: boolean; knees: number[]; bands: string[];
@@ -276,23 +139,14 @@ export type UniversalPayload = {
   /** The scores store's identity: the test fields (`indices`) and the truth. */
   identity: { indices?: number[] | null; subset?: string | null; [key: string]: unknown } | null;
   production: UniversalReference | null;
-  /** The universal model that is production (`member_238`): `production` is
-   *  then its own score. Null or absent: production is the gate. */
+  /** The universal model that is production (`member_257`): `production` is
+   *  its own score. */
   production_model?: string | null;
-  mean_model: UniversalReference | null;
-  /** Whether the knee payload (the gate, `mean_model`) was scored on the
-   *  scores' own fields (absent: read off the rows, universal.ts isComparable). */
-  comparable?: boolean | null;
   /** Whether `production` is on the scores' own fields, so the rows'
-   *  `vs_production_db` is meaningful: a scored universal production, else
-   *  `comparable`. */
+   *  `vs_production_db` is meaningful. */
   production_comparable?: boolean | null;
   models: UniversalRow[];
-  combiners: UniversalCombiner[];
   fasrc: UniversalFasrcRow[];
-  /** Combiner ids whose gate weights are not measured yet but can be now
-   *  (the score job measures them from the validate cubes). */
-  weights_pending?: string[] | null;
   notes: string[];
 };
 
@@ -312,69 +166,10 @@ export type TrainingJob = {
   params: Record<string, unknown>;
 };
 
-/* ── evals.json (Diagnostics) ──────────────────────────────────────────── */
-export type NumArr = (number | null)[];
-/** The bands the evaluation diagnostics are measured in (VIS is
- *  ensemble_evals.json; the others are computed from the same cached cubes). */
-export const EVAL_BANDS = ["VIS", "Y_E", "J_E", "H_E"] as const;
-export type EvalBand = (typeof EVAL_BANDS)[number];
-export type Evals = {
-  subset?: string; n_fields?: number; n_members?: number;
-  /** The band this payload measures (absent on payloads older than the band switch: VIS). */
-  band?: EvalBand;
-  /** A Y/J/H payload computed for an earlier evaluation (other members, fields or gate). */
-  stale?: boolean;
-  members?: ({ label: string; loss?: string; blocks?: number } & KneeInfo)[];
-  guides?: { theta_min?: number; lr_scale?: number; vis_fwhm?: number; psf_fwhm?: number; band?: string };
-  ps?: {
-    theta: NumArr; r: NumArr; r_lr?: NumArr; r_members?: NumArr[]; r_pairs?: NumArr[]; r_cross?: NumArr;
-    T?: NumArr; T_members?: NumArr[];
-    model_combiners?: Record<string, { r?: NumArr; T?: NumArr }>;
-  } | null;
-  coherence?: {
-    domains?: Record<string, { theta_min?: number; theta_max?: number }>;
-    scores?: { id: string; label: string; overall: number | null; sr: number | null;
-      overall_lo?: number | null; overall_hi?: number | null; sr_lo?: number | null; sr_hi?: number | null }[];
-  } | null;
-  std_err?: (StdErrModel & { models?: Record<string, StdErrModel> }) | null;
-  bright_std?: { bright_edges: NumArr; std_edges: NumArr; hist: number[][]; bright: NumArr; lo: NumArr; med: NumArr; hi: NumArr; stretch: number } | null;
-  calibration?: {
-    z_edges: NumArr; pdf: NumArr; field_std: NumArr; field_rmse: NumArr;
-    stats: { cover1?: number; cover2?: number; cover3?: number; sigma_z?: number };
-  } | null;
-  model_combiners?: Record<string, { available?: boolean; psnr?: number | null; asinh_l1?: number | null;
-    ensemble_mean_psnr?: number | null; best_member_psnr?: number | null; best_member_label?: string | null;
-    coherence_overall?: number | null; coherence_sr?: number | null } | null>;
-};
-/** The per-band HR-vs-SR angular power spectrum of the synced validation
- *  records (GET /api/evaluation/angular-power-spectrum.json). */
-export type ApsCurves = { theta: NumArr; T: NumArr; T_lo: NumArr; T_hi: NumArr; r: NumArr; r_lo: NumArr; r_hi: NumArr; count?: NumArr };
-export type Aps = {
-  subset?: string; n_fields: number; field_n?: number; pixel_scale?: number; lr_scale?: number; theta_max?: number;
-  band_names?: string[];
-  bands: Record<string, { psf_fwhm?: number; linear?: ApsCurves; asinh?: ApsCurves }>;
-};
-export type StdErrModel = { edges: NumArr; hist: number[][]; med_std: NumArr; med_err: NumArr; n_fields?: number };
-
 /* ── shared reads (other workspaces' endpoints, the fields used here) ──── */
 
-/** One row of the catalogue evaluation (GET /api/evaluation/runs): the
- *  synthetic stamps (grade syn-lens / syn-gal) carry an HR truth. CSV
- *  values arrive as strings. */
-export type EvalRow = {
-  id?: string | null; grade?: string | null; ok?: string | boolean | null; kind?: string | null;
-  psnr_lr_hr?: string | number | null; psnr_sr_hr?: string | number | null;
-  flux_ratio_sr_over_lr?: string | number | null; lr_total_e?: string | number | null; sr_total_e?: string | number | null;
-  n_members?: number | string | null; state?: string | null; state_reason?: string | null;
-  viewer_id?: string | null; out_subdir?: string | null;
-};
-export type EvalRuns = { rows: EvalRow[]; n?: number; n_ok?: number; groups?: Record<string, number> };
-
-/** A curve row the loss facets split (training-curves.json). */
-export type CurveFacetRow = { loss_norm: string; name: string };
-
 /** What production is (GET /api/models `production`): one registered
- *  universal model, or the production gate. */
+ *  universal model. */
 export type CatalogProduction = {
   kind: "universal" | "gate"; spec: string; name: string | null; label: string; available?: boolean; reason?: string | null;
 };
@@ -387,29 +182,12 @@ export type ModelCatalog = {
 /** One Sky › Compare run's record (GET /api/experiments/<id>): the fields read here. */
 export type ExperimentDetail = { id: string; label?: string; created?: string; fingerprints?: Record<string, string | null> | null };
 
-/** The production SR over the local records (GET /api/sky/sr-status). */
-export type SrSplit = "test" | "validate" | "train";
-export type SrStatus = {
-  records: boolean; checkpoint: boolean; can_generate: boolean; subsets: SrSplit[];
-  sr: Partial<Record<SrSplit, number>>;
-  splits: Partial<Record<SrSplit, { count: number; present: boolean; sr: { state: string; reasons: string[]; count: number } }>>;
-};
-
 /* ── URLs ──────────────────────────────────────────────────────────────── */
 export const url = {
-  overview: () => `/ensemble/overview.json?mode=${REGIME}`,
   members: () => `/ensemble/members.json?mode=${REGIME}`,
   member: (name: string) => `/ensemble/member/${encodeURIComponent(name)}.json`,
-  curves: () => "/ensemble/training-curves.json",
-  knee: () => `/ensemble/knee-psnr.json?mode=${REGIME}`,
-  evals: (band: EvalBand = "VIS") => `/ensemble/evals.json?mode=${REGIME}${band === "VIS" ? "" : `&band=${band}`}`,
-  evalBands: () => "/ensemble/evals/bands",
-  combiners: () => `/ensemble/combiners.json?mode=${REGIME}`,
-  report: (id?: string | null) => `/ensemble/combiners/compare.json?mode=${REGIME}${id ? `&report=${encodeURIComponent(id)}` : ""}`,
-  /** POST `model` = universal:member_NNN, or `gate` (instant, no job). */
+  /** POST `model` = universal:member_NNN (instant, no job). */
   production: () => "/ensemble/production",
-  gatesArchive: () => "/ensemble/combiners/archive",
-  gatesRestore: () => "/ensemble/combiners/restore",
   trainingJobs: () => "/ensemble/training-jobs.json",
   universal: () => `/ensemble/universal.json?mode=${REGIME}`,
   universalScore: () => "/ensemble/universal/score",
@@ -417,27 +195,11 @@ export const url = {
   experiments: () => "/api/experiments",
   experiment: (id: string) => `/api/experiments/${encodeURIComponent(id)}`,
   models: () => "/api/models",
-  viewerMeta: () => `/viewer/meta/ensemble?mode=${REGIME}`,
-  evalRuns: () => "/api/evaluation/runs",
-  srStatus: () => "/api/sky/sr-status",
-  generateSr: () => "/api/sky/generate-sr",
   config: () => "/api/config",
-  mirrorStatus: () => "/api/fasrc/mirror/status",
-  fieldStatus: () => "/api/inference/field.json",
-  fieldDiagnostics: () => "/api/inference/diagnostics.json",
-  fieldRefresh: () => "/inference/refresh-combiners",
-  recoveryFigure: () => "/api/evaluation/angular-power-spectrum",
-  recoverySpectrum: () => "/api/evaluation/angular-power-spectrum.json",
 };
 
 const MIN = 60_000;
-export const useOverview = () => useResource<Overview>(url.overview(), [], { ttl: 30_000 });
 export const useMembers = () => useResource<MembersPayload>(url.members(), [], { ttl: 30_000 });
-/** `poll` (ms) refetches while a member trains on FASRC. */
-export const useCurves = (poll?: number) =>
-  useResource<{ members: Curve[] }>(url.curves(), [], { ttl: poll ? 20_000 : 2 * MIN, poll });
-export const useKnee = () => useResource<KneePayload>(url.knee(), [], { ttl: MIN });
-export const useCombiners = () => useResource<CombinersPayload>(url.combiners(), [], { ttl: 30_000 });
 export const useTrainingJobs = () => useResource<{ jobs: TrainingJob[] }>(url.trainingJobs(), [], { ttl: MIN });
 export const useExperiments = () => useResource<{ experiments: ExperimentSummary[] }>(url.experiments(), [], { ttl: MIN });
 export const useExperiment = (id: string | null | undefined) =>
@@ -477,5 +239,3 @@ export function useExperimentDetails(ids: readonly string[]): { details: Map<str
     return { details, failed };
   }, [wanted, results]);
 }
-export const useEvalRuns = () => useResource<EvalRuns>(url.evalRuns(), [], { ttl: 30_000 });
-export const useSrStatus = (poll?: number) => useResource<SrStatus>(url.srStatus(), [], { ttl: 30_000, poll });

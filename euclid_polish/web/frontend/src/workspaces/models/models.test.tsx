@@ -6,13 +6,10 @@ import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import ModelsWorkspace from "./index";
 
-vi.mock("./tabs/Leaderboard", () => ({ default: () => <p>tab:leaderboard</p> }));
 vi.mock("./tabs/Universal", () => ({ default: () => <p>tab:universal</p> }));
-vi.mock("./tabs/Members", () => ({ default: () => <p>tab:members</p> }));
+vi.mock("./tabs/Knees", () => ({ default: () => <p>tab:knees</p> }));
+vi.mock("./tabs/Spectra", () => ({ default: () => <p>tab:spectra</p> }));
 vi.mock("./tabs/Train", () => ({ default: () => <p>tab:train</p> }));
-vi.mock("./tabs/Combiner", () => ({ default: () => <p>tab:combiner</p> }));
-vi.mock("./tabs/Diagnostics", () => ({ default: () => <p>tab:diagnostics</p> }));
-vi.mock("./tabs/Images", () => ({ default: () => <p>tab:images</p> }));
 
 function go(url: string) {
   const router = createMemoryRouter([{ path: "/models/*", element: <ModelsWorkspace /> }], {
@@ -24,10 +21,11 @@ function go(url: string) {
 }
 
 describe("models workspace", () => {
-  it("opens a bare /models on the Leaderboard", async () => {
+  it("opens a bare /models on Universal, the first of its four tabs", async () => {
     const router = go("/models");
-    await screen.findByText("tab:leaderboard");
-    expect(router.state.location.pathname).toBe("/models/leaderboard");
+    await screen.findByText("tab:universal");
+    expect(router.state.location.pathname).toBe("/models/universal");
+    expect(screen.getAllByRole("link").map((a) => a.textContent)).toEqual(["Universal", "Knees", "Spectra", "Train"]);
   });
 
   it("returns a bare /models to the last tab visited, keeping the query", async () => {
@@ -36,23 +34,15 @@ describe("models workspace", () => {
     await act(() => router.navigate("/models?inspect=job%3Alocal%2Fa"));
     await screen.findByText("tab:train");
     expect(router.state.location.pathname + router.state.location.search).toBe("/models/train?inspect=job%3Alocal%2Fa");
-    await act(() => router.navigate("/models/combiner"));
+    await act(() => router.navigate("/models/spectra"));
     await act(() => router.navigate("/models"));
-    await screen.findByText("tab:combiner");
-    expect(router.state.location.pathname).toBe("/models/combiner");
-  });
-
-  it("opens the Universal tab, second in the strip", async () => {
-    const router = go("/models/universal");
-    await screen.findByText("tab:universal");
-    expect(router.state.location.pathname).toBe("/models/universal");
-    const links = screen.getAllByRole("link").map((a) => a.textContent);
-    expect(links.slice(0, 2)).toEqual(["Leaderboard", "Universal"]);
+    await screen.findByText("tab:spectra");
+    expect(router.state.location.pathname).toBe("/models/spectra");
   });
 
   it("puts nothing beside the tab strip: no regime switch, no member popover", async () => {
-    go("/models/images?inspect=job%3Alocal%2Fa");
-    await screen.findByText("tab:images");
+    go("/models/knees?inspect=job%3Alocal%2Fa");
+    await screen.findByText("tab:knees");
     expect(screen.queryByRole("radiogroup", { name: "Star regime" })).toBeNull();
     expect(screen.queryByRole("radio", { name: /starless|starfull/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Members:/ })).toBeNull();

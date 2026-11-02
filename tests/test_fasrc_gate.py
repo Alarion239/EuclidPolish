@@ -176,7 +176,7 @@ def test_old_prefix_gate_is_gone():
     "/api/fasrc/steps/status",
     "/api/tracking/state",
     "/api/cutouts/VIS/list.json",
-    "/ensemble/status.json",
+    "/ensemble/members.json",
 ])
 def test_local_endpoints_work_offline(client, path):
     response = client.get(path)
@@ -229,7 +229,6 @@ def test_offline_non_api_pages_are_not_redirected_to_a_connection_page(client):
     ("POST", "/api/fasrc/env-update"),
     ("POST", "/api/sky/sync"),
     ("POST", "/api/evaluation/sync"),
-    ("POST", "/ensemble/pull"),
     ("POST", "/ensemble/universal/pull"),
     ("POST", "/tng-auth/save"),
     ("POST", "/euclid-auth/save"),

@@ -14,6 +14,7 @@ import { categorical } from "../colors";
 import { linearTicks, paddedDomain } from "../ticks";
 import { Button, Checkbox, Select } from "../ui";
 import { useController, useSettings, useViewer } from "./hooks";
+import { shownBandIndex } from "./color";
 import { unitLabel } from "./readout";
 import { lineProfile, radialProfile } from "./stats";
 
@@ -42,8 +43,9 @@ export function ProfilePanel() {
       const s = shown[k]!;
       const rec = s.rec;
       const names = rec.bands.length === rec.c ? rec.bands : (ctrl.s.meta?.band_names.slice(0, rec.c) ?? []);
-      const b = Math.max(0, names.indexOf(band));
-      // A tier without the chosen band (a one-filter JWST cube) samples its own channel.
+      const b = shownBandIndex(names, band, ctrl.s.meta?.color?.bands);
+      // A tier without the chosen band samples the filter matched to it (a
+      // NEXUS cube), else its own channel (a one-filter JWST cube).
       const sampled = names[b] ?? band;
       const ps = rec.pixscale > 0 ? rec.pixscale : 0;
       const area = perArea && ps ? ps * ps : 1;

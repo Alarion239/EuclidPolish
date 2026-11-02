@@ -1,5 +1,5 @@
 """The Loop staleness service (helpers/system_alerts.py): Home's Loop strip and
-System › Lineage read the same seven verdicts from it."""
+System › Lineage read the same six verdicts from it."""
 from __future__ import annotations
 
 import json
@@ -26,9 +26,8 @@ def alerts(**patch):
     checks = [
         check("disk", "ok", "400 GiB free on the data disk"),
         check("real-sr", "ok", "All 12 real production SRs are current", facts={"current": 12, "stale": 0}),
-        check("combiner", "ok", "Production gate fitted for the current 30 members", facts={"members": 30}),
-        check("evaluation", "ok", "Evaluation current (30 members, test records)", facts={"evaluated_at": iso(0.1)}),
-        check("knee", "ok", "PSNR-vs-knee curves current"),
+        check("production", "ok", "Production is 257", to="/models/universal",
+              facts={"model": "universal:member_257", "label": "257"}),
         check("records-noise", "unknown", "Noise model of the local records unverified"),
         check("tracking", "ok", "Tracking log up to date"),
     ]
@@ -61,6 +60,8 @@ MEMBERS = {
     "members": [{"name": f"member_{169 + i}", "status": "complete", "timeout": False, "step": 70000}
                 for i in range(30)],
     "archived": [{"name": "member_168"}],
+    # registered universal models: 211 predates the panel (PANEL_FIRST_MODEL = 257)
+    "universal": ["member_211", "member_257", "member_258", "member_259"],
 }
 PLATES = {"runs": [{"tag": "prod-0926", "updated": iso(1), "renders": [
     {"band": "VIS", "model": "production", "model_label": "Production · spatial gate",
@@ -74,19 +75,19 @@ def stages(**patch):
     return {s["id"]: s for s in sa.loop_stages(**kw)}
 
 
-def test_seven_stages_in_loop_order_each_with_one_short_reason():
+def test_six_stages_in_loop_order_each_with_one_short_reason():
     out = sa.loop_stages(alerts=alerts(), overview=overview(), members=MEMBERS, jobs=[], plates=PLATES,
                          catalog=CATALOG, now=NOW)
-    assert [s["label"] for s in out] == ["Priors", "Records", "Members", "Evaluation", "Gate", "Real SR", "Figures"]
+    assert [s["label"] for s in out] == ["Priors", "Records", "Models", "Production", "Real SR", "Figures"]
+    assert [s["id"] for s in out] == list(sa.STAGE_ORDER)
     assert {s["state"] for s in out} == {"current"}
     s = {x["id"]: x for x in out}
     assert s["priors"]["reason"] == "galaxies v15 · stars · noise v5"
     assert s["priors"]["detail"] == "Not checked here: PSF: ePSFs not synced to this machine."
     assert s["records"]["reason"] == "built 2 d ago, after the priors"
     assert "noise model" in s["records"]["detail"]
-    assert s["members"]["reason"] == "30 active"
-    assert s["evaluation"]["reason"] == "evaluated 2 h ago"
-    assert s["gate"]["reason"] == "fitted for the 30 members"
+    assert (s["models"]["reason"], s["models"]["to"]) == ("3 universal models", "/models/universal")
+    assert (s["production"]["reason"], s["production"]["to"]) == ("257", "/models/universal")
     assert s["real-sr"]["reason"] == "12 current"
     assert s["figures"]["reason"] == "NEXUS plates from production"
     assert all(len(x["reason"]) <= sa.REASON_MAX for x in out)
@@ -126,28 +127,6 @@ def test_records_stale_when_they_predate_a_prior_or_the_noise_model():
     assert (none["state"], none["reason"]) == ("unknown", "no local records")
 
 
-def test_members_finished_on_fasrc_and_not_pulled():
-    jobs = [
-        {"jobid": "1", "state": "COMPLETED", "mode": "add", "ended_at": iso(1),
-         "member_names": ["member_199", "member_200", "member_168", "member_170"], "params": {}},
-        {"jobid": "2", "state": "TIMEOUT", "mode": "add", "ended_at": iso(2), "member_names": ["member_201"],
-         "params": {}},
-        {"jobid": "3", "state": "RUNNING", "mode": "add", "ended_at": None, "member_names": ["member_202"],
-         "params": {}},
-        {"jobid": "4", "state": "COMPLETED", "mode": "add", "ended_at": iso(40), "member_names": ["member_150"],
-         "params": {}},
-        {"jobid": "5", "state": "COMPLETED", "mode": "add", "ended_at": iso(1), "member_names": ["member_210"],
-         "params": {"starless": "1"}},
-        {"jobid": "6", "state": "COMPLETED", "mode": "add", "ended_at": iso(1), "member_names": ["member_211"],
-         "params": {"member_spec": json.dumps([{"starless": True}])}},
-        {"jobid": "7", "state": "COMPLETED", "mode": "continue", "ended_at": iso(1), "target_steps": 90000,
-         "member_names": ["member_171"], "params": {}},
-    ]
-    m = stages(jobs=jobs)["members"]
-    assert (m["state"], m["reason"], m["to"]) == ("stale", "4 new on FASRC", "/models/members")
-    assert m["detail"].startswith("members 171, 199–201 finished on FASRC")
-
-
 UNIVERSAL_SPEC = json.dumps([{"asinh_knees": [0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0],
                                "output_knee": 10, "learn_output_knee": True}])
 
@@ -157,51 +136,63 @@ def _job(jobid, name, **params):
             "member_names": [name], "params": params}
 
 
-def test_universal_models_on_fasrc_never_make_the_members_stage_stale():
-    """Universal models are not ensemble members (review fix §9): a registered
-    one counts as local, a FASRC-only one is mentioned for Models › Universal —
-    never "Pull from FASRC… on Models › Members"."""
-    members = {**MEMBERS, "universal": ["member_216"]}
-    jobs = [_job("1", "member_216", member_spec=UNIVERSAL_SPEC),       # pulled, registered
-            _job("2", "member_217", member_spec=UNIVERSAL_SPEC),       # FASRC-only
-            _job("3", "member_218", asinh_knees="0.1,1,10", output_knee="10")]   # run-wide recipe
-    m = stages(members=members, jobs=jobs)["members"]
-    assert (m["state"], m["reason"], m["to"]) == ("current", "30 active", "/models/members")
-    assert m["detail"] == "2 universal models on FASRC → Models › Universal (members 217, 218)."
-    assert sa.waiting_on_fasrc(jobs, members, NOW) == []
-    assert sa.universal_on_fasrc(jobs, members, NOW) == ["member_217", "member_218"]
-    # a new ensemble member still makes it stale; the universal ones ride along in the detail
-    mixed = stages(members=members, jobs=[*jobs, _job("4", "member_219")])["members"]
-    assert (mixed["state"], mixed["reason"]) == ("stale", "1 new on FASRC")
-    assert mixed["detail"] == ("member 219 finished on FASRC and are not pulled: Pull from FASRC… on "
-                               "Models › Members. 2 universal models on FASRC → Models › Universal "
-                               "(members 217, 218).")
+def test_universal_models_finished_on_fasrc_and_not_pulled():
+    jobs = [
+        _job("1", "member_260", member_spec=UNIVERSAL_SPEC),                       # FASRC-only
+        {**_job("2", "member_261", member_spec=UNIVERSAL_SPEC), "state": "TIMEOUT"},
+        {**_job("3", "member_262", member_spec=UNIVERSAL_SPEC), "state": "RUNNING", "ended_at": None},
+        {**_job("4", "member_263", member_spec=UNIVERSAL_SPEC), "ended_at": iso(40)},  # too old
+        _job("5", "member_264", member_spec=UNIVERSAL_SPEC, starless="1"),          # starless
+        _job("6", "member_257", member_spec=UNIVERSAL_SPEC),                       # registered
+        _job("7", "member_265"),                                                   # not universal
+        _job("8", "member_217", member_spec=UNIVERSAL_SPEC),                       # before the panel
+    ]
+    m = stages(jobs=jobs)["models"]
+    assert (m["state"], m["reason"], m["to"]) == ("stale", "2 new on FASRC", "/models/universal")
+    assert m["detail"] == ("members 260, 261 finished on FASRC and are not pulled: "
+                           "Pull on Models › Universal.")
+    assert sa.universal_on_fasrc(jobs, MEMBERS, NOW) == ["member_260", "member_261"]
     # a registered universal model counts as local under any spelling
-    local = {**MEMBERS, "universal": ["member_216", "217·psnr", "218"]}
-    assert stages(members=local, jobs=jobs)["members"]["detail"] is None
-    one = stages(members={**MEMBERS, "universal": ["member_216", "member_218"]}, jobs=jobs)["members"]
-    assert one["detail"] == "1 universal model on FASRC → Models › Universal (member 217)."
+    local = {**MEMBERS, "universal": [*MEMBERS["universal"], "260·psnr", "261"]}
+    assert stages(members=local, jobs=jobs)["models"]["state"] == "current"
 
 
-def test_forks_of_universal_models_stay_out_of_the_members_stage(tmp_path, monkeypatch):
+def test_the_models_stage_counts_the_universal_models_the_panel_lists(monkeypatch):
+    counted = stages()["models"]
+    assert (counted["state"], counted["reason"]) == ("current", "3 universal models")   # 211 left out
+    one = stages(members={**MEMBERS, "universal": ["member_211", "257·psnr"]})["models"]
+    assert (one["state"], one["reason"]) == ("current", "1 universal model")
+    none = stages(members={**MEMBERS, "universal": ["member_211"]})["models"]
+    assert (none["state"], none["reason"], none["to"]) == ("unknown", "no universal models", "/models/universal")
+    # the cutoff is read at call time
+    monkeypatch.setattr(sa.model_catalog, "PANEL_FIRST_MODEL", 0)
+    assert stages()["models"]["reason"] == "4 universal models"
+    jobs = [_job("1", "member_217", member_spec=UNIVERSAL_SPEC)]
+    assert stages(jobs=jobs)["models"]["reason"] == "1 new on FASRC"
+
+
+def test_forks_of_universal_models_are_universal_models_to_pull(tmp_path, monkeypatch):
     """A fork inherits its source's knees: a fork of a FASRC-only universal
-    model (its ledger recipe) or of an active universal member (its local
-    origin.json) is a universal model too, never a member to pull."""
+    model (its ledger recipe) or of a local universal model (its origin.json)
+    is a universal model too."""
+    monkeypatch.setattr(sa.model_catalog, "PANEL_FIRST_MODEL", 0)
     monkeypatch.setattr(ev, "ensemble_dir", lambda: str(tmp_path))
     (tmp_path / "member_170").mkdir()
     (tmp_path / "member_170" / "origin.json").write_text(json.dumps(
         {"asinh_knees": [0.1, 1.0, 10.0], "output_knee": 10.0, "num_res_blocks": 32}))
     jobs = [{**_job("3", "member_301", fork_from="member_170"), "mode": "fork"},
             {**_job("2", "member_300", fork_from="member_211"), "mode": "fork"},
-            _job("1", "member_211", member_spec=UNIVERSAL_SPEC)]
-    m = stages(jobs=jobs)["members"]
-    assert (m["state"], m["reason"]) == ("current", "30 active")
-    assert m["detail"] == "3 universal models on FASRC → Models › Universal (members 211, 300, 301)."
+            _job("1", "member_211", member_spec=UNIVERSAL_SPEC),
+            _job("0", "member_302")]                                    # a plain member: ignored
+    m = stages(members={**MEMBERS, "universal": []}, jobs=jobs)["models"]
+    assert (m["state"], m["reason"]) == ("stale", "3 new on FASRC")
+    assert m["detail"].startswith("members 211, 300, 301 finished on FASRC")
 
 
-def test_the_members_stage_classifies_with_the_ledger_rule(monkeypatch):
+def test_the_models_stage_classifies_with_the_ledger_rule(monkeypatch):
     """The Home loop reads ``ensemble_viz.ledger_universal_names`` (forks of a
     universal model resolve through their source there), not its own guess."""
+    monkeypatch.setattr(sa.model_catalog, "PANEL_FIRST_MODEL", 0)
     seen = []
 
     def ledger(jobs):
@@ -211,27 +202,27 @@ def test_the_members_stage_classifies_with_the_ledger_rule(monkeypatch):
     monkeypatch.setattr(sa, "ledger_universal_names", ledger)
     jobs = [{**_job("9", "member_300", fork_from="member_211"), "mode": "fork"},
             _job("8", "member_211", member_spec=UNIVERSAL_SPEC)]
-    m = stages(jobs=jobs)["members"]
+    m = stages(members={**MEMBERS, "universal": []}, jobs=jobs)["models"]
     assert seen and seen[0] == ["9", "8"]
     assert (m["state"], m["reason"]) == ("stale", "1 new on FASRC")       # 211: the stub says member
-    assert m["detail"].startswith("member 211 finished on FASRC")
-    assert m["detail"].endswith("1 universal model on FASRC → Models › Universal (member 300).")
+    assert m["detail"].startswith("member 300 finished on FASRC")
 
     def broken(jobs):
         raise OSError("origin.json unreadable")
 
     monkeypatch.setattr(sa, "ledger_universal_names", broken)
-    assert stages(jobs=jobs)["members"]["state"] == "stale"      # still a verdict, never a crash
+    assert stages(jobs=jobs)["models"]["state"] == "current"      # still a verdict, never a crash
 
 
-def test_evaluation_gate_and_real_sr_from_their_checks():
+def test_production_and_real_sr_from_their_checks():
     s = stages(alerts=alerts(
-        evaluation={"state": "warn", "title": "The evaluation predates the current members"},
-        combiner={"state": "warn", "title": "The production gate does not match the members"},
+        production={"state": "warn", "title": "The production model 257 cannot run",
+                    "detail": "member_257 has no checkpoint"},
         real_sr={"state": "warn", "title": "450 real SR products are stale", "facts": {"current": 0, "stale": 450}},
     ))
-    assert (s["evaluation"]["state"], s["evaluation"]["reason"]) == ("stale", "predates the current members")
-    assert s["gate"]["reason"] == "does not match the members"
+    assert s["production"] == {**s["production"], "state": "stale", "to": "/models/universal",
+                               "reason": "the production model 257 cannot run",
+                               "detail": "member_257 has no checkpoint"}
     assert (s["real-sr"]["reason"], s["real-sr"]["to"]) == ("450 stale", "/sky/targets?state=stale")
     # With the per-source counts, the chip lands on exactly the sets it counted
     # (Targets' "All" also holds the catalogue sets, which this check does not count).
@@ -240,8 +231,11 @@ def test_evaluation_gate_and_real_sr_from_their_checks():
             {"source": "nexus", "stale": 445}, {"source": "tile", "stale": 1}, {"source": "field", "stale": 0},
             {"source": "poster", "stale": 4}]}}))
     assert by_source["real-sr"]["to"] == "/sky/targets?state=stale&set=nexus%2Cposter%2Ccached"
-    knee = stages(alerts=alerts(knee={"state": "warn", "title": "PSNR-vs-knee curves are stale"}))
-    assert knee["evaluation"]["reason"] == "knee curves are stale"
+    none = stages(alerts=alerts(production={"state": "warn", "title": "No universal model is production",
+                                            "facts": None}))["production"]
+    assert (none["state"], none["reason"]) == ("stale", "no universal model is production")
+    missing = stages(alerts={"checks": [c for c in alerts()["checks"] if c["id"] != "production"]})
+    assert (missing["production"]["state"], missing["production"]["reason"]) == ("unknown", "not checked")
 
 
 def test_figures_stale_for_legacy_or_earlier_nexus_plates_and_stale_galaxy_plots():
@@ -291,7 +285,7 @@ def sources(monkeypatch):
 def test_loop_payload_gathers_memoises_and_recomputes_when_fresh(sources):
     out = sa.loop_payload(alerts=alerts, check_records_noise=dict)
     assert [s["id"] for s in out["stages"]] == list(sa.STAGE_ORDER)
-    assert out["counts"]["current"] == 7 and out["errors"] == {}
+    assert out["counts"]["current"] == 6 and out["errors"] == {}
     sa.loop_payload(alerts=alerts, check_records_noise=dict)
     assert sources["n"] == 1
     sa.loop_payload(alerts=alerts, check_records_noise=dict, fresh=True)
@@ -304,6 +298,6 @@ def test_a_broken_source_is_named_and_never_reads_current(sources, monkeypatch):
 
     monkeypatch.setattr(sa, "members_payload", boom)
     out = sa.loop_payload(alerts=alerts, check_records_noise=dict, fresh=True)
-    members = next(s for s in out["stages"] if s["id"] == "members")
-    assert members["state"] == "unknown"
+    models = next(s for s in out["stages"] if s["id"] == "models")
+    assert models["state"] == "unknown"
     assert out["errors"] == {"members": "OSError: members.json unreadable"}

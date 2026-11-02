@@ -97,6 +97,8 @@ def register(app):
             "current_sr_count": field.get("current_sr_count", 0),
             "stale_sr_count": field.get("stale_sr_count", 0),
             "active_combiner_kind": field.get("active_combiner_kind"),
+            # tiles with each NIRCam filter matched to VIS / Y / J
+            "matched_band_counts": field.get("matched_band_counts", {}),
         } for field in nexus_fields()]
         return jsonify({"fields": fields})
 
@@ -167,6 +169,27 @@ def register(app):
             busy=jwst_euclid.NEXUS_MOSAIC_BUSY,
         )
         return jsonify(payload), status
+
+    @app.post("/api/jwst-euclid/nexus/matched-bands")
+    def api_nexus_matched_bands():
+        """Cache the NIRCam filters matched to VIS, Y and J (F090W, F115W,
+        F150W) on every tile of a saved NEXUS field, from the cached
+        early-release mosaics (a confirmed job; one mosaic job at a time)."""
+        identifier = request.form.get("field_id", "").strip()
+        if not _SAFE_ID.fullmatch(identifier) or not any(
+            field.get("field_id") == identifier for field in nexus_fields()
+        ):
+            return jsonify({"ok": False, "error": "save a valid NEXUS Euclid field first"}), 404
+        payload, status = start_exclusive(
+            f"cache NEXUS matched bands (F090W, F115W, F150W) · {identifier}",
+            lambda cap: jwst_euclid.cache_nexus_matched_bands(
+                identifier,
+                progress=lambda done, total, label: cap.tick(done, total, label),
+            ),
+            kind=jwst_euclid.NEXUS_MOSAIC_JOB_KIND, key=f"matched:{identifier}",
+            busy=jwst_euclid.NEXUS_MOSAIC_BUSY,
+        )
+        return jsonify({**payload, "field_id": identifier}), status
 
     @app.post("/api/jwst-euclid/nexus/infer")
     def api_nexus_infer():

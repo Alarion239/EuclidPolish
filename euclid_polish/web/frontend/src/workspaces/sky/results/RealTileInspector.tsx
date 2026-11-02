@@ -27,7 +27,7 @@ import {
 } from "../../../ui";
 import { ImageViewer, type ViewerApi } from "../../../viewer";
 import { VIcon } from "../../../viewer/icons";
-import { buildPairInput, cacheTileAt, downloadPair, runNexusProduction } from "../atlas/actions";
+import { buildPairInput, cacheNexusMatchedBands, cacheTileAt, downloadPair, runNexusProduction } from "../atlas/actions";
 import { useCompareModels, useFlyTo } from "../atlas/engineHooks";
 import { rememberTile } from "../atlas/home";
 import { MoreMenu, positionMenuItems } from "../atlas/inspectors/common";
@@ -160,6 +160,9 @@ export default function RealTileInspector({ id }: { id: string }) {
     ...(c.source === "nexus" ? [{
       label: "Run production on every stale NEXUS tile…",
       onSelect: () => { void runNexusProduction(typeof c.extras?.field_id === "string" ? c.extras.field_id : undefined); },
+    }, {
+      label: "Cache NEXUS F090W/F115W/F150W tiles…",
+      onSelect: () => { void cacheNexusMatchedBands(typeof c.extras?.field_id === "string" ? c.extras.field_id : undefined); },
     }] : []),
     ...(onTargets ? [] : [{ label: "Open in Sky › Targets", onSelect: () => navigate(`/sky/targets?inspect=${encodeURIComponent(`tile:${c.ref}`)}`) }]),
     { label: "Copy the tile ref", onSelect: () => { void copyText(c.ref).then((ok) => { if (ok) toast.success(`Copied ${c.ref}`); }); } },

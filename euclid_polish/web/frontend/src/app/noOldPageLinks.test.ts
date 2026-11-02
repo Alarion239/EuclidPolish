@@ -95,7 +95,7 @@ describe("the old-page-link matcher", () => {
       "/ensemble/status.json", "/ensemble/members.json?mode=${mode}", "/ensemble/combiners/compare",
       "/ensemble/train/preview", "/ensemble/${name}.json", "/inspect/preview.png?path=${p}", "/inspect/download",
       "/api/realism/overview", "/tng/result/grid.png", "/git/commit", "/fasrc/file/inspect${qs(x)}",
-      "/inference/refresh-combiners", "/viewer/meta/sky", "/models/images", "/synthetic/psf?view=cutouts",
+      "/viewer/meta/sky", "/models/spectra", "/synthetic/psf?view=cutouts",
       "/sky/targets", "/files?fits=${p}", "/runs/history", "/app/*", "/datasets", "/opsx", "/ensemble/",
       "/ensemble/${endpoint}.json",
     ]) expect(oldPageLink(ok), ok).toBeNull();

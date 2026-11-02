@@ -20,7 +20,6 @@ from euclid_polish.web.helpers.real_field import (
     _preserve_matching_member_cubes,
     _restore_matching_member_cubes,
 )
-from euclid_polish.web.routes import model as model_routes
 
 
 def test_real_field_diagnostics_use_model_power_cross_correlation():
@@ -216,36 +215,6 @@ def test_refresh_reuses_a_gate_only_cache_and_asks_for_missing_members(field_env
     with pytest.raises(RuntimeError, match="member cache is stale"):
         real_field.refresh_real_field_combiners(
             identifier, progress=_tick, all_members=True)
-
-
-def test_refresh_route_passes_the_all_members_option(monkeypatch):
-    seen: list[tuple[str, bool]] = []
-
-    def refresh(_identifier, *, progress, all_members=False):
-        seen.append(("refresh", all_members))
-        raise RuntimeError("real-field member cache is stale")
-
-    def cache(_ra, _dec, *, progress, all_members=False):
-        seen.append(("cache", all_members))
-        return {}
-
-    def spawn(*, label, target):
-        target(_Cap())
-        return "job"
-
-    monkeypatch.setattr(model_routes, "latest_field",
-                        lambda: {"field_id": "f", "ra": 1.0, "dec": 2.0})
-    monkeypatch.setattr(model_routes, "refresh_real_field_combiners", refresh)
-    monkeypatch.setattr(model_routes, "cache_real_field", cache)
-    monkeypatch.setattr(model_routes.REGISTRY, "spawn", spawn)
-    app = create_app()
-    app.config["TESTING"] = True
-    with app.test_client() as client:
-        assert client.post("/inference/refresh-combiners").status_code == 200
-        assert client.post("/inference/refresh-combiners",
-                           data={"all_members": "1"}).status_code == 200
-
-    assert seen == [("refresh", False), ("cache", False), ("refresh", True), ("cache", True)]
 
 
 class _Cap:

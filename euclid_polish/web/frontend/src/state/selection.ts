@@ -1,5 +1,5 @@
 /* Cross-view selection: one ordered, de-duplicated id list per scope, e.g.
- * `member` (Models › Members roster ↔ Combiner), `tile` (Sky atlas
+ * `member` (Models), `tile` (Sky atlas
  * selection ↔ Targets table ↔ Compare), `star`, `job`.
  * Scopes are free-form strings; ids are the same ids the inspector uses.
  * Session-only (not persisted): a selection is a working set, not a pref.

@@ -148,7 +148,7 @@ describe("tile card", () => {
     expect(screen.getByTestId("loc").textContent).toBe("/sky/compare?tiles=nexus%2Ff200w-0012");
   });
 
-  it("run models proposes the missing production + mean, asks first, then starts the experiment job", async () => {
+  it("run models proposes production, asks first, then starts the experiment job", async () => {
     routes["GET /api/real/nexus/f200w-0012"] = () => ({ body: CARD });
     routes["POST /api/experiments"] = () => ({ body: { ok: true, job_id: "abc12345", experiment_id: "e1" } });
     routes["GET /api/jobs"] = () => ({ body: [] });
@@ -158,13 +158,13 @@ describe("tile card", () => {
     ] } });
     show(<TileInspector id="nexus/f200w-0012" />);
     fireEvent.click(await screen.findByRole("button", { name: "Run models…" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Run 2" }));
-    const dlg = await screen.findByRole("alertdialog", { name: /Run 2 models on 1 tile/ });
+    fireEvent.click(await screen.findByRole("button", { name: "Run 1" }));
+    const dlg = await screen.findByRole("alertdialog", { name: /Run 1 model on 1 tile/ });
     // the confirm states the cost
-    expect(dlg.textContent).toContain("2 outputs (2 models on 1 tile). Needs 2 member SRs per tile: at most 2 member inferences");
+    expect(dlg.textContent).toContain("1 output (1 model on 1 tile). Needs 2 member SRs per tile: at most 2 member inferences");
     fireEvent.click(within(dlg).getByRole("button", { name: "Run" }));
     await waitFor(() => expect(posts.map((p) => p.url)).toContain("/api/experiments"));
-    expect(posts[0].form).toEqual({ tiles: "nexus/f200w-0012", models: "production,mean" });
+    expect(posts[0].form).toEqual({ tiles: "nexus/f200w-0012", models: "production" });
     expect(useJobsStore.getState().keyed["sky:experiment"]).toBe("abc12345");
   });
 });

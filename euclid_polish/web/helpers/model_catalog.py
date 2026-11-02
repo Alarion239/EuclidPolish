@@ -36,7 +36,11 @@ an ensemble of one from its own ensemble dir and is addressed by the label
 ``257@2000000`` (never a member label).
 
 Catalogue order: production, mean, rbf, the members, the gate variants, the
-universal models, the milestones (by member, then step). A universal model or
+universal models, the milestones (by member, then step). The web panel
+(:func:`catalog_payload`, ``GET /api/models``) lists only production and the
+universal models and milestones from :data:`PANEL_FIRST_MODEL` on
+(:func:`panel_specs`); every spec still resolves (:func:`resolve_spec`), so
+old outputs and scripts keep working. A universal model or
 an active member that is one (195/196 — its kind stays ``member``) carries
 ``details`` read from its ``origin.json`` and ``training_log.csv``
 (:func:`member_details`; cached by file stamp, never a TensorFlow read).
@@ -106,6 +110,9 @@ PRODUCTION_ARTIFACT_DIR = COMBINER_MODELS[PRODUCTION_KIND].artifact_dir
 RBF_KIND = RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
 #: SR grid magnification of every STARFULL member.
 SR_FACTOR = int(Config.DEFAULT_REBIN_FACTOR)
+#: The first model the web panel lists: the specialist members, the
+#: combiners and the universal models before it are left out of every list.
+PANEL_FIRST_MODEL = 257
 
 _MEMBER_DIGITS = re.compile(r"^\d{1,6}$")
 _VARIANT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -782,6 +789,33 @@ def _milestone_specs() -> list[ModelSpec]:
     return out
 
 
+def _model_number(text: str) -> int | None:
+    """``member_257`` / ``257·psnr`` / ``universal:member_257`` /
+    ``milestone:member_257@2000000`` → 257 (``None`` for no member)."""
+    match = re.search(r"(?:member_|^|:)(\d{1,6})(?:·|@|$)", str(text))
+    return int(match.group(1)) if match else None
+
+
+def in_panel(name: str) -> bool:
+    """Whether the web panel lists this model (a member name, label or spec):
+    one numbered :data:`PANEL_FIRST_MODEL` or later."""
+    number = _model_number(name)
+    return number is not None and number >= PANEL_FIRST_MODEL
+
+
+def is_panel_spec(spec: str) -> bool:
+    """Whether the web panel lists a spec: production, or a universal model or
+    milestone from :data:`PANEL_FIRST_MODEL` on (no members, gates, mean or
+    RBF)."""
+    return spec == SPEC_PRODUCTION or (
+        spec.startswith((UNIVERSAL_PREFIX, MILESTONE_PREFIX)) and in_panel(spec))
+
+
+def panel_specs(specs: Sequence[ModelSpec] | None = None) -> list[ModelSpec]:
+    """The specs the web panel lists (:func:`is_panel_spec`), catalogue order."""
+    return [item for item in (list_specs() if specs is None else specs) if is_panel_spec(item.spec)]
+
+
 def resolve_spec(spec: str, specs: Sequence[ModelSpec] | None = None) -> ModelSpec:
     """The catalogue entry of one spec (:class:`KeyError` when unknown)."""
     wanted = canonical_spec(spec)
@@ -823,17 +857,16 @@ def production_summary(specs: Sequence[ModelSpec] | None = None) -> dict[str, An
 
 
 def catalog_payload() -> dict[str, Any]:
-    """``GET /api/models``."""
+    """``GET /api/models``: production and the models the panel lists
+    (:func:`panel_specs`)."""
     specs = list_specs()
-    active = active_member_labels()
     production = production_summary(specs)
     return {
         "regime": "starfull",
-        # "universal" when production is a universal model, else the gate's kind
         "production_kind": "universal" if production["kind"] == "universal" else PRODUCTION_KIND,
         "production": production,
-        "members": active,
-        "models": [item.to_dict() for item in specs],
+        "first_model": PANEL_FIRST_MODEL,
+        "models": [item.to_dict() for item in panel_specs(specs)],
     }
 
 

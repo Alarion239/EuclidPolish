@@ -1,31 +1,18 @@
-"""Universal models (Models › Universal): single-image multi-knee members
-compared as models in their own right — their training time and hardware,
-their score on the Leaderboard's test fields, and the combiners' training time
-weighted by the gate's shares.
+"""Universal models (Models › Universal): single-image multi-knee models —
+their training time and hardware and their score on the test fields.
 
-A universal model (:func:`~euclid_polish.ensemble_registry.is_universal_origin`)
-is either an active ensemble member whose recipe is universal (class
-``member``, e.g. 195/196 — it stays in the ensemble) or a STANDALONE
-registered universal model (class ``universal``: pulled by
-:func:`job_universal_pull`, never in the mean, the gates, Evaluate or any
-cache keyed on the active members; it loads as an ensemble of one through
-``EnsembleModel(labels=[…], include_universal=True)``).
+A universal model is a STANDALONE registered model (registry class
+``universal``: pulled by :func:`job_universal_pull`; it loads as an ensemble
+of one through ``EnsembleModel(labels=[…], include_universal=True)``). The
+panel lists those from :data:`model_catalog.PANEL_FIRST_MODEL` on
+(:func:`universal_targets`).
 
 * **Training time** of a model = Σ ``duration_s`` over every non-baseline row
   of its ``training_log.csv`` — rolled-back windows included (real compute),
   never deduplicated — in hours (:func:`train_time`); the hardware comes from
   the FASRC job ledger (:func:`hardware`).
-* **Combiner training time** = Σ over the members a gate READS of
-  ``hours × weight``: the member's PEAK gate share
-  (:func:`~euclid_polish.eval.gate_members.member_peak_weights` — the max over
-  bands of its all-pixel, source-pixel and brightness-bin mean weights, the
-  "used by the gate" rule; the default), its mean share (mean over bands of
-  the all-pixel share) or 1 (every member). The production gate's shares come
-  from its payload (``spatial_gate_combiner_evals.json``); a variant's from
-  ``<regime>/<variant dir>_evals.json``, which the score job computes from the
-  validate cubes.
-* **Scores**: the Leaderboard's exact metric — knee-integrated PSNR against
-  ``hr_test`` blurred to the target PSF, on the Leaderboard's test fields —
+* **Scores**: knee-integrated PSNR against ``hr_test`` blurred to the target
+  PSF, on the test fields —
   stored per model in ``<vis>/ensemble/starfull/universal/`` (``<name>.npz``
   per-field curves + ``index.json``; the read side lives in
   :mod:`~euclid_polish.web.helpers.ensemble_viz`). Never in a cube bucket.
@@ -45,7 +32,6 @@ from __future__ import annotations
 
 import contextlib
 import csv
-import glob
 import io
 import json
 import os
@@ -54,20 +40,17 @@ import shutil
 import threading
 import time
 import zipfile
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import numpy as np
 
 from euclid_polish import ensemble_registry
-from euclid_polish.config import Config
 from euclid_polish.ensemble import EnsembleModel, member_fingerprint
-from euclid_polish.eval.combiner import BAND_NAMES, COMBINER_MODELS, combiner_artifact_fingerprint
-from euclid_polish.eval.gate_members import member_peak_weights
+from euclid_polish.eval.combiner import BAND_NAMES
 from euclid_polish.eval.knee_psnr import KNEE_GRID_E, integrated_psnr, knee_psnr, stretched_truth
 from euclid_polish.eval.model_spectra import SpectraAccumulator, field_sums
-from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND, load_spatial_gate
 from euclid_polish.image.collection import ImageSet
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.model import _checkpoint_exists
@@ -75,6 +58,7 @@ from euclid_polish.training.inference import checkpoint_step, infer_checkpoint_l
 from euclid_polish.training.target_blur import blur_target_array
 from euclid_polish.training.trainer import TRAINING_LOG_FILENAME, prune_orphaned_checkpoints
 from euclid_polish.web.helpers import ensemble_viz as ev
+from euclid_polish.web.helpers import model_catalog
 from euclid_polish.web.helpers.purge_requests import request_stale_purge
 from euclid_polish.web.remote import STATE
 
@@ -307,20 +291,15 @@ def fasrc_universal_rows(jobs: list[dict] | None = None,
 # --------------------------------------------------------------------------- #
 
 def universal_targets(base: str | None = None) -> dict[str, tuple[str, str]]:
-    """Every local universal model: ``{name: (class, dir)}`` in name order —
-    class ``member`` for an active STARFULL member whose recipe is universal,
-    ``universal`` for a registered universal model with a checkpoint."""
+    """Every local universal model the panel lists: ``{name: (class, dir)}``
+    in name order — the registered universal models with a checkpoint,
+    numbered :data:`model_catalog.PANEL_FIRST_MODEL` or later."""
     base = base or ev.ensemble_dir()
-    reg = ensemble_registry.load_registry(base)
     out: dict[str, tuple[str, str]] = {}
-    for name in reg["active"]:
-        d = os.path.join(base, name)
-        if (_checkpoint_exists(d) and not ensemble_registry.member_is_starless(d)
-                and ensemble_registry.is_universal_origin(ev._member_origin(d))):
-            out[name] = (ensemble_registry.MEMBER_CLASS, d)
     for d in ensemble_registry.universal_member_dirs(base):
-        if not ensemble_registry.member_is_starless(d):
-            out[os.path.basename(d)] = (ensemble_registry.UNIVERSAL_CLASS, d)
+        name = os.path.basename(d)
+        if not ensemble_registry.member_is_starless(d) and model_catalog.in_panel(name):
+            out[name] = (ensemble_registry.UNIVERSAL_CLASS, d)
     return dict(sorted(out.items(), key=lambda kv: _number(kv[0])))
 
 
@@ -339,144 +318,6 @@ def _number(name: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Gate weights per gate
-# --------------------------------------------------------------------------- #
-
-def _variant_evals_path(regime_dir: str, name: str) -> str:
-    """``<regime>/<variant dir>_evals.json`` — the production gate's is its
-    combiner payload; a variant's holds ``{artifact_fp, gate_diagnostics}``."""
-    return os.path.join(regime_dir, f"{name}_evals.json")
-
-
-def _validate_cube_labels(regime_dir: str) -> set[str] | None:
-    manifest = ev._read_json_file(os.path.join(regime_dir, "cubes_validate", "viz_index.json"))
-    if manifest is None:
-        return None
-    return {str(v) for v in manifest.get("member_labels") or []}
-
-
-def _weights_from_diagnostic(diag: dict, labels: list[str]
-                             ) -> tuple[list[float] | None, list[float] | None, str | None]:
-    """``(peak shares, mean shares, reason)`` per fitted member of a gate."""
-    try:
-        peaks = member_peak_weights(diag, len(labels))
-    except ValueError as exc:
-        return None, None, str(exc)
-    usage = diag.get("usage") or {}
-    means = []
-    for i in range(len(labels)):
-        vals = [ev._finite(v[i]) for v in usage.values() if isinstance(v, list) and i < len(v)]
-        vals = [v for v in vals if v is not None]
-        means.append(float(np.mean(vals)) if vals else 0.0)
-    return peaks, means, None
-
-
-def gate_weights(variant: dict, regime_dir: str, *,
-                 validate_labels: set[str] | None = None) -> dict:
-    """One gate's per-member shares, from cached diagnostics only:
-    ``{source: "production"|"variant"|None, reason, measurable, max: {label:
-    peak share}, mean: {label: mean share}}``. ``variant`` is a
-    :func:`~euclid_polish.web.helpers.ensemble_viz.combiner_variants` row; the
-    diagnostic must belong to its artifact on disk now (``artifact_fp``).
-    ``measurable``: a variant without current shares whose read members all
-    have validate cubes — the score job can measure it now."""
-    labels = [str(v) for v in variant.get("member_labels") or []]
-    name = str(variant.get("name"))
-    none = {"source": None, "reason": None, "measurable": False, "max": {}, "mean": {}}
-    if variant.get("production"):
-        payload = ev._read_json_file(os.path.join(
-            regime_dir, COMBINER_MODELS[SPATIAL_GATE_KIND].payload_name))
-        diag = (payload or {}).get("gate_diagnostics") or {}
-        if not payload or not diag:
-            return {**none, "reason": "no production gate payload yet — open Models › "
-                                      "Combiner once to compute it"}
-        if [str(v) for v in payload.get("member_labels") or []] != labels:
-            return {**none, "reason": "the production gate payload is for another fit — "
-                                      "open Models › Combiner once to refresh it"}
-        if diag.get("artifact_fp") not in (None, variant.get("fingerprint")):
-            return {**none, "reason": "the production gate's weight diagnostic predates the "
-                                      "gate on disk — open Models › Combiner once to refresh it"}
-        source = "production"
-    else:
-        reads = [str(v) for v in variant.get("reads") or labels]
-        missing = ([lb for lb in reads if lb not in validate_labels]
-                   if validate_labels is not None else None)
-        measurable = missing == []
-        cached = ev._read_json_file(_variant_evals_path(regime_dir, name))
-        diag = (cached or {}).get("gate_diagnostics") or {}
-        if cached and cached.get("artifact_fp") != variant.get("fingerprint"):
-            return {**none, "measurable": measurable,
-                    "reason": "computed for an earlier fit of this gate — “Measure gate "
-                              "weights” (the score job) refreshes it"}
-        if not cached or not diag.get("available"):
-            if missing is None:
-                reason = "no validate cube cache to measure its weights on"
-            elif missing:
-                reason = (f"the validate cubes lack {len(missing)} member(s) it reads ("
-                          + ", ".join(missing[:4]) + ("…" if len(missing) > 4 else "") + ")")
-            else:
-                reason = ("not measured yet — “Measure gate weights” (the score job) "
-                          "measures it from the validate cubes")
-            return {**none, "reason": reason, "measurable": measurable}
-        source = "variant"
-    peaks, means, reason = _weights_from_diagnostic(diag, labels)
-    if peaks is None or means is None:
-        return {**none, "reason": reason}
-    return {"source": source, "reason": None, "measurable": False,
-            "max": dict(zip(labels, peaks, strict=True)),
-            "mean": dict(zip(labels, means, strict=True))}
-
-
-def _gate_weight_diagnostics(cap) -> dict:
-    """Measure, from the validate cubes, the weight diagnostic of every gate
-    variant that lacks a current one (backups and the production gate
-    excluded — production keeps its own payload), into
-    ``<regime>/<variant dir>_evals.json``. A variant whose read members have
-    no validate cubes is reported unavailable and nothing is written."""
-    regime = ev._ensemble_regime_dir(False)
-    production = COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir
-    names = [os.path.basename(d) for d in sorted(glob.glob(os.path.join(regime, "spatial_gate_*")))
-             if os.path.isdir(d)]
-    names = [n for n in names if n != production and not n.startswith(ev.GATE_BACKUP_PREFIX)
-             and ev._VARIANT_NAME.fullmatch(n)]
-    computed: list[str] = []
-    reused: list[str] = []
-    unavailable: dict[str, str] = {}
-    for i, name in enumerate(names):
-        cap.tick(i, len(names), f"gate weights: {name}")
-        fp = combiner_artifact_fingerprint(regime, name)
-        if fp is None:
-            continue
-        path = _variant_evals_path(regime, name)
-        cached = ev._read_json_file(path) or {}
-        diag = cached.get("gate_diagnostics") or {}
-        if (cached.get("artifact_fp") == fp and diag.get("available")
-                and diag.get("schema") == ev._GATE_DIAGNOSTIC_SCHEMA):
-            reused.append(name)
-            continue
-        try:
-            comb = load_spatial_gate(os.path.join(regime, name))
-            if comb is None:
-                unavailable[name] = "the gate artifact does not load (older schema)"
-                continue
-            diag = ev._spatial_gate_weight_diagnostic(comb, starless=False)
-        except Exception as exc:  # noqa: BLE001 — one gate never stops the others
-            unavailable[name] = f"{type(exc).__name__}: {exc}"
-            continue
-        if not diag.get("available"):
-            unavailable[name] = str(diag.get("reason") or "unavailable")
-            continue
-        diag["artifact_fp"] = fp
-        ev._atomic_json(path, {"artifact_fp": fp, "member_labels": list(comb.member_labels),
-                               "computed_at": datetime.now(UTC).isoformat(timespec="seconds"),
-                               "gate_diagnostics": diag})
-        computed.append(name)
-    if names:
-        cap.tick(len(names), len(names), "gate weights measured")
-    return {"computed": computed, "reused": reused, "unavailable": unavailable}
-
-
-# --------------------------------------------------------------------------- #
 # The payload
 # --------------------------------------------------------------------------- #
 
@@ -489,18 +330,6 @@ def _mean(values: Iterable) -> float | None:
     return float(np.mean(vals)) if vals else None
 
 
-def _knee_model(knee: dict, model_id: str) -> dict | None:
-    """``{integrated[4], mean, stale}`` of one row of the knee payload."""
-    if not knee.get("available"):
-        return None
-    row = next((m for m in knee.get("models", []) or [] if m.get("id") == model_id), None)
-    if row is None:
-        return None
-    integrated = [ev._finite(v) for v in row.get("integrated") or []]
-    return {"integrated": integrated, "mean": _round(_mean(integrated)),
-            "stale": bool(knee.get("stale"))}
-
-
 def _universal_reference(name: str, scores: dict, identity_ok: bool) -> dict | None:
     """``{integrated[4], mean, stale, model}`` of the universal model that is
     production, from the universal scores (``None`` until it is scored)."""
@@ -511,204 +340,6 @@ def _universal_reference(name: str, scores: dict, identity_ok: bool) -> dict | N
     fresh = entry.get("fingerprint") == member_fingerprint(os.path.join(ev.ensemble_dir(), name))
     return {"integrated": integrated, "mean": _round(ev._finite(entry.get("mean"))),
             "stale": not (fresh and identity_ok), "model": name}
-
-
-def _comparable(knee: dict, identity: dict | None) -> bool:
-    """Whether the knee payload's production/mean numbers were scored on the
-    same fields, records and target as the universal scores."""
-    return ev.universal_knee_comparable(knee, identity)
-
-
-def _parse_time(value) -> datetime | None:
-    try:
-        stamp = datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return None
-    return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
-
-
-def _compare_knee_rows(regime_dir: str) -> dict[str, dict]:
-    """``{method: {report, created, integrated, identity, member_fps}}`` —
-    each gate method's knee row from the NEWEST saved compare report that
-    scored it (the latest report first, then every saved one, newest first);
-    ``identity``/``member_fps`` are ``None`` for a report written before
-    compare reports recorded them."""
-    paths = [os.path.join(regime_dir, ev._COMPARE_LATEST)]
-    folder = os.path.join(regime_dir, ev._COMPARE_DIR)
-    ids = sorted((os.path.basename(p)[:-5] for p in glob.glob(os.path.join(folder, "*.json"))),
-                 reverse=True)
-    paths += [os.path.join(folder, f"{rid}.json") for rid in ids if ev._COMPARE_ID.fullmatch(rid)]
-    out: dict[str, dict] = {}
-    for path in paths:
-        report = ev._read_json_file(path)
-        if not report:
-            continue
-        identity = report.get("identity") if isinstance(report.get("identity"), dict) else None
-        fps = report.get("member_fps") if isinstance(report.get("member_fps"), dict) else None
-        for method, row in ((report.get("knee") or {}).get("methods") or {}).items():
-            if method not in out and isinstance(row, dict) and row.get("integrated"):
-                out[method] = {"report": report.get("id"), "created": report.get("created"),
-                               "integrated": [ev._finite(v) for v in row["integrated"]],
-                               "identity": identity, "member_fps": fps}
-    return out
-
-
-def _fingerprint_resolver(base: str) -> Callable[[str], str | None]:
-    """label → the member's current checkpoint fingerprint (memoised)."""
-    memo: dict[str, str | None] = {}
-
-    def fingerprint_of(label: str) -> str | None:
-        if label not in memo:
-            name = _name_of(label)
-            memo[label] = member_fingerprint(os.path.join(base, name)) if name else None
-        return memo[label]
-
-    return fingerprint_of
-
-
-def _fingerprint_mtime(fingerprint: str | None) -> datetime | None:
-    """The checkpoint index mtime a :func:`member_fingerprint` ends with."""
-    try:
-        return datetime.fromtimestamp(int(str(fingerprint).rsplit(":", 1)[1]), UTC)
-    except (IndexError, ValueError, OverflowError, OSError):
-        return None
-
-
-def _compare_stale(hit: dict, variant: dict, fingerprint_of: Callable[[str], str | None]) -> bool:
-    """A compare knee row is stale when the report predates the gate's fit
-    (or its promotion), a member it reads is no longer active, or a member
-    it reads has another checkpoint now than the one the report scored —
-    the report's recorded ``member_fps``; a legacy report without them:
-    a read member's checkpoint index is newer than the report."""
-    created = _parse_time(hit.get("created"))
-    made = [t for t in (_parse_time(variant.get("fitted_at")),
-                        _parse_time((variant.get("fit") or {}).get("promoted_at"))) if t]
-    if created is None or (made and created < max(made)):
-        return True
-    if not bool((variant.get("membership") or {}).get("current")):
-        return True
-    reads = [str(v) for v in variant.get("reads") or []]
-    recorded = hit.get("member_fps")
-    if isinstance(recorded, dict):
-        return any(recorded.get(label) != fingerprint_of(label) for label in reads)
-    for label in reads:
-        saved = _fingerprint_mtime(fingerprint_of(label))
-        if saved is not None and saved > created:
-            return True
-    return False
-
-
-def _hours_resolver(base: str, registry: dict) -> Callable[[str], float | None]:
-    """label → the member's training hours: its dir in the ensemble dir, else
-    its archived tracking zip (tombstone), else ``None``."""
-    tombstones = {str(t.get("name")): t for t in registry["archived"]}
-    memo: dict[str, float | None] = {}
-
-    def hours_of(label: str) -> float | None:
-        if label in memo:
-            return memo[label]
-        name = _name_of(label)
-        if name is None:
-            memo[label] = None
-            return None
-        hours = train_time(os.path.join(base, name))["hours"]
-        if hours is None and name in tombstones:
-            found = ensemble_registry.find_archived_zip(tombstones[name], Config.TRACKING_DIR)
-            if found is not None:
-                hours = train_time(found[1])["hours"]
-        memo[label] = hours
-        return hours
-
-    return hours_of
-
-
-def _combiner_row(variant: dict, *, hours_of: Callable[[str], float | None],
-                  weights: dict, compare: dict[str, dict],
-                  fingerprint_of: Callable[[str], str | None],
-                  identity: dict | None, knee_comparable: bool) -> dict:
-    production = bool(variant.get("production"))
-    name = str(variant.get("name"))
-    short = name.removeprefix("spatial_gate_")
-    reads = [str(v) for v in variant.get("reads") or []]
-    knee_row = variant.get("knee") or {}
-    integrated = None
-    source = None
-    stale = False
-    comparable = False
-    if production and knee_row.get("source") == "knee":
-        integrated = [ev._finite(v) for v in knee_row.get("integrated") or []]
-        source, stale = "knee-psnr", bool(knee_row.get("stale"))
-        comparable = knee_comparable
-    elif (hit := compare.get(f"gate:{name}")) is not None:
-        integrated = hit["integrated"]
-        source, stale = "compare", _compare_stale(hit, variant, fingerprint_of)
-        comparable = ev.report_identity_matches(hit.get("identity"), identity)
-    members = []
-    for label in reads:
-        members.append({"label": label, "name": _name_of(label),
-                        "hours": hours_of(label),
-                        "max_weight": _round(weights["max"].get(label), 6),
-                        "mean_weight": _round(weights["mean"].get(label), 6)})
-    known = [m for m in members if m["hours"] is not None]
-    has_weights = weights["source"] is not None
-    hours: dict[str, float | None] = {"max": None, "mean": None, "sum": None}
-    if known:
-        hours["sum"] = _round(sum(m["hours"] for m in known))
-        if has_weights:
-            hours["max"] = _round(sum(m["hours"] * (m["max_weight"] or 0.0) for m in known))
-            hours["mean"] = _round(sum(m["hours"] * (m["mean_weight"] or 0.0) for m in known))
-    fit_seconds = ev._finite((variant.get("fit") or {}).get("fit_seconds"))
-    return {
-        "id": "production" if production else f"gate:{short}",
-        "name": name, "label": "production gate" if production else f"gate {short}",
-        "spec": variant.get("spec") or ("production" if production else f"gate:{short}"),
-        "production": production, "reads": reads, "n_reads": len(reads),
-        "integrated": integrated, "mean": _round(_mean(integrated or [])) if integrated else None,
-        "score_source": source, "stale": bool(stale), "comparable": bool(comparable),
-        "weights_source": weights["source"], "weights_reason": weights["reason"],
-        "members": members, "hours": hours,
-        "missing_hours": [m["label"] for m in members if m["hours"] is None],
-        "fit_hours": _round(fit_seconds / 3600.0) if fit_seconds is not None else None,
-    }
-
-
-def _combiner_table(*, base: str, registry: dict, identity: dict | None,
-                    knee_comparable: bool) -> tuple[list[dict], list[str]]:
-    """:func:`combiner_rows` plus the ids of the gates whose shares are
-    missing but measurable now (``weights_pending``)."""
-    regime = ev._regime_dir_ro(False)
-    variants = [v for v in ev.combiner_variants(False).get("variants") or []
-                if v.get("kind") == "gate" and not v.get("backup")]
-    variants.sort(key=lambda v: (not v.get("production"), str(v.get("name"))))
-    validate_labels = _validate_cube_labels(regime)
-    compare = _compare_knee_rows(regime)
-    hours_of = _hours_resolver(base, registry)
-    fingerprint_of = _fingerprint_resolver(base)
-    rows: list[dict] = []
-    pending: list[str] = []
-    for v in variants:
-        weights = gate_weights(v, regime, validate_labels=validate_labels)
-        row = _combiner_row(v, hours_of=hours_of, compare=compare, weights=weights,
-                            fingerprint_of=fingerprint_of, identity=identity,
-                            knee_comparable=knee_comparable)
-        rows.append(row)
-        if weights["measurable"]:
-            pending.append(row["id"])
-    return rows, pending
-
-
-def combiner_rows(*, base: str, registry: dict, identity: dict | None = None,
-                  knee_comparable: bool = False) -> list[dict]:
-    """One row per gate (the production gate first, then every variant by
-    name; promotion backups left out): its knee-integrated PSNR (production:
-    the knee payload; a variant: the newest compare report that scored it),
-    whether that score is ``comparable`` with the universal scores under
-    ``identity`` (production: ``knee_comparable``; a compare report: its
-    recorded identity), the members it reads with their training hours and
-    shares, and its training time weighted by the peak share (``hours.max``),
-    the mean share (``hours.mean``) and unweighted (``hours.sum``)."""
-    return _combiner_table(base=base, registry=registry, identity=identity,
-                           knee_comparable=knee_comparable)[0]
 
 
 def _model_row(name: str, cls: str, d: str, *, jobs: list[dict], by_member: dict,
@@ -767,17 +398,15 @@ def _model_row(name: str, cls: str, d: str, *, jobs: list[dict], by_member: dict
 def _empty_payload() -> dict:
     return {"available": False, "knees": list(KNEE_GRID_E), "bands": list(BAND_NAMES),
             "integration": {"from_e": KNEE_GRID_E[0], "to_e": KNEE_GRID_E[-1]},
-            "identity": None, "production": None, "mean_model": None, "comparable": False,
-            "models": [], "combiners": [], "fasrc": [], "weights_pending": [], "notes": []}
+            "identity": None, "production": None, "production_model": None,
+            "production_comparable": False, "models": [], "fasrc": [], "notes": []}
 
 
 def universal_payload(starless: bool = False) -> dict:
     """Models › Universal (``GET /ensemble/universal.json``): every local
-    universal model with its recipe, training time, hardware and test score;
-    every gate with its score and weighted training time; the universal
-    models still only on FASRC; plus the production gate's and plain mean's
-    knee-integrated PSNR for reference. Reads cached files only (no SSH, no
-    TensorFlow, nothing written); answers on an empty ensemble."""
+    universal model the panel lists with its recipe, training time, hardware
+    and test score, the ones still only on FASRC, and production's own score.
+    Reads cached files only (no SSH, no TensorFlow, nothing written)."""
     out = _empty_payload()
     if starless:
         out["notes"].append("universal models are STARFULL only")
@@ -786,58 +415,36 @@ def universal_payload(starless: bool = False) -> dict:
     registry = ensemble_registry.load_registry(base)
     jobs = ev.training_jobs()
     by_member = ev._jobs_by_member(jobs)
-    knee = ev.knee_psnr_status(False)
     scores = ev.read_universal_scores()
     identity = scores.get("identity") if isinstance(scores.get("identity"), dict) else None
     current = ev.universal_score_identity()
     identity_ok = ev.universal_identity_matches(identity, current)
-    comparable = _comparable(knee, identity)
-    universal_production = ensemble_registry.production_name(base)
-    if universal_production is not None:
-        # Production is one universal model: its own score, on the same store.
-        production = _universal_reference(universal_production, scores, identity_ok)
-        production_comparable = production is not None
-    else:
-        production = _knee_model(knee, SPATIAL_GATE_KIND)
-        production_comparable = comparable
+    production_name = ensemble_registry.production_name(base)
+    production = (_universal_reference(production_name, scores, identity_ok)
+                  if production_name is not None else None)
     models = [_model_row(name, cls, d, jobs=jobs, by_member=by_member, scores=scores,
                          identity_ok=identity_ok, production=production,
-                         comparable=production_comparable)
+                         comparable=production is not None)
               for name, (cls, d) in universal_targets(base).items()]
-    fasrc = fasrc_universal_rows(jobs, registry)
-    combiners, pending = _combiner_table(base=base, registry=registry, identity=identity,
-                                         knee_comparable=comparable)
+    fasrc = [row for row in fasrc_universal_rows(jobs, registry)
+             if model_catalog.in_panel(row["name"])]
     out.update({
         "available": bool(models or fasrc),
         "identity": identity,
+        # production's own score (null until it is scored)
         "production": production,
-        # the universal model that is production (null: production is the gate)
-        "production_model": universal_production,
-        "mean_model": _knee_model(knee, "ensemble_mean"),
-        # the knee payload (gate, mean_model) scored on the same fields,
-        # records and target as the universal scores
-        "comparable": comparable,
-        # production's reference is on the universal scores' fields (the
-        # rows' vs_production_db needs it): a scored universal production,
-        # else ``comparable``
-        "production_comparable": production_comparable,
+        "production_model": production_name,
+        "production_comparable": production is not None,
         "models": models,
-        "combiners": combiners,
         "fasrc": fasrc,
-        # gates whose shares are missing but measurable from the validate
-        # cubes now (the score job measures them first)
-        "weights_pending": pending,
     })
     notes = out["notes"]
-    missing = [n for n in registry["universal"] if n not in {m["name"] for m in models}]
+    missing = [n for n in registry["universal"]
+               if model_catalog.in_panel(n) and n not in {m["name"] for m in models}]
     if missing:
         notes.append(f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} registered "
                      "but not on disk with a checkpoint (pull in progress, or removed by the "
                      "mirror) — pull again")
-    if pending:
-        notes.append(f"{len(pending)} gate(s) without measured weights ("
-                     + ", ".join(pending) + ") — “Measure gate weights” measures them from "
-                     "the validate cubes")
     unscored = [m["name"] for m in models if m["score"] is None]
     if unscored:
         notes.append(f"{len(unscored)} universal model(s) not scored yet: "
@@ -849,20 +456,8 @@ def universal_payload(starless: bool = False) -> dict:
     if current.get("records_fp") is None:
         notes.append("the test records are not local — scores cannot be checked against "
                      "them (sync them on Synthetic › Records)")
-    if universal_production is not None:
-        pass                      # production is a universal model: no gate to evaluate
-    elif not knee.get("available"):
-        notes.append("no knee-PSNR payload — the production gate's ∫PSNR is unknown "
-                     "(Models › Leaderboard: compute the PSNR-vs-knee curves)")
-    elif knee.get("stale"):
-        notes.append("the knee-PSNR payload is stale — production and plain-mean ∫PSNR refer "
-                     "to older cubes; re-run Evaluate for a like-for-like comparison")
-    if universal_production is not None:
-        notes.append(f"production is universal model {universal_production.removeprefix('member_')}"
-                     " — Δ vs production compares with its score")
-    elif production and identity and not comparable:
-        notes.append("the knee-PSNR payload was scored on other fields or records than the "
-                     "universal models — Δ vs production is left out")
+    if production_name is None:
+        notes.append("no universal model is production — make one production from its row")
     notes.append("training time = Σ duration_s of every training_log.csv row (rolled-back "
                  "windows included); A100 MIG-slice hours are wall hours, not "
                  "A100-equivalent")
@@ -1005,24 +600,19 @@ def _needs_score(entry: dict | None, d: str, stored_identity: dict | None,
 
 def job_universal_score(cap, *, members: list[str] | None = None, force: bool = False,
                         spectra: bool = False) -> dict:
-    """Measure the gate weights, then score the universal models (every local
-    one, or ``members``) on the Leaderboard's test fields with its exact
-    knee-integrated PSNR, into the universal scores store; every model scored
-    also gets its spectra record (Models › Spectra). Local job
-    (``kind="universal-score"``).
+    """Score the universal models (every one the panel lists, or ``members``)
+    on the test fields with the knee-integrated PSNR, into the universal
+    scores store; every model scored also gets its spectra record (Models ›
+    Spectra). Local job (``kind="universal-score"``).
 
-    The weight diagnostic of every gate variant lacking a current one is
-    measured FIRST, from the validate cubes only — so it runs even when
-    nothing needs scoring or the test records are not local. A model whose
-    entry is current (same checkpoint fingerprint, same identity) is reused
-    unless ``force`` — or, with ``spectra``, unless its spectra record is
-    missing or stale. Without local test records the job still succeeds when
-    nothing needs scoring (scores are left as they are) and fails, after the
-    gate weights, when something does.
+    A model whose entry is current (same checkpoint fingerprint, same
+    identity) is reused unless ``force`` — or, with ``spectra``, unless its
+    spectra record is missing or stale. Without local test records the job
+    still succeeds when nothing needs scoring (scores are left as they are)
+    and fails when something does.
 
-    Result ``{scored, reused, failed: {name: error}, gates: {computed,
-    reused, unavailable: {variant: reason}}, identity, spectra: [names whose
-    spectra record was written]}``."""
+    Result ``{scored, reused, failed: {name: error}, identity, spectra:
+    [names whose spectra record was written]}``."""
     base = ev.ensemble_dir()
     targets = universal_targets(base)
     if members:
@@ -1032,10 +622,6 @@ def job_universal_score(cap, *, members: list[str] | None = None, force: bool = 
             raise RuntimeError("not a local universal model with a checkpoint: "
                                + ", ".join(unknown))
         targets = {n: targets[n] for n in wanted}
-    gates = _gate_weight_diagnostics(cap)          # validate cubes only — first
-    if gates["computed"] or gates["unavailable"]:
-        print(f"  • gate weights: {len(gates['computed'])} measured, "
-              f"{len(gates['reused'])} current, {len(gates['unavailable'])} unavailable")
     index = ev.read_universal_scores()
     records_dir = ev._sky_records_local_dir()
     identity = ev.universal_score_identity()
@@ -1052,9 +638,9 @@ def job_universal_score(cap, *, members: list[str] | None = None, force: bool = 
         need = [n for n, (_cls, d) in targets.items() if needs_work(n, d)]
         if need:
             raise RuntimeError(f"{why} ({len(need)} model(s) need a score: "
-                               f"{', '.join(need)}; the gate weights were measured first)")
+                               f"{', '.join(need)})")
         print("  • every universal model's score is current (test records not local)")
-        return {"scored": [], "reused": list(targets), "failed": {}, "gates": gates,
+        return {"scored": [], "reused": list(targets), "failed": {},
                 "identity": index.get("identity"), "spectra": []}
     store = ev.universal_scores_dir()
     os.makedirs(store, exist_ok=True)
@@ -1094,7 +680,7 @@ def job_universal_score(cap, *, members: list[str] | None = None, force: bool = 
     if failed and not scored and not reused:
         raise RuntimeError("no universal model could be scored: "
                            + "; ".join(f"{n}: {e}" for n, e in failed.items()))
-    return {"scored": scored, "reused": reused, "failed": failed, "gates": gates,
+    return {"scored": scored, "reused": reused, "failed": failed,
             "identity": identity, "spectra": list(scored)}
 
 

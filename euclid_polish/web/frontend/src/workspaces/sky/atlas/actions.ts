@@ -220,11 +220,13 @@ export async function runFillAction(action: { url: string; label: string; requir
   return r;
 }
 
-type NexusField = { field_id: string; target_name?: string; count?: number; stale_sr_count?: number; current_sr_count?: number; sr_count?: number };
+type NexusField = {
+  field_id: string; target_name?: string; count?: number; stale_sr_count?: number; current_sr_count?: number; sr_count?: number;
+  /** Tiles holding each NIRCam filter matched to VIS / Y / J (F090W, F115W, F150W). */
+  matched_band_counts?: Record<string, number>;
+};
 
-/** Run the production model on the stale tiles of the cached NEXUS field
- *  (`/api/jwst-euclid/nexus/infer`; the legacy JWST × Euclid page's action). */
-export async function runNexusProduction(fieldId?: string): Promise<StartResult | null> {
+async function nexusField(fieldId?: string): Promise<NexusField | null> {
   let fields: NexusField[];
   try {
     fields = (await apiGet<{ fields?: NexusField[] }>("/api/jwst-euclid/nexus/fields")).fields ?? [];
@@ -233,7 +235,38 @@ export async function runNexusProduction(fieldId?: string): Promise<StartResult 
     return null;
   }
   const field = fieldId ? fields.find((f) => f.field_id === fieldId) : fields[0];
-  if (!field) { toast.error("No NEXUS field is cached yet: cache the NEXUS mosaic first (JWST tools)."); return null; }
+  if (!field) toast.error("No NEXUS field is cached yet: cache the NEXUS mosaic first (JWST tools).");
+  return field ?? null;
+}
+
+/** Cache the NIRCam filters matched to VIS, Y and J (F090W, F115W, F150W) on
+ *  every tile of the NEXUS field, from the cached early-release mosaics
+ *  (`/api/jwst-euclid/nexus/matched-bands`): the viewer's NEXUS frame then
+ *  shows the filter matched to the shown Euclid band. */
+export async function cacheNexusMatchedBands(fieldId?: string): Promise<StartResult | null> {
+  const field = await nexusField(fieldId);
+  if (!field) return null;
+  const counts = field.matched_band_counts ?? {};
+  const have = Object.entries(counts).map(([f, n]) => `${f} ${n}`).join(", ");
+  const ok = await confirm({
+    title: "Cache NEXUS F090W / F115W / F150W tiles?",
+    message: `Resamples the early-release NEXUS mosaics onto the ${field.count ?? "?"} F200W tiles of ${field.target_name ?? field.field_id}`
+      + ` (a local job, ~1.3 GB per filter; existing tiles are kept${have ? ` — now ${have}` : ""}).`
+      + " VIS then shows F090W, Y F115W, J F150W and H F200W.",
+    confirmLabel: "Cache tiles",
+  });
+  if (!ok) return null;
+  const r = await startJob("/api/jwst-euclid/nexus/matched-bands", { field_id: field.field_id },
+    { key: "sky:nexus-matched-bands", onDone: refreshSky });
+  reportStart(r, "NEXUS matched bands");
+  return r;
+}
+
+/** Run the production model on the stale tiles of the cached NEXUS field
+ *  (`/api/jwst-euclid/nexus/infer`; the legacy JWST × Euclid page's action). */
+export async function runNexusProduction(fieldId?: string): Promise<StartResult | null> {
+  const field = await nexusField(fieldId);
+  if (!field) return null;
   const stale = field.stale_sr_count ?? field.count ?? 0;
   if (!stale) { toast.success(`Every ${field.target_name ?? "NEXUS"} tile already has a current production SR.`); return null; }
   const ok = await confirm({

@@ -31,7 +31,7 @@ describe("Sky › Targets", () => {
     expect(screen.queryByRole("button", { name: /Legacy field/ })).toBeNull();          // under More
     await waitFor(() => expect(targetIds()).toEqual(["f200w-0001", "lensA", "lensB", "gal1", "f200w-0002", "p1"]));
     const lead = (text: string) => screen.getByText((_, el) => el?.tagName === "P" && el.textContent === text);
-    expect(lead("Lens candidates: all 2 reconstructions predate the current gate · median flux SR/LR 0.67")).toBeTruthy();
+    expect(lead("Lens candidates: all 2 reconstructions predate the current production model · median flux SR/LR 0.67")).toBeTruthy();
     expect(lead("NEXUS × JWST: 1 current, 1 stale · median flux SR/LR 0.74, median worst-band holes 2.9 %")).toBeTruthy();
     expect(lead("Poster galaxy: the tile has no production SR yet")).toBeTruthy();
     // the counts live on the state control, once
@@ -64,7 +64,7 @@ describe("Sky › Targets", () => {
     expect((screen.getByRole("button", { name: /Run production on stale/ }) as HTMLButtonElement).disabled).toBe(true);
     release();
     expect(await screen.findByText((_, el) => el?.tagName === "P"
-      && el.textContent === "Lens candidates: all 2 reconstructions predate the current gate · median flux SR/LR 0.67")).toBeTruthy();
+      && el.textContent === "Lens candidates: all 2 reconstructions predate the current production model · median flux SR/LR 0.67")).toBeTruthy();
     expect(lead("Lens candidates: loading…")).toBeNull();
     expect(screen.getByRole("radio", { name: "Stale 4" })).toBeTruthy();
   });

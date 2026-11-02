@@ -406,7 +406,7 @@ export type SentencePiece = { text: string; num?: boolean; warn?: boolean };
 
 /** The set's sentence as pieces (numbers marked, the out-of-tolerance ones
  *  warned), so the page can bold the numbers and tests read the text. */
-export function sentencePieces(s: SetSentence, gate: string): SentencePiece[] {
+export function sentencePieces(s: SetSentence, gate = "production model"): SentencePiece[] {
   const def = SET_BY_ID[s.set];
   const [one, many] = def.noun;
   const n = (v: number, warn = false): SentencePiece => ({ text: String(v), num: true, warn });

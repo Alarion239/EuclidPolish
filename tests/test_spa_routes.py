@@ -67,7 +67,7 @@ def test_load_manifest_reads_an_explicit_path(tmp_path):
 
 @pytest.mark.parametrize("path", [
     "/", "/sky", "/sky/atlas", "/sky/targets", "/sky/compare",
-    "/models", "/models/train", "/models/leaderboard", "/models/combiner/", "/synthetic", "/synthetic/noise",
+    "/models", "/models/train", "/models/universal", "/models/spectra/", "/synthetic", "/synthetic/noise",
     "/synthetic/records", "/synthetic/psf", "/figures/plates",
     "/figures/sheet", "/files", "/runs/live", "/runs/history", "/runs/resources",
     "/notebook/log", "/system", "/system/storage",
@@ -98,6 +98,9 @@ def test_trailing_slash_is_normalised():
     "/ensemble/starfull",
     "/ensemble/starfull/overview",
     "/models/foo",
+    "/models/leaderboard",      # removed tabs: redirects to /models/universal, not pages
+    "/models/combiner",
+    "/models/members",
     "/models/starfull",
     "/models/starless/train",
     "/models/starfull/foo",
@@ -166,7 +169,7 @@ def test_app_prefix_redirect_never_leaves_the_host(path, target):
 
 
 @pytest.mark.parametrize("path", [
-    "/sky", "/sky/atlas", "/api/jobs", "/ensemble/status.json", "/apple",
+    "/sky", "/sky/atlas", "/api/jobs", "/ensemble/members.json", "/apple",
     "/application/x", "/", "/configure",
 ])
 def test_non_redirect_paths_have_no_target(path):
@@ -259,7 +262,7 @@ def _satisfying_query(rule) -> str:
 
 def test_every_rule_param_is_constrained():
     """``:name`` binds only listed values, so a rule like ``/ensemble/:mode``
-    can never capture a data endpoint (``/ensemble/status.json``)."""
+    can never capture a data endpoint (``/ensemble/members.json``)."""
     for rule in RULES:
         names = {seg[1:] for seg in rule["from"].split("/") if seg.startswith(":")}
         assert names == set(rule.get("params") or {}), rule["from"]
@@ -345,3 +348,14 @@ def test_no_flask_endpoint_is_a_page_or_a_redirect_source():
             continue
         assert not is_page_path(url_rule.rule), url_rule.rule
         assert redirect_target(url_rule.rule, "") is None, url_rule.rule
+
+
+@pytest.mark.parametrize("tab", ["leaderboard", "members", "combiner", "diagnostics", "images"])
+def test_the_removed_models_tabs_redirect_to_universal(tab):
+    assert redirect_target(f"/models/{tab}", "") == "/models/universal"
+
+
+def test_the_models_tabs_are_universal_knees_spectra_train():
+    models = next(w for w in MANIFEST["workspaces"] if w["path"] == "/models")
+    assert models["tabs"] == ["universal", "knees", "spectra", "train"]
+    assert models["defaultTab"] == "universal"

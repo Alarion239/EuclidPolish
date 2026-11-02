@@ -14,6 +14,7 @@ from euclid_polish.config import Config
 from euclid_polish.observability import JobLog, JobRecord
 from euclid_polish.web import fasrc_jobs
 from euclid_polish.web.app import create_app
+from euclid_polish.web.helpers import model_catalog
 from euclid_polish.web.routes import ensemble as routes
 
 
@@ -57,10 +58,9 @@ def _capture(monkeypatch, name):
 
 
 def test_read_endpoints_answer_on_an_empty_ensemble(client):
-    for url in ("/ensemble/overview.json", "/ensemble/members.json",
-                "/ensemble/combiners.json", "/ensemble/training-jobs.json",
+    for url in ("/ensemble/members.json", "/ensemble/training-jobs.json",
                 "/ensemble/training-curves.json", "/ensemble/universal.json",
-                "/ensemble/universal/spectra.json"):
+                "/ensemble/universal/spectra.json", "/ensemble/universal/milestones.json"):
         r = client.get(url)
         assert r.status_code == 200, url
     assert client.get("/ensemble/members.json").get_json()["members"] == []
@@ -69,9 +69,26 @@ def test_read_endpoints_answer_on_an_empty_ensemble(client):
     assert universal["available"] is False and universal["models"] == []
     spectra = client.get("/ensemble/universal/spectra.json").get_json()
     assert spectra["models"] == [] and spectra["missing"] == []
-    assert universal["combiners"] == [] and universal["fasrc"] == []
-    body = client.get("/ensemble/combiners.json?mode=starless").get_json()
-    assert body["regime"] == "starless" and body["variants"] == [] and body["reports"] == []
+    assert universal["fasrc"] == [] and "combiners" not in universal
+
+
+@pytest.mark.parametrize(("method", "url"), [
+    ("GET", "/ensemble/status.json"), ("GET", "/ensemble/overview.json"),
+    ("POST", "/ensemble/evaluate"), ("GET", "/ensemble/combiners.json"),
+    ("POST", "/ensemble/combiners/compare"), ("GET", "/ensemble/combiners/compare.json"),
+    ("POST", "/ensemble/combiners/fit"), ("POST", "/ensemble/combiners/promote"),
+    ("POST", "/ensemble/combiners/archive"), ("POST", "/ensemble/combiners/restore"),
+    ("POST", "/ensemble/knee-psnr"), ("GET", "/ensemble/knee-psnr.json"),
+    ("POST", "/ensemble/member-psnr"), ("GET", "/ensemble/evals.json"),
+    ("POST", "/ensemble/evals/bands"), ("GET", "/ensemble/pixel-trace.json"),
+    ("POST", "/ensemble/pull"), ("GET", "/api/inference/field.json"),
+    ("GET", "/api/inference/diagnostics.json"), ("POST", "/inference/refresh-combiners"),
+    ("GET", "/api/system/production"),
+])
+def test_the_removed_endpoints_are_gone(client, spawned, method, url):
+    r = client.open(url, method=method, headers={"Sec-Fetch-Site": "same-origin"})
+    assert r.status_code in (404, 405), (method, url, r.status_code)
+    assert spawned == []
 
 
 def test_member_json_404_and_400_are_json(client):
@@ -81,101 +98,17 @@ def test_member_json_404_and_400_are_json(client):
     assert r.status_code == 400 and r.get_json()["ok"] is False
 
 
-def test_compare_report_404_without_a_report(client):
-    r = client.get("/ensemble/combiners/compare.json")
-    assert r.status_code == 404 and "compare" in r.get_json()["error"]
-    assert client.get("/ensemble/combiners/compare.json?report=../x").status_code == 400
-
-
 def test_errors_under_ensemble_are_json(client):
-    r = client.get("/ensemble/pixel-trace.json?diag=nope")
+    r = client.get("/ensemble/nothing-here.json")
     assert r.status_code == 404 and "error" in r.get_json()
 
 
-def test_pixel_trace_has_no_combiner_axes_diagnostic(client):
-    r = client.get("/ensemble/pixel-trace.json?diag=combiner_feature_error"
-                   "&model=spatial_gate&axis=mean_std&i=0&j=0")
-    assert r.status_code == 404 and "error" in r.get_json()
-
-
-def test_evaluate_passes_force(client, spawned, monkeypatch):
-    seen = _capture(monkeypatch, "job_ensemble_evaluate")
-    client.post("/ensemble/evaluate", data={"num_images": "20", "force": "1"})
-    spawned[0]["target"](_Cap())
-    assert seen["force"] is True and seen["num_images"] == 20 and seen["starless"] is False
-    assert "forced" in spawned[0]["label"]
-
-
-def test_compare_validates_gates_and_passes_knobs(client, spawned, monkeypatch):
-    seen = _capture(monkeypatch, "job_combiner_compare")
-    r = client.post("/ensemble/combiners/compare", data={"gates": "../etc"})
-    assert r.status_code == 400
-    r = client.post("/ensemble/combiners/compare", data={"blackout_fields": "-1"})
-    assert r.status_code == 400
-    r = client.post("/ensemble/combiners/compare", data={"blackout_fields": "0", "knee": "0"})
-    assert r.status_code == 200 and r.get_json()["job_id"] == "job1"
-    spawned[0]["target"](_Cap())
-    # the legacy RBF is never scored, even when a stale form still asks for it
-    assert seen == {"starless": False, "gates": None, "blackout_fields": 0, "seed": 0,
-                    "include_rbf": False, "knee": False}
-    seen.clear()
-    r = client.post("/ensemble/combiners/compare", data={"include_rbf": "1"})
-    assert r.status_code == 200
-    spawned[-1]["target"](_Cap())
-    assert seen["include_rbf"] is False
-    assert spawned[0]["kind"] == "ensemble-compare"
-
-
-def test_fit_writes_a_named_variant_never_production(client, spawned, monkeypatch):
-    seen = _capture(monkeypatch, "job_gate_variant_fit")
-    r = client.post("/ensemble/combiners/fit", data={"out_name": "spatial_gate_combiner"})
-    assert r.status_code == 400 and "production" in r.get_json()["error"]
-    r = client.post("/ensemble/combiners/fit", data={"out_name": ""})
-    assert r.status_code == 400
-    r = client.post("/ensemble/combiners/fit", data={"out_name": "trial", "mix_space": "cubic"})
-    assert r.status_code == 400
-    r = client.post("/ensemble/combiners/fit", data={"out_name": "trial", "steps": "0"})
-    assert r.status_code == 400
-    r = client.post("/ensemble/combiners/fit", data={
-        "out_name": "trial", "mix_space": "asinh", "loss_knees": "band", "use_lr": "1",
-        "width": "16", "steps": "500", "learning_rate": "0.001", "crop": "128",
-        "members": "170,member_171", "compare_after": "0"})
-    assert r.status_code == 200 and r.get_json()["variant"] == "spatial_gate_trial"
-    spawned[0]["target"](_Cap())
-    assert seen["out_name"] == "spatial_gate_trial" and seen["mix_space"] == "asinh"
-    assert seen["loss_knees"] == "band" and seen["use_lr"] is True
-    assert seen["width"] == 16 and seen["steps"] == 500 and seen["crop"] == 128
-    assert seen["learning_rate"] == pytest.approx(1e-3)
-    assert seen["members"] == ["170", "member_171"] and seen["compare_after"] is False
-
-
-def test_promote_validates_the_variant_name(client, spawned, monkeypatch, tmp_path):
-    seen = _capture(monkeypatch, "job_combiner_promote")
-    assert client.post("/ensemble/combiners/promote", data={"variant": "nope"}).status_code == 400
-    regime = tmp_path / "vis" / "ensemble" / "starfull" / "spatial_gate_trial"
-    regime.mkdir(parents=True)
-    (regime / "combiner.json").write_text(json.dumps({"kind": "spatial_gate"}))
-    r = client.post("/ensemble/combiners/promote", data={"variant": "gate:trial", "force": "1"})
-    assert r.status_code == 200
-    spawned[0]["target"](_Cap())
-    assert seen == {"starless": False, "variant": "spatial_gate_trial", "force": True}
-
-
-def test_restore_and_pull_validate_member_names(client, spawned, monkeypatch):
+def test_restore_validates_member_names(client, spawned, monkeypatch):
     seen_restore = _capture(monkeypatch, "job_restore_member")
     assert client.post("/ensemble/restore-member", data={"member": "x"}).status_code == 400
     assert client.post("/ensemble/restore-member", data={"member": "7"}).status_code == 200
     spawned[0]["target"](_Cap())
     assert seen_restore == {"name": "member_07"}
-
-    seen_pull = _capture(monkeypatch, "job_ensemble_pull")
-    r = client.post("/ensemble/pull", data={"members": "bad!"})
-    assert r.status_code in (400, 503)      # 503 when the FASRC gate is closed
-    r = client.post("/ensemble/pull", data={"members": "195,196", "dry_run": "1"})
-    if r.status_code == 200:
-        spawned[-1]["target"](_Cap())
-        assert seen_pull == {"members": ["member_195", "member_196"], "dry_run": True,
-                             "allow_universal": False}
 
 
 def _ledger_universal(tmp_path, monkeypatch, *names):
@@ -187,28 +120,6 @@ def _ledger_universal(tmp_path, monkeypatch, *names):
             submitted_at="2026-10-12T00:00:00Z", state="COMPLETED",
             params_json=json.dumps({"mode": "add", "member_names": name,
                                     "member_spec": json.dumps([spec])})))
-
-
-def test_an_explicit_pull_of_only_universal_models_is_refused(client, spawned, monkeypatch,
-                                                             tmp_path):
-    """The ensemble Pull dialog's free-text names must not bootstrap a
-    FASRC-only universal model into the ensemble: a list of only such names
-    is a 400 pointing at Models › Universal; ``allow_universal=1`` opts in; a
-    mixed list is handed to the job, which drops them."""
-    _ledger_universal(tmp_path, monkeypatch, "member_218")
-    seen = _capture(monkeypatch, "job_ensemble_pull")
-    r = client.post("/ensemble/pull", data={"members": "218"})
-    assert r.status_code == 400 and "Models › Universal" in r.get_json()["error"]
-    assert spawned == []
-    r = client.post("/ensemble/pull", data={"members": "218", "allow_universal": "1"})
-    assert r.status_code == 200
-    spawned[-1]["target"](_Cap())
-    assert seen == {"members": ["member_218"], "dry_run": False, "allow_universal": True}
-    seen.clear()
-    assert client.post("/ensemble/pull", data={"members": "218,219"}).status_code == 200
-    spawned[-1]["target"](_Cap())
-    assert seen == {"members": ["member_218", "member_219"], "dry_run": False,
-                    "allow_universal": False}
 
 
 def test_training_curves_count_registered_universal_models_as_local(client, monkeypatch,
@@ -290,6 +201,7 @@ _UNIVERSAL = {"asinh_knees": [0.1, 1.0, 10.0], "learned_output_knee": {"init_e":
 
 def test_universal_score_validates_the_models_and_passes_knobs(client, exclusive, monkeypatch,
                                                               tmp_path):
+    monkeypatch.setattr(model_catalog, "PANEL_FIRST_MODEL", 0)     # 211 predates the panel's 257
     base = str(tmp_path / "ckpt" / "ensemble")
     ensemble_registry.add_universal_entry(base, "211")
     _universal_member(tmp_path, 211, _UNIVERSAL)
@@ -312,6 +224,23 @@ def test_universal_score_validates_the_models_and_passes_knobs(client, exclusive
     exclusive[2]["target"](_Cap())
     assert seen == {"members": None, "force": False, "spectra": True}
     assert "spectra" in exclusive[2]["label"]
+
+
+def test_universal_score_refuses_a_model_before_the_first_model(client, exclusive, monkeypatch,
+                                                                tmp_path):
+    """A registered universal model numbered below PANEL_FIRST_MODEL (257)
+    is no score target: 400 before spawning; 257 is scored."""
+    base = str(tmp_path / "ckpt" / "ensemble")
+    for n in (211, 257):
+        ensemble_registry.add_universal_entry(base, str(n))
+        _universal_member(tmp_path, n, _UNIVERSAL)
+    _capture(monkeypatch, "job_universal_score")
+    r = client.post("/ensemble/universal/score", data={"members": "211"})
+    assert r.status_code == 400 and "member_211" in r.get_json()["error"]
+    assert exclusive == []
+    assert client.post("/ensemble/universal/score", data={"members": "257"}).status_code == 200
+    names = [m["name"] for m in client.get("/ensemble/universal.json").get_json()["models"]]
+    assert names == ["member_257"]
 
 
 def test_universal_spectra_map_404s_are_json(client, tmp_path):

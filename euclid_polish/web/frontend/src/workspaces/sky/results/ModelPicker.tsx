@@ -88,8 +88,8 @@ export function ModelPicker({ value, onChange, compact = false }: {
   return (
     <div className="res-models" data-compact={compact || undefined}>
       <div className="res-models__quick" role="group" aria-label="Quick picks">
-        <Button size="sm" variant="subtle" onClick={() => set(available.filter((m) => m.kind === "production" || m.kind === "mean").map((m) => m.spec))}>
-          Production + mean
+        <Button size="sm" variant="subtle" onClick={() => set(production)}>
+          Production
         </Button>
         {universalGroup && (
           <Button size="sm" variant="subtle" disabled={!universal.length}

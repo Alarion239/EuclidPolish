@@ -6,7 +6,7 @@ import { Button, Input, Popover } from "../../../ui";
 import { runModels } from "./actions";
 import { ModelPicker } from "./ModelPicker";
 
-export function RunModelsPopover({ refs, trigger, defaultSpecs = ["production", "mean"], onStarted, onDone, open: openProp, onOpenChange }: {
+export function RunModelsPopover({ refs, trigger, defaultSpecs = ["production"], onStarted, onDone, open: openProp, onOpenChange }: {
   refs: readonly string[];
   trigger?: ReactElement;
   defaultSpecs?: string[];

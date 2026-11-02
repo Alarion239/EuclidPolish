@@ -87,8 +87,8 @@ describe("model picker", () => {
     const old = await screen.findByRole("checkbox", { name: /gate:old/ });
     expect((old as HTMLInputElement).disabled).toBe(true);
     expect(screen.getByText("fitted for 20 archived members")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Production + mean" }));
-    expect(seen.at(-1)).toEqual(["production", "mean"]);
+    fireEvent.click(screen.getByRole("button", { name: "Production" }));
+    expect(seen.at(-1)).toEqual(["production"]);
     fireEvent.click(screen.getByRole("button", { name: "+ all members" }));
     expect(seen.at(-1)).toEqual(["member:member_1", "member:member_2"]);
     // a pruned gate says how many members it reads, not how many it was fitted on
@@ -348,9 +348,9 @@ describe("the real-tile card", () => {
     routes["POST /api/experiments"] = () => ({ body: { ok: true, job_id: "j9", experiment_id: "20260926-111111-000000", tiles: ["nexus/f200w-0001"], models: ["production", "mean"], skipped: {} } });
     show(<RealTileInspector id="nexus/f200w-0001" />);
     fireEvent.click(await screen.findByRole("button", { name: "Run models…" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Run 2" }));
-    await answer(/Run 2 models on 1 tile/, "Run");
-    await waitFor(() => expect(posts[0]).toEqual({ url: "/api/experiments", form: { tiles: "nexus/f200w-0001", models: "production,mean" } }));
+    fireEvent.click(await screen.findByRole("button", { name: "Run 1" }));
+    await answer(/Run 1 model on 1 tile/, "Run");
+    await waitFor(() => expect(posts[0]).toEqual({ url: "/api/experiments", form: { tiles: "nexus/f200w-0001", models: "production" } }));
     expect(useJobsStore.getState().keyed["sky:experiment"]).toBe("j9");
   });
 });

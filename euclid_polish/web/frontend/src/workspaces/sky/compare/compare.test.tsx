@@ -164,14 +164,14 @@ describe("Sky › Compare › New comparison", () => {
     expect(within(list).getByText("nexus/f200w-0001")).toBeTruthy();
     expect(within(list).getByText("poster/p1")).toBeTruthy();
     await screen.findByRole("checkbox", { name: /production/ });
-    expect(screen.getByText(/4 outputs \(2 models on 2 tiles\)\. Needs 2 member SRs per tile: at most 4 member inferences/)).toBeTruthy();
+    expect(screen.getByText(/2 outputs \(1 model on 2 tiles\)\. Needs 2 member SRs per tile: at most 4 member inferences/)).toBeTruthy();
     // tiles handed over: the form is the point, no comparison opens by itself
     expect(screen.queryByTestId("viewer")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Run 2 models on 2 tiles…" }));
-    const dlg = await answer(/Run 2 models on 2 tiles/, "Run");
-    expect(dlg.textContent).toContain("4 outputs (2 models on 2 tiles).");
+    fireEvent.click(screen.getByRole("button", { name: "Run 1 model on 2 tiles…" }));
+    const dlg = await answer(/Run 1 model on 2 tiles/, "Run");
+    expect(dlg.textContent).toContain("2 outputs (1 model on 2 tiles).");
     await waitFor(() => expect(posts[0]).toEqual({
-      url: "/api/experiments", form: { tiles: "nexus/f200w-0001,poster/p1", models: "production,mean" },
+      url: "/api/experiments", form: { tiles: "nexus/f200w-0001,poster/p1", models: "production" },
     }));
     await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("exp=20260926-121212-111111"));
   });

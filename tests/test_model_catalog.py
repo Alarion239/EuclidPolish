@@ -427,11 +427,48 @@ def test_universal_models_list_last_and_stay_out_of_the_ensemble(universe):
     # a universal model is never part of the mean, the gates or the members list
     assert list(by_spec["mean"].member_labels) == LABELS
     assert "member:member_211" not in by_spec
+    json.dumps(mc.catalog_payload())
+
+
+def test_the_panel_lists_production_and_universal_models_from_the_first_model_on(
+        universe, monkeypatch):
+    """``GET /api/models`` lists production and the universal models /
+    milestones numbered PANEL_FIRST_MODEL (257) or later; every spec still
+    resolves (``list_specs`` / ``resolve_spec`` are unchanged)."""
+    assert mc.PANEL_FIRST_MODEL == 257
     payload = mc.catalog_payload()
-    assert payload["members"] == LABELS
+    assert "members" not in payload and payload["first_model"] == 257
+    assert [row["spec"] for row in payload["models"]] == ["production"]   # 211, 212 predate it
+    assert mc.resolve_spec("universal:211").kind == "universal"
+    assert mc.resolve_spec("mean").kind == "mean"
+    monkeypatch.setattr(mc, "PANEL_FIRST_MODEL", 0)                   # read at call time
+    payload = mc.catalog_payload()
+    assert payload["first_model"] == 0
+    assert [row["spec"] for row in payload["models"]] == [
+        "production", "universal:member_211", "universal:member_212"]    # no mean, rbf, members, gates
     json.dumps(payload)
     row = next(item for item in payload["models"] if item["spec"] == "universal:member_211")
     assert row["slug"] == "universal-member_211" and row["n_members"] == 1
+    assert [item.spec for item in mc.panel_specs()] == [row["spec"] for row in payload["models"]]
+
+
+@pytest.mark.parametrize(("name", "listed"), [
+    ("member_257", True), ("257·psnr", True), ("257", True), ("universal:member_300", True),
+    ("milestone:member_257@2000000", True), ("member_256", False), ("universal:member_238", False),
+    ("milestone:member_227@15000000", False), ("production", False), ("mean", False),
+    ("gate:two", False),
+])
+def test_in_panel_reads_the_model_number(name, listed):
+    assert mc.in_panel(name) is listed
+
+
+@pytest.mark.parametrize(("spec", "listed"), [
+    ("production", True), ("universal:member_257", True), ("milestone:member_257@200000", True),
+    ("universal:member_238", False), ("milestone:member_227@15000000", False),
+    ("member:member_257", False), ("gate:spatial_gate_v1", False), ("mean", False), ("rbf", False),
+])
+def test_is_panel_spec_is_production_or_a_listed_universal_model(spec, listed):
+    assert mc.is_panel_spec(spec) is listed
 
 
 def test_a_universal_model_without_a_checkpoint_is_listed_unavailable(universe):

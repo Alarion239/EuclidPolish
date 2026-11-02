@@ -258,10 +258,9 @@ describe("the real-tile card", () => {
     expect(outputOrigin({ member_labels: ["a", "b"], combiner_kind: "spatial_gate" })).toBe("2 members · spatial gate");
   });
   it("proposes the production / mean outputs a tile is missing", () => {
-    expect(defaultRunSpecs({})).toEqual(["production", "mean"]);
-    expect(defaultRunSpecs({ production: { state: "current" } })).toEqual(["mean"]);
+    expect(defaultRunSpecs({})).toEqual(["production"]);
+    expect(defaultRunSpecs({ production: { state: "current" } })).toEqual(["production"]);
     expect(defaultRunSpecs({ production: { state: "stale" }, mean: { state: "current" } })).toEqual(["production"]);
-    expect(defaultRunSpecs({ production: { state: "current" }, mean: { state: "current" } })).toEqual(["production", "mean"]);
   });
 });
 

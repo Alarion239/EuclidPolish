@@ -51,7 +51,7 @@ WINDOW = 128
 BORDER = 32
 SR_PIXEL_ARCSEC = 0.05
 #: The NIRCam filter compared with each Euclid band (the nearest bandpass).
-JWST_FILTER = {"VIS": "F090W", "Y_E": "F115W", "J_E": "F150W", "H_E": "F200W"}
+JWST_FILTER = Config.JWST_PARTNER_FILTER
 #: Euclid PSF FWHM (″) per band, roughly — JWST is blurred to it to register
 #: against the input.
 EUCLID_FWHM_ARCSEC = {"VIS": 0.18, "Y_E": 0.45, "J_E": 0.45, "H_E": 0.45}

@@ -1,11 +1,11 @@
 /* Job helpers of the Models workspace: the shared job keys (so the palette
-   and these tabs never start the same job twice), the
-   confirmed starters of the loop's local jobs (evaluate, PSNR vs knee,
-   member PSNR, the universal models' score, spectra and pull, a
-   knee-attribution run, a pixel-types analysis or comparison), the confirmed production switch (an instant POST,
-   no job) and an end-of-job effect. Jobs start through
-   `startJob` (app/RunActions), which confirms, registers the job under its
-   key and toasts the start; the shell toasts the end. */
+   and these tabs never start the same job twice), the confirmed starters of
+   its local jobs (the universal models' score, spectra and pull, a
+   knee-attribution run, a pixel-types analysis or comparison), the
+   confirmed production switch (an instant POST, no job) and an end-of-job
+   effect. Jobs start through `startJob` (app/RunActions), which confirms,
+   registers the job under its key and toasts the start; the shell toasts
+   the end. */
 import { useEffect, useRef } from "react";
 import { apiPost } from "../../api/client";
 import { isTerminal, type Job } from "../../api/jobs";
@@ -17,93 +17,18 @@ import { kneeUrl } from "./kneesApi";
 import { numbersText } from "./universal";
 
 export const JOB = {
-  evaluate: "run:evaluate",        // == app/RunActions (same url → same key)
-  knee: "run:knee",
-  memberPsnr: "run:member-psnr",
-  pull: "ensemble:pull",
-  pullCheck: "ensemble:pull-check",
-  mirror: "fasrc:mirror",          // == System › Storage's checkpoint pull
-  compare: "ensemble:compare",
-  fit: "ensemble:gate-fit",
-  promote: "ensemble:gate-promote",
   restore: "ensemble:restore",
   archive: "ensemble:archive",
-  generateSr: "data:generate-sr",  // == Synthetic › Records (same job)
-  fieldDiagnostics: "sky:field-diagnostics",
-  bandEvals: "ensemble:band-evals",
   universalScore: "ensemble:universal-score",
   universalPull: "ensemble:universal-pull",
   kneeAttribution: "models:knee-attribution",
   /** A pixel-types analysis or comparison (one at a time: both load the run's fields). */
   kneePixelTypes: "models:knee-pixel-types",
-  gatesArchive: "ensemble:gates-archive",
-  gatesRestore: "ensemble:gates-restore",
 } as const;
 
 /** The start of the universal score job's label (routes/ensemble.py), so a
  *  page follows that job whoever started it (api/jobs useTrackedJob). */
 export const UNIVERSAL_SCORE_LABEL = "universal: score";
-
-/** Evaluate the ensemble on `n` test fields (confirmed; `asked`: the
- *  caller's own dialog already asked, so no second confirm). */
-export function evaluate(n: number, force = false, opts: { asked?: boolean } = {}) {
-  return startJob({
-    key: JOB.evaluate, url: "/ensemble/evaluate",
-    label: `Evaluate the ensemble${force ? " (forced)" : ""}`,
-    data: { mode: REGIME, num_images: String(n), force: force ? "1" : "0" },
-    question: opts.asked ? undefined : {
-      title: `Evaluate the ensemble on ${n} test fields?`,
-      message: force
-        ? "Forced: every member is re-run (TensorFlow) even if an identical evaluation is cached. Several minutes."
-        : "Loads every active member (TensorFlow) unless an identical evaluation is cached. Several minutes.",
-      confirmLabel: "Evaluate",
-    },
-  });
-}
-
-/** Recompute the PSNR-vs-knee curves from the cached test cubes (confirmed). */
-export const computeKnee = () => startJob({
-  key: JOB.knee, url: "/ensemble/knee-psnr", label: "PSNR vs knee", data: { mode: REGIME },
-  question: { title: "Recompute PSNR vs knee?", message: "Scores every member, the mean and each combiner at every knee from the cached test cubes.", confirmLabel: "Compute" },
-});
-
-/** Generate the production SR over the local synthetic records (the SR tier
- *  of Synthetic › Records and the angular power spectrum). Asks first; a
- *  danger confirm when the existing SR is deleted. */
-export async function generateSr(subsets: readonly string[], overwrite: boolean) {
-  const ok = await confirm({
-    title: `Generate the production SR for ${subsets.join(" + ")}?`,
-    message: `Runs the production model (TensorFlow) over the records${overwrite ? "; the existing SR of these splits is deleted first" : ""}.`,
-    confirmLabel: "Generate", tone: overwrite ? "danger" : "default",
-  });
-  if (!ok) return null;
-  return startJob({
-    key: JOB.generateSr, url: "/api/sky/generate-sr", label: "Generate SR",
-    data: { subsets: subsets.join(","), overwrite: overwrite ? "1" : "0" },
-  });
-}
-
-/** Re-apply the newest combiners to the cached legacy real field
- *  and rewrite its diagnostics (Diagnostics › Real field; confirmed). */
-export const refreshFieldDiagnostics = (fieldId: string) => startJob({
-  key: JOB.fieldDiagnostics, url: "/inference/refresh-combiners", label: "Real-field diagnostics",
-  question: {
-    title: "Recompute the real-field diagnostics?",
-    message: `Applies the newest combiners to field ${fieldId} (TensorFlow, local job; stale member SRs are rebuilt, the 100 sub-tiles re-downloaded only if the member cache is stale).`,
-    confirmLabel: "Recompute",
-  },
-});
-
-/** Compute the Y, J and H evaluation diagnostics from the cached test cubes
- *  (Diagnostics' band switch; confirmed). */
-export const computeBandEvals = () => startJob({
-  key: JOB.bandEvals, url: "/ensemble/evals/bands", label: "Y, J, H diagnostics", data: { mode: REGIME },
-  question: {
-    title: "Compute the Y, J and H diagnostics?",
-    message: "Re-measures the spectra, the coherence and the spread in each NISP band from the cached test cubes (no model runs; a local job of several minutes). Evaluate keeps them current afterwards.",
-    confirmLabel: "Compute",
-  },
-});
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const numbers = (names: readonly string[]) => names.map((n) => n.replace(/^member_/, "")).join(", ");
@@ -139,25 +64,6 @@ export function computeSpectra(missing: readonly string[], nFields: number, esti
       title: `Compute the spectra of ${plural(missing.length, "universal model")}?`,
       message: `${estimate.charAt(0).toUpperCase()}${estimate.slice(1)}. The universal score job loads ${numbersText(missing)} on this machine (TensorFlow, never FASRC) and measures their power spectra and direction diagnostics on the ${nFields} test fields; a model without a current score is scored too (minutes per model). It writes only the universal scores and spectra.`,
       confirmLabel: "Compute",
-    },
-  });
-}
-
-/** Measure the gates' member shares (Models › Universal's combiner hours)
- *  from the validate cubes: the score job with no models named, which
- *  measures the gates first, then scores whatever has no current score
- *  (`unscored`, named in the confirm). */
-export function measureGateWeights(gates: readonly string[], unscored: readonly string[], nFields: number) {
-  return startJob({
-    key: JOB.universalScore, url: url.universalScore(),
-    label: "Measure gate weights",
-    data: { mode: REGIME, force: "0" },
-    question: {
-      title: `Measure the weights of ${plural(gates.length, "gate")}?`,
-      message: `Reads ${gates.join(", ")} over the validate cubes (no model runs) for the members' gate shares, which set the combiners' training hours.${unscored.length
-        ? ` The same job then scores ${plural(unscored.length, "universal model")} without a current score (${numbers(unscored)}) on the ${nFields} test fields (TensorFlow, minutes per model).`
-        : ""}`,
-      confirmLabel: "Measure",
     },
   });
 }
@@ -226,43 +132,34 @@ export function startPixelCompare(fields: Record<string, string>, what: string) 
   });
 }
 
-/** The reads that name production: the catalogue and the Universal,
- *  Leaderboard and Combiner payloads (Home reads the first two of these). */
-const PRODUCTION_READS = [url.models(), url.universal(), url.overview(), url.combiners()];
+/** The reads that name production: the catalogue and the Universal payload
+ *  (Home reads both). */
+const PRODUCTION_READS = [url.models(), url.universal()];
 
 /** Make a registered universal model production — `target` its spec and
- *  label (universal:member_238, "Universal 238") — or the production gate
- *  again (`"gate"`), after a confirm. An instant POST (no job, nothing
- *  deleted); then every read that names production is refreshed.
- *  `current`: what production is now, in words ("the production gate",
- *  "Universal 238"). Resolves true when production changed; a refusal (the
+ *  label (universal:member_257, "Universal 257") — after a confirm. An
+ *  instant POST (no job, nothing deleted); then every read that names
+ *  production is refreshed. `current`: what production is now, in words
+ *  ("Universal 257"). Resolves true when production changed; a refusal (the
  *  server's 400) is toasted. */
-export async function setProduction(target: { spec: string; label: string } | "gate", current: string): Promise<boolean> {
-  const gate = target === "gate";
-  const what = gate ? "the production gate" : target.label;
+export async function setProduction(target: { spec: string; label: string }, current: string): Promise<boolean> {
   const ok = await confirm({
-    title: gate ? "Make the gate production again?" : `Make ${target.label} production?`,
-    message: `Every page that defaults to “production” — Sky, the NEXUS plates, the figures and inference — will run ${what}${gate ? "" : " (one universal model, no gate)"} instead of ${current}. The production outputs made so far (real SR tiles, plates, figures) turn stale until they are run again. Instant: no job runs and nothing is deleted.`,
-    confirmLabel: gate ? "Make the gate production" : "Make production",
+    title: `Make ${target.label} production?`,
+    message: `Every page that defaults to “production” — Sky, the NEXUS plates, the figures and inference — will run ${target.label} instead of ${current}. The production outputs made so far (real SR tiles, plates, figures) turn stale until they are run again. Instant: no job runs and nothing is deleted.`,
+    confirmLabel: "Make production",
   });
   if (!ok) return false;
   try {
-    const r = await apiPost<{ ok?: boolean; error?: string }>(url.production(), { model: gate ? "gate" : target.spec });
+    const r = await apiPost<{ ok?: boolean; error?: string }>(url.production(), { model: target.spec });
     if (r.ok === false || r.error) throw new Error(r.error ?? "refused");
   } catch (e) {
     toast.error("Production: not changed", { description: e instanceof Error ? e.message : String(e) });
     return false;
   }
-  toast.success(gate ? "The production gate is production again" : `${target.label} is production`);
+  toast.success(`${target.label} is production`);
   await Promise.all(PRODUCTION_READS.map((u) => invalidate(u)));
   return true;
 }
-
-/** Score the members' test PSNR (changed or unscored ones only; confirmed). */
-export const refreshMemberPsnr = () => startJob({
-  key: JOB.memberPsnr, url: "/ensemble/member-psnr", label: "Re-score the members' test PSNR",
-  question: { title: "Re-score the members' test PSNR?", message: "Only changed or unscored members are evaluated (TensorFlow).", confirmLabel: "Re-score" },
-});
 
 /** Run `onEnd` once when `job` goes from running to a terminal state (and
  *  refresh every /ensemble/ resource). */

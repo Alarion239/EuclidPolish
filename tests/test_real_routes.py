@@ -111,17 +111,21 @@ def test_errors_are_json(client, path, status):
 
 
 def test_models_payload(client):
+    """The panel lists production and the universal models from
+    PANEL_FIRST_MODEL on; mean, RBF, members and gates still resolve."""
     payload = client.get("/api/models").get_json()
-    assert payload["regime"] == "starfull" and payload["members"] == fx.LABELS
+    assert payload["regime"] == "starfull" and "members" not in payload
+    assert payload["first_model"] == model_catalog.PANEL_FIRST_MODEL
     specs = {item["spec"]: item for item in payload["models"]}
-    assert specs["production"]["available"] and specs["gate:two"]["available"]
-    assert specs["production"]["members"] == fx.LABELS
-    assert not specs["rbf"]["available"] and specs["rbf"]["reason"]
+    assert list(specs) == ["production"]
+    assert specs["production"]["available"] and specs["production"]["members"] == fx.LABELS
+    assert model_catalog.resolve_spec("gate:two").available
+    assert not model_catalog.resolve_spec("rbf").available
 
 
 def test_experiment_job_record_and_card(client, world):
-    payload, job = _run_experiment(client)
-    assert payload["models"] == ["mean", "member:member_1"]
+    payload, job = _run_experiment(client, models="production,mean")
+    assert payload["models"] == ["production", "mean"]
     assert job["result"]["experiment_id"] == payload["experiment_id"]
     record = client.get(f"/api/experiments/{payload['experiment_id']}").get_json()
     assert record["status"] == "done" and record["job_id"] == payload["job_id"]
@@ -130,16 +134,20 @@ def test_experiment_job_record_and_card(client, world):
     listing = client.get("/api/experiments").get_json()["experiments"]
     assert listing[0]["id"] == payload["experiment_id"]
     card = client.get("/api/real/nexus/f200w-0000").get_json()
-    assert card["models"]["mean"]["state"] == "current"
-    assert card["models"]["mean"]["metrics"]["summary"]["n_peaks"] >= 1
+    assert card["models"]["production"]["state"] == "current"
+    assert card["models"]["production"]["metrics"]["summary"]["n_peaks"] >= 1
+    # the card lists only the models the panel lists (the mean's output stays on disk)
+    assert list(card["models"]) == ["production"] and "m:mean" not in card["files"]
+    assert card["runnable_models"] == ["production"]
     assert card["experiments"] == [payload["experiment_id"]]
     row = client.get("/api/real/nexus").get_json()["tiles"][0]
-    assert row["models"]["mean"]["state"] == "current"
+    assert list(row["models"]) == ["production"]
+    assert row["models"]["production"]["state"] == "current"
     # the listing carries each scored output's per-band SR/LR flux ratio
     # (Sky › Targets sorts and plots it without opening every card)
-    assert row["models"]["mean"]["flux_ratio"]["VIS"] == pytest.approx(2.0, rel=1e-5)
-    assert set(row["models"]["mean"]["flux_ratio"]) == {"VIS", "Y_E", "J_E", "H_E"}
-    output = card["files"]["m:mean"]
+    assert row["models"]["production"]["flux_ratio"]["VIS"] == pytest.approx(2.0, rel=1e-5)
+    assert set(row["models"]["production"]["flux_ratio"]) == {"VIS", "Y_E", "J_E", "H_E"}
+    output = card["files"]["m:production"]
     assert output.endswith(".fits")
     assert client.get("/api/inspect", query_string={"fits": output}).status_code == 200
 
@@ -188,18 +196,21 @@ def test_image_fits_slices_carry_their_wcs(client, world):
 
 
 def test_real_viewer_collection(client, world):
-    _run_experiment(client, models="mean")
+    _run_experiment(client, models="production,mean")
     meta = client.get("/viewer/meta/real?source=nexus").get_json()
     assert meta["collection"] == "real" and meta["count"] == 2
-    assert [tier["key"] for tier in meta["tiers"]] == ["lr", "jwst", "m:mean"]
+    # default tiers: only the specs the panel lists (the mean stays on ?models=)
+    assert [tier["key"] for tier in meta["tiers"]] == ["lr", "jwst", "m:production"]
     first, second = meta["objects"]
-    assert first["id"] == "f200w-0000" and "m:mean" in first["tiers"]
-    assert first["model_states"] == {"mean": "current"}
-    assert "m:mean" not in second["tiers"]
+    assert first["id"] == "f200w-0000" and "m:production" in first["tiers"]
+    assert first["model_states"] == {"production": "current"}
+    assert "m:production" not in second["tiers"]
     lr = client.get("/viewer/cube/real/0?source=nexus&tier=lr")
     assert lr.status_code == 200 and lr.headers["X-Cube-Unit"] == "e-"
     lr_wcs = fx.served_wcs(lr.headers["X-Cube-WCS"])
-    sr = client.get("/viewer/cube/real?source=nexus&tier=m:mean&id=f200w-0000")
+    mean = client.get("/viewer/meta/real?source=nexus&models=mean").get_json()
+    assert [t["key"] for t in mean["tiers"]][2:] == ["m:mean"]
+    sr = client.get("/viewer/cube/real?source=nexus&tier=m:production&id=f200w-0000")
     assert sr.status_code == 200 and sr.headers["X-Cube-Index"] == "0"
     sr_wcs = fx.served_wcs(sr.headers["X-Cube-WCS"])
     expected = lr_wcs.pixel_to_world_values(-0.25, -0.25)
@@ -209,7 +220,7 @@ def test_real_viewer_collection(client, world):
     assert jwst.headers["X-Cube-Unit"] == "MJy/sr"
     explicit = client.get("/viewer/meta/real?source=nexus&models=production,member:1").get_json()
     assert [t["key"] for t in explicit["tiers"]][2:] == ["m:production", "m:member:member_1"]
-    assert client.get("/viewer/cube/real/1?source=nexus&tier=m:mean").status_code == 404
+    assert client.get("/viewer/cube/real/1?source=nexus&tier=m:production").status_code == 404
     assert client.get("/viewer/meta/real?source=mars").status_code == 404
     assert client.get("/viewer/meta/real?source=nexus&models=bogus").status_code == 400
     assert client.get("/viewer/cube/real/9?source=nexus&tier=lr").status_code == 404
@@ -228,7 +239,7 @@ def test_cache_tile_endpoint(client, world, monkeypatch):
     assert empty.get_json()["tile"] == "102018211"
     monkeypatch.setattr(jwst_euclid, "fetch_q1_cutout", fx.fake_cutout_writer())
     response = client.post("/api/real/tiles", data={"ra": str(fx.NEXUS_RA),
-                                                    "dec": str(fx.NEXUS_DEC), "run": "mean"})
+                                                    "dec": str(fx.NEXUS_DEC), "run": "production"})
     payload = response.get_json()
     assert response.status_code == 200 and payload["ref"].startswith("tile/")
     job = _wait(payload["job_id"])
@@ -238,7 +249,7 @@ def test_cache_tile_endpoint(client, world, monkeypatch):
     assert job["result"]["experiment"]["experiment_id"] == payload["experiment_id"]
     tiles = client.get("/api/real/tile").get_json()["tiles"]
     assert [row["id"] for row in tiles] == [payload["id"]]
-    assert tiles[0]["models"]["mean"]["state"] == "current"
+    assert tiles[0]["models"]["production"]["state"] == "current"
     deleted = client.post(f"/api/real/tile/{payload['id']}/delete-outputs").get_json()
     assert deleted["ok"] and deleted["removed_count"] > 0
     assert client.get("/api/real/tile").get_json()["tiles"][0]["models"] == {}
@@ -331,7 +342,7 @@ def test_legacy_sr_wcs_comes_from_the_lr_grid_not_the_old_file(client, world):
     real_tiles.invalidate()
     card = client.get("/api/real/nexus/f200w-0001").get_json()
     assert card["production_state"] == "stale"            # an older production SR
-    assert card["models"]["rbf"]["legacy"] and card["models"]["rbf"]["state"] == "unavailable"
+    assert "rbf" not in card["models"]                     # not a model the panel lists
     sr = client.get("/api/real/nexus/f200w-0001/image.fits?tier=m:rbf&band=VIS")
     assert sr.status_code == 200, sr.get_json()
     _sr_matches_lr_grid(lr_header, fits.getheader(io.BytesIO(sr.data)))
@@ -348,8 +359,8 @@ def test_pair_inference_outputs_are_served_and_tracked(client, world):
     card = client.get(f"/api/real/pair/{pair}").get_json()
     assert card["production_state"] == "current"
     assert card["legacy"]["spec"] == "production" and card["legacy"]["identity"]
-    assert {spec: m["state"] for spec, m in card["models"].items()} == {
-        "production": "current", "mean": "current"}
+    # the mean's output stays served by its tier, but the card lists the panel's models
+    assert {spec: m["state"] for spec, m in card["models"].items()} == {"production": "current"}
     image = client.get(f"/api/real/pair/{pair}/image.fits?tier=m:mean&band=VIS")
     assert image.status_code == 200
     with fits.open(io.BytesIO(image.data)) as hdul:
@@ -446,6 +457,7 @@ UNIVERSAL = "211·psnr"
 @pytest.fixture
 def universe(tmp_path, monkeypatch):
     store = fx.point_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(model_catalog, "PANEL_FIRST_MODEL", 0)     # 211 predates the panel's 257
     regime = fx.stub_regime(tmp_path, monkeypatch, universal=(UNIVERSAL,))
     fx.make_nexus_field(n_tiles=2)
     runner = fx.StubRunner()
@@ -463,10 +475,9 @@ def universal_client(universe):
 
 def test_models_payload_lists_universal_models_last(universal_client):
     payload = universal_client.get("/api/models").get_json()
-    assert payload["members"] == fx.LABELS                  # never an ensemble member
+    assert "members" not in payload
     rows = payload["models"]
-    assert [row["spec"] for row in rows[:3]] == ["production", "mean", "rbf"]
-    assert [row["kind"] for row in rows][-1] == "universal"
+    assert [row["spec"] for row in rows] == ["production", "universal:member_211"]
     row = rows[-1]
     assert row["spec"] == "universal:member_211" and row["label"] == "Universal 211"
     assert row["slug"] == "universal-member_211" and row["available"]
@@ -474,8 +485,7 @@ def test_models_payload_lists_universal_models_last(universal_client):
     assert row["details"]["class"] == "universal" and row["details"]["knee"] == "learned"
     assert row["details"]["num_res_blocks"] == 16 and row["details"]["steps"] == 2000
     assert row["details"]["train_hours"] == pytest.approx(2.0)
-    mean = next(item for item in rows if item["spec"] == "mean")
-    assert UNIVERSAL not in mean["members"]
+    assert UNIVERSAL not in model_catalog.resolve_spec("mean").member_labels   # never a member
 
 
 def test_a_universal_model_runs_on_real_tiles_and_is_served(universal_client, universe):
@@ -519,13 +529,22 @@ def test_pair_inference_with_a_universal_model(universal_client, universe):
     assert row["state"] == "current" and row["kind"] == "universal"
 
 
-def test_real_default_tier_order():
-    outputs = [{"universal:member_211": {}, "gate:two": {}, "member:member_3": {},
-                "mean": {}}, {"production": {}, "member:member_1": {}, "rbf": {},
-                              "universal:member_206": {}}]
+def test_real_default_tier_order(monkeypatch):
+    """Default tiers: production, then the universal models and milestones
+    the panel lists (natural order); members, gates, mean and RBF only on
+    ``?models=``."""
+    outputs = [{"universal:member_258": {}, "gate:two": {}, "member:member_3": {},
+                "mean": {}, "milestone:member_257@1000000": {}, "universal:member_211": {}},
+               {"production": {}, "member:member_1": {}, "rbf": {}, "universal:member_257": {},
+                "milestone:member_257@200000": {}, "milestone:member_227@15000000": {}}]
     assert vd._real_default_specs(outputs) == [
-        "production", "mean", "rbf", "member:member_1", "member:member_3", "gate:two",
-        "universal:member_206", "universal:member_211"]
+        "production", "universal:member_257", "universal:member_258",
+        "milestone:member_257@200000", "milestone:member_257@1000000"]
+    monkeypatch.setattr(model_catalog, "PANEL_FIRST_MODEL", 0)
+    assert vd._real_default_specs(outputs) == [
+        "production", "universal:member_211", "universal:member_257", "universal:member_258",
+        "milestone:member_227@15000000", "milestone:member_257@200000",
+        "milestone:member_257@1000000"]
 
 
 def test_real_tier_label_names_members_and_universal_models_without_the_catalogue():

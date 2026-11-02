@@ -1,65 +1,31 @@
-"""Ensemble routes: member status, the joined members table and one member's
-detail, training curves, the combiner variant registry (fit a named variant,
-compare, promote), evaluation, PSNR vs knee, archive / restore, the FASRC
-pull, the universal models (comparison payload, score, pull) and the
+"""Ensemble routes: the registry's members and one model's detail, the
+training jobs and curves, the production switch, archive / restore, the
+universal models (payload, milestones, spectra, score, pull) and the
 train-command preview. Every ``/ensemble/*`` route defaults ``mode`` to
 STARFULL; errors under ``/ensemble/`` are JSON ``{error}``.
 """
 
 from __future__ import annotations
 
-import json
-import os
-
-from flask import abort, jsonify, request, send_file
+from flask import jsonify, request
 
 from euclid_polish import ensemble_registry
-from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import member_name
-from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS
-from euclid_polish.eval.spatial_gate import MIX_SPACES
-from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
 from euclid_polish.web import errors
 from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.fasrc_pipeline import TaskParamError
 from euclid_polish.web.helpers import milestones
 from euclid_polish.web.helpers.ensemble_viz import (
-    EVAL_EXTRA_BANDS,
-    _evals_payload_path,
-    check_new_variant_name,
-    combiner_variants,
-    compare_reports,
-    compute_band_evaluation_payloads,
-    compute_evaluation_payload,
     ensemble_dir,
-    ensemble_overview,
-    ensemble_status,
     gate_and_cube_member_names,
-    gate_archives,
-    job_archive_gates,
     job_archive_member,
-    job_combiner_compare,
-    job_combiner_promote,
-    job_ensemble_evaluate,
-    job_ensemble_pull,
-    job_gate_variant_fit,
-    job_knee_psnr,
-    job_member_psnr,
-    job_restore_gates,
     job_restore_member,
-    knee_psnr_status,
     ledger_universal_names,
     member_detail,
     members_payload,
-    pixel_trace,
-    read_band_evals,
-    read_compare_report,
-    refresh_evaluation_diagnostics,
     train_command_preview,
     training_curves_payload,
     training_jobs,
-    unregistered_universal_names,
-    variant_dir,
 )
 from euclid_polish.web.helpers.remote_curves import remote_training_curves
 from euclid_polish.web.helpers.universal_models import (
@@ -70,11 +36,6 @@ from euclid_polish.web.helpers.universal_models import (
 )
 from euclid_polish.web.helpers.universal_spectra import spectra_map_payload, spectra_payload
 from euclid_polish.web.jobs import REGISTRY
-from euclid_polish.web.security import (
-    fresh_requested,
-    is_same_origin_request,
-    refuse_cross_site_cache_fill,
-)
 
 
 def _mode_starless(default: str = "starfull") -> bool:
@@ -130,21 +91,6 @@ def _form_list(name: str) -> list[str]:
 def register(app):
     errors.json_errors_for(app, "/ensemble/")
 
-    @app.route("/ensemble/status.json")
-    def ensemble_status_json():
-        """The full ensemble status (members, archived, eval summary, data
-        presence) — the removed classic page's render context, as JSON. The
-        React console's Home reads it only as a fallback for a server without
-        ``/api/system/production``. ``?mode=`` selects which regime's eval
-        summary + staleness to report (default starfull)."""
-        return jsonify(ensemble_status(_mode_starless()))
-
-    @app.route("/ensemble/overview.json")
-    def ensemble_overview_json():
-        """Models › Leaderboard: headline numbers with their definitions and
-        the staleness checks of its status line."""
-        return jsonify(ensemble_overview(_mode_starless()))
-
     @app.route("/ensemble/members.json")
     def ensemble_members_json():
         """Members tab: one joined row per active member of the regime."""
@@ -167,217 +113,24 @@ def register(app):
         Models › Train's presets, "Repeat last batch" and "Clone a past job"."""
         return jsonify({"jobs": training_jobs()})
 
-    @app.route("/ensemble/evaluate", methods=["POST"])
-    def ensemble_evaluate():
-        try:
-            num_images = max(1, int(request.form.get("num_images", 100) or 100))
-        except (TypeError, ValueError):
-            num_images = 100
-        # Star regime: starfull (reconstruct stars, hr target — the default)
-        # vs starless (erase them, clean target; opt-in).
-        starless = _mode_starless()
-        force = _form_bool("force")
-        try:
-            target_fwhm = validate_target_fwhm_arcsec(
-                float(request.form.get("target_psf_fwhm_arcsec",
-                                       Config.TARGET_PSF_FWHM_ARCSEC)))
-        except (TypeError, ValueError):
-            abort(400, description="invalid target_psf_fwhm_arcsec")
-        regime = "starless" if starless else "starfull"
-        job_id = REGISTRY.spawn(
-            f"ensemble: evaluate {regime} on {num_images} test fields"
-            + (" (forced re-inference)" if force else ""),
-            target=lambda cap: job_ensemble_evaluate(
-                cap, num_images=num_images, starless=starless, force=force,
-                target_fwhm_arcsec=target_fwhm),
-        )
-        return jsonify({"job_id": job_id})
-
-    # ---- combiner variants: registry, compare, fit, promote -------------- #
-
-    @app.route("/ensemble/combiners.json")
-    def ensemble_combiners_json():
-        """The combiner variant registry of a regime + the saved compare reports."""
-        starless = _mode_starless()
-        return jsonify({**combiner_variants(starless), "reports": compare_reports(starless)})
-
-    @app.route("/ensemble/combiners/compare.json")
-    def ensemble_compare_report_json():
-        """One saved compare report (``?report=<id>``; default the latest)."""
-        try:
-            report = read_compare_report(_mode_starless(), request.args.get("report"))
-        except ValueError as exc:
-            return _bad(str(exc))
-        if report is None:
-            return _bad("no compare report yet — run a compare", 404)
-        return jsonify(report)
-
-    @app.route("/ensemble/combiners/compare", methods=["POST"])
-    def ensemble_combiners_compare():
-        """Score gate variants on the test cubes + blackout copies (local job)."""
-        starless = _mode_starless()
-        gates = _form_list("gates")
-        try:
-            for gate in gates:
-                variant_dir(starless, gate)
-            blackout_fields = _form_number("blackout_fields", 40, int, lo=0, hi=400)
-            seed = _form_number("seed", 0, int, lo=0, hi=2**31 - 1)
-        except ValueError as exc:
-            return _bad(str(exc))
-        # The RBF combiner is legacy and never scored (the "include the RBF"
-        # option is gone with it).
-        knee = _form_bool("knee", True)
-        regime = "starless" if starless else "starfull"
-        what = ", ".join(gates) if gates else "every applicable gate"
-        job_id = REGISTRY.spawn(
-            f"combiner: compare {regime} ({what})",
-            target=lambda cap: job_combiner_compare(
-                cap, starless=starless, gates=gates or None,
-                blackout_fields=blackout_fields, seed=seed,
-                include_rbf=False, knee=knee),
-            kind="ensemble-compare")
-        return jsonify({"ok": True, "job_id": job_id})
-
-    @app.route("/ensemble/combiners/fit", methods=["POST"])
-    def ensemble_combiners_fit():
-        """Fit a NAMED spatial-gate variant (never production; local job)."""
-        starless = _mode_starless()
-        out_name = (request.form.get("out_name") or "").strip()
-        if out_name and not out_name.startswith("spatial_gate_"):
-            out_name = f"spatial_gate_{out_name}"
-        try:
-            overwrite = _form_bool("overwrite")
-            check_new_variant_name(starless, out_name, overwrite=overwrite)
-            mix = (request.form.get("mix_space") or "linear").strip()
-            if mix not in MIX_SPACES:
-                raise ValueError(f"mix_space must be one of {', '.join(MIX_SPACES)}")
-            loss_knees = (request.form.get("loss_knees") or "all").strip()
-            knobs = {
-                "width": _form_number("width", 32, int, lo=4, hi=256),
-                "steps": _form_number("steps", 2000, int, lo=1, hi=200_000),
-                "batch_size": _form_number("batch_size", 8, int, lo=1, hi=64),
-                "crop": _form_number("crop", 192, int, lo=32, hi=1024),
-                "learning_rate": _form_number("learning_rate", 2e-3, float, lo=1e-7, hi=1.0),
-                "eval_every": _form_number("eval_every", 250, int, lo=1, hi=100_000),
-                "holdout": _form_number("holdout", 15, int, lo=1, hi=1000),
-                "blackout_fields": _form_number("blackout_fields", 40, int, lo=0, hi=400),
-                "seed": _form_number("seed", 0, int, lo=0, hi=2**31 - 1),
-                "num_images": _form_number("num_images", 100, int, lo=2, hi=2000),
-            }
-            target_fwhm = validate_target_fwhm_arcsec(
-                _form_number("target_psf_fwhm_arcsec", Config.TARGET_PSF_FWHM_ARCSEC, float))
-            members = _form_list("members")
-            for token in members:
-                member_name(token)
-        except ValueError as exc:
-            return _bad(str(exc))
-        use_lr = _form_bool("use_lr")
-        compare_after = _form_bool("compare_after", True)
-        regime = "starless" if starless else "starfull"
-        job_id = REGISTRY.spawn(
-            f"combiner: fit gate variant {out_name} ({regime}, {knobs['steps']} steps)",
-            target=lambda cap: job_gate_variant_fit(
-                cap, starless=starless, out_name=out_name, use_lr=use_lr,
-                members=members or None, loss_knees=loss_knees, mix_space=mix,
-                target_fwhm_arcsec=target_fwhm, overwrite=overwrite,
-                compare_after=compare_after, **knobs),
-            kind="gate-fit")
-        return jsonify({"ok": True, "job_id": job_id, "variant": out_name})
-
-    @app.route("/ensemble/combiners/promote", methods=["POST"])
-    def ensemble_combiners_promote():
-        """Promote a variant to production (backs the current one up; job)."""
-        starless = _mode_starless()
-        variant = (request.form.get("variant") or "").strip()
-        try:
-            name = os.path.basename(variant_dir(starless, variant))
-        except ValueError as exc:
-            return _bad(str(exc))
-        force = _form_bool("force")
-        regime = "starless" if starless else "starfull"
-        job_id = REGISTRY.spawn(
-            f"combiner: promote {name} to production ({regime})",
-            target=lambda cap: job_combiner_promote(
-                cap, starless=starless, variant=name, force=force),
-            kind="gate-promote")
-        return jsonify({"ok": True, "job_id": job_id})
-
-    @app.route("/ensemble/combiners/archive", methods=["POST"])
-    def ensemble_combiners_archive():
-        """Archive every STARFULL spatial gate (production gate, variants,
-        backups, compare reports, payloads) into one tracking zip (job).
-        Refused while production is still the gate."""
-        if ensemble_registry.production_name(ensemble_dir()) is None:
-            return _bad("production is still the spatial gate — make a universal model "
-                        "production first (POST /ensemble/production)")
-        job, started = REGISTRY.spawn_exclusive(
-            "combiner: archive every spatial gate (starfull)", job_archive_gates,
-            kind="gates-archive")
-        return jsonify({"ok": True, "job_id": job.job_id, "already_running": not started})
-
-    @app.route("/ensemble/combiners/restore", methods=["POST"])
-    def ensemble_combiners_restore():
-        """Unzip a gate archive (``archive``: its zip name, default the
-        newest) back into the STARFULL regime dir (job)."""
-        archive = (request.form.get("archive") or "").strip() or None
-        names = [a["name"] for a in gate_archives()]
-        if not names:
-            return _bad("no gate archive found")
-        if archive is not None and archive not in names:
-            return _bad(f"unknown gate archive {archive!r}")
-        job, started = REGISTRY.spawn_exclusive(
-            f"combiner: restore spatial gates from {archive or names[0]}",
-            lambda cap: job_restore_gates(cap, archive=archive), kind="gates-restore")
-        return jsonify({"ok": True, "job_id": job.job_id, "already_running": not started})
-
     @app.route("/ensemble/production", methods=["POST"])
     def ensemble_production():
         """Make a registered universal model production (``model``: any
-        ``universal:member_NNN`` / ``member_NNN`` / ``NNN`` spelling), or the
-        production gate again (``model=gate``). Instant (no job)."""
+        ``universal:member_NNN`` / ``member_NNN`` / ``NNN`` spelling). Instant
+        (no job)."""
         raw = (request.form.get("model") or "").strip()
         if not raw:
-            return _bad("name the model (model=universal:member_NNN, or gate)")
+            return _bad("name the model (model=universal:member_NNN)")
         base = ensemble_dir()
         try:
-            if raw.lower() == "gate":
-                ensemble_registry.set_production(base, None)
-            else:
-                ensemble_registry.set_production(
-                    base, member_name(raw.removeprefix("universal:")))
+            ensemble_registry.set_production(base, member_name(raw.removeprefix("universal:")))
         except ValueError as exc:
             return _bad(str(exc))
         name = ensemble_registry.production_name(base)
         return jsonify({"ok": True, "production": name,
                         "spec": f"universal:{name}" if name else "production"})
 
-    # ---- knee, member PSNR, curves, diagnostics --------------------------- #
-
-    @app.route("/ensemble/knee-psnr.json")
-    def ensemble_knee_psnr_json():
-        """PSNR-vs-knee curves + integrated PSNR for every model of a regime
-        (``?mode=``), flagged ``stale`` when the cubes or combiners changed."""
-        return jsonify(knee_psnr_status(_mode_starless()))
-
-    @app.route("/ensemble/knee-psnr", methods=["POST"])
-    def ensemble_knee_psnr_compute():
-        starless = _mode_starless()
-        regime = "starless" if starless else "starfull"
-        job_id = REGISTRY.spawn(
-            f"ensemble: PSNR vs knee ({regime})",
-            target=lambda cap: job_knee_psnr(cap, starless=starless),
-        )
-        return jsonify({"job_id": job_id})
-
-    @app.route("/ensemble/member-psnr", methods=["POST"])
-    def ensemble_member_psnr():
-        """Refresh the members table's test PSNRs (asinh space). Fingerprint-
-        cached per checkpoint — only changed/unscored members are evaluated."""
-        job_id = REGISTRY.spawn(
-            "ensemble: member test PSNR (changed members only)",
-            target=job_member_psnr,
-        )
-        return jsonify({"job_id": job_id})
+    # ---- training curves -------------------------------------------------- #
 
     @app.route("/ensemble/training-curves.json")
     def ensemble_training_curves_json():
@@ -398,107 +151,7 @@ def register(app):
             universal_names=ledger_universal_names(base=base))
         return jsonify({"members": training_curves_payload() + remote})
 
-    @app.route("/ensemble/evals.json")
-    def ensemble_evals_json():
-        """Models › Diagnostics' dataset: power-spectrum curves, diagnostic
-        histograms, calibration stats and per-member loss/depth meta. The
-        FRONTEND renders all figures from this JSON, so styling (member-line
-        coloring, tab switches) never recomputes anything. ``?fresh=1``
-        recomputes the payload from the cached cubes (one sweep, seconds) —
-        for a same-origin request only. A cross-site request gets the cached
-        payload as it is (no diagnostics upgrade), or 404 when none exists.
-        ``?band=Y_E|J_E|H_E`` serves that band's cached payload (same schema,
-        plus ``stale``: computed for an earlier evaluation) — cache only, 404
-        until ``POST /ensemble/evals/bands`` or an Evaluate has computed it."""
-        starless = _mode_starless()
-        band = (request.args.get("band") or "VIS").strip()
-        if band != "VIS":
-            if band not in EVAL_EXTRA_BANDS:
-                abort(400, description=f"band must be VIS or one of {', '.join(EVAL_EXTRA_BANDS)}")
-            payload = read_band_evals(starless, band)
-            if payload is None:
-                abort(404, description=f"the {band} diagnostics are not computed yet — "
-                                       "compute them from the cached cubes (a local job)")
-            return jsonify(payload)
-        path = _evals_payload_path(starless)
-        refuse_cross_site_cache_fill(path)
-        if not is_same_origin_request():
-            return send_file(path, mimetype="application/json", max_age=0)
-        fresh = fresh_requested()          # same-origin only (a GET recomputes)
-        needs_diagnostics = False
-        if os.path.isfile(path) and not fresh:
-            # Older payloads predate one or more cache-derived diagnostics.
-            # Rebuild once from existing cubes, with no model inference or
-            # recaching; this also refreshes the per-model trace sidecar.
-            try:
-                with open(path) as f:
-                    cached = json.load(f)
-                    fresh = "coherence" not in cached
-                    std_err = cached.get("std_err") or {}
-                    needs_diagnostics = not std_err.get("adaptive_range", False)
-            except (OSError, ValueError):
-                fresh = True
-        if (needs_diagnostics
-                and refresh_evaluation_diagnostics(starless) is None):
-            fresh = True
-        if ((fresh or not os.path.isfile(path))
-                and compute_evaluation_payload(starless) is None
-                and not os.path.isfile(path)):
-            abort(404, description="no evaluation cached for this regime — "
-                                   "evaluate the ensemble first")
-        return send_file(path, mimetype="application/json", max_age=0)
-
-    @app.route("/ensemble/evals/bands", methods=["POST"])
-    def ensemble_evals_bands():
-        """Compute the Y, J and H evaluation diagnostics from the cached test
-        cubes (a local job, ``kind="ensemble-band-evals"``; no model
-        inference; a running one's id is returned with ``already_running``).
-        400 without a cached evaluation of this regime."""
-        starless = _mode_starless()
-        if not os.path.isfile(_evals_payload_path(starless)):
-            return _bad("no evaluation cached for this regime — evaluate the ensemble first")
-        regime = "starless" if starless else "starfull"
-
-        def target(cap):
-            out = compute_band_evaluation_payloads(starless, progress=cap.tick)
-            if out is None:
-                raise RuntimeError("no cached test cubes for this regime — evaluate the ensemble first")
-            return {"regime": regime, "bands": sorted(out)}
-
-        job, started = REGISTRY.spawn_exclusive(
-            f"ensemble: Y, J, H diagnostics ({regime}, cached cubes)",
-            target, kind="ensemble-band-evals")
-        return jsonify({"ok": True, "job_id": job.job_id, "already_running": not started})
-
-    @app.route("/ensemble/pixel-trace.json")
-    def ensemble_pixel_trace():
-        """Back-trace a diagnostic heatmap cell to real image stamps.
-
-        ``?mode=&diag=std_err|bright_std&model=&i=&j=``
-        → up to a handful of
-        VIS zoom stamps (HR / ensemble-mean SR / cross-member std, electrons) of
-        the actual pixels that fell into the clicked cell, each with the exact
-        per-pixel σ / |error| / brightness so the user can see WHY it landed
-        there. Empty ``stamps`` when nothing was sampled for that cell."""
-        starless = _mode_starless()
-        diag = (request.args.get("diag") or "").strip()
-        if diag not in ("std_err", "bright_std"):
-            abort(404)
-        model_kind = (request.args.get("model") or "").strip()
-        if model_kind and model_kind not in ("ensemble_mean", *ACTIVE_COMBINER_KINDS):
-            abort(400)
-        try:
-            i = int(request.args.get("i", ""))
-            j = int(request.args.get("j", ""))
-        except (TypeError, ValueError):
-            abort(400)
-        band = (request.args.get("band") or "VIS").strip()
-        if band != "VIS" and band not in EVAL_EXTRA_BANDS:
-            abort(400)
-        return jsonify(pixel_trace(starless, diag, i, j,
-                                   model_kind=model_kind or None, band=band))
-
-    # ---- members: archive, restore, pull, train preview ------------------- #
+    # ---- archive, restore, train preview ------------------------------------ #
 
     @app.route("/ensemble/archive-member", methods=["POST"])
     def ensemble_archive_member():
@@ -535,46 +188,14 @@ def register(app):
             kind="member-restore")
         return jsonify({"ok": True, "job_id": job_id})
 
-    @app.route("/ensemble/pull", methods=["POST"])
-    @requires_fasrc
-    def ensemble_pull():
-        """Download changed members from FASRC (local job). ``members`` limits
-        it to those members; ``dry_run=1`` only probes what changed. Named
-        universal models the registry does not know are left out (pull them
-        on Models › Universal) unless ``allow_universal=1``; a list of only
-        such names is a 400."""
-        try:
-            members = list(dict.fromkeys(member_name(token) for token in _form_list("members")))
-        except ValueError as exc:
-            return _bad(str(exc))
-        dry_run = _form_bool("dry_run")
-        allow_universal = _form_bool("allow_universal")
-        if members and not dry_run and not allow_universal:
-            universal = set(unregistered_universal_names(ensemble_dir()))
-            if all(name in universal for name in members):
-                return _bad(f"{', '.join(members)} "
-                            f"{'is a universal model' if len(members) == 1 else 'are universal models'}"
-                            " — pull it on Models › Universal (or send allow_universal=1 to "
-                            "make it an ensemble member)")
-        label = ("ensemble: check FASRC for changed members" if dry_run
-                 else f"ensemble: download {', '.join(members)} from FASRC" if members
-                 else "ensemble: download from FASRC")
-        job_id = REGISTRY.spawn(
-            label,
-            target=lambda cap: job_ensemble_pull(
-                cap, members=members or None, dry_run=dry_run,
-                allow_universal=allow_universal),
-        )
-        return jsonify({"job_id": job_id})
-
     # ---- universal models ------------------------------------------------ #
 
     @app.route("/ensemble/universal.json")
     def ensemble_universal_json():
-        """Models › Universal: every universal model (single-image multi-knee)
-        with its recipe, training time, hardware and test score, every gate
-        with its score and share-weighted training time, and the universal
-        models still only on FASRC (from the local job log). Local files only."""
+        """Models › Universal: every universal model the panel lists
+        (single-image multi-knee) with its recipe, training time, hardware and
+        test score, production's own score, and the universal models still
+        only on FASRC (from the local job log). Local files only."""
         return jsonify(universal_payload(_mode_starless()))
 
     @app.route("/ensemble/universal/milestones.json")
@@ -608,13 +229,11 @@ def register(app):
 
     @app.route("/ensemble/universal/score", methods=["POST"])
     def ensemble_universal_score():
-        """Measure missing gate-variant weights (validate cubes only — first,
-        even with nothing to score or no local test records), then score the
-        universal models (``members``: comma list, default every local one;
-        ``force=1`` rescores current entries; ``spectra=1`` also re-runs the
-        models whose spectra are missing or stale) on the Leaderboard's test
-        fields (local job, one at a time). Every model scored gets its
-        spectra."""
+        """Score the universal models (``members``: comma list, default every
+        one the panel lists; ``force=1`` rescores current entries;
+        ``spectra=1`` also re-runs the models whose spectra are missing or
+        stale) on the test fields (local job, one at a time). Every model
+        scored gets its spectra."""
         try:
             members = [member_name(token) for token in _form_list("members")]
         except ValueError as exc:

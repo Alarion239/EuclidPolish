@@ -1,17 +1,10 @@
-/* Inspector kind `member` (`member:member_196`, also `196` / `196·psnr`):
-   one ensemble member — status and recipe (origin.json), its training curves
-   (per-band PSNR, loss, gradient norm, step time), its PSNR-vs-knee curve
-   against the plain mean and the production gate, and how much weight the
-   production gate gives it (overall and by brightness). Active and archived
-   members (restore from the archive zip, worded by the tombstone's class: an
-   archived universal model comes back standalone), and the registered
-   universal models (standalone, not ensemble members: their recipe and
-   curves, Models › Universal, Sky › Compare and Archive; "vs plain mean"
-   only when their score is current and on the knee payload's fields, a
-   stale ∫PSNR marked). While a universal model is production (the
-   catalogue's `production`, GET /api/models) it is badged and cannot be
-   archived, and the gate is the former production gate.
-   GET /ensemble/member/<name>.json. */
+/* Inspector kind `member` (`member:member_257`, also `257` / `257·psnr`):
+   one universal model — status and recipe (origin.json), its training
+   curves (per-band PSNR, loss, gradient norm, step time), Models ›
+   Universal, Sky › Compare and Archive (a stale ∫PSNR marked); an archived
+   one restores from its zip as a universal model. The production model
+   (the catalogue's `production`, GET /api/models) is badged and cannot be
+   archived. GET /ensemble/member/<name>.json. */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Plot, { type Series } from "../../charts/Plot";
@@ -21,13 +14,12 @@ import { useResource } from "../../api/query";
 import { openInspector, type InspectorProps } from "../../app/inspector";
 import { pagePath } from "../../app/nav";
 import { formatDateTime, formatDuration, formatRelative } from "../../format";
-import { logTicks } from "../../ticks";
 import {
   Badge, Button, DefList, EmptyState, JobProgress, JsonTree, Section, Segmented, Skeleton, confirm,
 } from "../../ui";
-import { BAND_SHORT, BANDS, url, useModelCatalog, type CatalogProduction, type MemberDetail } from "./api";
+import { BAND_SHORT, BANDS, url, useModelCatalog, type MemberDetail } from "./api";
 import { JOB, useOnJobEnd } from "./jobs";
-import { db, dbDelta, inspectorVsMean, kneeText, memberName, memberNumber, relativeTo, restoreText, stepsText, xy } from "./model";
+import { db, kneeText, memberName, memberNumber, restoreText, stepsText, xy } from "./model";
 import { compareHref } from "./universal";
 import "./models.css";
 
@@ -73,68 +65,12 @@ function CurvesPlot({ d }: { d: MemberDetail }) {
   );
 }
 
-/** `gate`: the gate's curve in words ("production gate", or the former one
- *  while a universal model is production). */
-function KneePlot({ d, gate }: { d: MemberDetail; gate: string }) {
-  const [band, setBand] = useState(0);
-  const k = d.knee;
-  const me = k?.models.find((m) => m.kind === "member" && m.label === d.label);
-  if (!k || !me) return <EmptyState compact icon="activity" title="No PSNR-vs-knee curve" />;
-  const mean = k.models.find((m) => m.kind === "mean");
-  const gateModel = k.models.find((m) => m.id === "spatial_gate");
-  const rel = (p: number[][]) => relativeTo(p, mean?.psnr).map((r) => r[band]);
-  const series: Series[] = [
-    { x: k.knees, y: rel(me.psnr), color: categorical(0), width: 2.4, dots: true, name: `#${memberNumber(d.name)}` },
-    ...(gateModel ? [{ x: k.knees, y: rel(gateModel.psnr), color: C.comb, width: 2, name: gate }] : []),
-    { x: k.knees, y: k.knees.map(() => 0), color: C.mean, width: 1.2, dash: [4, 3], name: "plain mean" },
-  ];
-  const ys = series.flatMap((s) => s.y.filter((v): v is number => v != null && Number.isFinite(v)));
-  const lo = Math.min(...ys, 0), hi = Math.max(...ys, 0);
-  const pad = (hi - lo) * 0.1 || 0.3;
-  return (
-    <div className="mdl-stack" style={{ gap: "var(--s2)" }}>
-      <Segmented size="sm" aria-label="Band" value={String(band)} onChange={(v) => setBand(Number(v))}
-        options={k.bands.map((b, i) => ({ value: String(i), label: BAND_SHORT[b] ?? b }))} />
-      <Plot xScale="log" xDomain={[k.knees[0], k.knees[k.knees.length - 1]]} xTicks={logTicks([k.knees[0], k.knees[k.knees.length - 1]])}
-        yDomain={[lo - pad, hi + pad]} series={series} xLabel="scoring knee [e⁻]" yLabel="PSNR − mean [dB]"
-        aspect={0.62} legend="auto" exportName={`${d.name}-knee`} aria-label={`${d.name} PSNR vs knee`} />
-      {k.stale && <Badge tone="warn">knee curves stale</Badge>}
-    </div>
-  );
-}
-
-/** `production`: a universal model that is production (then no gate runs in production). */
-function GatePlot({ d, production }: { d: MemberDetail; production: CatalogProduction | null }) {
-  const g = d.gate;
-  if (!g) {
-    return <EmptyState compact icon="layers" title={production ? `No gate weight: production is ${production.label}` : "Not read by the production gate"} />;
-  }
-  const names = g.brightness_names;
-  const series: Series[] = [
-    ...g.bands.map((b) => ({ x: names.map((_, i) => i), y: (g.by_brightness[b] ?? []).map((v) => v ?? null), color: bandColor(b),
-      width: 1.8, dots: true, name: BAND_SHORT[b] ?? b })),
-    { x: [0, names.length - 1], y: [g.uniform, g.uniform], color: C.guide, dash: [4, 3], width: 1.2, name: "uniform share" },
-  ];
-  const ys = series.flatMap((s) => s.y.filter((v): v is number => v != null && Number.isFinite(v)));
-  return (
-    <div className="mdl-stack" style={{ gap: "var(--s2)" }}>
-      <DefList dense items={g.bands.map((b) => [`${BAND_SHORT[b] ?? b} weight`,
-        `${g.usage[b] != null ? (100 * (g.usage[b] as number)).toFixed(2) : "—"}% · sources ${g.usage_source[b] != null ? (100 * (g.usage_source[b] as number)).toFixed(2) : "—"}%`])} />
-      <Plot xDomain={[-0.3, names.length - 0.7]} yDomain={[0, Math.max(g.uniform * 1.5, ...ys) * 1.1]}
-        xTicks={names.map((n, i) => ({ v: i, label: n }))} series={series} xLabel="member-mean brightness" yLabel="mean gate weight"
-        aspect={0.6} legend="auto" zoom={false} exportName={`${d.name}-gate`} aria-label={`${d.name} gate weight by brightness`} />
-      {g.stale && <Badge tone="warn">from a stale gate</Badge>}
-    </div>
-  );
-}
-
 export default function MemberInspector({ id }: InspectorProps) {
   const name = memberName(id) ?? id;
   const res = useResource<MemberDetail>(url.member(name), [name], { ttl: 30_000 });
   const navigate = useNavigate();
   const restore = useJob(JOB.restore);
   const archive = useJob(JOB.archive);
-  // A universal model that is production (the gate is then the former production gate).
   const catalog = useModelCatalog();
   const production = catalog.data?.production?.kind === "universal" ? catalog.data.production : null;
   useOnJobEnd(restore.job, () => void res.reload());
@@ -149,11 +85,7 @@ export default function MemberInspector({ id }: InspectorProps) {
   const num = memberNumber(d.name);
   const tab = (t: string, q = "") => navigate(`${pagePath("models", { tab: t })}${q}`);
   const k = r ? kneeText(r) : null;
-  const vsMean = inspectorVsMean(d);
-  // A registered universal model: standalone, never an ensemble member (Models › Universal).
-  const universal = !d.active && (d.universal === true || (r?.class === "universal" && !d.archived));
-  // An archived one comes back as a universal model (its tombstone's class).
-  const archivedUniversal = !d.active && !universal && (d.archived?.class === "universal" || d.class === "universal");
+  const universal = !d.archived;
   const stale = universal && r?.score_stale === true;
   const isProduction = universal && production?.name === d.name;
   const doArchive = async () => {
@@ -167,23 +99,12 @@ export default function MemberInspector({ id }: InspectorProps) {
       <div className="mdl-insp__head">
         <span className="mdl-insp__title">#{num}</span>
         {isProduction && <Badge tone="accent">production</Badge>}
-        {universal ? <Badge tone="accent">universal</Badge>
-          : archivedUniversal ? <Badge tone="warn">universal · archived</Badge>
-            : !d.active && <Badge tone="warn">archived</Badge>}
+        {universal ? <Badge tone="accent">universal</Badge> : <Badge tone="warn">archived</Badge>}
         {r?.status === "timeout" && <Badge tone="warn">TIMEOUT</Badge>}
         {r?.status === "running" && <Badge tone="info" dot>training</Badge>}
         {r && <Badge>{r.loss.toUpperCase()}</Badge>}
         {k && <Badge tone={k.kind === "multi" ? "accent" : undefined}>{k.text}</Badge>}
       </div>
-      {d.active && (
-        <div className="mdl-row">
-          <Button size="sm" onClick={() => tab("train", `?mode=continue&members=${d.name}`)}>Continue</Button>
-          <Button size="sm" onClick={() => tab("train", `?mode=fork&member=${d.name}`)}>Fork</Button>
-          <Button size="sm" variant="ghost" onClick={() => tab("members", `?view=curves&sel=${num}`)}>Curves</Button>
-          <Button size="sm" variant="ghost" onClick={() => tab("images", `?sel=${num}`)}>Viewer</Button>
-          <Button size="sm" variant="danger" loading={archive.busy} onClick={doArchive}>Archive</Button>
-        </div>
-      )}
       {universal && (
         <div className="mdl-row">
           <Button size="sm" onClick={() => tab("universal")}>Universal</Button>
@@ -192,7 +113,7 @@ export default function MemberInspector({ id }: InspectorProps) {
             title={isProduction ? "The production model: make another model production first (Models › Universal)" : undefined}>Archive</Button>
         </div>
       )}
-      {!d.active && d.archived && (
+      {d.archived && (
         <div className="mdl-stack" style={{ gap: "var(--s2)" }}>
           <DefList dense items={[
             ["archived", d.archived.archived_at ? `${formatRelative(d.archived.archived_at)} · ${formatDateTime(d.archived.archived_at)}` : "—"],
@@ -200,7 +121,7 @@ export default function MemberInspector({ id }: InspectorProps) {
             ["zip", d.archived.zip_found ? `${d.archived.zip} (${d.archived.campaign})` : `${d.archived.zip ?? "—"} — not found`],
           ]} />
           <Button size="sm" disabled={!d.archived.zip_found} loading={restore.busy} onClick={async () => {
-            if (await confirm({ title: `Restore ${d.name}?`, message: restoreText(archivedUniversal ? { class: "universal" } : d.archived), confirmLabel: "Restore" })) {
+            if (await confirm({ title: `Restore ${d.name}?`, message: restoreText({ class: "universal" }), confirmLabel: "Restore" })) {
               await restore.run("/ensemble/restore-member", { member: d.name });
             }
           }}>Restore from zip</Button>
@@ -212,12 +133,9 @@ export default function MemberInspector({ id }: InspectorProps) {
         <DefList dense items={[
           ["steps", `${stepsText(r.step, r.target_steps)}${r.status === "timeout" ? " · stopped short" : ""}`],
           ["∫PSNR", r.knee_integrated ? <span key="k" className={stale ? "mdl-faint" : undefined}>
-            {`${db(r.knee_integrated.mean)} dB (rank ${r.knee_rank ?? "—"}) · ${BANDS.map((b) => `${BAND_SHORT[b]} ${db(r.knee_integrated?.[b])}`).join(" · ")}`}
+            {`${db(r.knee_integrated.mean)} dB · ${BANDS.map((b) => `${BAND_SHORT[b]} ${db(r.knee_integrated?.[b])}`).join(" · ")}`}
             {stale && <> <Badge tone="warn" size="sm">stale score</Badge></>}
           </span> : "—"],
-          ["test VIS", r.vis_psnr != null ? `${db(r.vis_psnr, 3)} dB · VIS asinh, last evaluation` : "—"],
-          ["test 4-band", r.psnr != null ? `${db(r.psnr, 3)} dB (rank ${r.psnr_rank ?? "—"}) · joint asinh, member-PSNR cache` : "—"],
-          ["coherence", r.coherence ? `all ${db(r.coherence.overall, 3)} · SR ${db(r.coherence.sr, 3)}` : "—"],
           ["knee", k ? k.title : "—"],
           ["depth", r.blocks != null ? `${r.blocks} blocks` : "—"],
           ["bootstrap · noise", `${r.bootstrap ?? "off"} · ${r.noise_aug ?? 0} RN`],
@@ -235,15 +153,6 @@ export default function MemberInspector({ id }: InspectorProps) {
         <Section title="Training curves"><CurvesPlot d={d} /></Section>
         {r?.origin && <Section title="origin.json" collapsible defaultOpen={false}><JsonTree data={r.origin} expandDepth={1} /></Section>}
       </>}
-      {d.active && <>
-        <Section title="Training curves"><CurvesPlot d={d} /></Section>
-        <Section title="PSNR vs knee"><KneePlot d={d} gate={production ? "former production gate" : "production gate"} /></Section>
-        <Section title={production ? "Former production-gate usage" : "Production-gate usage"}><GatePlot d={d} production={production} /></Section>
-        {r?.origin && <Section title="origin.json" collapsible defaultOpen={false}><JsonTree data={r.origin} expandDepth={1} /></Section>}
-      </>}
-      {vsMean != null && (
-        <span className="mdl-faint">vs plain mean: {dbDelta(vsMean)} dB knee-integrated</span>
-      )}
     </div>
   );
 }

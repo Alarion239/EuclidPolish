@@ -294,10 +294,15 @@ describe("Records", () => {
     await waitFor(() => expect([...lens.querySelectorAll("td")].map((c) => c.textContent).slice(1, 3)).toEqual(["2.77", "0.02"]));
   });
 
-  it("the record's SR is one click away, in Models › Images", async () => {
+  it("generates (or regenerates) the split's production SR from under the viewer, only after a confirm", async () => {
+    routes["POST /api/sky/generate-sr"] = () => ({ body: { ok: true, job_id: "sr1" } });
     show(<Records />);
-    const link = await screen.findByRole("link", { name: "Open its SR in Models › Images" });
-    await waitFor(() => expect(link.getAttribute("href")).toBe("/models/images?set=records&split=test&id=test%3A1"));
+    const button = await screen.findByRole("button", { name: /^(Generate|Regenerate) the test SR…$/ });
+    fireEvent.click(button);
+    const dlg = await screen.findByRole("alertdialog", { name: /Generate the production SR for test\?/ });
+    expect(posts.some((c) => c.url === "/api/sky/generate-sr")).toBe(false);
+    fireEvent.click(within(dlg).getByRole("button", { name: "Generate" }));
+    await waitFor(() => expect(posts.find((c) => c.url === "/api/sky/generate-sr")?.form).toEqual({ subsets: "test", overwrite: "1" }));
   });
 
   it("links back to System › Config when a scene or lens knob differs from its default", async () => {

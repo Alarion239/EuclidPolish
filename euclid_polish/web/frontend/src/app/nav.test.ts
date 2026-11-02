@@ -35,7 +35,7 @@ describe("paths", () => {
   it("lands on the default tab with default params", () => {
     expect(landingPath("home")).toBe("/");
     expect(landingPath("synthetic")).toBe("/synthetic/status");
-    expect(landingPath("models")).toBe("/models/leaderboard");
+    expect(landingPath("models")).toBe("/models/universal");
     expect(landingPath("sky")).toBe("/sky/atlas");
     expect(landingPath("figures")).toBe("/figures/plates");
     expect(landingPath("files")).toBe("/files");
@@ -45,9 +45,11 @@ describe("paths", () => {
   });
 
   it("builds tab paths", () => {
-    expect(pagePath("models", { tab: "combiner" })).toBe("/models/combiner");
+    expect(pagePath("models", { tab: "spectra" })).toBe("/models/spectra");
     // a workspace without path params ignores any (old links passed the regime)
-    expect(pagePath("models", { tab: "combiner", params: { mode: "starless" } })).toBe("/models/combiner");
+    expect(pagePath("models", { tab: "spectra", params: { mode: "starless" } })).toBe("/models/spectra");
+    // a removed tab is no page: the base
+    expect(pagePath("models", { tab: "combiner" })).toBe("/models");
     // an unknown tab falls back to the base
     expect(pagePath("sky", { tab: "nope" })).toBe("/sky");
   });
@@ -57,7 +59,7 @@ describe("paths", () => {
     expect(pages.length).toBeGreaterThan(30);
     for (const p of pages) expect(isPagePath(p.path), p.path).toBe(true);
     // one page per models tab (no star regime)
-    expect(pages.filter((p) => p.workspace === "models")).toHaveLength(9);
+    expect(pages.filter((p) => p.workspace === "models")).toHaveLength(4);
     expect(pages.find((p) => p.path === "/models/universal")?.label).toBe("Models › Universal");
     expect(pages.find((p) => p.path === "/models/knees")?.label).toBe("Models › Knees");
     expect(pages.find((p) => p.path === "/models/spectra")?.label).toBe("Models › Spectra");
@@ -74,11 +76,11 @@ describe("labels", () => {
   });
 
   it("describes a location and titles the document", () => {
-    const d = describePath("/models/members");
+    const d = describePath("/models/spectra");
     expect(d?.workspaceLabel).toBe("Models");
-    expect(d?.tabLabel).toBe("Members");
+    expect(d?.tabLabel).toBe("Spectra");
     expect(d?.paramLabels).toEqual([]);
-    expect(pageTitle("/models/members")).toBe("Members · Models · EuclidPolish");
+    expect(pageTitle("/models/spectra")).toBe("Spectra · Models · EuclidPolish");
     expect(pageTitle("/runs/history")).toBe("History · Runs · EuclidPolish");
     expect(pageTitle("/")).toBe("Home · EuclidPolish");
     expect(pageTitle("/sky")).toBe("Sky · EuclidPolish");
@@ -87,7 +89,7 @@ describe("labels", () => {
   });
 
   it("gives every page a heading: the tab, then where it lives", () => {
-    expect(pageHeading("/models/members")).toBe("Members, Models");
+    expect(pageHeading("/models/spectra")).toBe("Spectra, Models");
     expect(pageHeading("/synthetic/records")).toBe("Records, Synthetic");
     expect(pageHeading("/")).toBe("Home");
     expect(pageHeading("/files")).toBe("Files");

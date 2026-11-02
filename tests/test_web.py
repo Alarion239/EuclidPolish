@@ -68,14 +68,17 @@ def test_app_prefix_redirects_to_canonical_route(client):
 
 def test_ensemble_page_renders(client):
     _assert_react_shell(client.get("/models"))
-    _assert_react_shell(client.get("/models/combiner"))
+    _assert_react_shell(client.get("/models/universal"))
+    # the gate-era tabs (leaderboard, members, combiner, …) were removed
+    removed = client.get("/models/combiner")
+    assert removed.status_code == 308 and removed.headers["Location"] == "/models/universal"
     legacy = client.get("/ensemble")
     assert legacy.status_code == 308
-    assert legacy.headers["Location"] == "/models/leaderboard"
+    assert legacy.headers["Location"] == "/models/universal"
     # The star regime left the Models URLs (starfull only): old links keep working.
     regime = client.get("/models/starfull/combiner?inspect=member%3Amember_196")
     assert regime.status_code == 308
-    assert regime.headers["Location"] == "/models/combiner?inspect=member%3Amember_196"
+    assert regime.headers["Location"] == "/models/universal?inspect=member%3Amember_196"
     starless = client.get("/models/starless")
     assert starless.status_code == 308
     assert starless.headers["Location"] == "/models"
@@ -362,7 +365,7 @@ def test_training_redirects_to_models(client):
     training); the legacy URL moves permanently."""
     r = client.get("/training")
     assert r.status_code == 308
-    assert r.headers["Location"] == "/models/leaderboard"
+    assert r.headers["Location"] == "/models/universal"
 
 
 def test_inference_page_renders(client):
@@ -687,23 +690,6 @@ def test_tng_result_missing_returns_404(client, tmp_path, monkeypatch):
     _stub_fetch(monkeypatch, ok=False, local_path=None, error="not found")
     job = _wait_job(client.post("/api/tng/result/pull").get_json()["job_id"])
     assert job["status"] == "failed" and "not found" in job["error"]
-
-
-def test_post_inference_refresh_combiners_returns_job_id(client, monkeypatch):
-    """A fitted combiner can be reapplied without rerunning member networks."""
-    monkeypatch.setattr(
-        "euclid_polish.web.routes.model.latest_field",
-        lambda: {"field_id": "ra267p4_dec64p9"},
-    )
-    monkeypatch.setattr(
-        "euclid_polish.web.routes.model.refresh_real_field_combiners",
-        lambda *args, **kwargs: {},
-    )
-
-    response = client.post("/inference/refresh-combiners")
-
-    assert response.status_code == 200
-    assert "job_id" in response.get_json()
 
 
 # ---------------------------------------------------------------------------
@@ -1047,16 +1033,3 @@ def test_steps_status_omits_deleted_two_stage_chain_keys(client, monkeypatch):
         assert gone not in artifacts, (
             f"deleted artifact key '{gone}' is still in the probe map"
         )
-
-
-def test_inference_field_status_uses_real_field_manifest(client, tmp_path, monkeypatch):
-    inf = tmp_path / "euclid_inference"
-    field = inf / "real_fields" / "ra0267.42290_decp064.88730"
-    field.mkdir(parents=True)
-    (field / "manifest.json").write_text(
-        '{"field_id":"ra0267.42290_decp064.88730","ra":267.4229,"dec":64.8873,'
-        '"field_size":2560,"tile_size":256,"count":100,"member_labels":[],"combiner_kinds":[]}')
-    monkeypatch.setattr(Config, "EUCLID_INFERENCE_DIR", str(inf))
-    result = client.get("/api/inference/field.json").get_json()
-    assert result["field"]["field_id"] == "ra0267.42290_decp064.88730"
-    assert result["field"]["count"] == 100

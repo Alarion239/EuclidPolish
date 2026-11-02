@@ -142,12 +142,12 @@ def list_runs(limit: int = 200) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 
 def candidate_models() -> list[dict[str, Any]]:
-    """The catalogue's universal, member and milestone specs with their
-    knees: available when the catalogue runs them and they read several
-    knees (a milestone reads its member's knees)."""
+    """The panel's universal and milestone specs (model_catalog.panel_specs)
+    with their knees: available when the catalogue runs them and they read
+    several knees (a milestone reads its member's knees)."""
     base = ev.ensemble_dir()
     out = []
-    for item in model_catalog.list_specs():
+    for item in model_catalog.panel_specs():
         if item.kind not in _KINDS or len(item.reads) != 1:
             continue
         if item.kind == "milestone":

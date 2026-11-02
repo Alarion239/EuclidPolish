@@ -1,8 +1,8 @@
 """The Loop: one staleness verdict per stage of the loop run after every batch.
 
 Home's Loop strip and System › Lineage read the same verdicts from here
-(spec 2026-09-27, Home). Seven stages, in loop order — Priors, Records,
-Members, Evaluation, Gate, Real SR, Figures — each ``current | stale |
+(spec 2026-09-27, Home). Six stages, in loop order — Priors, Records,
+Models, Production, Real SR, Figures — each ``current | stale |
 blocked | unknown`` with ONE short reason (it fits a chip in two lines), a
 longer ``detail`` for the tooltip and ``to``, the tab whose confirmed button
 fixes it.
@@ -13,14 +13,14 @@ Risks), so each stage reads the existing read-only checks:
 * Priors, Records — :func:`realism_overview.overview_payload` (the Synthetic ›
   Status rows: the ``synthetic_generate`` gate, each ingredient's state and
   its "records built with this?" tick) and the ``records-noise`` alert;
-* Members — the STARFULL roster (:func:`ensemble_viz.members_payload`) and the
-  local ``ensemble_train`` job log (:func:`ensemble_viz.training_jobs`): what
-  finished on FASRC and is not local yet (the Models › Members rule). Universal
-  models are not ensemble members: registered ones count as local, and the
-  job log's (:func:`ensemble_viz.ledger_universal_names`, forks resolved
-  through their source) are only mentioned for Models › Universal — never stale;
-* Evaluation, Gate, Real SR — the ``evaluation``, ``knee``, ``combiner`` and
-  ``real-sr`` checks of ``GET /api/system/alerts``;
+* Models — the registry (:func:`ensemble_viz.members_payload`) and the local
+  ``ensemble_train`` job log (:func:`ensemble_viz.training_jobs`): the
+  universal models (:func:`ensemble_viz.ledger_universal_names`, forks
+  resolved through their source) that finished on FASRC and are not pulled
+  yet; the panel lists models from
+  :data:`model_catalog.PANEL_FIRST_MODEL` on;
+* Production, Real SR — the ``production`` and ``real-sr`` checks of
+  ``GET /api/system/alerts``;
 * Figures — the newest NEXUS render (:func:`nexus_plates.list_runs`) against
   the catalogue's production fingerprint, and the ``galaxy-plots`` cache.
 
@@ -53,7 +53,7 @@ from euclid_polish.web.helpers.realism_overview import overview_payload
 
 #: How long a computed Loop is served before it is recomputed (``?fresh=1`` skips it).
 LOOP_TTL_S = 60.0
-#: How long a finished batch counts as new (the Models › Members banner's window).
+#: How long a finished batch counts as new (the Models › Universal pull window).
 WAITING_DAYS = 14
 _TERMINAL_WITH_CHECKPOINT = {"COMPLETED", "TIMEOUT"}
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -61,9 +61,8 @@ _TRUTHY = {"1", "true", "yes", "on"}
 STAGE_LABELS = {
     "priors": "Priors",
     "records": "Records",
-    "members": "Members",
-    "evaluation": "Evaluation",
-    "gate": "Gate",
+    "models": "Models",
+    "production": "Production",
     "real-sr": "Real SR",
     "figures": "Figures",
 }
@@ -345,116 +344,52 @@ def _split_waiting(
     return list(out), list(uni)
 
 
-def waiting_on_fasrc(jobs: Sequence[Mapping[str, Any]], members: Mapping[str, Any], now: float) -> list[str]:
-    """STARFULL members that finished on FASRC and are not here yet: new members
-    of add / fork batches that ended in the last :data:`WAITING_DAYS` and are
-    neither active, archived nor universal models, and continued members whose
-    job's target lies past their local step."""
-    return _split_waiting(jobs, members, now)[0]
-
-
 def universal_on_fasrc(
     jobs: Sequence[Mapping[str, Any]], members: Mapping[str, Any], now: float
 ) -> list[str]:
     """Universal models (the job log's, forks included) that finished on FASRC
-    in the same window and are neither registered, active nor archived: they
-    are pulled on Models › Universal, never into the ensemble."""
-    return _split_waiting(jobs, members, now)[1]
+    in the last :data:`WAITING_DAYS` and are neither registered, active nor
+    archived: they are pulled on Models › Universal. Only models the panel
+    lists (:func:`model_catalog.in_panel`)."""
+    return [name for name in _split_waiting(jobs, members, now)[1] if model_catalog.in_panel(name)]
 
 
-def _universal_note(names: Sequence[str]) -> str | None:
-    """``"2 universal models on FASRC → Models › Universal (members 216, 217)."``"""
-    if not names:
-        return None
-    who = member_range(names) or ", ".join(names)
-    plural = "s" if len(names) != 1 else ""
-    return f"{len(names)} universal model{plural} on FASRC → Models › Universal ({who})."
-
-
-def members_stage(
+def models_stage(
     m: Mapping[str, Any] | None, jobs: Sequence[Mapping[str, Any]] | None, now: float
 ) -> dict[str, Any]:
-    to = "/models/members"
+    to = "/models/universal"
     if m is None:
-        return _loading("members", to)
-    waiting, universal = _split_waiting(jobs, m, now) if jobs else ([], [])
-    note = _universal_note(universal)
+        return _loading("models", to)
+    waiting = universal_on_fasrc(jobs, m, now) if jobs else []
     if waiting:
         who = member_range(waiting) or ", ".join(waiting)
-        detail = f"{who} finished on FASRC and are not pulled: Pull from FASRC… on Models › Members."
         return _stage(
-            "members",
+            "models",
             "stale",
             f"{len(waiting)} new on FASRC",
             to=to,
-            detail=f"{detail} {note}" if note else detail,
+            detail=f"{who} finished on FASRC and are not pulled: Pull on Models › Universal.",
         )
-    n = len(m.get("members") or [])
+    n = len([name for name in m.get("universal") or [] if model_catalog.in_panel(name)])
     return _stage(
-        "members",
+        "models",
         "current" if n else "unknown",
-        f"{n} active" if n else "no active members",
+        f"{n} universal model{'' if n == 1 else 's'}" if n else "no universal models",
         to=to,
-        detail=note,
     )
 
 
-def evaluation_stage(alerts: Mapping[str, Any] | None, now: float) -> dict[str, Any]:
-    to = "/models/leaderboard"
+def production_stage(alerts: Mapping[str, Any] | None) -> dict[str, Any]:
+    to = "/models/universal"
     if alerts is None:
-        return _loading("evaluation", to)
-    ev, knee = _check(alerts, "evaluation"), _check(alerts, "knee")
-    if _bad(ev):
-        return _stage(
-            "evaluation",
-            "stale",
-            _lower_first(re.sub(r"^The evaluation ", "", ev["title"], flags=re.I)),
-            to=to,
-            detail=ev.get("detail"),
-        )
-    if _bad(knee):
-        return _stage(
-            "evaluation",
-            "stale",
-            _lower_first(re.sub(r"^PSNR-vs-knee ", "knee ", knee["title"], flags=re.I)),
-            to=to,
-            detail=knee.get("detail"),
-        )
-    if not ev or ev.get("state") == "unknown":
-        return _stage("evaluation", "unknown", _lower_first(ev["title"]) if ev else "not checked", to=to)
-    when = relative((ev.get("facts") or {}).get("evaluated_at"), now)
-    return _stage("evaluation", "current", f"evaluated {when}" if when else "current", to=to)
-
-
-def gate_stage(alerts: Mapping[str, Any] | None) -> dict[str, Any]:
-    to = "/models/combiner"
-    if alerts is None:
-        return _loading("gate", to)
-    c = _check(alerts, "combiner")
-    model = ((c or {}).get("facts") or {}).get("label")
-    if model:
-        # Production is one universal model: there is no gate to keep fitted.
-        to = (c or {}).get("to") or "/models/universal"
-        if _bad(c):
-            return _stage("gate", "stale", _lower_first(c["title"]), to=to, detail=c.get("detail"))
-        return _stage("gate", "current", f"production is {model}", to=to)
+        return _loading("production", to)
+    c = _check(alerts, "production")
     if _bad(c):
-        return _stage(
-            "gate",
-            "stale",
-            _lower_first(re.sub(r"^The production gate ", "", c["title"], flags=re.I)),
-            to=to,
-            detail=c.get("detail"),
-        )
-    if not c or c.get("state") != "ok":
-        return _stage("gate", "unknown", _lower_first(c["title"]) if c else "not checked", to=to)
-    n = _num((c.get("facts") or {}).get("members"))
-    return _stage(
-        "gate",
-        "current",
-        f"fitted for the {int(n)} members" if n is not None else "fitted for the members",
-        to=to,
-    )
+        return _stage("production", "stale", _lower_first(c["title"]), to=to, detail=c.get("detail"))
+    model = ((c or {}).get("facts") or {}).get("label")
+    if not c or c.get("state") != "ok" or not model:
+        return _stage("production", "unknown", _lower_first(c["title"]) if c else "not checked", to=to)
+    return _stage("production", "current", str(model), to=to)
 
 
 #: Real-tile store (the ``real-sr`` check's ``sources``) → its Sky › Targets set.
@@ -561,15 +496,14 @@ def loop_stages(
     catalog: Mapping[str, Any] | None,
     now: float | None = None,
 ) -> list[dict[str, Any]]:
-    """The seven stages, in loop order. A source passed as ``None`` has not
+    """The six stages, in loop order. A source passed as ``None`` has not
     answered: its stage reads ``loading`` ("checking"), never ``current``."""
     t = time.time() if now is None else now
     return [
         priors_stage(overview),
         records_stage(overview, alerts, t),
-        members_stage(members, jobs, t),
-        evaluation_stage(alerts, t),
-        gate_stage(alerts),
+        models_stage(members, jobs, t),
+        production_stage(alerts),
         real_sr_stage(alerts),
         figures_stage(plates, catalog, overview),
     ]

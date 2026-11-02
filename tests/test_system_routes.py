@@ -320,129 +320,61 @@ def _spec(spec, available, reason=None, members=()):
                            member_labels=tuple(members))
 
 
-def test_combiner_check_follows_the_production_spec(monkeypatch):
-    monkeypatch.setattr(system.model_catalog, "list_specs", lambda: [
-        _spec("production", False, "the production gate was fitted for 26 members; the active "
-                                   "STARFULL ensemble has 30"),
-    ])
-    check = system.check_combiner()
-    assert check["state"] == "warn" and "26 members" in check["detail"]
-    assert check["to"] == "/models/combiner"
+def _universal_summary(available, reason=None):
+    return lambda specs=None: {"kind": "universal", "spec": "universal:member_257",
+                               "name": "member_257", "label": "257", "available": available,
+                               "reason": reason}
+
+
+def test_production_check_names_the_universal_production(monkeypatch):
+    monkeypatch.setattr(system.model_catalog, "list_specs",
+                        lambda: [_spec("production", True)])
+    monkeypatch.setattr(system.model_catalog, "production_summary", _universal_summary(True))
+    ok = system.check_production()
+    assert ok["state"] == "ok" and ok["title"] == "Production is 257"
+    assert ok["to"] == "/models/universal"
+    assert ok["facts"] == {"model": "universal:member_257", "label": "257"}
+
+
+def test_production_check_warns_when_the_universal_production_cannot_run(monkeypatch):
+    monkeypatch.setattr(system.model_catalog, "list_specs",
+                        lambda: [_spec("production", False, "member_257 has no checkpoint")])
+    monkeypatch.setattr(system.model_catalog, "production_summary",
+                        _universal_summary(False, "member_257 has no checkpoint"))
+    check = system.check_production()
+    assert check["state"] == "warn" and "cannot run" in check["title"]
+    assert check["detail"] == "member_257 has no checkpoint"
+    assert check["to"] == "/models/universal" and check["facts"]["label"] == "257"
+
+
+def test_production_check_warns_without_a_universal_production(monkeypatch):
+    # a gate production (no universal pointer) is no longer a production the panel runs
     monkeypatch.setattr(system.model_catalog, "list_specs",
                         lambda: [_spec("production", True, members=["1·psnr"] * 30)])
-    ok = system.check_combiner()
-    assert ok["state"] == "ok" and "30 members" in ok["title"]
+    monkeypatch.setattr(system.model_catalog, "production_summary", lambda specs=None: {
+        "kind": "gate", "spec": "production", "name": None, "label": "Spatial gate",
+        "available": True, "reason": None})
+    check = system.check_production()
+    assert check["state"] == "warn" and check["title"] == "No universal model is production"
+    assert check["to"] == "/models/universal" and "facts" not in check
+    # no production spec in the catalogue at all
+    monkeypatch.setattr(system.model_catalog, "list_specs", lambda: [])
+    assert system.check_production()["state"] == "warn"
+
+
+def test_the_removed_checks_are_gone():
+    ids = [cid for cid, _fn in system.CHECKS]
+    assert ids == ["disk", "real-sr", "production", "records-noise", "tracking"]
+    assert set(system.CHECK_LABELS) == set(ids)
 
 
 @pytest.fixture
 def ensemble_dirs(tmp_path, monkeypatch):
-    regime = tmp_path / "vis" / "ensemble" / "starfull"
-    regime.mkdir(parents=True)
-    records = tmp_path / "records"
-    records.mkdir()
-    for name in ("dirty_test", "hr_test"):
-        (records / f"{name}.tfrecord").write_bytes(b"x" * 10)
-    monkeypatch.setattr(system.model_catalog, "regime_dir", lambda: regime)
-    monkeypatch.setattr(system, "records_dir", lambda: str(records))
-    monkeypatch.setattr(system.model_catalog, "active_member_labels", lambda: ["1·psnr", "2·psnr"])
+    scores = tmp_path / "vis" / "ensemble" / "starfull" / "universal"
+    scores.mkdir(parents=True)
+    monkeypatch.setattr(system, "universal_scores_dir", lambda: str(scores))
     monkeypatch.setattr(system, "experiment_records_root", lambda: tmp_path / "experiments")
-    return SimpleNamespace(regime=regime, records=records)
-
-
-def _records_fp(records):
-    parts = []
-    for kind in ("dirty", "hr"):
-        st = os.stat(records / f"{kind}_test.tfrecord")
-        parts.append(f"{kind}:{st.st_size}:{st.st_mtime_ns}")
-    return "|".join(parts)
-
-
-def _summary(dirs, *, labels=("1·psnr", "2·psnr"), records_fp=None):
-    (dirs.regime / "eval_summary.json").write_text(json.dumps({
-        "member_labels": list(labels),
-        "eval_identity": {"records_fp": records_fp or _records_fp(dirs.records), "subset": "test"},
-    }))
-
-
-def test_evaluation_check_current(ensemble_dirs):
-    _summary(ensemble_dirs)
-    assert system.check_evaluation()["state"] == "ok"
-
-
-def test_evaluation_check_missing(ensemble_dirs):
-    check = system.check_evaluation()
-    assert check["state"] == "warn" and "not evaluated" in check["title"].lower()
-    assert check["action"]["url"] == "/ensemble/evaluate"
-
-
-def test_evaluation_check_membership_changed(ensemble_dirs):
-    _summary(ensemble_dirs, labels=("1·psnr",))
-    check = system.check_evaluation()
-    assert check["state"] == "warn" and "members" in check["title"]
-
-
-def test_evaluation_check_ignores_member_order(ensemble_dirs):
-    _summary(ensemble_dirs, labels=("2·psnr", "1·psnr"))
-    assert system.check_evaluation()["state"] == "ok"
-
-
-def test_evaluation_check_records_regenerated(ensemble_dirs):
-    _summary(ensemble_dirs, records_fp="dirty:10:1|hr:10:1")
-    check = system.check_evaluation()
-    assert check["state"] == "warn" and "records" in check["title"]
-
-
-# ---------------------------------------------------------------------------
-# Home's production numbers (/api/system/production)
-# ---------------------------------------------------------------------------
-
-def _headline_summary(dirs, labels=("1·psnr", "2·psnr")):
-    (dirs.regime / "eval_summary.json").write_text(json.dumps({
-        "member_labels": list(labels), "n_scored": 100, "per_member_psnr_stretched": [57.0, 58.0],
-        "ensemble_psnr": 58.3753, "mean_member_psnr": 57.22, "ensemble_gain_db": 1.155,
-        "combiner_psnr": 99.0,
-        "spatial_gate_combiner_psnr": 59.2354, "spatial_gate_combiner_vs_mean_db": 0.8601,
-        "spatial_gate_combiner_vs_best_member_db": 0.2948,
-        "eval_identity": {"records_fp": _records_fp(dirs.records), "subset": "test"},
-    }))
-
-
-def test_production_reads_the_eval_summary_headline(client, ensemble_dirs, monkeypatch):
-    monkeypatch.setattr(system, "starless_member_labels", lambda: ["105·psnr"] * 12)
-    _headline_summary(ensemble_dirs)
-    body = client.get("/api/system/production").get_json()
-    summary = body["eval_summary"]
-    assert summary["spatial_gate_combiner_psnr"] == pytest.approx(59.2354)
-    assert summary["spatial_gate_combiner_vs_best_member_db"] == pytest.approx(0.2948)
-    assert summary["ensemble_psnr"] == pytest.approx(58.3753)
-    assert "per_member_psnr_stretched" not in summary and "eval_identity" not in summary  # scalars only
-    assert body["stale"] is False and body["stale_reason"] is None
-    assert body["evaluated_at"]
-    assert body["members"] == 2 and body["starless_members"] == 12
-
-
-def test_production_flags_a_summary_of_other_members(client, ensemble_dirs, monkeypatch):
-    monkeypatch.setattr(system, "starless_member_labels", lambda: [])
-    _headline_summary(ensemble_dirs, labels=("1·psnr",))
-    body = client.get("/api/system/production").get_json()
-    assert body["stale"] is True
-    assert "predates the current members" in body["stale_reason"]
-
-
-def test_production_without_an_evaluation(client, ensemble_dirs, monkeypatch):
-    monkeypatch.setattr(system, "starless_member_labels", lambda: [])
-    body = client.get("/api/system/production").get_json()
-    assert body["eval_summary"] is None and body["stale"] is False and body["evaluated_at"] is None
-    assert body["members"] == 2
-
-
-def test_knee_check(monkeypatch):
-    monkeypatch.setattr(system, "knee_psnr_status", lambda starless: {"available": True, "stale": True})
-    assert system.check_knee()["state"] == "warn"
-    monkeypatch.setattr(system, "knee_psnr_status", lambda starless: {"available": True, "stale": False})
-    assert system.check_knee()["state"] == "ok"
-    monkeypatch.setattr(system, "knee_psnr_status", lambda starless: {"available": False, "stale": False})
-    assert system.check_knee()["state"] == "warn"
+    return SimpleNamespace(scores=scores)
 
 
 def test_records_noise_check(tmp_path, monkeypatch):
@@ -474,16 +406,18 @@ def test_tracking_check_flags_results_newer_than_the_last_entry(tmp_path, monkey
     (tracking / "current" / "log.md").write_text(
         "# notebook\n\n## 2026-09-20T10:00:00Z\n\nold\n\n## 2026-09-21T14:42:29Z\n\nlast\n")
     monkeypatch.setattr(Config, "TRACKING_DIR", str(tracking))
-    _summary(ensemble_dirs)
+    index = ensemble_dirs.scores / "index.json"
+    index.write_text(json.dumps({"schema": 1, "models": {}}))
     stamp = time.mktime(time.strptime("2026-09-25 12:00", "%Y-%m-%d %H:%M"))
-    os.utime(ensemble_dirs.regime / "eval_summary.json", (stamp, stamp))
+    os.utime(index, (stamp, stamp))
     check = system.check_tracking()
     assert check["state"] == "warn"
     assert check["facts"]["last_entry"].startswith("2026-09-21T14:42:29")
-    assert "evaluation" in check["detail"]
+    assert "universal scores" in check["detail"]
+    assert [row["label"] for row in check["facts"]["unlogged"]] == ["universal scores"]
     assert check["to"] == "/notebook/log"
     old = time.mktime(time.strptime("2026-09-19 12:00", "%Y-%m-%d %H:%M"))
-    os.utime(ensemble_dirs.regime / "eval_summary.json", (old, old))
+    os.utime(index, (old, old))
     assert system.check_tracking()["state"] == "ok"
 
 

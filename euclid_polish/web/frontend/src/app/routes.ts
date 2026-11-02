@@ -50,7 +50,7 @@ export const workspaceComponents: Record<string, WorkspaceLoader> = {
 /** Every concrete path a rule's `from` matches (each `:name` segment takes
  *  each of its allowed values). Registered as static routes, a rule never
  *  outranks a workspace's splat route: the pattern `/models/:mode` would
- *  capture the page `/models/leaderboard` and answer it Not found. */
+ *  capture the page `/models/universal` and answer it Not found. */
 function ruleSources(rule: RedirectRule): string[] {
   let paths = [normalisePath(rule.from).split("/")];
   for (const [name, values] of Object.entries(rule.params ?? {})) {

@@ -42,6 +42,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
     monkeypatch.setattr(Config, "TRACKING_DIR", str(tmp_path / "tracking"))
     monkeypatch.setattr(ev, "_sky_records_local_dir", lambda: None)
+    monkeypatch.setattr(mc, "PANEL_FIRST_MODEL", 0)        # 211 / 238 predate the panel's 257
     default_store().create_campaign("production test")
     base = ev.ensemble_dir()
     _member(base, 1, SINGLE)
@@ -182,10 +183,12 @@ def test_an_sr_made_by_the_gate_reads_production_changed(monkeypatch):
 
 def test_the_checks_name_the_universal_production(env):
     er.set_production(env, "238")
-    check = system.check_combiner()
+    check = system.check_production()
     assert check["state"] == "ok" and check["title"] == "Production is Universal 238"
-    stage = system_alerts.gate_stage({"checks": [{**check, "id": "combiner"}]})
-    assert stage["state"] == "current" and stage["reason"] == "production is Universal 238"
+    assert check["to"] == "/models/universal"
+    assert check["facts"] == {"model": "universal:member_238", "label": "Universal 238"}
+    stage = system_alerts.production_stage({"checks": [{**check, "id": "production"}]})
+    assert stage["state"] == "current" and stage["reason"] == "Universal 238"
     overview = ev.ensemble_overview(False)
     ids = {c["id"]: c for c in overview["checks"]}
     assert ids["production"]["ok"] and "gate" not in ids and "eval-gate" not in ids
@@ -206,7 +209,6 @@ def test_the_universal_tab_compares_with_the_production_models_score(env):
         json.dump(scores, f)
     payload = um.universal_payload()
     assert payload["production_model"] == "member_238" and payload["production_comparable"] is True
-    assert payload["comparable"] is False          # no knee payload to compare with
     assert payload["production"] == {"integrated": [62.0] * 4, "mean": 62.0, "stale": False,
                                      "model": "member_238"}
     rows = {m["name"]: m for m in payload["models"]}
@@ -294,13 +296,13 @@ def test_the_production_model_cannot_be_archived(env):
 
 # ---- routes ------------------------------------------------------------------------------ #
 
-def test_routes_set_production_and_guard_the_gate_archive(env):
+def test_routes_set_production_to_universal_models_only(env):
     app = create_app()
     app.config["TESTING"] = True
     with app.test_client() as client:
-        r = client.post("/ensemble/combiners/archive")
-        assert r.status_code == 400 and "still the spatial gate" in r.get_json()["error"]
-        assert client.post("/ensemble/combiners/restore").status_code == 400
+        # the gate archive / restore routes went with the panel clean-up
+        assert client.post("/ensemble/combiners/archive").status_code == 404
+        assert client.post("/ensemble/combiners/restore").status_code == 404
         r = client.post("/ensemble/production", data={"model": "universal:member_238"})
         assert r.get_json() == {"ok": True, "production": "member_238",
                                 "spec": "universal:member_238"}
@@ -309,5 +311,7 @@ def test_routes_set_production_and_guard_the_gate_archive(env):
         assert r.status_code == 400 and "production model" in r.get_json()["error"]
         assert client.post("/ensemble/production", data={"model": "1"}).status_code == 400
         assert client.post("/ensemble/production", data={}).status_code == 400
+        # universal models only: the gate can no longer be made production
         r = client.post("/ensemble/production", data={"model": "gate"})
-        assert r.get_json()["production"] is None
+        assert r.status_code == 400 and r.get_json()["ok"] is False
+        assert er.production_name(env) == "member_238"

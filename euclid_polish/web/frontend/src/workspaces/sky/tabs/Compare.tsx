@@ -157,7 +157,7 @@ export default function Compare() {
   const navigate = useNavigate();
   const reduce = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [tiles, setTiles] = useUrlState<string[]>("tiles", []);
-  const [models, setModels] = useUrlState<string[]>("models", ["production", "mean"]);
+  const [models, setModels] = useUrlState<string[]>("models", ["production"]);
   const [exp, setExp] = useUrlState("exp", "");
   const [scope, setScope] = useUrlState("scope", "pooled");
   const [metricRaw, setMetric] = useUrlState("metric", "hole_pct");
@@ -270,7 +270,7 @@ export default function Compare() {
         ) : !current ? (
           <EmptyState icon="table" title="No comparison yet"
             action={<Button size="sm" onClick={openNew}>New comparison</Button>}>
-            Run production, the mean, gate variants, universal models or single members on the poster galaxy, NEXUS tiles or the Q1 targets.
+            Run production, universal models or their milestones on the poster galaxy, NEXUS tiles or the Q1 targets.
           </EmptyState>
         ) : record.loading && !r ? <Skeleton lines={8} /> : !r ? (
           <Callout tone="bad" title={record.error?.status === 404 ? `Unknown comparison ${current}` : "Could not load the comparison"}

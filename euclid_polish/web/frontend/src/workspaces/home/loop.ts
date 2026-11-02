@@ -1,21 +1,19 @@
 /* The Home Loop: one chip per stage of the loop you run after every batch —
- * Priors, Records, Members, Evaluation, Gate, Real SR, Figures — each current,
+ * Priors, Records, Models, Production, Real SR, Figures — each current,
  * stale, blocked or unknown with ONE reason and the tab whose confirmed
  * button fixes it; the problem-only strip warnings (disk, FASRC, unlogged
- * results); the "Running now" line with the TIMEOUT alert; and the strip of
- * cached thumbnails. Pure; loop.test.ts.
+ * results); the "Running now" line; and the strip of cached thumbnails.
+ * Pure; loop.test.ts.
  *
  * The verdicts come only from the backend staleness service, GET
  * /api/system/loop (helpers/system_alerts.py, which System › Lineage reads
  * too; its rules are pinned by tests/test_system_alerts.py). Until it
  * answers, each chip reads "checking"; if it fails, "not checked" — never
- * "current". While a universal model is production there is no gate to keep
- * fitted: the Gate chip reads as the production stage ("Production", the
- * model's label, Models › Universal). */
+ * "current". */
 import type { HealthCheck, SystemAlerts } from "../../app/status";
 import { memberRange } from "./homeModel";
 
-export type StageId = "priors" | "records" | "members" | "evaluation" | "gate" | "real-sr" | "figures";
+export type StageId = "priors" | "records" | "models" | "production" | "real-sr" | "figures";
 export type StageState = "current" | "stale" | "blocked" | "unknown" | "loading";
 export type Stage = {
   id: StageId; label: string; state: StageState;
@@ -27,11 +25,6 @@ export type Stage = {
   to: string;
 };
 
-/** The slice of GET /ensemble/members.json read here. */
-export type MembersSlice = {
-  members?: { name: string; status?: string; timeout?: boolean; step?: number | null }[] | null;
-  archived?: { name: string }[] | null;
-};
 type PlateRenderSlice = {
   band: string; model: string | null; legacy?: boolean; model_label?: string | null; model_fingerprint?: string | null;
   created?: string | null; sheet: string | null; tiles: { index: number; file: string; ref?: string | null; model_state?: string | null }[];
@@ -45,39 +38,23 @@ export type LoopPayload = {
   counts: Record<string, number>; errors: Record<string, string>;
 };
 
-/** The seven stages in loop order, with the tab each one opens: the
+/** The six stages in loop order, with the tab each one opens: the
  *  placeholders shown while the service has not answered (or failed). */
 const STAGES: readonly { id: StageId; label: string; to: string }[] = [
   { id: "priors", label: "Priors", to: "/synthetic/status" },
   { id: "records", label: "Records", to: "/synthetic/records" },
-  { id: "members", label: "Members", to: "/models/members" },
-  { id: "evaluation", label: "Evaluation", to: "/models/leaderboard" },
-  { id: "gate", label: "Gate", to: "/models/combiner" },
+  { id: "models", label: "Models", to: "/models/universal" },
+  { id: "production", label: "Production", to: "/models/universal" },
   { id: "real-sr", label: "Real SR", to: "/sky/targets" },
   { id: "figures", label: "Figures", to: "/figures/plates" },
 ];
 
-/** What production is, as the Loop needs it (homeModel.ts productionModel). */
-type ProductionSlice = { kind: "gate" | "universal"; label: string } | null | undefined;
-
-/** The Gate chip as the production stage while a universal model is
- *  production: "Production", the model's label as the reason while current
- *  (the server says "production is Universal 238"), its own reason
- *  otherwise, linking to Models › Universal. */
-function productionStage(stage: Stage, production: ProductionSlice): Stage {
-  if (stage.id !== "gate" || production?.kind !== "universal") return stage;
-  const reason = stage.state === "current" ? production.label : stage.reason;
-  return { ...stage, label: "Production", reason, to: "/models/universal" };
-}
-
 /** The chips to show: the service's stages, or placeholders ("checking"
- *  while it loads, "not checked" when it failed); the Gate chip is the
- *  production stage while `production` is a universal model. */
-export function loopStages(payload: LoopPayload | null | undefined, failed = false, production: ProductionSlice = null): Stage[] {
-  const stages = payload?.stages?.length ? payload.stages : STAGES.map((s) => failed
+ *  while it loads, "not checked" when it failed). */
+export function loopStages(payload: LoopPayload | null | undefined, failed = false): Stage[] {
+  return payload?.stages?.length ? payload.stages : STAGES.map((s) => failed
     ? { ...s, state: "unknown" as const, reason: "not checked" }
     : { ...s, state: "loading" as const, reason: "checking" });
-  return production?.kind === "universal" ? stages.map((s) => productionStage(s, production)) : stages;
 }
 
 /* ── strip warnings ─────────────────────────────────────────────────────── */
@@ -140,14 +117,11 @@ function slurmMembers(job: SlurmJobSlice): string | null {
 export type RunningLine = {
   /** One phrase per running / queued job, SLURM first. */
   items: string[];
-  /** Active STARFULL members that stopped short of their target (TIMEOUT). */
-  timeouts: string[];
-  continueTo?: string;
 };
 
-/** The "Running now" line, or null when nothing runs and nothing timed out. */
-export function runningLine({ local, slurm, members }: {
-  local: readonly LocalJobSlice[]; slurm: readonly SlurmJobSlice[]; members: MembersSlice | null | undefined;
+/** The "Running now" line, or null when nothing runs. */
+export function runningLine({ local, slurm }: {
+  local: readonly LocalJobSlice[]; slurm: readonly SlurmJobSlice[];
 }): RunningLine | null {
   const remote = slurm.filter((j) => j.state === "RUNNING" || j.state === "PENDING").map((j) => {
     const what = slurmMembers(j) ?? j.label ?? j.step_id ?? `job ${j.jobid}`;
@@ -157,14 +131,8 @@ export function runningLine({ local, slurm, members }: {
   });
   const here = local.filter((j) => j.status === "running")
     .map((j) => `${j.label} on this laptop${pct(j.progress?.current ?? 0, j.progress?.total ?? 0)}`);
-  const timeouts = (members?.members ?? []).filter((m) => m.timeout).map((m) => m.name);
   const items = [...remote, ...here];
-  if (!items.length && !timeouts.length) return null;
-  const line: RunningLine = { items, timeouts };
-  if (timeouts.length) {
-    line.continueTo = `/models/train?${new URLSearchParams({ mode: "continue", members: timeouts.join(",") }).toString()}`;
-  }
-  return line;
+  return items.length ? { items } : null;
 }
 
 /* ── thumbnails ─────────────────────────────────────────────────────────── */

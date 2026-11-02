@@ -1,8 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import {
-  homeThumbs, loopStages, runningLine, stripAlerts, type LoopPayload, type MembersSlice, type PlatesSlice,
-} from "./loop";
+import { homeThumbs, loopStages, stripAlerts, type LoopPayload, type PlatesSlice } from "./loop";
 import type { SystemAlerts } from "../../app/status";
 
 const NOW = Date.parse("2026-09-27T12:00:00Z");
@@ -25,11 +23,6 @@ const ALERTS = (patch: Record<string, Partial<Check>> = {}): SystemAlerts => {
   ].map((c) => ({ ...c, ...(patch[c.id] ?? {}) }));
   return { computed_at: iso(0), ttl_s: 30, counts: { bad: 0, warn: 0, ok: 0, unknown: 0 }, checks, alerts: checks.filter((c) => c.state === "warn" || c.state === "bad") } as SystemAlerts;
 };
-
-const MEMBERS: MembersSlice = {
-  members: Array.from({ length: 30 }, (_, i) => ({ name: `member_${169 + i}`, status: "complete", timeout: false, step: 70000 })),
-  archived: [{ name: "member_168" }],
-};
 const PLATES: PlatesSlice = { runs: [{ tag: "prod-0926", updated: iso(1), renders: [
   { band: "VIS", model: "production", model_label: "Production · spatial gate", model_fingerprint: "p1", created: iso(1), sheet: "s.png", tiles: [] },
 ] }] };
@@ -43,33 +36,13 @@ describe("the Loop strip", () => {
 
   it("reads 'checking' while the service loads and 'not checked' when it failed, never 'current'", () => {
     const loading = loopStages(null);
-    expect(loading.map((s) => s.label)).toEqual(["Priors", "Records", "Members", "Evaluation", "Gate", "Real SR", "Figures"]);
+    expect(loading.map((s) => s.label)).toEqual(["Priors", "Records", "Models", "Production", "Real SR", "Figures"]);
+    expect(loading.find((s) => s.id === "production")?.to).toBe("/models/universal");
     expect(loading.every((s) => s.state === "loading" && s.reason === "checking")).toBe(true);
     const failed = loopStages(undefined, true);
     expect(failed.every((s) => s.state === "unknown" && s.reason === "not checked")).toBe(true);
     expect(failed.find((s) => s.id === "real-sr")?.to).toBe("/sky/targets");
     expect(loopStages({ computed_at: iso(0), ttl_s: 60, stages: [], counts: {}, errors: {} }).every((s) => s.state === "loading")).toBe(true);
-  });
-
-  it("reads the Gate chip as the production stage while a universal model is production", () => {
-    const universal = { kind: "universal" as const, label: "Universal 238" };
-    const gate = (state: "current" | "stale", reason: string) => ({ id: "gate" as const, label: "Gate", state, reason, to: "/models/universal" });
-    const payload = (g: ReturnType<typeof gate>): LoopPayload => ({ computed_at: iso(0), ttl_s: 60, counts: {}, errors: {}, stages: [
-      { id: "members", label: "Members", state: "current", reason: "30 active", to: "/models/members" }, g] });
-    // the server: "production is Universal 238" → "Production", "Universal 238"
-    expect(loopStages(payload(gate("current", "production is Universal 238")), false, universal)).toEqual([
-      { id: "members", label: "Members", state: "current", reason: "30 active", to: "/models/members" },
-      { id: "gate", label: "Production", state: "current", reason: "Universal 238", to: "/models/universal" },
-    ]);
-    // a problem keeps the server's own reason
-    expect(loopStages(payload(gate("stale", "the production model Universal 238 cannot run")), false, universal)[1])
-      .toMatchObject({ label: "Production", state: "stale", reason: "the production model Universal 238 cannot run" });
-    // the placeholders too, linking to Models › Universal
-    expect(loopStages(null, false, universal).find((s) => s.id === "gate"))
-      .toEqual({ id: "gate", label: "Production", state: "loading", reason: "checking", to: "/models/universal" });
-    // the gate as production: the server's stages untouched
-    const stages = payload(gate("current", "fitted for the 30 members"));
-    expect(loopStages(stages, false, { kind: "gate", label: "spatial gate" })).toBe(stages.stages);
   });
 });
 
@@ -88,26 +61,6 @@ describe("strip warnings (only when broken)", () => {
       { id: "fasrc", tone: "warn", text: "FASRC not connected", detail: "timed out", to: "/system/connections" },
       { id: "tracking", tone: "warn", text: "No notebook entry since 09-21 · 2 results", detail: "evaluation, PSNR vs knee", to: "/notebook/log", log: true },
     ]);
-  });
-});
-
-describe("running now", () => {
-  it("names SLURM batches by their members with progress and GPU, then local jobs", () => {
-    const line = runningLine({
-      local: [{ job_id: "a", label: "evaluate", status: "running", progress: { current: 2, total: 5 } }],
-      slurm: [{ jobid: "9", state: "RUNNING", label: "ensemble_train", params_json: JSON.stringify({ member_names: "member_199,member_200,member_201,member_202" }),
-        progress_step: 10650, progress_total: 70000, gpu_util_mean: 78.4 }],
-      members: MEMBERS,
-    });
-    expect(line?.items).toEqual(["members 199–202 on FASRC · 15% · GPU 78%", "evaluate on this laptop · 40%"]);
-    expect(line?.timeouts).toEqual([]);
-  });
-
-  it("raises the members that stopped short (TIMEOUT) even when nothing runs", () => {
-    const members = { ...MEMBERS, members: MEMBERS.members!.map((m, i) => (i < 2 ? { ...m, timeout: true, status: "timeout" } : m)) };
-    const line = runningLine({ local: [], slurm: [], members });
-    expect(line).toEqual({ items: [], timeouts: ["member_169", "member_170"], continueTo: "/models/train?mode=continue&members=member_169%2Cmember_170" });
-    expect(runningLine({ local: [], slurm: [], members: MEMBERS })).toBeNull();
   });
 });
 

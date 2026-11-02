@@ -1,7 +1,6 @@
 /* Synthetic › Records census (pure; recordsModel.test.ts): the Σ VIS and
    brightest-star histograms, the record a histogram click opens, the record
    area and the generated lens density; and where the record's SR is. */
-import { pagePath } from "../../app/nav";
 import { extent } from "../../ticks";
 import type { FieldCensus, SourcesCensus } from "./dataApi";
 import { histogram } from "./dataModel";
@@ -62,11 +61,11 @@ export function lensDensity(census: SourcesCensus): { count: number; area: numbe
   return { count, area, density: count / area };
 }
 
-/** Where a record's SR is: Models › Images, records set, on this record when
- *  its split has SR cubes (`nSr`), else the set itself (its Generate SR). */
-export function recordSrLink(split: string, index: number | null, nSr: number): { to: string; label: string } {
-  const base = pagePath("models", { tab: "images" });
-  if (!nSr) return { to: `${base}?set=records`, label: "Generate its SR in Models › Images" };
-  const q = new URLSearchParams({ set: "records", split, ...(index != null ? { id: `${split}:${index}` } : {}) });
-  return { to: `${base}?${q.toString()}`, label: "Open its SR in Models › Images" };
+/** The Records caption's SR action: generate the production SR of the
+ *  split, or regenerate it when the split already has SR cubes (`nSr`; it is
+ *  then the viewer's SR tier). */
+export function recordSrAction(split: string, nSr: number): { label: string; overwrite: boolean } {
+  return nSr
+    ? { label: `Regenerate the ${split} SR…`, overwrite: true }
+    : { label: `Generate the ${split} SR…`, overwrite: false };
 }

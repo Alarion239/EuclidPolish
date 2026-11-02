@@ -18,6 +18,7 @@ import numpy as np
 from astropy.io import fits
 from flask import Response, jsonify, request
 
+from euclid_polish.config import Config
 from euclid_polish.web import errors
 from euclid_polish.web.helpers import (
     experiments,
@@ -55,8 +56,11 @@ _OUTPUT_KEYS = ("label", "kind", "fingerprint", "created", "experiment_id", "fil
 def _model_rows(entry: real_tiles.TileEntry, current: dict[str, str | None], *,
                 full: bool) -> tuple[dict, dict]:
     """``(models, outputs)`` of a tile: one row per spec with an output (the
-    C9 store or a legacy SR read in place, :func:`real_tiles.tile_outputs`)."""
-    outputs = real_tiles.tile_outputs(entry, current)
+    C9 store or a legacy SR read in place, :func:`real_tiles.tile_outputs`)
+    that the panel lists (:func:`model_catalog.is_panel_spec`; older outputs
+    stay on disk)."""
+    outputs = {spec: meta for spec, meta in real_tiles.tile_outputs(entry, current).items()
+               if model_catalog.is_panel_spec(spec)}
     rows = {}
     for spec, meta in outputs.items():
         metrics = meta.get("metrics") or {}
@@ -123,7 +127,7 @@ def _card(entry: real_tiles.TileEntry) -> dict:
         "production_state": sky_atlas.production_state(
             entry, current.get(model_catalog.SPEC_PRODUCTION), outputs),
         "legacy": entry.extras.get("legacy_sr"),
-        "runnable_models": [item.spec for item in specs if item.available],
+        "runnable_models": [item.spec for item in model_catalog.panel_specs(specs) if item.available],
         "experiments": experiments.experiments_for_tile(entry.source, entry.id),
         "disk": real_tiles.disk_usage(entry),
         "q1_tile": q1_tile.to_dict() if q1_tile is not None else None,
@@ -147,7 +151,9 @@ def _image(entry: real_tiles.TileEntry, tier: str, band: str) -> tuple[np.ndarra
         planes = real_tiles.jwst_planes(entry)
         if not planes:
             raise real_tiles.RealTileError(404, f"{entry.ref} has no JWST image")
-        plane = next((p for p in planes if p["band"].upper() == band.upper()), None)
+        # a Euclid band picks its matched NIRCam filter (VIS → F090W …)
+        wanted = Config.JWST_PARTNER_FILTER.get(band, band).upper()
+        plane = next((p for p in planes if p["band"].upper() == wanted), None)
         if plane is None and band.upper() in ("", "VIS", "JWST"):
             plane = planes[0]
         if plane is None:

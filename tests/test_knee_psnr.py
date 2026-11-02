@@ -14,7 +14,6 @@ from euclid_polish.eval.knee_psnr import (
     knee_psnr,
     stretched_truth,
 )
-from euclid_polish.web.app import create_app
 from euclid_polish.web.helpers import ensemble_viz
 
 
@@ -108,10 +107,8 @@ def test_payload_scores_members_mean_and_combiners(tmp_path, monkeypatch):
     assert ensemble_viz.knee_psnr_status(False)["stale"] is True
 
 
-def test_knee_psnr_route_reports_missing_curves(tmp_path, monkeypatch):
+def test_knee_psnr_status_reports_missing_curves(tmp_path, monkeypatch):
+    # the /ensemble/knee-psnr.json route went with the panel clean-up; the
+    # helper (scripts, universal score identity) still answers
     monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path))
-    app = create_app()
-    app.config["TESTING"] = True
-    with app.test_client() as client:
-        payload = client.get("/ensemble/knee-psnr.json?mode=starfull").get_json()
-    assert payload["available"] is False
+    assert ensemble_viz.knee_psnr_status(False)["available"] is False

@@ -218,7 +218,7 @@ function FasrcStorage({ connected }: { connected: boolean }) {
             </Details>
           ) : null}
           <p className="sys-note">
-            Pull checkpoints from Models › <Link to={pagePath("models", { tab: "members" })}>Members</Link>.
+            Pull checkpoints from Models › <Link to={pagePath("models", { tab: "universal" })}>Universal</Link>.
             FASRC files opened here are cached locally (see <Link to="/files">Files</Link>).
           </p>
         </CardBody>

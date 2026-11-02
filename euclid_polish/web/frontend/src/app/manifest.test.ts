@@ -19,7 +19,7 @@ describe("route manifest (C1)", () => {
   it("expands every workspace path and tab into a page", () => {
     for (const p of [
       "/", "/sky", "/sky/atlas", "/sky/targets", "/sky/compare", "/models",
-      "/models/train", "/models/leaderboard", "/files", "/synthetic",
+      "/models/train", "/models/universal", "/files", "/synthetic",
       "/synthetic/psf", "/runs/history", "/notebook/sandboxes", "/system/storage", "/figures/sheet",
     ]) expect(isPagePath(p), p).toBe(true);
   });
@@ -32,7 +32,7 @@ describe("route manifest (C1)", () => {
   it("rejects data URLs that share a page prefix, and the old pages", () => {
     for (const p of [
       "/ensemble/status.json", "/ensemble/foo", "/ensemble", "/sky/unknown", "/models/foo",
-      "/models/starfull", "/models/starless/train", "/inspect/preview.png", "/api/jobs", "/static/x.js",
+      "/models/starfull", "/models/starless/train", "/models/leaderboard", "/models/combiner", "/inspect/preview.png", "/api/jobs", "/static/x.js",
       "/ensemble/starfull/overview", "/sky/results", "/inspect", "/settings/about", "/overview", "",
     ]) expect(isPagePath(p), p).toBe(false);
   });
@@ -51,13 +51,14 @@ describe("route manifest (C1)", () => {
     const pages = pagePaths();
     expect(new Set(pages).size).toBe(pages.length);
     expect(pages).toContain("/");
-    expect(pages).toContain("/models/combiner");
+    expect(pages).toContain("/models/spectra");
+    expect(pages).not.toContain("/models/combiner");
     expect(pages).not.toContain("//atlas");
   });
 
   it("matches a page to its workspace, params and tab", () => {
-    expect(matchPage("/models/images")).toEqual({
-      workspace: "models", params: {}, tab: "images",
+    expect(matchPage("/models/spectra")).toEqual({
+      workspace: "models", params: {}, tab: "spectra",
       base: "/models",
     });
     expect(matchPage("/sky")).toEqual({ workspace: "sky", params: {}, tab: null, base: "/sky" });
