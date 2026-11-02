@@ -516,6 +516,57 @@ def test_growth_nearest_cluster_on_the_sphere():
     assert growth.nearest_cluster(np.array([[1.0, 0.0], [300.0, 0.0]]), 359.0, 0.0) == 0   # RA wraps
 
 
+def test_growth_syn_rings_mask_the_other_segments_grown():
+    labels = np.zeros((200, 200), np.int64)
+    labels[95:106, 95:106] = 1                                            # the source
+    labels[100, 130] = 2                                                  # a neighbour pixel, 30 px east
+    ring, masked = growth.syn_rings(labels, 100.0, 100.0)
+    c = growth.R_MAX
+    assert ring[c, c] == 1                                                # its own segment is kept
+    grown = ring[c - growth.SYN_GROW:c + growth.SYN_GROW + 1, c + 30 - growth.SYN_GROW:c + 30 + growth.SYN_GROW + 1]
+    assert (grown == growth.R_MAX + 1)[growth.SYN_GROW].all()             # neighbour row masked ± SYN_GROW
+    assert ring[c, c + 30 + growth.SYN_GROW + 1] != growth.R_MAX + 1      # one px beyond the growth is kept
+    assert 0 < masked < 0.05
+
+
+def test_growth_syn_summary_report_and_method_check(tmp_path, monkeypatch):
+    bt = _battery(tmp_path)
+    base = _growth_geo()
+    geo = {"field": np.array([0, 0, 1, 1]), "mag": base["mag"], "area": base["area"], "lr": base["lr"],
+           "truth": 0.9 * base["lr"], "truth_epsf": base["lr"].copy()}             # truth ⊛ ePSF = input
+    monkeypatch.setattr(growth, "syn_geometry", lambda bt: geo)
+    monkeypatch.setattr(growth, "geometry", lambda bt: _growth_geo())
+    a, b = _info(), _info("universal:member_257", "member_257", fingerprint="ckpt-116:1:2")
+    for info in (a, b):
+        bt.store.write(info, "growth", {}, {"cog": 0.9 * base["lr"], "sky": np.zeros((4, 4))})
+    bt.store.write(b, "growth_syn", {}, {"cog": 0.9 * base["lr"], "epsf": 0.95 * base["lr"],
+                                         "sky": np.full((4, 4), -0.01)})
+    s = growth.summary(bt, [a, b])["synthetic"]
+    assert s["n_sources"] == 4 and s["n_fields"] == 2
+    assert s["reference"]["VIS"]["all"]["r1"]["median"] == pytest.approx(1.0)
+    assert a.spec not in s["models"]
+    cell = s["models"][b.spec]
+    assert cell["truth"]["H"][">24"]["r3"]["median"] == pytest.approx(1.0)       # SR = truth
+    assert cell["epsf"]["VIS"]["all"]["r0.5"]["median"] == pytest.approx(0.95)
+    assert cell["sky"] == pytest.approx([-0.01] * 4)
+    full = {"growth": growth.summary(bt, [a, b])}
+    rows = {(sec, metric): cells for sec, metric, cells in report.table_rows(full, [a, b])}
+    sec = next(sec for sec, _m in rows if sec.startswith("Curve of growth, synthetic"))
+    assert rows[(sec, "SR ⊛ ePSF / input: VIS F(<0.5″) / F(<1″) / F(<3″), all")] == [
+        "– / – / –", "0.950 / 0.950 / 0.950"]
+    assert rows[(sec, "SR / truth: VIS F(<3″), mag <22 / 22-23 / 23-24 / >24")][1] == "1.000 / 1.000 / 1.000 / 1.000"
+    text = report.markdown(full, [a, b], {})
+    assert "method check (no model): truth ⊛ ePSF / input" in text and "= 1.000 / 1.000 / 1.000." in text
+
+
+def test_growth_syn_stage_is_skipped_without_the_training_psfs(tmp_path, monkeypatch):
+    bt = _battery(tmp_path)
+    monkeypatch.setattr(growth, "epsf_paths", lambda: None)
+    assert growth.syn_geometry(bt) is None
+    assert growth.run_syn(bt, _info()) == {}
+    assert bt.store.read(_info(), "growth_syn") is None
+
+
 def test_growth_epsf_stage_is_skipped_without_the_training_psfs(tmp_path, monkeypatch):
     bt = _battery(tmp_path)
     assert growth.epsf_paths(str(tmp_path / "none")) is None

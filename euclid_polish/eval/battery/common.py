@@ -236,7 +236,7 @@ def write_json(path: str, payload: Any) -> None:
 #: Stages measured on the synthetic test records (their stamp names the records).
 RECORD_STAGES = frozenset({"synthetic", "grid", "grid_prep", "grid_ref_lr_syn", "grid_ref_truth_syn",
                            "grid_ref_white_syn", "synflux_sources", "synflux", "outskirts_deck",
-                           "outskirts_hosts"})
+                           "outskirts_hosts", "growth_syn_geometry", "growth_syn"})
 
 
 def depends_on_records(stage: str) -> bool:

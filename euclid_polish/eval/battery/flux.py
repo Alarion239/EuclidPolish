@@ -19,7 +19,7 @@ from __future__ import annotations
 import numpy as np
 from astropy.wcs import WCS
 from photutils.aperture import EllipticalAperture, aperture_photometry
-from photutils.segmentation import SourceCatalog, detect_sources
+from photutils.segmentation import SegmentationImage, SourceCatalog, detect_sources
 
 from euclid_polish.config import Config
 from euclid_polish.eval import flux_conservation as fc
@@ -247,12 +247,17 @@ def kron(img: np.ndarray, x: float, y: float, a: float, b: float, th: float) -> 
     return float(table["aperture_sum"][0])
 
 
+def segment(v: np.ndarray) -> tuple[SegmentationImage | None, float, float]:
+    """``(segmentation, median, σ)`` of a LR VIS plane: 3σ, 8 px."""
+    med = float(np.median(v))
+    sig = float(1.4826 * np.median(np.abs(v - med)))
+    return detect_sources(v - med, 3 * sig, npixels=8), med, sig
+
+
 def field_sources(lr: np.ndarray) -> tuple[list[dict], float]:
     """Isolated sources of one field's LR VIS: ``([{x, y, a, b, th, A, B, peak}], σ)``."""
     v = lr[..., 0]
-    med = np.median(v)
-    sig = 1.4826 * np.median(np.abs(v - med))
-    seg = detect_sources(v - med, 3 * sig, npixels=8)
+    seg, med, sig = segment(v)
     if seg is None:
         return [], float(sig)
     out = []

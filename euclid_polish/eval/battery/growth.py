@@ -28,6 +28,13 @@ differs from the input only by resolution; what it misses is lost. The SR's
 own 0.066″ target PSF stays in, so this is a hair wider than the real image
 formation.
 
+The synthetic twin does the same on the score's test fields, whose truth is
+known: the isolated sources of the synthetic flux test, the other segments
+masked, binned by truth VIS magnitude, through the field-averaged ePSF (each
+scene drew one cluster). There SR ⊛ ePSF / input says whether the real-sky
+deficit is the model's or the sky's, SR / truth checks it directly, and
+truth ⊛ ePSF / input is the method's own bias.
+
 The geometry (rings, masks, input curves) is measured once (no model); each
 model adds its SR curves and blank-sky offsets.
 """
@@ -37,6 +44,7 @@ import os
 
 import numpy as np
 from astropy.wcs import WCS
+from scipy.ndimage import binary_dilation
 from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
@@ -45,11 +53,15 @@ from euclid_polish.eval.battery.common import (
     SHORT,
     Battery,
     ModelInfo,
+    field_key,
+    field_truth,
     nexus_entries,
     nexus_key,
     nexus_lr,
+    target_fwhm,
+    test_fields,
 )
-from euclid_polish.eval.battery.flux import boot_median, paired_median
+from euclid_polish.eval.battery.flux import boot_median, paired_median, segment, synthetic_sources, truth_mag
 from euclid_polish.photometry import uJy_to_ab_mag
 from euclid_polish.psf.psf_set import PSFSet
 from euclid_polish.sky.observation.observation_simulator import ObservationSimulator
@@ -71,6 +83,8 @@ MAG_RANGES = ((0.0, 22.0), (22.0, 23.0), (23.0, 24.0), (24.0, 99.0))
 QUOTED_RADII = (0.5, 1.0, 3.0)
 #: The Kron aperture in r_Kron (MER's KRON_RADIUS).
 KRON_APERTURE = 2.5
+#: Synthetic sources: other segments grown by this many SR px are masked.
+SYN_GROW = 4
 #: The training ePSFs (FASRC ``$DATA_DIR/euclid_psf``; the local
 #: ``data/euclid_psf`` is an older VIS-only extraction).
 EPSF_DIR = os.path.join(Config.DATA_DIR, "euclid_psf_training")
@@ -110,20 +124,36 @@ def ownership(x, y, kron, ell, pa, shape) -> tuple[np.ndarray, np.ndarray]:
     return owner, best
 
 
-def rings(owner, best, hole, index: int, x: float, y: float) -> tuple[np.ndarray, float]:
-    """The ``(2 R_MAX + 1)²`` ring map of source ``index`` centred on the pixel
-    nearest ``(x, y)``: ring k (1 … R_MAX) holds the pixels with k − 1 < r ≤ k
-    (r from the exact centre, SR px; the central pixel is ring 1), masked or
-    farther pixels ``R_MAX + 1``. Also the masked share of the disc."""
+def ring_map(bad: np.ndarray, x: float, y: float) -> tuple[np.ndarray, float]:
+    """The ``(2 R_MAX + 1)²`` ring map centred on the pixel nearest ``(x, y)``
+    of a stamp with masked pixels ``bad``: ring k (1 … R_MAX) holds the pixels
+    with k − 1 < r ≤ k (r from the exact centre, SR px; the central pixel is
+    ring 1), masked or farther pixels ``R_MAX + 1``. Also the masked share of
+    the disc."""
     cx, cy = int(round(x)), int(round(y))
-    sl = (slice(cy - R_MAX, cy + R_MAX + 1), slice(cx - R_MAX, cx + R_MAX + 1))
     yy, xx = np.mgrid[-R_MAX:R_MAX + 1, -R_MAX:R_MAX + 1]
     r = np.hypot(xx + cx - x, yy + cy - y)
-    bad = hole[sl] | ((owner[sl] != index) & (owner[sl] >= 0) & (best[sl] < OWNED))
-    disc = r < R_MAX
     ring = np.maximum(np.ceil(r), 1).astype(np.int64)
     ring[bad | (ring > R_MAX)] = R_MAX + 1
-    return ring.astype(np.uint8), float(bad[disc].mean())
+    return ring.astype(np.uint8), float(bad[r < R_MAX].mean())
+
+
+def rings(owner, best, hole, index: int, x: float, y: float) -> tuple[np.ndarray, float]:
+    """:func:`ring_map` of source ``index``, masking the holes and the pixels
+    inside another source's Kron ellipse that belong to it."""
+    sl = centre(x, y)
+    return ring_map(hole[sl] | ((owner[sl] != index) & (owner[sl] >= 0) & (best[sl] < OWNED)), x, y)
+
+
+def syn_rings(labels: np.ndarray, x: float, y: float) -> tuple[np.ndarray, float]:
+    """:func:`ring_map` of the synthetic source at ``(x, y)`` (SR px), masking
+    the other segments of ``labels`` (SR grid) grown by :data:`SYN_GROW`."""
+    sl = centre(x, y)
+    stamp = labels[sl]
+    c = R_MAX
+    near = stamp[c - SYN_GROW:c + SYN_GROW + 1, c - SYN_GROW:c + SYN_GROW + 1]
+    own = stamp[c, c] if stamp[c, c] else (np.bincount(near[near > 0]).argmax() if (near > 0).any() else 0)
+    return ring_map(binary_dilation((stamp > 0) & (stamp != own), iterations=SYN_GROW), x, y)
 
 
 def cumulative(ring: np.ndarray, image: np.ndarray) -> np.ndarray:
@@ -299,6 +329,105 @@ def run_epsf(bt: Battery, info: ModelInfo) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# the synthetic twin
+# --------------------------------------------------------------------------- #
+
+def syn_kernels(paths: list[str]) -> list[np.ndarray]:
+    """Per band, the field-averaged training ePSF (each synthetic scene draws
+    one cluster, so no one cluster is the field's)."""
+    means = [PSFSet.from_fits(p).mean().background_cleaned().resampled_to(SR_PIXEL_ARCSEC) for p in paths]
+    return [m.data.astype(np.float64) for m in means]
+
+
+def _syn_field(lr: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(input on the SR grid, segment labels on the SR grid, blank sky)`` of
+    a synthetic field's LR."""
+    lr = np.nan_to_num(np.asarray(lr, np.float64))
+    seg = segment(lr[..., 0])[0]
+    labels = np.zeros(lr.shape[:2], np.int64) if seg is None else seg.data
+    labels = np.repeat(np.repeat(labels, 2, 0), 2, 1)
+    return spread(lr), labels, ~binary_dilation(labels > 0, iterations=SYN_GROW)
+
+
+def syn_geometry(bt: Battery) -> dict[str, np.ndarray] | None:
+    """The synthetic twin of :func:`geometry` on the score's test fields: per
+    isolated source of :func:`~.flux.synthetic_sources` its field, SR-grid
+    centre, truth VIS magnitude, ring map (other segments masked), unmasked
+    area and the curves of the input, the truth (target PSF) and the truth
+    through the field-averaged ePSF; ``None`` without :data:`EPSF_DIR`."""
+    paths = epsf_paths()
+    if paths is None:
+        return None
+
+    def compute():
+        src = synthetic_sources(bt)
+        kernels = syn_kernels(paths)
+        fwhm = target_fwhm()
+        mags = truth_mag(src["truth_big"])
+        out = {k: [] for k in ("field", "x", "y", "mag", "rings", "area", "lr", "truth", "truth_epsf")}
+        for index, lr, target in test_fields(bt.limits.fields):
+            sel = np.flatnonzero(src["field"] == index)
+            if not sel.size:
+                continue
+            inp, labels, _free = _syn_field(lr)
+            truth = np.asarray(field_truth(target, fwhm), np.float64)
+            seen = forward(truth, kernels)
+            h, w = labels.shape
+            for i in sel:
+                x, y = 2 * src["x"][i] + 0.5, 2 * src["y"][i] + 0.5
+                if not (R_MAX <= round(x) < w - R_MAX - 1 and R_MAX <= round(y) < h - R_MAX - 1):
+                    continue
+                ring, masked = syn_rings(labels, x, y)
+                if masked > MAX_MASKED:
+                    continue
+                sl = centre(x, y)
+                for k, v in (("field", index), ("x", x), ("y", y), ("mag", mags[i]), ("rings", ring)):
+                    out[k].append(v)
+                out["area"].append(cumulative(ring, np.ones(ring.shape + (1,)))[:, 0])
+                out["lr"].append(cumulative(ring, inp[sl]))
+                out["truth"].append(cumulative(ring, truth[sl]))
+                out["truth_epsf"].append(cumulative(ring, seen[sl]))
+        arrays = {k: np.asarray(v) for k, v in out.items()}
+        return {"n_sources": len(out["field"]), "n_fields": len(set(out["field"]))}, arrays
+
+    bt.stage(None, "growth_syn_geometry", compute)
+    return bt.store.arrays(None, "growth_syn_geometry")
+
+
+def run_syn(bt: Battery, info: ModelInfo) -> dict:
+    """The model's SR curves of every source of :func:`syn_geometry`, raw and
+    through the field-averaged ePSF, and each field's blank-sky SR − truth;
+    skipped without :data:`EPSF_DIR`."""
+    paths = epsf_paths()
+    if paths is None:
+        bt.log(f"  growth_syn · {info.name}: skipped, no training ePSFs in {EPSF_DIR}")
+        return {}
+    geo = syn_geometry(bt)
+
+    def compute():
+        kernels = syn_kernels(paths)
+        fwhm = target_fwhm()
+        cog = np.full(geo["lr"].shape, np.nan)
+        seen_cog = np.full(geo["lr"].shape, np.nan)
+        sky = np.full((len(geo["field"]), cog.shape[-1]), np.nan)
+        for index, lr, target in test_fields(bt.limits.fields):
+            sel = np.flatnonzero(geo["field"] == index)
+            if not sel.size:
+                continue
+            sr = np.nan_to_num(np.asarray(bt.cache.get(info, field_key(index), lr), np.float64))
+            seen = forward(sr, kernels)
+            free = _syn_field(lr)[2]
+            sky[sel] = (sr - np.asarray(field_truth(target, fwhm), np.float64))[free].mean(0)
+            for i in sel:
+                sl = centre(geo["x"][i], geo["y"][i])
+                cog[i] = cumulative(geo["rings"][i], sr[sl])
+                seen_cog[i] = cumulative(geo["rings"][i], seen[sl])
+        return {"n_sources": len(geo["field"])}, {"cog": cog, "epsf": seen_cog, "sky": sky}
+
+    return bt.stage(info, "growth_syn", compute)
+
+
+# --------------------------------------------------------------------------- #
 # summary
 # --------------------------------------------------------------------------- #
 
@@ -334,11 +463,40 @@ def _index(radius: float) -> int:
     return int(np.argmin(np.abs(RADII - radius)))
 
 
+def _selections(mag: np.ndarray) -> dict[str, np.ndarray]:
+    return {"all": np.ones(len(mag), bool),
+            **{range_name(a, b): (mag >= a) & (mag < b) for a, b in MAG_RANGES}}
+
+
+def _ratio_cells(ratio: np.ndarray, selections: dict[str, np.ndarray]) -> dict:
+    """``band → range → r<radius> →`` bootstrap median of ``ratio`` ``(N, R, C)``."""
+    return {band: {name: {f"r{r:g}": boot_median(ratio[sel, _index(r), b]) for r in QUOTED_RADII}
+                   for name, sel in selections.items()}
+            for b, band in enumerate(SHORT)}
+
+
+def syn_summary(bt: Battery, infos: list[ModelInfo], geo: dict) -> dict:
+    """The synthetic twin per truth VIS magnitude range: SR ⊛ ePSF / input
+    (the real-sky ePSF ratio), SR / truth, the fields' blank-sky SR − truth,
+    and (no model) truth ⊛ ePSF / input, the method's own bias."""
+    selections = _selections(geo["mag"])
+    lr = np.where(geo["lr"] > 0, geo["lr"], np.nan)
+    truth = np.where(geo["truth"] > 0, geo["truth"], np.nan)
+    out: dict = {"n_sources": int(len(geo["mag"])), "n_fields": int(len(set(geo["field"].tolist()))),
+                 "reference": _ratio_cells(geo["truth_epsf"] / lr, selections), "models": {}}
+    for info in infos:
+        if bt.store.read(info, "growth_syn"):
+            model = bt.store.arrays(info, "growth_syn")
+            out["models"][info.spec] = {"sky": [float(v) for v in np.nanmean(model["sky"], 0)],
+                                        "epsf": _ratio_cells(model["epsf"] / lr, selections),
+                                        "truth": _ratio_cells(model["cog"] / truth, selections)}
+    return out
+
+
 def summary(bt: Battery, infos: list[ModelInfo]) -> dict:
     geo = geometry(bt)
     mag = geo["mag"]
-    selections = {"all": np.ones(len(mag), bool),
-                  **{range_name(a, b): (mag >= a) & (mag < b) for a, b in MAG_RANGES}}
+    selections = _selections(mag)
     out: dict = {"n_galaxies": int(len(mag)), "n_tiles": int(len(set(geo["tile"].tolist()))),
                  "ranges": list(selections), "radii": list(QUOTED_RADII), "models": {}, "vs_baseline": {}}
     r50_lr = [half_light(geo["lr"][:, :, b]) for b in range(len(SHORT))]
@@ -380,6 +538,10 @@ def summary(bt: Battery, infos: list[ModelInfo]) -> dict:
                 out["vs_baseline"][info.spec] = {
                     band: {name: paired_median(d[sel, b]) for name, sel in selections.items()}
                     for b, band in enumerate(SHORT)}
+    if any(bt.store.read(i, "growth_syn") for i in infos):
+        syn = syn_geometry(bt)
+        if syn is not None:
+            out["synthetic"] = syn_summary(bt, infos, syn)
     return out
 
 
@@ -404,4 +566,23 @@ def median_curves(bt: Battery, infos: list[ModelInfo], sel: np.ndarray | None = 
             cell["epsf"] = np.nanmedian(psf / np.where(lr > 0, lr, np.nan), 0)
             cell["epsf_norm"] = np.nanmedian(psf / norm, 0)
         out["models"][info.spec] = cell
+    return out
+
+
+def syn_median_curves(bt: Battery, infos: list[ModelInfo], band: int = 0) -> dict:
+    """Median synthetic curves of one band for the figure: truth ⊛ ePSF / input
+    and per model SR / truth and SR ⊛ ePSF / input."""
+    if not any(bt.store.read(i, "growth_syn") for i in infos):
+        return {"reference": None, "models": {}}
+    geo = syn_geometry(bt)
+    if geo is None:
+        return {"reference": None, "models": {}}
+    lr = np.where(geo["lr"][:, :, band] > 0, geo["lr"][:, :, band], np.nan)
+    truth = np.where(geo["truth"][:, :, band] > 0, geo["truth"][:, :, band], np.nan)
+    out = {"reference": np.nanmedian(geo["truth_epsf"][:, :, band] / lr, 0), "models": {}}
+    for info in infos:
+        if bt.store.read(info, "growth_syn"):
+            model = bt.store.arrays(info, "growth_syn")
+            out["models"][info.spec] = {"truth": np.nanmedian(model["cog"][:, :, band] / truth, 0),
+                                        "epsf": np.nanmedian(model["epsf"][:, :, band] / lr, 0)}
     return out

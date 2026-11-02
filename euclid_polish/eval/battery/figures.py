@@ -8,8 +8,8 @@
   against MER (``scripts/plot_flux_conservation.py``'s layout);
 * ``outskirt_recovery.png`` — injected light recovered per r / r_Kron ring;
 * ``curve_of_growth.png`` — real galaxies' SR/input F(<r) against r (all
-  galaxies and VIS > 24; raw, sky-matched and through the real ePSF) and the
-  median VIS curve of growth;
+  galaxies and VIS > 24; raw, sky-matched and through the real ePSF), the
+  median VIS curve of growth and the synthetic twin (SR/truth, SR ⊛ ePSF/input);
 * ``resolution_knee_scan.png`` — ½-coherence resolution against JWST at each
   surface brightness of the knee scan;
 * ``fields_synthetic_zooms.png`` / ``fields_synthetic_full.png`` — test
@@ -315,7 +315,7 @@ def flux_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
 
 def growth_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
     """Solid: the SR; dashed: sky-matched; dash-dot: the SR through the real
-    ePSF and rebinned."""
+    ePSF and rebinned. The last panel is the synthetic twin."""
     if not any(bt.store.read(i, "growth") for i in infos):
         return None
     geo = growth.geometry(bt)
@@ -323,8 +323,8 @@ def growth_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
     panels = [(growth.median_curves(bt, infos), "all NEXUS galaxies"),
               (growth.median_curves(bt, infos, geo["mag"] >= 24.0), "VIS > 24 mag")]
     panels.append((growth.median_curves(bt, infos, band=3), "H, all NEXUS galaxies"))
-    fig = _figure(20.0, 4.6)
-    axes = fig.subplots(1, 4)
+    fig = _figure(25.0, 4.6)
+    axes = fig.subplots(1, 5)
     styles = [("raw", "-", 1.8, "SR"), ("sky", "--", 1.2, "SR, sky-matched"),
               ("epsf", "-.", 1.5, "SR ⊛ Euclid ePSF")]
     for ax, (curves, title) in zip(axes[[0, 1, 3]], panels, strict=True):
@@ -353,6 +353,21 @@ def growth_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
     axes[2].set(title=f"VIS curve of growth (n = {len(geo['mag'])})", xlabel="aperture radius (″)",
                 ylabel="median F(<r) / F_input(<3″)")
     axes[2].legend(fontsize=7, loc="lower right")
+    syn = growth.syn_median_curves(bt, infos)
+    if syn["models"]:
+        ax = axes[4]
+        ax.plot(r, syn["reference"], "-.", color="k", lw=1.5, label="truth ⊛ ePSF / input")
+        for n, info in enumerate(infos):
+            cell = syn["models"].get(info.spec)
+            if cell:
+                ax.plot(r, cell["truth"], "-", color=f"C{n}", lw=1.8, label=f"{info.name} SR / truth")
+                ax.plot(r, cell["epsf"], "-.", color=f"C{n}", lw=1.5, label=f"{info.name} SR ⊛ ePSF / input")
+        ax.axhline(1.0, color="k", lw=1)
+        ax.set(title="VIS, synthetic test fields", xlabel="aperture radius (″)", ylabel="median per source",
+               ylim=(0.6, 1.6))
+        ax.legend(fontsize=7, loc="upper right")
+    else:
+        axes[4].set_axis_off()
     fig.tight_layout()
     return _save(fig, path, dpi=100)
 

@@ -257,6 +257,25 @@ def table_rows(s: dict, infos: Sequence[ModelInfo]) -> list[tuple[str, str, list
                 lambda p: " / ".join(cells(p, b, "epsf_r50", ["all"], 2) for b in ("VIS", "Y", "J", "H")))
         add(sec, "blank-sky SR − input VIS / Y / J / H (e⁻ per SR px)",
             lambda p: _band_list(_get(growth, p, "sky") or [None] * 4, 3))
+    syn = _get(s, "growth", "synthetic") or {}
+    if syn.get("models"):
+        sec = (f"Curve of growth, synthetic test fields (n = {syn['n_sources']} sources, "
+               f"{syn['n_fields']} fields, truth VIS mag)")
+        mags = [r for r in s["growth"]["ranges"] if r != "all"]
+
+        def syn_cells(p, kind, band, key, names):
+            return " / ".join(num(_get(syn, "models", p, kind, band, n, key, "median"), 3) for n in names)
+
+        add(sec, "SR ⊛ ePSF / input: VIS F(<0.5″) / F(<1″) / F(<3″), all",
+            lambda p: " / ".join(syn_cells(p, "epsf", "VIS", k, ["all"]) for k in ("r0.5", "r1", "r3")))
+        add(sec, f"SR ⊛ ePSF / input: VIS F(<1″), mag {' / '.join(mags)}",
+            lambda p: syn_cells(p, "epsf", "VIS", "r1", mags))
+        add(sec, "SR ⊛ ePSF / input: Y / J / H F(<0.5″), all",
+            lambda p: " / ".join(syn_cells(p, "epsf", b, "r0.5", ["all"]) for b in ("Y", "J", "H")))
+        add(sec, f"SR / truth: VIS F(<3″), mag {' / '.join(mags)}",
+            lambda p: syn_cells(p, "truth", "VIS", "r3", mags))
+        add(sec, "blank-sky SR − truth VIS / Y / J / H (e⁻ per SR px)",
+            lambda p: _band_list(_get(syn, "models", p, "sky") or [None] * 4, 3))
     return rows
 
 
@@ -360,6 +379,11 @@ def markdown(s: dict, infos: Sequence[ModelInfo], meta: dict) -> str:
                   f"{ref('jwst', 'real_out3')}; Euclid input real {ref('lr', 'real3')}, synthetic "
                   f"{ref('lr', 'syn3')}; truth synthetic {ref('truth', 'syn3')} (outskirts "
                   f"{ref('truth', 'syn_out3')}); white noise {ref('white', 'real3')}."]
+    syn_ref = _get(s, "growth", "synthetic", "reference", "VIS", "all") or {}
+    if syn_ref:
+        lines += ["", "Curve-of-growth method check (no model): truth ⊛ ePSF / input on the synthetic "
+                  "fields, VIS F(<0.5″) / F(<1″) / F(<3″) = "
+                  + " / ".join(num(_get(syn_ref, k, "median"), 3) for k in ("r0.5", "r1", "r3")) + "."]
     if len(infos) > 1:
         lines += ["", f"## Paired differences vs {infos[0].name}", "",
                   *_markdown_table(["comparison", *names[1:]], paired_rows(s, infos))]
