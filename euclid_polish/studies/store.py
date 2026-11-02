@@ -316,10 +316,14 @@ class StudyStore:
                 "numbers not written" if not manifest.get("numbers") else "not sealed")
         ensemble = manifest.get("ensemble") or {}
         gate = manifest.get("gate") or {}
+        # A battery study (studies.battery) compares chosen models, not the membership.
+        models = [str(m.get("name")) for m in (manifest.get("battery") or {}).get("models") or []]
         return {
             "id": study_id, "name": manifest.get("name"), "created": manifest.get("created"),
             "completed": manifest.get("completed"), "regime": manifest.get("regime"),
-            "members": len(ensemble.get("members") or []),
+            "kind": manifest.get("kind") or "ensemble", "models": models,
+            "members": len(models) if manifest.get("kind") == "battery"
+            else len(ensemble.get("members") or []),
             "gate": gate.get("name") or gate.get("promoted_from"),
             "fields": len(fields), "field_ids": [f.get("fid") for f in fields],
             "note": self.note(study_id), "commit": manifest.get("commit"),

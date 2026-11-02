@@ -1,5 +1,6 @@
-/* Figures › Studies, the list: every study, newest first — name, created,
- * members, gate, fields, note and (only on a problem) its state. An
+/* Figures › Studies, the list: every study, newest first — name (a battery
+ * study is marked), created, members, gate, fields, note and (only on a
+ * problem) its state. An
  * incomplete study offers Resume; Delete is confirmed. A freeze running now
  * shows its progress here too. Reads `/api/studies` only. */
 import { useEffect, useMemo, useState } from "react";
@@ -51,7 +52,12 @@ export function StudyList() {
   ]);
 
   const columns = useMemo<DataColumn<StudySummary>[]>(() => [
-    { id: "name", header: "Study", cell: (s) => <Link to={studyPath(s.id)} className="stu-name">{s.name}</Link> },
+    { id: "name", header: "Study", cell: (s) => (
+      <span className="stu-row-actions">
+        <Link to={studyPath(s.id)} className="stu-name">{s.name}</Link>
+        {s.kind === "battery" && <Badge size="sm" title={`Model battery: ${(s.models ?? []).join(", ")}`}>battery</Badge>}
+      </span>
+    ) },
     { id: "created", header: "Created", width: 118, cell: (s) => formatDate(s.created), priority: 3 },
     { id: "regime", header: "Regime", width: 92, priority: 4 },
     { id: "members", header: "Members", numeric: true, width: 90, cell: (s) => formatCount(s.members) },
@@ -78,8 +84,8 @@ export function StudyList() {
   return (
     <div className="stu-stack">
       <PageLead right={<Button variant="primary" onClick={() => setFreezeOpen(true)}>Freeze study…</Button>}>
-        Frozen comparisons of the whole ensemble. A study keeps every member's numbers after the member is archived, and exports each chart as a
-        publication figure with its CSV.
+        Frozen comparisons of the whole ensemble, or of chosen models through the model battery (scripts/model_battery.py --study). A study keeps
+        every model's numbers after the model is archived, and exports each chart as a publication figure with its CSV.
       </PageLead>
       {busyWhy && <p id="stu-list-busy" className="stu-reason" role="status">{busyWhy}</p>}
       {(freezeJob.job || freezeJob.error) && <JobProgress job={freezeJob.job} error={freezeJob.error} />}

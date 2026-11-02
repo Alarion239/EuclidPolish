@@ -12,6 +12,10 @@
 * ``GET  /api/studies/<id>/figure/<chart>[.csv]``      — a publication figure or its CSV.
 * ``GET  /api/studies/<id>/numbers/<path>``            — one frozen numbers file.
 
+A battery study (``kind: battery``, frozen by ``scripts/model_battery.py
+--study``) answers ``numbers.battery`` (its ``battery.json``) and no charts:
+its figures and report are numbers files.
+
 Opening or reading never starts a job and never fetches a field; freezing,
 resuming, fetching and deleting are explicit POSTs. The numbers never need
 FASRC; attaching and fetching fields do (fetch is ``@requires_fasrc``; a
@@ -25,6 +29,7 @@ from typing import Any
 
 from flask import jsonify, request, send_file
 
+from euclid_polish.studies import battery as study_battery
 from euclid_polish.studies import candidates as study_candidates
 from euclid_polish.studies import fields as study_fields
 from euclid_polish.studies import freeze as study_freeze
@@ -42,7 +47,8 @@ from euclid_polish.web.remote import STATE
 
 FREEZE_KIND = "study-freeze"
 FETCH_KIND = "study-fetch"
-_MEDIA = {"csv": "text/csv", "json": "application/json", "jpg": "image/jpeg"}
+_MEDIA = {"csv": "text/csv", "json": "application/json", "jpg": "image/jpeg", "png": "image/png",
+          "md": "text/markdown; charset=utf-8"}
 
 
 def _fail(message: str, status: int = 400, **extra):
@@ -222,17 +228,20 @@ def register(app):
         try:
             manifest = store.manifest(study_id)
             sha = store.manifest_sha256(study_id)
+            battery = manifest.get("kind") == study_battery.KIND
             out: dict[str, Any] = {
                 "ok": True, "study": store.summary(manifest), "manifest": manifest,
                 "manifest_sha256": sha,
                 "note": store.note(study_id), "selections": store.selections(study_id),
                 "fields": _fields_view(store, study_id, manifest),
-                "charts": list(study_render.CHARTS),
+                "charts": [] if battery else list(study_render.CHARTS),
                 "group_fields": list(study_render.GROUP_FIELDS),
                 "citation": (f"model study {study_id} “{manifest.get('name')}” "
                              f"(study.json sha256 {sha[:16]})"),
             }
-            if manifest.get("complete") and request.args.get("numbers", "1") != "0":
+            if manifest.get("complete") and request.args.get("numbers", "1") != "0" and battery:
+                out["numbers"] = {"battery": store.read_json(study_id, study_battery.RESULTS)}
+            elif manifest.get("complete") and request.args.get("numbers", "1") != "0":
                 out["numbers"] = {name.removesuffix(".json"): store.read_json(study_id, name)
                                   for name in ("knee_psnr.json", "training_curves.json",
                                                "gate.json", "real.json")}

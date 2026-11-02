@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.eval.battery import (
+    common,
     figures,
     flux,
     grid,
@@ -589,3 +590,20 @@ def test_figure_jobs_are_only_those_of_the_tests_that_ran(tmp_path):
     names = [name for name, _job in figures.jobs(bt, [_info()], {}, str(tmp_path), ["growth"])]
     assert names == ["curve of growth"]
     assert "real sky" in [name for name, _job in figures.jobs(bt, [_info()], {}, str(tmp_path), ["flux"])]
+
+
+def test_another_records_dir_moves_the_records_and_their_fingerprint(tmp_path, monkeypatch):
+    bc = common
+    monkeypatch.setattr(bc.ev, "universal_score_identity", lambda: {"records_fp": "mirror", "indices": [0]})
+    monkeypatch.setattr(bc.ev, "_sky_records_local_dir", lambda: "/mirror")
+    monkeypatch.setattr(bc.ev, "_eval_records_fingerprint", lambda d, subset: f"{subset}:{d}")
+    assert bc.records_dir() == "/mirror" and bc.score_identity()["records_fp"] == "mirror"
+    with pytest.raises(ValueError):
+        bc.use_records_dir(str(tmp_path / "missing"))
+    try:
+        bc.use_records_dir(str(tmp_path))
+        assert bc.records_dir() == str(tmp_path)
+        assert bc.score_identity() == {"records_fp": f"test:{tmp_path}", "indices": [0]}
+    finally:
+        bc.use_records_dir(None)
+    assert bc.records_dir() == "/mirror"

@@ -836,8 +836,11 @@ blank-sky-matched, and half-light radii; also with the SR put back through the t
 pulled from FASRC to `data/euclid_psf_training/`); and the field figures. It writes one table (`battery.md`, `battery.json`, the first model
 the baseline of paired comparisons) and `figures/`, caches each model's SR outputs so the tests
 share inference, loads one model at a time and writes nothing under `data/`. It reproduces the
-2026-10-29/30 comparison of 257 @ 15M with 238 (a reference check in the table); about 40 min per
-model on a laptop.
+2026-10-29/30 comparison of 257 @ 15M with 238 (a reference check in the table); about 15–40 min per
+model on a laptop. `--records-dir DIR` reads the synthetic test set from DIR instead of the
+console's mirror (another noise model's records; stored results follow the records fingerprint),
+and `--study NAME` freezes the finished run as a battery study in Figures › Studies (the table,
+the paired comparisons, the report and the figures, hashed and sealed; `euclid_polish/studies/battery.py`).
 
 ### 9.4 Real-sky and grouped evaluation
 

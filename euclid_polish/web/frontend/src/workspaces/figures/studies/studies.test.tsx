@@ -461,3 +461,53 @@ describe("the study view", () => {
     expect(why?.textContent).toMatch(/A study is being frozen \(“Loss and knee”\): Resume waits/);
   });
 });
+
+describe("a battery study", () => {
+  const BID = "20261102-140000-steps-on-v6";
+  const models = [
+    { spec: "milestone:member_259@200000", name: "259@200k", kind: "milestone", member: "member_259", step: 200000, fingerprint: "ckpt-200000:1:2" },
+    { spec: "milestone:member_260@2000000", name: "260@2M", kind: "milestone", member: "member_260", step: 2000000, fingerprint: "ckpt-2000000:1:3" },
+  ];
+  const BSUMMARY: StudySummary = { ...SUMMARY, id: BID, name: "Steps on v6", members: 2, gate: null, fields: 0, field_ids: [], kind: "battery", models: ["259@200k", "260@2M"] };
+  const BDETAIL: StudyDetail = {
+    ...DETAIL, study: BSUMMARY, selections: [], fields: [], charts: [], group_fields: [],
+    manifest: {
+      id: BID, name: "Steps on v6", created: "2026-11-02T14:00:00Z", completed: "2026-11-02T14:00:01Z", complete: true, kind: "battery", warnings: [],
+      battery: { models, tests: ["synthetic", "grid", "figures"], records_dir: "/data/records_v6_test", records_fp: "dirty:1|hr:2",
+        figures: ["figure-curve_of_growth.png", "figure-kron_vis.png"] },
+    },
+    numbers: { battery: {
+      table: [["Synthetic score", "∫PSNR, mean of 4 bands (dB)", ["59.98", "61.60"]], ["Grid", "real sky", ["2.5%", "3.8%"]]],
+      paired: [["Grid z ≥ 3 share", "real sky", ["+1.4 [+1.0, +1.8]"]]],
+    } },
+  };
+  beforeEach(() => {
+    routes["GET /api/studies"] = () => ({ body: { ok: true, studies: [BSUMMARY, SUMMARY], root: "tracking/studies", max_fields: 10, freezing: null } });
+    routes[`GET /api/studies/${BID}`] = () => ({ body: BDETAIL });
+  });
+
+  it("is marked in the list", async () => {
+    show("/figures/studies");
+    const row = (await screen.findByRole("link", { name: "Steps on v6" })).closest("tr")!;
+    expect(within(row).getByText("battery")).toBeTruthy();
+  });
+
+  it("shows the frozen table, the paired comparisons and the frozen figures, and fetches no chart", async () => {
+    show(`/figures/studies?study=${BID}`);
+    const table = await screen.findByRole("table", { name: "Synthetic score" });
+    expect(within(table).getByRole("columnheader", { name: "259@200k" })).toBeTruthy();
+    expect(within(table).getByText("61.60")).toBeTruthy();
+    expect(screen.getByText("records_v6_test")).toBeTruthy();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Paired vs baseline" }));
+    const paired = await screen.findByRole("table", { name: "Grid z ≥ 3 share" });
+    expect(within(paired).queryByRole("columnheader", { name: "259@200k" })).toBeNull();
+    expect(within(paired).getByText("+1.4 [+1.0, +1.8]")).toBeTruthy();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Figures" }));
+    const img = await screen.findByRole("img", { name: "Curve of growth" });
+    expect(img.getAttribute("src")).toBe(`/api/studies/${BID}/numbers/figure-curve_of_growth.png`);
+    fireEvent.click(screen.getByRole("button", { name: "Kron vis" }));
+    await waitFor(() => expect(loc()).toContain("figure=figure-kron_vis.png"));
+    expect(calls.some((c) => c.url.includes("/figure/"))).toBe(false);
+    expect(posts()).toEqual([]);
+  });
+});

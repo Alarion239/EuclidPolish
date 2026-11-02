@@ -1319,7 +1319,17 @@ the same helper.
 
 ### Model studies (`routes/studies.py`, `euclid_polish/studies/`)
 
-A study freezes the **whole** ensemble of one regime (every active member, the production gate,
+A **battery study** (`kind: "battery"`, `studies/battery.py`) freezes a finished model-battery run
+instead (`scripts/model_battery.py SPEC … --out DIR --study NAME`): any chosen single models,
+`battery.json` (table + paired comparisons), `battery.md` and every figure as
+`figure-<name>.png` numbers files, the manifest's `battery{models[{spec, name, kind, member, step,
+fingerprint}], tests, created, records_fp, records_dir, seconds, source, figures}`. Its summary
+carries `kind` and `models` (and `members` = the model count), its study answer
+`numbers{battery}` and no charts; its files are read through `/numbers/<name>` (PNG as
+`image/png`, the report as `text/markdown`). A smoke run, a run without figures or with missing
+files is refused and leaves nothing.
+
+An ensemble study freezes the **whole** ensemble of one regime (every active member, the production gate,
 the combiner comparison) into an immutable record that outlives the members: archiving,
 retraining or deleting a member never touches it. Local store
 `<Config.TRACKING_DIR>/studies/<id>/` (outside every tracking campaign): `study.json` (the

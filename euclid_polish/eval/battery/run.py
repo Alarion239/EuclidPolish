@@ -25,6 +25,7 @@ from euclid_polish.eval.battery.common import (
     ModelRunner,
     SRCache,
     Store,
+    records_dir,
     resolve,
     score_identity,
     write_json,
@@ -92,7 +93,8 @@ def run(specs: Sequence[str], out_dir: str, *, tests: Sequence[str] = TESTS, cac
                 log(f"  pruned {freed / 1e9:.2f} GB of NEXUS SR outputs (kept the figures' tiles)")
     summary = summaries(bt, infos, tests)
     meta = {"created": time.strftime("%Y-%m-%d %H:%M"), "models": [i.__dict__ for i in infos],
-            "tests": list(tests), "limits": limits.tag, "records_fp": records_fp, "sr_cache": bt.cache.root,
+            "tests": list(tests), "limits": limits.tag, "records_fp": records_fp,
+            "records_dir": records_dir(), "sr_cache": bt.cache.root,
             "sr_computed": bt.cache.computed, "sr_read": bt.cache.read}
     paths = {"markdown": os.path.join(out_dir, "battery.md"), "json": os.path.join(out_dir, "battery.json")}
 

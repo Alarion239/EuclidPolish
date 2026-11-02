@@ -337,13 +337,32 @@ def nexus_lr(entry) -> np.ndarray:
     return np.asarray(rt.get_tile("nexus", entry.id, entry=entry).lr_e, np.float32)
 
 
+#: Test records read instead of the console's mirror (``use_records_dir``).
+_records_override: str | None = None
+
+
+def use_records_dir(path: str | None) -> None:
+    """Read the synthetic test records from ``path`` (a directory holding
+    ``dirty_test`` / ``hr_test`` / ``clean_test`` and ``sources_test.csv``)
+    instead of the console's mirror; ``None`` goes back to the mirror. The
+    records fingerprint follows, so results stored against other records are
+    never read."""
+    global _records_override
+    if path is not None and not os.path.isdir(path):
+        raise ValueError(f"no test records directory {path!r}")
+    _records_override = None if path is None else os.path.abspath(path)
+
+
 def score_identity() -> dict:
     """The Leaderboard's test fields, records and target (the console score's)."""
-    return ev.universal_score_identity()
+    identity = ev.universal_score_identity()
+    if _records_override is not None:
+        identity = {**identity, "records_fp": ev._eval_records_fingerprint(_records_override, "test")}
+    return identity
 
 
 def records_dir() -> str:
-    return ev._sky_records_local_dir()
+    return _records_override or ev._sky_records_local_dir()
 
 
 def test_fields(limit: int | None = None) -> Iterator[tuple[int, np.ndarray, object]]:

@@ -1,7 +1,8 @@
 /* One study (`/figures/studies?study=<id>`): what was frozen, the selection
  * (members, grouping, colour, named selections saved in the study's
  * sidecar), the six charts from the frozen numbers with their exports, and
- * the attached fields. Reads only on open; every write is a button. */
+ * the attached fields. A battery study has its own view (BatteryStudy).
+ * Reads only on open; every write is a button. */
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { apiPost } from "../../../api/client";
@@ -13,12 +14,14 @@ import { useUrlState } from "../../../hooks/useUrlState";
 import { useResolvedTheme } from "../../../state/prefs";
 import {
   Button, Callout, Details, FactsList, Field, IconButton, Input, JobProgress, MultiSelect, Num, Popover, Section, Select, Skeleton,
-  SummaryLine, Tabs, Textarea, Toolbar, ToolbarGroup, toast,
+  SummaryLine, Tabs, Toolbar, ToolbarGroup, toast,
 } from "../../../ui";
 import { FREEZE_JOB_KEY } from "../../shared/studyFreeze";
 import { deleteStudy, resumeStudy } from "./actions";
 import { studyUrl, useStudies, useStudy, type SavedSelection, type StudyDetail, type StudyMember } from "./api";
+import { BatteryStudy } from "./BatteryStudy";
 import { FieldsSection } from "./FieldsSection";
+import { NoteEditor } from "./NoteEditor";
 import { CHART_COMPONENT, makePalette, type ChartProps } from "./StudyCharts";
 import { CHARTS, CHART_TAB, CHART_TITLE, GROUP_LABEL, groupNames, memberKey, memberName, type Chart, type ChartSelection } from "./model";
 
@@ -29,39 +32,6 @@ const commitText = (c: StudyDetail["manifest"]["commit"]) => {
   if (typeof c === "string") return c;
   return `${c.short ?? c.hash?.slice(0, 8) ?? "—"}${c.dirty ? " (uncommitted changes)" : ""}`;
 };
-
-function NoteEditor({ detail, onSaved }: { detail: StudyDetail; onSaved: () => void }) {
-  const [text, setText] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const value = text ?? detail.note ?? "";
-  const changed = text != null && text !== (detail.note ?? "");
-  async function save() {
-    setSaving(true);
-    try {
-      await apiPost(`${studyUrl(detail.study.id)}/note`, { note: value });
-      toast.success("Note saved");
-      setText(null);
-      onSaved();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-  return (
-    <div className="stu-note">
-      <Field label="Note" description="The study's only editable text besides its named selections; the frozen numbers never change.">
-        <Textarea value={value} onChange={setText} rows={2} />
-      </Field>
-      {changed && (
-        <div className="stu-note__actions">
-          <Button size="sm" variant="ghost" onClick={() => setText(null)}>Discard</Button>
-          <Button size="sm" variant="primary" loading={saving} onClick={() => void save()}>Save note</Button>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function SaveSelection({ detail, current, onSaved }: {
   detail: StudyDetail; current: { members: readonly string[] | null; group: string | null }; onSaved: () => void;
@@ -289,6 +259,7 @@ export function StudyView({ id }: { id: string }) {
     );
   }
   if (!res.data) return <Skeleton lines={8} />;
+  if (res.data.manifest.kind === "battery") return <BatteryStudy detail={res.data} reload={() => { invalidate(studyUrl(id)); res.reload(); }} />;
   return <Loaded detail={res.data} reload={() => { invalidate(studyUrl(id)); res.reload(); }} />;
 }
 

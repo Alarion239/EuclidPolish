@@ -22,6 +22,10 @@ export type StudySummary = {
   reason: string | null;
   numbers_bytes: number;
   fields_bytes: number;
+  /** "ensemble" (the membership) or "battery" (chosen models, studies/battery.py). */
+  kind?: "ensemble" | "battery" | string;
+  /** A battery study's model names, in table order (the first is the baseline). */
+  models?: string[];
 };
 
 export type StudiesList = {
@@ -69,11 +73,33 @@ export type StudyManifest = {
   records?: { records_fp?: string | null; subset?: string | null; indices?: number[]; noise_models?: unknown };
   evaluation?: { evaluated_at?: string | null };
   warnings?: string[];
+  kind?: string;
+  battery?: BatteryManifest;
   knees?: number[];
   bands?: string[];
   knee_fields?: number[];
   [k: string]: unknown;
 };
+
+/** One model of a battery study (the battery's ModelInfo, without paths). */
+export type BatteryModel = { spec: string; name: string; kind: string; member: string; step: number | null; fingerprint: string };
+
+export type BatteryManifest = {
+  models: BatteryModel[];
+  tests: string[];
+  created?: string | null;
+  records_fp?: string | null;
+  records_dir?: string | null;
+  seconds?: number | null;
+  source?: string | null;
+  /** Numbers-file names of the figures (`figure-<name>.png`). */
+  figures: string[];
+};
+
+/** One table row: [section, metric, one value per model (paired: per model after the baseline)]. */
+export type BatteryRow = [string, string, string[]];
+
+export type BatteryNumbers = { meta?: Record<string, unknown>; table: BatteryRow[]; paired: BatteryRow[] };
 
 export type StudyViewer = { collection: string; params: Record<string, string>; id: string };
 
@@ -123,7 +149,7 @@ export type StudyDetail = {
   charts: string[];
   group_fields: string[];
   citation: string;
-  numbers?: { knee_psnr?: KneeNumbers; training_curves?: unknown; gate?: GateNumbers; real?: RealNumbers };
+  numbers?: { knee_psnr?: KneeNumbers; training_curves?: unknown; gate?: GateNumbers; real?: RealNumbers; battery?: BatteryNumbers };
 };
 
 export const STUDIES_URL = "/api/studies";
