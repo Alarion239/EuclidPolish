@@ -24,7 +24,8 @@ and a faint empty-sky window counts as much as a bright halo.
 
 The batch mean ``B(k)`` of the normalised spectra feeds an exponential moving
 average ``M(k)`` (``decay``; state checkpointed with the model), so isotropy
-is enforced on average, not batch by batch. The excess
+is enforced on average, not batch by batch (``decay`` 0 judges each batch
+by itself: ``M = B``). The excess
 ``E(k) = relu(M(k) / ringmean(M) - 1 - tolerance)`` marks the directions that
 carry more error than the rest of their ring, and the penalty is
 ``sum_k E(k) B(k) / sum_k B(k)``, averaged over the bands. ``E``, the window

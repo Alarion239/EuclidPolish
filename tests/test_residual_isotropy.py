@@ -343,3 +343,41 @@ def test_model_train_needs_crops_that_hold_the_largest_window(tmp_path):
         learned.train("missing_lr", "missing_hr", steps=1, isotropy_penalty=0.1, forward_onthefly=True,
                       hr_crop_size=96)
 
+
+
+# -- per batch: no moving average -------------------------------------------------
+
+def test_per_batch_judges_each_batch_by_itself():
+    iso = MultiScaleIsotropy(((64.0, 3.0, 21.0, 1.0),), n_bands=1, decay=0.0)
+    field = _isotropic_field(-1.0, 8, seed=3)
+    yy, xx = np.mgrid[0:256, 0:256]
+    gridded = field + 0.5 * np.sin(2 * np.pi * xx / 8.0)[None, ..., None].astype(np.float32)
+    sr = lambda r: tf.constant(iso.knee_e * np.sinh(r))  # noqa: E731
+    first = float(iso.penalty(sr(gridded), tf.zeros((8, 256, 256, 1))))
+    # The grid is gone from the next batch, and so is its cost: nothing remembers it.
+    after = float(iso.penalty(sr(field), tf.zeros((8, 256, 256, 1))))
+    fresh = MultiScaleIsotropy(((64.0, 3.0, 21.0, 1.0),), n_bands=1, decay=0.0)
+    assert first > 10 * after
+    assert after == pytest.approx(float(fresh.penalty(sr(field), tf.zeros((8, 256, 256, 1)))), rel=1e-5)
+
+
+def test_the_per_batch_knob_from_member_spec_origin_and_continue(tmp_path, monkeypatch):
+    member = {"asinh_knees": list(KNEES), "learn_output_knee": True, "isotropy_penalty": 0.5,
+              "isotropy_per_batch": True}
+    spec = build_specs(parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([member])]),
+                       str(tmp_path / "b1"))[0]
+    assert spec.isotropy_per_batch is True
+    for bad in ({**member, "isotropy_per_batch": 1}, {"asinh_knees": list(KNEES), "isotropy_per_batch": True}):
+        with pytest.raises(SystemExit):
+            build_specs(parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([bad])]),
+                        str(tmp_path / "b2"))
+    monkeypatch.setattr(ens_mod, "Model", _Recorder)
+    base = tmp_path / "ensemble"
+    ens = EnsembleModel(str(base), _models=[])
+    ens.train_members("lr", "hr", [MemberTrainSpec(
+        name="member_315", seed=1, target_steps=10, run_steps=10, loss_norm="l2", asinh_knees=KNEES,
+        knee_loss="balanced", output_knee=10.0, learn_output_knee=True, isotropy_penalty=0.5,
+        isotropy_per_batch=True)])
+    assert json.loads((base / "member_315" / "origin.json").read_text())["isotropy_per_batch"] is True
+    assert ens._models[0].trained["isotropy_per_batch"] is True
+    assert _continue_identity("member_315", str(base / "member_315"), {}, {})["isotropy_per_batch"] is True

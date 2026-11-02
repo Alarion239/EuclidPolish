@@ -629,6 +629,7 @@ class Model:
         isotropy_penalty: float = 0.0,
         isotropy_knee: float | None = None,
         isotropy_scales: Sequence[Sequence[float]] | None = None,
+        isotropy_per_batch: bool = False,
         jit_compile: bool = False,
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
@@ -693,8 +694,10 @@ class Model:
         ``isotropy_knee`` (e⁻, default 0.01) must not prefer a direction,
         which the pixel-axis grid does, at the ``isotropy_scales``
         ((window px, shortest period px, longest period px[, weight]) each;
-        ``None`` → ``training.isotropy.DEFAULT_SCALES``). It needs a learned output knee
-        (electrons out) and live training (electrons in).
+        ``None`` → ``training.isotropy.DEFAULT_SCALES``). ``isotropy_per_batch``
+        judges each batch's directions by that batch alone (moving-average
+        decay 0). It needs a learned output knee (electrons out) and live
+        training (electrons in).
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
@@ -821,10 +824,13 @@ class Model:
         isotropy = None
         if isotropy_penalty:
             knee = float(isotropy_knee) if isotropy_knee else DEFAULT_ISOTROPY_KNEE_E
-            isotropy = MultiScaleIsotropy(scales, knee_e=knee, n_bands=Config.NUM_HR_CHANNELS)
+            isotropy = MultiScaleIsotropy(scales, knee_e=knee, n_bands=Config.NUM_HR_CHANNELS,
+                                          **({"decay": 0.0} if isotropy_per_batch else {}))
             provenance_fields["isotropy_penalty"] = float(isotropy_penalty)
             provenance_fields["isotropy_knee"] = knee
             provenance_fields["isotropy_scales"] = [list(scale) for scale in scales]
+            if isotropy_per_batch:
+                provenance_fields["isotropy_per_batch"] = True
         loss = self._member_loss(loss_norm, knee_loss, loss_knees, loss_floor, knee_tilt,
                                  lupton=bool(lupton), loss_knee_weights=loss_knee_weights)
         if loss_knee_weights:

@@ -218,11 +218,13 @@ class MemberTrainSpec:
     #: average, the error stretched at ``isotropy_knee`` e⁻ (``None`` = the
     #: module default, 0.01) must not prefer a direction, at
     #: ``isotropy_scales`` ((window, shortest, longest period px, weight) each;
-    #: ``None`` = the module default). 0 = off. Recorded in origin.json; continue keeps
-    #: all three.
+    #: ``None`` = the module default). 0 = off. ``isotropy_per_batch`` scores
+    #: each batch against its own spectrum instead of the moving average.
+    #: Recorded in origin.json; continue keeps all four.
     isotropy_penalty: float = 0.0
     isotropy_knee: float | None = None
     isotropy_scales: tuple[tuple[float, float, float, float], ...] | None = None
+    isotropy_per_batch: bool = False
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
     #: Faster training steps (see ``Model.train``): XLA-compile the gradient
@@ -558,6 +560,8 @@ class EnsembleModel:
                     origin["isotropy_knee"] = float(spec.isotropy_knee or DEFAULT_ISOTROPY_KNEE_E)
                     scales = canonical_scales(spec.isotropy_scales or DEFAULT_ISOTROPY_SCALES)
                     origin["isotropy_scales"] = [list(scale) for scale in scales]
+                    if spec.isotropy_per_batch:
+                        origin["isotropy_per_batch"] = True
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval
@@ -587,6 +591,8 @@ class EnsembleModel:
                 member_train_kwargs["isotropy_penalty"] = float(spec.isotropy_penalty)
                 member_train_kwargs["isotropy_knee"] = spec.isotropy_knee
                 member_train_kwargs["isotropy_scales"] = spec.isotropy_scales
+                if spec.isotropy_per_batch:
+                    member_train_kwargs["isotropy_per_batch"] = True
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"

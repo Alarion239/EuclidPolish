@@ -298,6 +298,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                         + ",".join(f"{w:g}:{a:g}:{b:g}:{c:g}" for w, a, b, c in DEFAULT_ISOTROPY_SCALES)
                         + "). Member-spec key: isotropy_scales, a list of "
                         "[window, shortest, longest(, weight)].")
+    p.add_argument("--isotropy-per-batch", action="store_true",
+                   help="Judge each batch's error directions by that batch "
+                        "alone, not by the moving average over recent "
+                        "batches. Member-spec key: isotropy_per_batch.")
     p.add_argument("--loss-knees", default=None,
                    help="Comma-separated knees (e⁻) a single-image multi-knee "
                         "member is SCORED at — a subset of the knees it reads "
@@ -505,7 +509,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "loss_knees", "loss_floor", "knee_tilt", "loss_knee_weights", "lupton_loss",
                "brightness_consistency", "noise_texture_jitter",
                "galaxy_blur_prob", "galaxy_blur_fwhm_max",
-               "isotropy_penalty", "isotropy_knee", "isotropy_scales",
+               "isotropy_penalty", "isotropy_knee", "isotropy_scales", "isotropy_per_batch",
                "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
@@ -726,6 +730,10 @@ def _diversity_kwargs(args, over: dict) -> dict:
     if isotropy_scales and not isotropy_penalty:
         print("✗ isotropy_scales needs an isotropy_penalty")
         raise SystemExit(2)
+    isotropy_per_batch = _flag(over.get("isotropy_per_batch", args.isotropy_per_batch), "isotropy_per_batch")
+    if isotropy_per_batch and not isotropy_penalty:
+        print("✗ isotropy_per_batch needs an isotropy_penalty")
+        raise SystemExit(2)
     lupton = _flag(over.get("lupton_loss", args.lupton_loss), "lupton_loss")
     brightness = _flag(over.get("brightness_consistency", args.brightness_consistency),
                        "brightness_consistency")
@@ -779,6 +787,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "isotropy_penalty": isotropy_penalty,
             "isotropy_knee": isotropy_knee,
             "isotropy_scales": isotropy_scales,
+            "isotropy_per_batch": isotropy_per_batch,
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
             "forward_onthefly": bool(over.get("forward_onthefly",
@@ -874,6 +883,8 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
             # Members from before the scales were recorded scored 3-21 px.
             identity["isotropy_scales"] = (_isotropy_scales(origin["isotropy_scales"])
                                            if origin.get("isotropy_scales") else LEGACY_ISOTROPY_SCALES)
+        if "isotropy_per_batch" not in override and origin.get("isotropy_per_batch") is True:
+            identity["isotropy_per_batch"] = True
     # A member created with faster steps keeps them (a member-spec xla/bf16
     # false turns one off).
     for key, field in (("xla", "jit_compile"), ("bf16", "mixed_precision")):
@@ -1161,7 +1172,8 @@ def main() -> int:
             knobs += (f" isotropy={s.isotropy_penalty:g}"
                       f"@{s.isotropy_knee or DEFAULT_ISOTROPY_KNEE_E:g}e"
                       " scales=" + ",".join(f"{w:g}:{a:g}:{b:g}:{c:g}" for w, a, b, c in
-                                             (s.isotropy_scales or DEFAULT_ISOTROPY_SCALES)))
+                                             (s.isotropy_scales or DEFAULT_ISOTROPY_SCALES))
+                      + (" per-batch" if s.isotropy_per_batch else ""))
         if s.bootstrap:
             knobs += f" bootstrap={s.bootstrap:g}"
         if s.forward_onthefly:
