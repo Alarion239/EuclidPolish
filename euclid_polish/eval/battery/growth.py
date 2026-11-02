@@ -20,15 +20,13 @@ pixel. Blank sky still holds undetected faint galaxies, so the truth sits
 between the raw and the sky-matched ratio.
 
 To separate light moved by the resolution from light lost, each SR is also
-seen with Euclid's PSF (:func:`euclid_psf`: every band smoothed by the Gaussian
-taking the SR's target PSF to the band's measured MER FWHM) and measured the
-same way: where it follows the input, the SR differs from the input only by
-resolution; what it misses at 3″ is lost. A Gaussian has no wings, so the SR
-is also put through the forward model's noiseless image formation
-(:func:`forward`): convolved with the training ePSF of the cluster nearest
-the tile (the FASRC ``$DATA_DIR/euclid_psf`` files, pulled to
-:data:`EPSF_DIR`) and sum-rebinned to the input grid. The SR's own 0.066″
-target PSF stays in, so this is a hair wider than the real image formation.
+put through the forward model's noiseless image formation (:func:`forward`):
+convolved with the training ePSF of the cluster nearest the tile (the FASRC
+``$DATA_DIR/euclid_psf`` files, pulled to :data:`EPSF_DIR`), sum-rebinned to
+the input grid and measured the same way. Where it follows the input, the SR
+differs from the input only by resolution; what it misses is lost. The SR's
+own 0.066″ target PSF stays in, so this is a hair wider than the real image
+formation.
 
 The geometry (rings, masks, input curves) is measured once (no model); each
 model adds its SR curves and blank-sky offsets.
@@ -39,11 +37,9 @@ import os
 
 import numpy as np
 from astropy.wcs import WCS
-from scipy.ndimage import gaussian_filter
 from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
-from euclid_polish.eval import flux_conservation as fc
 from euclid_polish.eval.battery.common import (
     MER_CATALOGUE,
     SHORT,
@@ -78,8 +74,6 @@ KRON_APERTURE = 2.5
 #: The training ePSFs (FASRC ``$DATA_DIR/euclid_psf``; the local
 #: ``data/euclid_psf`` is an older VIS-only extraction).
 EPSF_DIR = os.path.join(Config.DATA_DIR, "euclid_psf_training")
-#: The SR seen through a PSF: summary/curve prefix → stage.
-SEEN = {"psf": "growth_psf", "epsf": "growth_epsf"}
 
 
 def range_name(lo: float, hi: float) -> str:
@@ -150,20 +144,6 @@ def centre(x: float, y: float) -> tuple[slice, slice]:
 def spread(lr: np.ndarray) -> np.ndarray:
     """The input on the SR grid, flux-conserving."""
     return np.repeat(np.repeat(lr, 2, 0), 2, 1) / 4.0
-
-
-def euclid_sigma_px() -> np.ndarray:
-    """Per band (VIS, Y, J, H): σ in SR px of the Gaussian that takes the SR's
-    target PSF to Euclid's measured MER FWHM."""
-    native = np.array([fc.NATIVE_FWHM_ARCSEC[b] for b in fc.BANDS])
-    width = np.sqrt(np.maximum(native ** 2 - Config.TARGET_PSF_FWHM_ARCSEC ** 2, 0.0))
-    return width / (2.0 * np.sqrt(2.0 * np.log(2.0))) / SR_PIXEL_ARCSEC
-
-
-def euclid_psf(sr: np.ndarray) -> np.ndarray:
-    """An SR ``(h, w, 4)`` seen with Euclid's PSF (flux kept away from the edges)."""
-    return np.stack([gaussian_filter(sr[..., b], sigma, mode="constant")
-                     for b, sigma in enumerate(euclid_sigma_px())], -1)
 
 
 def epsf_paths(psf_dir: str = EPSF_DIR) -> list[str] | None:
@@ -278,15 +258,6 @@ def run(bt: Battery, info: ModelInfo) -> dict:
                                             _measure(bt, info, geo, lambda sr, _: sr, True)))
 
 
-def run_psf(bt: Battery, info: ModelInfo) -> dict:
-    """The curves of the model's SR seen with Euclid's PSF (:func:`euclid_psf`)."""
-    geo = geometry(bt)
-    return bt.stage(info, "growth_psf",
-                    lambda: ({"n_galaxies": len(geo["tile"]),
-                              "sigma_sr_px": [float(v) for v in euclid_sigma_px()]},
-                             _measure(bt, info, geo, lambda sr, _: euclid_psf(sr), False)))
-
-
 def tile_clusters(bt: Battery, centroids: np.ndarray) -> tuple[dict[str, int], dict[str, np.ndarray]]:
     """Per NEXUS tile, the ePSF cluster nearest its centre and the input's
     per-band padding holes on the SR grid."""
@@ -388,10 +359,8 @@ def summary(bt: Battery, infos: list[ModelInfo]) -> dict:
                                           "kron": boot_median(kron[sel]),
                                           "r50": boot_median(r50[sel])}
                                    for name, sel in selections.items()}
-        for prefix, stage in SEEN.items():
-            if not bt.store.read(info, stage):
-                continue
-            psf = bt.store.arrays(info, stage)["cog"]
+        if bt.store.read(info, "growth_epsf"):
+            psf = bt.store.arrays(info, "growth_epsf")["cog"]
             seen = psf / np.where(geo["lr"] > 0, geo["lr"], np.nan)
             for b, band in enumerate(SHORT):
                 # sky-matched like the SR's r50 (a unit-sum kernel keeps the blank-sky level)
@@ -399,8 +368,8 @@ def summary(bt: Battery, infos: list[ModelInfo]) -> dict:
                                  * geo["area"]) / r50_lr[b]
                 for name, sel in selections.items():
                     cell["bands"][band][name].update(
-                        {f"{prefix}_r{r:g}": boot_median(seen[sel, _index(r), b]) for r in QUOTED_RADII})
-                    cell["bands"][band][name][f"{prefix}_r50"] = boot_median(r50[sel])
+                        {f"epsf_r{r:g}": boot_median(seen[sel, _index(r), b]) for r in QUOTED_RADII})
+                    cell["bands"][band][name]["epsf_r50"] = boot_median(r50[sel])
         out["models"][info.spec] = cell
         raw3[info.spec] = raw[:, _index(3.0), :]
     if infos and infos[0].spec in raw3:
@@ -416,7 +385,7 @@ def summary(bt: Battery, infos: list[ModelInfo]) -> dict:
 
 def median_curves(bt: Battery, infos: list[ModelInfo], sel: np.ndarray | None = None, band: int = 0) -> dict:
     """Median curves of one band (VIS by default) for the figure: per model
-    raw, sky-matched, Euclid-PSF and ePSF-forward SR/input, and
+    raw, sky-matched and ePSF-forward SR/input, and
     F(<r) / F_input(<3″) of the input and each model."""
     geo = geometry(bt)
     sel = np.ones(len(geo["mag"]), bool) if sel is None else sel
@@ -429,11 +398,10 @@ def median_curves(bt: Battery, infos: list[ModelInfo], sel: np.ndarray | None = 
         raw, matched = ratios(geo, model)
         cell = {"raw": np.nanmedian(raw[sel, :, band], 0), "sky": np.nanmedian(matched[sel, :, band], 0),
                 "norm": np.nanmedian(model["cog"][sel, :, band] / norm, 0)}
-        for prefix, stage in SEEN.items():
-            if bt.store.read(info, stage):
-                psf = bt.store.arrays(info, stage)["cog"][sel, :, band]
-                lr = geo["lr"][sel, :, band]
-                cell[prefix] = np.nanmedian(psf / np.where(lr > 0, lr, np.nan), 0)
-                cell[f"{prefix}_norm"] = np.nanmedian(psf / norm, 0)
+        if bt.store.read(info, "growth_epsf"):
+            psf = bt.store.arrays(info, "growth_epsf")["cog"][sel, :, band]
+            lr = geo["lr"][sel, :, band]
+            cell["epsf"] = np.nanmedian(psf / np.where(lr > 0, lr, np.nan), 0)
+            cell["epsf_norm"] = np.nanmedian(psf / norm, 0)
         out["models"][info.spec] = cell
     return out

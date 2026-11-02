@@ -484,35 +484,16 @@ def test_growth_summary_ratios_sky_matching_and_pairs(tmp_path, monkeypatch):
     assert rows[(sec, "VIS F(<3″) sky-matched, mag <22 / 22-23 / 23-24 / >24")][1] == "1.000 / 1.000 / 1.000 / 1.000"
     paired = report.paired_rows({"growth": s}, [a, b])
     assert any(metric == "VIS, all" and cells[0].startswith("+0.000") for _s, metric, cells in paired)
-    assert not any("Euclid PSF" in metric for _s, metric in rows)              # not measured yet
-    bt.store.write(a, "growth_psf", {}, {"cog": geo["lr"].copy()})            # a ⊛ PSF gives the input back
-    s = growth.summary(bt, [a, b])
-    assert s["models"][a.spec]["bands"]["J"]["all"]["psf_r3"]["median"] == pytest.approx(1.0)
-    assert s["models"][a.spec]["bands"]["VIS"]["all"]["psf_r50"]["median"] == pytest.approx(1.0)
-    assert "psf_r3" not in s["models"][b.spec]["bands"]["VIS"]["all"]
-    rows = {(sec, metric): cells for sec, metric, cells in report.table_rows({"growth": s}, [a, b])}
-    assert rows[(sec, "SR ⊛ Euclid-FWHM Gaussian: VIS F(<0.5″) / F(<1″) / F(<3″), all")] == [
-        "1.000 / 1.000 / 1.000", "– / – / –"]
-    assert not any("ePSF" in metric for _s, metric in rows)
+    assert not any("ePSF" in metric for _s, metric in rows)                   # not measured yet
+    bt.store.write(a, "growth_epsf", {}, {"cog": geo["lr"].copy()})           # a ⊛ ePSF gives the input back
     bt.store.write(b, "growth_epsf", {}, {"cog": 0.8 * geo["lr"]})
     s = growth.summary(bt, [a, b])
+    assert s["models"][a.spec]["bands"]["J"]["all"]["epsf_r3"]["median"] == pytest.approx(1.0)
+    assert s["models"][a.spec]["bands"]["VIS"]["all"]["epsf_r50"]["median"] == pytest.approx(1.0)
     assert s["models"][b.spec]["bands"]["H"]["all"]["epsf_r1"]["median"] == pytest.approx(0.8)
     rows = {(sec, metric): cells for sec, metric, cells in report.table_rows({"growth": s}, [a, b])}
-    assert rows[(sec, "SR ⊛ Euclid ePSF, rebinned: Y / J / H F(<0.5″), all")] == [
-        "– / – / –", "0.800 / 0.800 / 0.800"]
-
-
-def test_growth_euclid_psf_keeps_flux_at_each_bands_width():
-    sigma = growth.euclid_sigma_px()
-    assert sigma[0] == pytest.approx(np.sqrt(0.147 ** 2 - 0.066 ** 2) / 2.3548 / 0.05, rel=1e-3)
-    assert np.all(np.diff(sigma) > 0)                                        # VIS sharpest, H broadest
-    sr = np.zeros((81, 81, 4))
-    sr[40, 40] = 100.0
-    seen = growth.euclid_psf(sr)
-    np.testing.assert_allclose(seen.sum((0, 1)), 100.0, rtol=1e-9)
-    yy = np.arange(81)[:, None] - 40.0
-    variance = (seen * (yy ** 2)[..., None]).sum((0, 1)) / seen.sum((0, 1))
-    np.testing.assert_allclose(np.sqrt(variance), sigma, rtol=0.02)
+    assert rows[(sec, "SR ⊛ Euclid ePSF, rebinned: VIS F(<0.5″) / F(<1″) / F(<3″), all")] == [
+        "1.000 / 1.000 / 1.000", "0.800 / 0.800 / 0.800"]
 
 
 def test_growth_forward_keeps_flux_and_spreads_like_the_input():

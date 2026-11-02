@@ -8,8 +8,8 @@
   against MER (``scripts/plot_flux_conservation.py``'s layout);
 * ``outskirt_recovery.png`` — injected light recovered per r / r_Kron ring;
 * ``curve_of_growth.png`` — real galaxies' SR/input F(<r) against r (all
-  galaxies and VIS > 24; raw, sky-matched, seen with a Gaussian of Euclid's
-  FWHM and through the real ePSF) and the median VIS curve of growth;
+  galaxies and VIS > 24; raw, sky-matched and through the real ePSF) and the
+  median VIS curve of growth;
 * ``resolution_knee_scan.png`` — ½-coherence resolution against JWST at each
   surface brightness of the knee scan;
 * ``fields_synthetic_zooms.png`` / ``fields_synthetic_full.png`` — test
@@ -314,8 +314,8 @@ def flux_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
 
 
 def growth_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
-    """Solid: the SR; dashed: sky-matched; dotted: the SR seen with a Gaussian
-    of Euclid's FWHM; dash-dot: the SR through the real ePSF and rebinned."""
+    """Solid: the SR; dashed: sky-matched; dash-dot: the SR through the real
+    ePSF and rebinned."""
     if not any(bt.store.read(i, "growth") for i in infos):
         return None
     geo = growth.geometry(bt)
@@ -326,7 +326,7 @@ def growth_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
     fig = _figure(20.0, 4.6)
     axes = fig.subplots(1, 4)
     styles = [("raw", "-", 1.8, "SR"), ("sky", "--", 1.2, "SR, sky-matched"),
-              ("psf", ":", 1.8, "SR ⊛ Euclid-FWHM Gaussian"), ("epsf", "-.", 1.5, "SR ⊛ Euclid ePSF")]
+              ("epsf", "-.", 1.5, "SR ⊛ Euclid ePSF")]
     for ax, (curves, title) in zip(axes[[0, 1, 3]], panels, strict=True):
         for n, info in enumerate(infos):
             cell = curves["models"].get(info.spec) or {}
@@ -347,8 +347,6 @@ def growth_figure(bt: Battery, infos: list[ModelInfo], path: str) -> str | None:
         cell = curves["models"].get(info.spec) or {}
         if "norm" in cell:
             axes[2].plot(r, cell["norm"], color=f"C{n}", lw=1.6, label=info.name)
-        if "psf_norm" in cell:
-            axes[2].plot(r, cell["psf_norm"], ":", color=f"C{n}", lw=1.8, label=f"{info.name} ⊛ Gaussian")
         if "epsf_norm" in cell:
             axes[2].plot(r, cell["epsf_norm"], "-.", color=f"C{n}", lw=1.5, label=f"{info.name} ⊛ ePSF")
     axes[2].axhline(1.0, color="k", lw=1)
