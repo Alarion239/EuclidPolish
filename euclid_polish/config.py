@@ -431,6 +431,10 @@ class Config:
     BANDS = (BAND_VIS, BAND_Y_E, BAND_J_E, BAND_H_E)
     LR_INPUT_BAND_NAMES = ("VIS", "Y_E", "J_E", "H_E")
     HR_TARGET_BAND_NAMES = ("VIS", "Y_E", "J_E", "H_E")
+    # The JWST/NIRCam filter compared with each Euclid band on the NEXUS
+    # field (the nearest bandpass): the resolution metric and the console's
+    # NEXUS panels.
+    JWST_PARTNER_FILTER = {"VIS": "F090W", "Y_E": "F115W", "J_E": "F150W", "H_E": "F200W"}
     # The single "primary" HR band: channel 0 (VIS). Still the band the
     # VIS-only model uses.
     HR_TARGET_BAND_NAME = "VIS"
@@ -1166,10 +1170,13 @@ class Config:
             "nisp_only": ("H_E", "J_E", "Y_E"),   # NIR-only, VIS-free
             "h_y_vis":   ("H_E", "Y_E", "VIS"),   # wider green-channel spacing
         }
-        # Pivot wavelengths (μm) of the four bands — the Planck-spectrum
+        # Representative wavelengths (μm) of the four bands — the Planck-spectrum
         # sampling points for the "eye" physical color mode's per-pixel
-        # color-temperature fit. VIS: Euclid Collaboration (Cropper+24);
-        # NISP Y/J/H: Schirmer+22 Table 4.
+        # color-temperature fit. Despite the name these are not pivots: NISP
+        # Y/J/H are Schirmer+22's band CENTRES (midpoints of the 50% cut-on/
+        # cut-off), and VIS is taken from Cropper+24. The pivots of the same
+        # passbands (SVO total-system curves) are 3–6 nm bluer: VIS 0.710,
+        # Y 1.079, J 1.362, H 1.765.
         PIVOT_WAVELENGTH_UM: ClassVar[dict[str, float]] = {
             "VIS": 0.715,
             "Y_E": 1.081,
