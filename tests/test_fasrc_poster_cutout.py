@@ -22,6 +22,7 @@ from euclid_polish.config import Config
 from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_pipeline import REGISTRY
+from tests._star_fixtures import fixture_star_color_model
 
 GALAXY_DENSITY = 151.25
 STAR_DENSITY = 2.5
@@ -39,24 +40,8 @@ def _stellar_prior_payload(density: float | None = STAR_DENSITY) -> dict:
         population["density_arcmin2"] = density
     return {
         "fingerprint": "s" * 64,
-        "gaia": {"bp_rp_quantiles": [0.0, 2.0],
-                 "temperature_quantiles_k": [7500.0, 4000.0]},
-        "euclid_mapping": {
-            "g_to_band_offset_coefficients": {
-                key: [0.0, 0.0, 0.0]
-                for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")},
-            "residual_covariance": np.eye(4).tolist(),
-        },
         "population": population,
-        "color_model": {
-            "kind": "gaia_euclid_latent_locus_v1",
-            "bp_rp_edges": [0.0, 1.0, 2.0], "bp_rp_nodes": [0.5, 1.5],
-            "temperature_nodes_k": [7000.0, 4200.0],
-            "locus_colors": [[0.2, 0.1, 0.05], [0.8, 0.3, 0.1]],
-            "intrinsic_color_covariance": (np.eye(3) * 0.01).tolist(),
-            "magnitude_edges": [12.0, 18.5, 25.0],
-            "magnitude_node_weights": [[0.5, 0.5], [0.5, 0.5]],
-        },
+        "color_model": fixture_star_color_model(),
     }
 
 

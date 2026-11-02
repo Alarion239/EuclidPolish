@@ -620,7 +620,7 @@ class TestRegistry:
             lambda: {"active": None, "is_active": False},
         )
 
-        with pytest.raises(ValueError, match=r"Gaia\+Euclid stellar"):
+        with pytest.raises(ValueError, match=r"valid Euclid stellar"):
             REGISTRY.get("synthetic_generate").prepare_params({})
 
     def test_synthetic_generate_needs_no_vis_noise_calibration(self, monkeypatch):

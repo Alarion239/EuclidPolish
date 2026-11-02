@@ -117,7 +117,7 @@ describe("truth-source map", () => {
   const src = (over: Partial<TruthSource>): TruthSource => ({
     row: 0, type: "galaxy", render: "tng", x_pix: 10, y_pix: 20, off_field: false, flux_vis_e: 1000,
     flux_y_e: null, flux_j_e: null, flux_h_e: null, mag_vis: 24, mag_y_e: null, mag_j_e: null, mag_h_e: null,
-    target_vis_mag: null, z: null, re_arcsec: 0.2, theta_E_arcsec: null, orientation: null, temperature_k: null,
+    target_vis_mag: null, z: null, re_arcsec: 0.2, theta_E_arcsec: null, orientation: null,
     subhalo_id: null, source_subhalo_id: null, sfr_class: null, ...over,
   });
   const grid = { width: 510, height: 510, pixscale: 0.05 };

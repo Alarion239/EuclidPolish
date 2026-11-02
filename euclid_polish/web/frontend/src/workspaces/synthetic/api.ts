@@ -228,7 +228,7 @@ export type GalaxyPayload = {
 export type StarColorKey = "vis_y" | "vis_j" | "vis_h" | "y_j" | "y_h" | "j_h";
 export type StarDensityKey = "vis" | StarColorKey;
 /** One density panel. Only the VIS panel carries the Q1 point sources, the Q1 fit window and the
- *  native Gaia G_AB counts (`gaia` on the coarser `gaia_x` bins) with their shared-slope fit. */
+ *  comparison native Gaia G_AB counts (`gaia` on the coarser `gaia_x` bins) with their own straight fit. */
 export type StarDensityParameter = {
   label: string; x_label: string; x: number[]; x_domain: [number, number];
   euclid: number[]; model: number[]; synthetic: number[];
@@ -237,8 +237,8 @@ export type StarDensityParameter = {
   fit_ranges?: { q1?: [number | null, number | null] };
 };
 export type StarDistribution = {
-  /** The Gaia–Euclid colour sample the prior fits colours on. */
-  matched_stars: number; high_quality_stars: number; pointlike_over_0_9: number;
+  /** The Euclid colour sample (rows, rows the fit uses, point-like rows) the prior fits colours on. */
+  color_sample_rows: number; color_rows_used: number; pointlike_over_0_9: number;
   training_included?: boolean;
   density_comparison: null | {
     area_arcmin2: number; gaia_area_arcmin2?: number; model_density_arcmin2: number; model_sample_count: number;
@@ -256,8 +256,8 @@ export type StarPayload = {
   authenticated: boolean;
   color_sample: { cached: boolean; euclid: null | { rows?: number; field_count?: number }; gaia: null | { rows?: number; field_count?: number } };
   calibration: {
-    candidate: null | { valid?: boolean; warnings?: string[]; coverage_notes?: string[]; gaia?: { rows?: number };
-      euclid_mapping?: { matched_stars?: number } };
+    candidate: null | { valid?: boolean; warnings?: string[]; coverage_notes?: string[];
+      coverage?: { color_rows?: number } };
     is_active: boolean;
   };
   distribution: StarDistribution | null;

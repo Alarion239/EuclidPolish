@@ -44,7 +44,7 @@ over one SSH ControlMaster.
 flowchart LR
   subgraph Calibrate["Calibrate (local console, Euclid archive)"]
     P1[Euclid joint galaxy prior v15<br/>R_e · VIS 2FWHM mag · colour+SFR forest]
-    P2[Gaia+Euclid stellar prior v6]
+    P2[Euclid stellar prior v7]
     P3[Per-band ePSFs<br/>clustered by field position]
     P4[Q1 MER noise-level table<br/>294 tiles in 3 deep fields]
   end
@@ -97,7 +97,7 @@ PSNR (§9.3) averaged over the four bands, on the 100 synthetic test fields.
 | Ensemble members | 18 active STARFULL members (170–204), kept for the plain mean and the Leaderboard; 50 registered universal models (206–256) |
 | Noise model | `euclid-q1-mer-noise-levels-dithered-bilinear-median-v6` in code (median-combined stack, 2026-10-28); the records and every trained model so far are v5 (mean-combined), so training refuses the v5 records until they are regenerated |
 | Galaxy population | Euclid joint prior v15 (colour+SFR forest), 151.5 galaxies/arcmin² |
-| Stellar population | Gaia+Euclid prior v6, 5.08 stars/arcmin² |
+| Stellar population | Euclid-only prior v7 (needs a refit); production models trained on the Gaia-locus v6, 5.08 stars/arcmin² |
 | Training records | All splits regenerated 2026-10-20 with whole (unmasked) TNG frames and dust-box and periodic-box donors excluded (§6.4) |
 
 Known open problems: bright real galaxy cores can still come out with blacked-out "holes"
@@ -309,7 +309,7 @@ uniform positions (clustering is not modelled), each from its own seeded RNG str
 | Population | Source of truth | Rendered as |
 |---|---|---|
 | Field galaxies | Activated Euclid joint galaxy prior (v15) | TNG50-SKIRT stamp, shrink-only resized, empirical colours |
-| Stars | Activated Gaia+Euclid stellar prior (v6) | single-HR-pixel deltas, injected by the forward model |
+| Stars | Activated Euclid stellar prior (v7) | single-HR-pixel deltas, injected by the forward model |
 | Strong lenses | `Config.LENS_*` priors + the TNG atlas | lenstronomy SIE + external shear, TNG deflector and TNG source |
 
 Generation is **strict**: with a positive star density, a missing stellar prior is a hard error.
@@ -343,8 +343,10 @@ reaches it. Every draw is recorded in `sources_<split>.csv` (`sky/generation/sou
 ### 6.2 Stars
 
 `EmpiricalStellarPrior` (`sky/generation/stellar_sed.py`) reads `star_population_active.json`
-(v6, 5.08 stars/arcmin²). VIS magnitudes follow a count law over VIS 12–25, normalised to Gaia and
-Q1 counts; VIS−Y, Y−J and J−H come from a magnitude-conditioned Gaia BP−RP latent locus. Scenes are
+(v7). The model uses Euclid data alone. VIS magnitudes follow the straight region of the Q1
+PHZ-weighted counts over VIS 12–25; Gaia G counts are only a comparison overlay. VIS−Y, Y−J and J−H
+are resampled from real Q1 point sources in the star's 0.5-mag bin and deconvolved jointly
+(`docs/population_model.md`). Scenes are
 stored **starless**: each field's stars are recorded in the source CSV and the forward model
 deposits them as HR deltas before the PSF. A clean-only train split (`--onthefly-train`) records
 no stars, because on-the-fly training draws a fresh star realization on every visit.
@@ -389,7 +391,7 @@ The priors are fitted locally in the console from Euclid archive data, then froz
 1. **Galaxies** (Synthetic › Galaxies): query Q1 counts and size/FWHM distributions, fit
    (scikit-learn is used here and by the PSF-extraction clustering; generation never imports it), review, activate. Activation writes
    `joint_galaxy_population_active.json` and sets the galaxy density in System › Config.
-2. **Stars** (Synthetic › Stars): query Q1 and Gaia, fit, activate.
+2. **Stars** (Synthetic › Stars): query Q1 (plus Gaia comparison counts), fit, activate.
 3. **TNG**: download the atlas (FASRC step), refresh properties, validate radii.
 
 The `synthetic_generate` step refuses to submit until both artifacts are active, and stages them

@@ -16,6 +16,7 @@ from euclid_polish.web.helpers.q1_star_counts import (
     Q1_STAR_COUNT_VERSION,
     q1_star_counts_path,
 )
+from euclid_polish.web.helpers.q1_stellar_colors import Q1_STELLAR_COLOR_SAMPLE_VERSION
 
 
 def _write_csv(path, rows):
@@ -27,49 +28,37 @@ def _write_csv(path, rows):
 
 
 def _cache_fit_inputs(root):
-    """A fixed-field Gaia–Euclid colour sample + Q1 PHZ counts the strict
-    stellar fit accepts (40 matched stars, a straight native-G count law)."""
-    gaia = []
+    """A fixed-field Euclid colour sample, Gaia comparison counts and Q1 PHZ
+    counts the strict stellar fit accepts (400 point sources on a locus)."""
+    rng = np.random.default_rng(3)
     euclid = []
-    for index in range(40):
-        source_id = str(1000 + index)
-        color = 0.5 + 0.05 * index
-        g_mag = 16.0 + 0.18 * index
-        gaia.append({
-            "source_id": source_id, "field_index": index % 2, "ra": 1,
-            "dec": 2, "g_mag": g_mag, "bp_mag": g_mag + color / 2,
-            "rp_mag": g_mag - color / 2, "bp_rp": color,
-            "temperature_k": 8000 - 150 * index, "extinction_g_mag": 0.1,
-            "central_selected_star": 1 if index < 2 else 0,
-        })
-        magnitudes = {
-            "vis": g_mag + 0.2 * color, "y": g_mag - 0.4 * color,
-            "j": g_mag - 0.55 * color, "h": g_mag - 0.60 * color,
-        }
+    for index in range(400):
+        vis = float(rng.uniform(18.0, 23.0))
+        vis_y = float(rng.uniform(0.3, 1.5))
+        magnitudes = {"vis": vis, "y": vis - vis_y}
+        magnitudes["j"] = magnitudes["y"] - (0.05 + 0.1 * vis_y)
+        magnitudes["h"] = magnitudes["j"] - 0.02 * vis_y
         fluxes = {band: 10 ** ((23.9 - mag) / 2.5) for band, mag in magnitudes.items()}
         euclid.append({
-            "object_id": index, "gaia_id": source_id, "type": "star",
-            "point_like_prob": "1.0",
+            "object_id": index, "type": "star",
+            "point_like_prob": "1.0", "phz_star_prob": "0.9", "mag_vis_psf": vis,
             "mag_vis": magnitudes["vis"], "mag_y_e": magnitudes["y"],
             "mag_j_e": magnitudes["j"], "mag_h_e": magnitudes["h"],
-            **{f"flux_{band}_aper_uJy": flux for band, flux in fluxes.items()},
-            **{f"fluxerr_{band}_aper_uJy": flux / 20.0 for band, flux in fluxes.items()},
+            **{f"flux_{band}_aper_uJy": flux * (1 + rng.normal(0, 0.025))
+               for band, flux in fluxes.items()},
+            **{f"fluxerr_{band}_aper_uJy": flux / 40.0 for band, flux in fluxes.items()},
         })
+    gaia = []
     for bin_index, magnitude in enumerate(np.arange(12.05, 25.0, 0.1)):
         count = max(2, int(round(8.0 * 10 ** (0.15 * (magnitude - 12.0)))))
-        for repeat in range(count):
-            color = 0.5 + 0.01 * ((bin_index + repeat) % 120)
-            gaia.append({
-                "source_id": f"extra-{bin_index}-{repeat}",
-                "field_index": repeat % 3, "ra": 1, "dec": 2, "g_mag": magnitude,
-                "bp_mag": magnitude + color / 2, "rp_mag": magnitude - color / 2,
-                "bp_rp": color, "temperature_k": 6500 - 500 * color,
-                "extinction_g_mag": 0.1, "central_selected_star": 0,
-            })
+        gaia.extend({
+            "source_id": f"g-{bin_index}-{repeat}", "g_mag": magnitude,
+            "central_selected_star": 0,
+        } for repeat in range(count))
     _write_csv(root / "gaia_population.csv", gaia)
     _write_csv(root / "q1_stellar_color_sample.csv", euclid)
-    meta = {"field_count": 3, "radius_deg": 0.35, "area_arcmin2": 8 * np.pi,
-            "random_centres": False}
+    meta = {"version": Q1_STELLAR_COLOR_SAMPLE_VERSION, "field_count": 3,
+            "radius_deg": 0.35, "area_arcmin2": 8 * np.pi, "random_centres": False}
     (root / "gaia_population.meta.json").write_text(json.dumps(meta))
     (root / "q1_stellar_color_sample.meta.json").write_text(json.dumps(meta))
     edges = np.linspace(12.0, 25.0, 131)

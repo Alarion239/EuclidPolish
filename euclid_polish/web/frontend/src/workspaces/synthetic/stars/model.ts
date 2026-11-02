@@ -15,7 +15,7 @@ export const DENSITY_ORDER: StarDensityKey[] = ["vis", "vis_y", "vis_j", "vis_h"
 export const DENSITY_KEYS = {
   pointSources: "point sources",
   q1: "Q1 PHZ",
-  /** The colour panels' Euclid curve: the four-band colours of the Gaia-matched fixed-field stars. */
+  /** The colour panels' Euclid curve: the four-band colours of the fixed-field Q1 point sources. */
   fourBand: "Euclid four-band",
   model: "model",
   synthetic: "generated",
@@ -35,8 +35,8 @@ export const densityColor = {
 };
 
 /** One panel's curves. On the VIS panel the Euclid curve is the Q1 PHZ counts; on a colour panel it
- *  is the matched fixed-field stars' four-band colours. The VIS panel also draws the native Gaia G_AB
- *  counts and their shared-slope fit. */
+ *  is the fixed-field Q1 point sources' four-band colours. The VIS panel also draws, for comparison,
+ *  the native Gaia G_AB counts and their own straight fit. */
 export function densitySeries(parameter: StarDensityParameter, trainingIncluded: boolean, panel: StarDensityKey = "vis"): Series[] {
   const out: Series[] = [];
   if (parameter.point_sources) {
@@ -48,7 +48,7 @@ export function densitySeries(parameter: StarDensityParameter, trainingIncluded:
       marker: "ring", name: "native Gaia G (AB) counts", key: DENSITY_KEYS.gaia });
     if (parameter.gaia_fit) {
       out.push({ x: parameter.gaia_x, y: positiveOrNull(parameter.gaia_fit), color: densityColor.gaiaFit(), width: 1.8, dash: [4, 3],
-        name: "Gaia-intercept shared-slope fit", key: DENSITY_KEYS.gaiaFit });
+        name: "Gaia straight fit (comparison)", key: DENSITY_KEYS.gaiaFit });
     }
   }
   out.push(panel === "vis"
@@ -125,10 +125,10 @@ export function normalisedPdf(x: readonly number[], y: readonly (number | null |
 export const STAR_LEGEND = {
   pointSources: "Q1 point sources",
   q1: "Q1 PHZ stars",
-  fourBand: "Gaia-matched Q1 stars",
+  fourBand: "Q1 point sources (colours)",
   synthetic: "generated stars",
   gaia: "Gaia G (AB) counts",
-  gaiaFit: "Gaia-intercept fit",
+  gaiaFit: "Gaia fit (comparison)",
 } as const;
 
 /** The model curve's legend name: the VIS law, and whether its colour draws
@@ -147,7 +147,7 @@ export function modelNoiseNote(noise?: ModelNoise | null): string {
   return `the model's colour draws carry no measurement noise${noise?.detail ? ` (${noise.detail})` : ""}`;
 }
 
-/** One colour panel's curves as unit-area PDFs: the Gaia-matched Q1 stars'
+/** One colour panel's curves as unit-area PDFs: the Q1 point sources'
  *  four-band colours, the model's colour draws and the generated stars. */
 export function colourPdfSeries(parameter: StarDensityParameter, noise?: ModelNoise | null): Series[] {
   const x = parameter.x;

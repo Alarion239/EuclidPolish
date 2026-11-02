@@ -3,11 +3,11 @@
    the verdict line (generated vs prior density, the trusted fit window),
    the legend with the sample sizes, the wide VIS density panel with the
    trusted window shaded (Q1 point sources, Q1 PHZ stars, the model law, the
-   generated stars; the native Gaia G counts and their fit), then
-   the six colour panels as unit-area PDFs (Gaia-matched Q1 stars, the
+   generated stars; for comparison the native Gaia G counts and their own
+   fit), then the six colour panels as unit-area PDFs (Q1 point sources, the
    model's colour draws, the generated stars) and one caption (the Q1 area,
-   the matched stars and their fields). Then the drawers: Prior (`?prior=1`:
-   the fit sample in one sentence, Fit and Activate, both confirmed, the Gaia
+   the colour sample and its fields). Then the drawers: Prior (`?prior=1`:
+   the fit sample in one sentence, Fit and Activate, both confirmed, the
    colour-field inputs collapsed) and How this is produced (`?how=1`: the
    confirmed "Query stars · MER + PHZ + Gaia", its job, the query result as
    facts). The Gaia colour and CMD views were deleted: an old `?view=` shows
@@ -85,7 +85,7 @@ function Density({ distribution }: { distribution: StarDistribution }) {
   const fields = distribution.gaia_sampling?.field_count ?? distribution.gaia_sampling?.fields?.length;
   const caption = [
     q1Area ? `Q1 footprint ${formatNumber(q1Area / 3600, { digits: 1 })} deg²` : null,
-    `colours from ${hasColours ? "the" : formatCount(comparison.euclid_color_count)} Gaia-matched stars in ${fields ? `${fields} fixed Q1 fields` : "the fixed Q1 fields"}`,
+    `colours from ${hasColours ? "the" : formatCount(comparison.euclid_color_count)} Q1 point sources in ${fields ? `${fields} fixed Q1 fields` : "the fixed Q1 fields"}`,
     `the colour panels are unit-area PDFs; ${modelNoiseNote(comparison.model_color_noise)}`,
   ].filter(Boolean).join(" · ");
   const yDomain = densityDomain(vis);
@@ -144,9 +144,9 @@ function legendName(key: string | undefined, noise?: ModelNoise | null): string 
   }
 }
 
-type GaiaField = { name?: string; ra: number; dec: number; rows?: number };
+type ColourField = { name?: string; ra: number; dec: number; rows?: number };
 
-const FIELD_COLUMNS: Column<GaiaField>[] = [
+const FIELD_COLUMNS: Column<ColourField>[] = [
   { header: "Field", cell: (f) => f.name ?? "—" },
   { header: "RA, Dec", align: "right", cell: (f) => <span className="rl-num">{f.ra.toFixed(3)}, {f.dec.toFixed(3)}</span> },
   { header: "Stars", align: "right", cell: (f) => formatCount(f.rows) },
@@ -161,16 +161,16 @@ function PriorDrawer({ api }: { api: StarPayload }) {
   const candidate = api.calibration.candidate;
   const sampling = d?.gaia_sampling;
   return (
-    <Drawer flag="prior" title="Prior" sub="Q1 counts set the magnitude law; the Gaia–Euclid sample supplies the colours">
+    <Drawer flag="prior" title="Prior" sub="Q1 counts set the magnitude law; Q1 point sources supply the colours">
       {d ? (
         <p className="syn-sentence">
-          Colours fitted on <Num>{formatCount(d.high_quality_stars)}</Num> stars with S/N ≥ 5 in all bands,
-          of <Num>{formatCount(d.matched_stars)}</Num> matched
+          Colours fitted on <Num>{formatCount(d.color_rows_used)}</Num> Q1 point sources with S/N ≥ 5 in all bands,
+          of <Num>{formatCount(d.color_sample_rows)}</Num> in the fixed-field sample
         </p>
       ) : (
         <p className="rl-note">{api.color_sample.cached
-          ? "The Gaia–Euclid colour sample is cached; fit the prior to derive the colours."
-          : "No Gaia–Euclid colour sample is cached yet: run the stellar query (How this is produced) first."}</p>
+          ? "The Euclid colour sample is cached; fit the prior to derive the colours."
+          : "No Euclid colour sample is cached yet: run the stellar query (How this is produced) first."}</p>
       )}
       {candidate?.warnings?.[0] && <p className="rl-note"><strong>Fit note:</strong> {candidate.warnings[0]}</p>}
       <div className="rl-row">
@@ -182,14 +182,15 @@ function PriorDrawer({ api }: { api: StarPayload }) {
           {api.calibration.is_active ? "Re-activate stellar prior" : "Activate stellar prior"}
         </Button>
         <Info label="About the stellar fit">
-          <p>The straight count fit keeps Q1 at 0.1-mag resolution and bins the smaller Gaia shape sample at 0.5 mag.</p>
+          <p>The straight count law is fitted to the Q1 PHZ counts alone at 0.1-mag resolution; the smaller Gaia
+            G sample, binned at 0.5 mag, gets its own straight fit and is only overlaid for comparison.</p>
           {candidate?.coverage_notes?.map((n) => <p key={n}>{n}</p>)}
         </Info>
       </div>
       <JobProgress job={fit.job} error={fit.error} />
       <JobProgress job={activate.job} error={activate.error} />
       {sampling?.fields?.length ? (
-        <Details summary="Inputs: the Gaia colour fields" className="rl-details">
+        <Details summary="Inputs: the fixed colour fields" className="rl-details">
           <Caption>{`${formatCount(sampling.fields.length)} fixed Q1 fields, r = ${sampling.radius_arcmin.toFixed(0)}′ each`}</Caption>
           <Table columns={FIELD_COLUMNS} rows={sampling.fields} rowKey={(f) => f.name ?? `${f.ra},${f.dec}`} />
         </Details>
@@ -203,7 +204,7 @@ function HowDrawer({ api }: { api: StarPayload }) {
   const q1 = api.q1_counts;
   const login = !api.authenticated;
   return (
-    <Drawer flag="how" title="How this is produced" sub="the Q1 stellar counts and the Gaia–Euclid colour sample">
+    <Drawer flag="how" title="How this is produced" sub="the Q1 stellar counts, the Euclid colour sample and the Gaia comparison counts">
       {q1 ? (
         <FactsList title="Query result" facts={[
           { label: "Objects selected", value: formatApprox(q1.selected_point_sources), hint: q1.selection },
@@ -224,7 +225,8 @@ function HowDrawer({ api }: { api: StarPayload }) {
         {login && <Button asChild size="sm" variant="ghost"><Link to="/system/connections">Log in to the Euclid archive</Link></Button>}
         <Info label="About the stellar query">
           <p>0.1-mag VIS PSF bins of point-like objects, summed as Σ POINT_LIKE_PROB and Σ PHZ_STAR_PROB over the Q1
-            footprint. The fixed-field colour query uses the same point-like threshold and Gaia matches.</p>
+            footprint. The fixed-field colour query uses the same point-like threshold and needs no Gaia match;
+            Gaia DR3 cones over the same fields give the comparison counts.</p>
         </Info>
       </div>
       <JobProgress job={query.job} error={query.error} />

@@ -119,7 +119,7 @@ const GEOMETRY = { hr: { height: 510, width: 510, pixscale: 0.05 }, lr: { height
 const src = (row: number, over: Record<string, unknown>) => ({
   row, type: "galaxy", render: "tng", x_pix: 10 + row, y_pix: 20, off_field: false, flux_vis_e: 1000, flux_y_e: null,
   flux_j_e: null, flux_h_e: null, mag_vis: 24, mag_y_e: null, mag_j_e: null, mag_h_e: null, target_vis_mag: null, z: null,
-  re_arcsec: 0.2, theta_E_arcsec: null, orientation: null, temperature_k: null, subhalo_id: "658592", source_subhalo_id: null,
+  re_arcsec: 0.2, theta_E_arcsec: null, orientation: null, subhalo_id: "658592", source_subhalo_id: null,
   sfr_class: null, ...over,
 });
 const SOURCES = {

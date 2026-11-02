@@ -867,7 +867,7 @@ def star_state() -> dict[str, Any]:
             "valid": False,
             "warnings": list(candidate.get("warnings") or []) + [
                 "refit required: stellar counts must come from Q1 "
-                "PHZ_STAR_PROB and colours from the fixed-Q1 sample"
+                "PHZ_STAR_PROB and colours from Euclid point sources alone"
             ],
         }
     is_active = False
@@ -887,9 +887,9 @@ def star_state() -> dict[str, Any]:
 def _current_star_artifact(payload: dict[str, Any] | None) -> bool:
     return bool(
         payload
-        and payload.get("version") == 6
+        and payload.get("version") == 7
         and (payload.get("fingerprint_inputs") or {}).get("fit_version")
-        == "q1-phz-gaia-shared-straight-counts-latent-locus-v5"
+        == "q1-phz-straight-counts-euclid-colors-v6"
     )
 
 

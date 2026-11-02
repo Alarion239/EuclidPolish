@@ -1159,7 +1159,7 @@ class InteractiveCLI:
             stellar_prior = active_star()
             if stellar_prior is None:
                 raise RuntimeError(
-                    "activate the Gaia+Euclid stellar calibration before "
+                    "activate the Euclid stellar calibration before "
                     "generating fields"
                 )
             print(

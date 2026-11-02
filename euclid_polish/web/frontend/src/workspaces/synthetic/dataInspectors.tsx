@@ -87,7 +87,6 @@ const KEY_FIELDS: [string, string, (v: unknown) => string][] = [
   ["z", "z", (v) => formatNumber(v as number, { digits: 3 })],
   ["logmass", "log M★", (v) => formatNumber(v as number, { digits: 2 })],
   ["sfr_class", "SFR class", (v) => String(v ?? "—")],
-  ["temperature_k", "T (K)", (v) => formatNumber(v as number, { digits: 0 })],
 ];
 
 export function TruthInspector({ id }: InspectorProps) {

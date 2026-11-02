@@ -22,6 +22,7 @@ from euclid_polish.web.helpers.star_population import (
     _star_distribution_from_rows,
 )
 from euclid_polish.web.routes import star_distribution as routes
+from tests._star_fixtures import fixture_star_color_model
 
 #: Payload keys that existed only for the deleted Stars 'colours' (Gaia
 #: BP−RP vs the six Euclid colours) and 'gaia' (CMD + projection) views.
@@ -47,8 +48,9 @@ def _euclid_rows() -> list[dict[str, str]]:
     rows = []
     for index in range(1, 9):
         rows.append({
-            "gaia_id": str(index),
             "type": "star",
+            "phz_star_prob": "0.9",
+            "mag_vis_psf": str(20.0 + index),
             "mag_vis": str(20.0 + index),
             "mag_y_e": str(19.0 + index),
             "mag_j_e": str(18.5 + index),
@@ -89,6 +91,7 @@ def _stellar_model() -> dict:
                 "source": "fixture",
                 "fit_diagnostics": {
                     "gaia": {
+                        "slope": 0.0,
                         "intercept": -2.0,
                         "fit_bright": 12.0,
                         "fit_faint": 18.0,
@@ -97,36 +100,7 @@ def _stellar_model() -> dict:
                 },
             },
         },
-        "gaia": {
-            "bp_rp_quantiles": [0.0, 2.0],
-            "temperature_quantiles_k": [8000.0, 3500.0],
-        },
-        "euclid_mapping": {
-            "g_to_band_offset_coefficients": {
-                key: [0.0, 0.0, 0.0]
-                for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
-            },
-            "residual_covariance": [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-        },
-        "color_model": {
-            "kind": "gaia_euclid_latent_locus_v1",
-            "bp_rp_edges": [0.0, 1.0, 2.0],
-            "bp_rp_nodes": [0.5, 1.5],
-            "temperature_nodes_k": [7000.0, 4000.0],
-            "locus_colors": [[0.2, 0.1, 0.05], [1.0, 0.2, 0.1]],
-            "intrinsic_color_covariance": [
-                [0.01, 0.0, 0.0],
-                [0.0, 0.01, 0.0],
-                [0.0, 0.0, 0.01],
-            ],
-            "magnitude_edges": [12.0, 25.0],
-            "magnitude_node_weights": [[0.5, 0.5]],
-        },
+        "color_model": fixture_star_color_model(),
     }
 
 
@@ -142,28 +116,18 @@ def _no_q1_cache(monkeypatch):
 
 
 def test_star_distribution_counts_the_colour_sample_without_the_deleted_views():
-    """The Gaia–Euclid colour sample the prior fits colours on is still
-    counted, but the Gaia colour / CMD / projection views are not built."""
+    """The Euclid colour sample the prior fits colours on is counted, and the
+    deleted Gaia colour / CMD / projection views are not built."""
     payload = _star_distribution_from_rows(
         _euclid_rows(),
         _gaia_rows(),
         calibration_fingerprint="candidate-1",
-        color_model={
-            "bp_rp_edges": [0.0, 0.8, 2.0],
-            "bp_rp_nodes": [0.4, 1.2],
-            "locus_colors": [[1.0, 0.5, 0.25], [1.2, 0.4, 0.1]],
-            "g_to_vis_offset": [0.3, 0.5],
-            "intrinsic_color_covariance": [
-                [0.04, 0.0, 0.0],
-                [0.0, 0.01, 0.0],
-                [0.0, 0.0, 0.0025],
-            ],
-        },
+        color_model=fixture_star_color_model(),
         gaia_sampling={"field_count": 3, "radius_arcmin": 21.0},
     )
 
-    assert payload["matched_stars"] == 8
-    assert payload["high_quality_stars"] == 8
+    assert payload["color_sample_rows"] == 8
+    assert payload["color_rows_used"] == 8
     assert payload["pointlike_over_0_9"] == 8
     assert payload["gaia_sampling"] == {"field_count": 3, "radius_arcmin": 21.0}
     for key in DELETED_VIEW_KEYS:
@@ -206,7 +170,7 @@ def test_star_distribution_payload_keeps_the_density_and_colour_panels(
     served = body["distribution"]
     for key in DELETED_VIEW_KEYS:
         assert key not in served, key
-    assert served["matched_stars"] == 8
+    assert served["color_rows_used"] == 8
     assert served["gaia_sampling"] == {"field_count": 3}
     comparison = served["density_comparison"]
     assert set(comparison["parameters"]) == {
@@ -455,7 +419,7 @@ def test_cached_stellar_fit_does_not_query_gaia_or_require_euclid_login(monkeypa
     monkeypatch.setattr(
         routes,
         "fit_star_population",
-        lambda: {"euclid_mapping": {"matched_stars": 8}},
+        lambda: {"coverage": {"color_rows": 8}},
     )
     persisted = []
     monkeypatch.setattr(

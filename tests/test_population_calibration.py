@@ -34,12 +34,16 @@ from euclid_polish.web.helpers.q1_star_counts import (
     Q1_STAR_COUNT_VERSION,
     q1_star_counts_path,
 )
+from euclid_polish.web.helpers.q1_stellar_colors import (
+    Q1_STELLAR_COLOR_SAMPLE_VERSION,
+)
 from euclid_polish.web.helpers.star_population import (
     _GAIA_G_AB_MINUS_VEGA_MAG,
     _fit_straight_star_magnitude_law,
     _weighted_summary,
     fit_star_population,
 )
+from tests._star_fixtures import fixture_star_color_model
 
 
 def _straight_law_payload(
@@ -79,26 +83,8 @@ def test_probability_weighted_summary_and_straight_magnitude_law():
 
 
     prior = EmpiricalStellarPrior.from_payload({
-        "gaia": {"bp_rp_quantiles": [0.5, 1.0],
-                 "temperature_quantiles_k": [4000.0, 6000.0]},
-        "euclid_mapping": {
-            "g_to_band_offset_coefficients": {
-                key: [0.0, 0.0, 0.0]
-                for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
-            },
-            "residual_covariance": np.eye(4).tolist(),
-        },
         "population": {"magnitude_distribution": _straight_law_payload()},
-        "color_model": {
-            "kind": "gaia_euclid_latent_locus_v1",
-            "bp_rp_edges": [0.0, 0.75, 1.5],
-            "bp_rp_nodes": [0.4, 1.1],
-            "temperature_nodes_k": [6500.0, 4500.0],
-            "locus_colors": [[0.2, 0.1, 0.05], [0.8, 0.3, 0.1]],
-            "intrinsic_color_covariance": (np.eye(3) * 0.01).tolist(),
-            "magnitude_edges": [20.0, 21.0, 22.0],
-            "magnitude_node_weights": [[0.5, 0.5], [0.5, 0.5]],
-        },
+        "color_model": fixture_star_color_model(),
     })
     draws = np.asarray([
         prior.sample_magnitude(np.random.default_rng(seed))
@@ -126,16 +112,29 @@ def test_stale_gaia_count_artifact_cannot_remain_active(tmp_path, monkeypatch):
         activate_star_candidate()
 
 
+def test_previous_gaia_locus_artifact_cannot_activate(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    path = star_candidate_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "version": 6, "valid": True, "fingerprint": "c" * 64,
+        "fingerprint_inputs": {
+            "fit_version": "q1-phz-gaia-shared-straight-counts-latent-locus-v5",
+        },
+    }))
+    assert not star_state()["candidate"]["valid"]
+    with pytest.raises(ValueError, match="No valid fitted stellar"):
+        activate_star_candidate()
+
+
 def test_fixed_q1_stellar_colour_artifact_can_activate(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
     candidate = {
-        "version": 6,
+        "version": 7,
         "valid": True,
         "fingerprint": "b" * 64,
         "fingerprint_inputs": {
-            "fit_version": (
-                "q1-phz-gaia-shared-straight-counts-latent-locus-v5"
-            ),
+            "fit_version": "q1-phz-straight-counts-euclid-colors-v6",
         },
     }
     path = star_candidate_path()
@@ -148,7 +147,7 @@ def test_fixed_q1_stellar_colour_artifact_can_activate(tmp_path, monkeypatch):
     assert star_state()["is_active"] is True
 
 
-def test_gaia_shape_fit_rebins_sparse_point_one_mag_counts():
+def test_count_slope_is_q1_alone_and_gaia_is_a_rebinned_comparison():
     edges = np.linspace(12.0, 25.0, 131)
     q1_bins = []
     for lower, upper in zip(edges[:-1], edges[1:], strict=True):
@@ -165,7 +164,8 @@ def test_gaia_shape_fit_rebins_sparse_point_one_mag_counts():
     gaia_rows = []
     subbin_weights = np.asarray([0.2, 1.8, 0.3, 1.7, 1.0])
     for group, group_centre in enumerate(np.arange(12.25, 25.0, 0.5)):
-        group_total = int(round(20.0 * 10.0 ** (0.15 * (group_centre - 12.0))))
+        # A deliberately different Gaia slope: it must not move the law.
+        group_total = int(round(20.0 * 10.0 ** (0.2 * (group_centre - 12.0))))
         counts = np.maximum(
             1, np.rint(group_total * subbin_weights / subbin_weights.sum()),
         ).astype(int)
@@ -186,7 +186,11 @@ def test_gaia_shape_fit_rebins_sparse_point_one_mag_counts():
         },
     )
 
-    assert law.slope == pytest.approx(0.15, abs=0.01)
+    assert law.slope == pytest.approx(0.15, abs=1e-6)
+    assert diagnostics["q1"]["slope"] == pytest.approx(0.15, abs=1e-6)
+    assert diagnostics["gaia"]["role"] == "comparison only"
+    assert diagnostics["gaia"]["slope"] == pytest.approx(0.2, abs=0.01)
+    assert diagnostics["gaia"]["slope_difference_sigma"] > 3.0
     assert diagnostics["gaia"]["bin_width_mag"] == 0.5
     assert diagnostics["gaia"]["r_squared"] >= 0.99
     assert diagnostics["q1"]["bin_width_mag"] == pytest.approx(0.1)
@@ -238,70 +242,45 @@ def _write_csv(path, rows):
         writer.writerows(rows)
 
 
-def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
+def test_star_fit_uses_q1_counts_and_euclid_colours_without_gaia(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
     root = tmp_path / "population_comparison"
-    gaia = []
+    rng = np.random.default_rng(4)
     euclid = []
-    for index in range(40):
-        field_index = index % 2
-        source_id = str(1000 + index)
-        color = 0.5 + 0.05 * index
-        g_mag = 16.0 + 0.18 * index
-        gaia.append({
-            "source_id": source_id, "field_index": field_index, "ra": 1,
-            "dec": 2, "g_mag": g_mag, "bp_mag": g_mag + color / 2,
-            "rp_mag": g_mag - color / 2, "bp_rp": color,
-            "temperature_k": 8000 - 150 * index, "extinction_g_mag": 0.1,
-            "central_selected_star": 1 if index < 2 else 0,
-        })
-        magnitudes = {
-            "vis": g_mag + 0.2 * color,
-            "y": g_mag - 0.4 * color,
-            "j": g_mag - 0.55 * color,
-            "h": g_mag - 0.60 * color,
-        }
+    for index in range(400):
+        vis = float(rng.uniform(18.0, 23.0))
+        vis_y = float(rng.uniform(0.3, 1.5))
+        colours = (vis_y, 0.05 + 0.1 * vis_y, 0.02 * vis_y)
+        magnitudes = {"vis": vis}
+        magnitudes["y"] = vis - colours[0]
+        magnitudes["j"] = magnitudes["y"] - colours[1]
+        magnitudes["h"] = magnitudes["j"] - colours[2]
         fluxes = {
             band: 10 ** ((23.9 - magnitude) / 2.5)
             for band, magnitude in magnitudes.items()
         }
+        error = {band: flux / 40.0 for band, flux in fluxes.items()}
+        measured = {
+            band: flux + error[band] * rng.standard_normal()
+            for band, flux in fluxes.items()
+        }
         euclid.append({
-            "object_id": index, "gaia_id": source_id, "type": "star",
-            "point_like_prob": "1.0",
-            "mag_vis": magnitudes["vis"],
-            "mag_y_e": magnitudes["y"],
-            "mag_j_e": magnitudes["j"],
-            "mag_h_e": magnitudes["h"],
-            **{
-                f"flux_{band}_aper_uJy": flux
-                for band, flux in fluxes.items()
-            },
-            **{
-                f"fluxerr_{band}_aper_uJy": flux / 20.0
-                for band, flux in fluxes.items()
-            },
+            "object_id": index, "type": "star",
+            "point_like_prob": "1.0", "phz_star_prob": "0.9",
+            "mag_vis_psf": vis,
+            **{f"flux_{band}_aper_uJy": flux for band, flux in measured.items()},
+            **{f"fluxerr_{band}_aper_uJy": value for band, value in error.items()},
         })
-    # Deterministic native-G count law for straight-region detection; these
-    # additional Gaia rows inform shape but have no Euclid match.
+    # The Gaia comparison counts: a native-G law with a different slope.
+    gaia = []
     for bin_index, magnitude in enumerate(np.arange(12.05, 25.0, 0.1)):
-        count = max(2, int(round(
-            8.0 * 10 ** (0.15 * (magnitude - 12.0))
-        )))
-        for repeat in range(count):
-            color = 0.5 + 0.01 * ((bin_index + repeat) % 120)
-            gaia.append({
-                "source_id": f"extra-{bin_index}-{repeat}",
-                "field_index": repeat % 3,
-                "ra": 1, "dec": 2, "g_mag": magnitude,
-                "bp_mag": magnitude + color / 2,
-                "rp_mag": magnitude - color / 2,
-                "bp_rp": color,
-                "temperature_k": 6500 - 500 * color,
-                "extinction_g_mag": 0.1,
-                "central_selected_star": 0,
-            })
+        count = max(2, int(round(8.0 * 10 ** (0.2 * (magnitude - 12.0)))))
+        gaia.extend({
+            "source_id": f"g-{bin_index}-{repeat}", "g_mag": magnitude,
+            "central_selected_star": 0,
+        } for repeat in range(count))
     _write_csv(root / "gaia_population.csv", gaia)
     _write_csv(root / "q1_stellar_color_sample.csv", euclid)
     (root / "gaia_population.meta.json").write_text(json.dumps({
@@ -310,6 +289,7 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
         "random_centres": False,
     }))
     (root / "q1_stellar_color_sample.meta.json").write_text(json.dumps({
+        "version": Q1_STELLAR_COLOR_SAMPLE_VERSION,
         "field_count": 3, "radius_deg": 0.35,
         "area_arcmin2": 8 * np.pi,
         "random_centres": False,
@@ -363,9 +343,15 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
     )
 
     fit = fit_star_population()
-    assert fit["color_sample_provenance"]["role"].endswith("locus only")
+    assert fit["color_sample_provenance"]["role"] == "Euclid point-source colours only"
     assert fit["color_sample_provenance"]["random_centres"] is False
-    assert fit["euclid_mapping"]["matched_stars"] == 38
+    assert fit["coverage"]["color_rows"] == 400
+    assert fit["color_model"]["kind"] == "q1_point_source_color_resampling_v1"
+    assert "gaia" not in fit and "euclid_mapping" not in fit
+    assert fit["quality_gates"]["passed"] and fit["valid"]
+    # The law's slope is Q1 alone; Gaia's own (different) slope is reported.
+    assert fit["population"]["magnitude_slope"] == pytest.approx(0.15, abs=1e-3)
+    assert magnitude_gaia_slope(fit) == pytest.approx(0.2, abs=0.01)
     assert fit["population_provenance"]["classification_field"] == "PHZ_STAR_PROB"
     magnitude = fit["population"]["magnitude_distribution"]
     assert magnitude["kind"] == "straight_log10_differential_counts"
@@ -395,3 +381,7 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
     sed = prior.sample(np.random.default_rng(8), 21.5)
     assert sed.magnitudes["VIS"] == pytest.approx(21.5)
     assert set(sed.magnitudes) == {"VIS", "Y_E", "J_E", "H_E"}
+
+
+def magnitude_gaia_slope(fit: dict) -> float:
+    return fit["population"]["magnitude_distribution"]["fit_diagnostics"]["gaia"]["slope"]

@@ -1,4 +1,4 @@
-"""Q1 PHZ number counts plus matched Gaia--Euclid stellar colours."""
+"""Q1 PHZ number counts plus Euclid-only stellar colours."""
 
 from __future__ import annotations
 
@@ -15,10 +15,16 @@ import numpy as np
 from euclid_polish.config import Config
 from euclid_polish.population.magnitude_law import (
     StraightMagnitudeLaw,
-    fit_shared_slope,
     fit_straight_region,
 )
-from euclid_polish.sky.generation.stellar_sed import EmpiricalStellarPrior
+from euclid_polish.sky.generation.stellar_sed import (
+    STAR_COLOR_MODEL_KIND,
+    EmpiricalStellarPrior,
+    StarColorModel,
+    build_star_color_model,
+    deconvolved_draw,
+    magnitude_errors,
+)
 from euclid_polish.web.helpers.population_calibration import (
     star_candidate_path,
     write_star_candidate,
@@ -45,13 +51,14 @@ from euclid_polish.web.helpers.q1_stellar_colors import (
     q1_stellar_color_meta_path as euclid_catalog_meta_path,
 )
 
-_GAIA_COUNT_LIMIT_MAG = 20.5
 # Gaia (E)DR3 G-band AB and Vega zero points are 25.8010446445 and
 # 25.6873668671 mag, respectively.  The archive's phot_g_mean_mag is Vega.
 _GAIA_G_AB_MINUS_VEGA_MAG = 25.8010446445 - 25.6873668671
 _GAIA_TAP_PROVIDER = "ARI Gaia TAP"
-_STAR_POPULATION_VERSION = 6
-_STAR_DISTRIBUTION_VERSION = 15
+_STAR_POPULATION_VERSION = 7
+#: The law is Euclid alone; Gaia G counts are only overlaid for comparison.
+_STAR_FIT_VERSION = "q1-phz-straight-counts-euclid-colors-v6"
+_STAR_DISTRIBUTION_VERSION = 16
 _GAIA_COUNT_FIT_BIN_WIDTH_MAG = 0.5
 
 
@@ -291,9 +298,9 @@ def _stellar_density_comparison(
     """Compare measured and generator stellar densities.
 
     The VIS panel shows the Q1 counts, the fitted law, the generated stars
-    and the native Gaia G_AB counts with their Gaia-intercept shared-slope
-    fit (``gaia_x`` / ``gaia`` / ``gaia_fit``). The colour panels carry no
-    Gaia series; the Gaia projection was deleted from the console.
+    and, for comparison, the native Gaia G_AB counts with their own
+    straight-region fit (``gaia_x`` / ``gaia`` / ``gaia_fit``). The colour
+    panels carry no Gaia series.
     """
     if (
         euclid_area_arcmin2 <= 0.0 or gaia_area_arcmin2 <= 0.0
@@ -382,7 +389,7 @@ def _stellar_density_comparison(
                 if value is not None
             })
     # The Q1 colours are measured: noisy, and only over the VIS range of the
-    # Gaia-matched colour sample. The model's colour draws and the generated
+    # Euclid colour sample. The model's colour draws and the generated
     # stars are compared the same way: restricted to that VIS window and
     # given the Q1 flux errors (forward noised), so the widths compare. The
     # VIS law panel stays intrinsic.
@@ -465,8 +472,8 @@ def _stellar_density_comparison(
         )
     )
     q1_fit_diagnostics = magnitude_diagnostics.get("q1") or {}
-    # Native Gaia G_AB counts (Vega→AB) over the fixed Q1 Gaia fields, and the
-    # Gaia-intercept shared-slope line the prior was fitted with.
+    # Native Gaia G_AB counts (Vega→AB) over the fixed Q1 Gaia fields, with
+    # Gaia's own straight-region line, for comparison with the Q1 law.
     gaia_g_ab = np.asarray([
         float(value) + _GAIA_G_AB_MINUS_VEGA_MAG
         for row in gaia_rows
@@ -483,12 +490,12 @@ def _stellar_density_comparison(
     gaia_density = (
         gaia_counts / (gaia_area_arcmin2 * np.diff(gaia_edges))
     ).tolist()
+    # Gaia's own straight-region line (a comparison; it is not the law).
     gaia_intercept = _finite(gaia_fit_diagnostics.get("intercept"))
+    gaia_slope = _finite(gaia_fit_diagnostics.get("slope"))
     gaia_fit = (
-        np.power(
-            10.0, model_magnitude_law.slope * gaia_centres + gaia_intercept,
-        ).tolist()
-        if gaia_intercept is not None else None
+        np.power(10.0, gaia_slope * gaia_centres + gaia_intercept).tolist()
+        if gaia_intercept is not None and gaia_slope is not None else None
     )
     parameters: dict[str, Any] = {
         "vis": {
@@ -577,13 +584,12 @@ def _stellar_density_comparison(
                 "The Q1 count cache is not available; the VIS curve is "
                 "only the local high-purity Euclid diagnostic. "
             )
-            + "The magnitude panel also shows native Gaia G converted from "
-            "the archive Vega magnitude to AB with the Gaia (E)DR3 zero-point "
-            "offset and divided by the fixed Q1 Gaia-field area. Gaia and Q1 are "
-            "fit over independently selected straight regions with one shared "
-            "slope and separate intercepts; the Q1 intercept normalizes the "
-            "12–25 VIS generator. Colour curves "
-            "remain matched-field fit diagnostics; "
+            + "The 12–25 VIS generator is the straight region of the Q1 "
+            "PHZ-weighted counts alone. For comparison only, the magnitude "
+            "panel also shows native Gaia G, converted from the archive Vega "
+            "magnitude to AB with the Gaia (E)DR3 zero-point offset and divided "
+            "by the fixed Q1 Gaia-field area, with its own straight-region "
+            "line. Colour curves are fixed-field Euclid diagnostics; "
             + (
                 "the model colour draws and the generated stars are taken over "
                 "the VIS range of the Q1 colour sample and carry Q1 measurement "
@@ -600,36 +606,7 @@ def _stellar_density_comparison(
     }
 
 
-_LATENT_NODE_COUNT = 17
-_LATENT_COLOR_ORDER = ("vis_y", "y_j", "j_h")
-_LATENT_NU = 4.0
-
-
-def _positive_semidefinite_covariance(
-    values: np.ndarray, *, floor: float,
-) -> np.ndarray:
-    matrix = np.asarray(values, dtype=np.float64)
-    matrix = 0.5 * (matrix + matrix.T)
-    eigenvalues, eigenvectors = np.linalg.eigh(matrix)
-    projected = (
-        (eigenvectors * np.maximum(eigenvalues, float(floor)))
-        @ eigenvectors.T
-    )
-    # Roundoff in the eigensystem reconstruction can leave an antisymmetric
-    # component large enough for NumPy's covariance validity check to warn.
-    return 0.5 * (projected + projected.T)
-
-
-def _draw_zero_mean_gaussian(
-    rng: np.random.Generator, covariance: np.ndarray,
-) -> np.ndarray:
-    """Draw from an explicitly projected PSD covariance."""
-    covariance = _positive_semidefinite_covariance(covariance, floor=0.0)
-    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
-    return eigenvectors @ (
-        np.sqrt(np.maximum(eigenvalues, 0.0))
-        * rng.standard_normal(covariance.shape[0])
-    )
+_COLOR_ORDER = ("vis_y", "y_j", "j_h")
 
 
 def _raw_measurement(row: dict[str, str], band: str) -> tuple[float, float] | None:
@@ -780,69 +757,19 @@ def _star_distribution_from_rows(
     synthetic_area_arcmin2: float = 0.0,
     synthetic_scope: str = "test + validation",
 ) -> dict[str, Any]:
-    """Count the Gaia–Euclid colour sample and compare stellar densities.
+    """Count the Euclid colour sample and compare stellar densities.
 
-    The matched counts describe the sample the stellar prior fits its colours
-    on. The Gaia BP−RP colour, CMD and Gaia-projection views were deleted
-    (a deterministic locus and raw G < 21.9 input), so their payloads are not
-    built.
+    The counts describe the Q1 point-source sample the stellar prior fits its
+    colours on (Euclid alone; no Gaia match).
     """
-    gaia_by_id = {
-        str(row.get("source_id")): row
-        for row in gaia_rows
-        if _finite(row.get("bp_rp")) is not None
-        and _finite(row.get("g_mag")) is not None
-        and row.get("central_selected_star") != "1"
-    }
-    matched = 0
-    high_quality = 0
-    pointlike_over_09 = 0
-    for row in euclid_rows:
-        gaia = gaia_by_id.get(str(row.get("gaia_id") or "").strip())
-        if gaia is None or row.get("type") != "star":
-            continue
-        measurements = [
-            _raw_measurement(row, band) for band in ("vis", "y", "j", "h")
-        ]
-        if any(item is None for item in measurements):
-            continue
-        if any(
-            _finite(row.get(key)) is None
-            for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
-        ):
-            continue
-        matched += 1
-        signal_to_noise = [
-            abs(flux / error)
-            for flux, error in (
-                measurement for measurement in measurements
-                if measurement is not None
-            )
-        ]
-        high_quality += int(min(signal_to_noise) >= 5.0)
-        probability = _finite(row.get("point_like_prob"))
-        pointlike_over_09 += int(probability is not None and probability >= 0.9)
-
-    fit_nodes = np.asarray(
-        color_model.get("bp_rp_nodes", []) if color_model else [],
-        dtype=np.float64,
+    pointlike_over_09 = sum(
+        int((probability := _finite(row.get("point_like_prob"))) is not None
+            and probability >= 0.9)
+        for row in euclid_rows
     )
-    fit_locus = np.asarray(
-        color_model.get("locus_colors", []) if color_model else [],
-        dtype=np.float64,
-    )
-    fit_covariance = np.asarray(
-        color_model.get("intrinsic_color_covariance", []) if color_model else [],
-        dtype=np.float64,
-    )
-    has_fit = (
-        fit_nodes.ndim == 1
-        and fit_nodes.size >= 2
-        and fit_locus.shape == (fit_nodes.size, 3)
-        and fit_covariance.shape == (3, 3)
-        and np.all(np.isfinite(fit_nodes))
-        and np.all(np.isfinite(fit_locus))
-        and np.all(np.isfinite(fit_covariance))
+    color_rows = int(_star_color_rows(euclid_rows)["weight"].size)
+    has_fit = bool(
+        color_model and color_model.get("kind") == STAR_COLOR_MODEL_KIND
     )
     density_comparison = None
     if (
@@ -864,8 +791,8 @@ def _star_distribution_from_rows(
         "version": _STAR_DISTRIBUTION_VERSION,
         "calibration_fingerprint": calibration_fingerprint,
         "source_signature": _distribution_source_signature(),
-        "matched_stars": int(matched),
-        "high_quality_stars": int(high_quality),
+        "color_sample_rows": len(euclid_rows),
+        "color_rows_used": color_rows,
         "pointlike_over_0_9": int(pointlike_over_09),
         "density_comparison": density_comparison,
         "gaia_sampling": gaia_sampling,
@@ -988,128 +915,6 @@ def star_distribution_payload(
     return payload
 
 
-def _gaia_bp_rp_sigma(row: dict[str, str]) -> float:
-    bp_flux = _finite(row.get("bp_flux"))
-    rp_flux = _finite(row.get("rp_flux"))
-    bp_error = _finite(row.get("bp_flux_error"))
-    rp_error = _finite(row.get("rp_flux_error"))
-    if (
-        bp_flux is None or rp_flux is None or bp_error is None
-        or rp_error is None or bp_flux <= 0.0 or rp_flux <= 0.0
-    ):
-        return 0.03
-    sigma = 1.0857362047581296 * math.sqrt(
-        (bp_error / bp_flux) ** 2 + (rp_error / rp_flux) ** 2,
-    )
-    return float(max(sigma, 1e-4)) if math.isfinite(sigma) else 0.03
-
-
-def _color_measurement_covariance(
-    row: dict[str, str],
-) -> np.ndarray | None:
-    measurements = [_raw_measurement(row, band) for band in ("vis", "y", "j", "h")]
-    if any(item is None for item in measurements):
-        return None
-    valid_measurements = [
-        measurement for measurement in measurements
-        if measurement is not None
-    ]
-    sigma_mag = np.asarray([
-        1.0857362047581296 * abs(error / flux)
-        if abs(flux) > 0.0 else np.inf
-        for flux, error in valid_measurements
-    ])
-    if not np.all(np.isfinite(sigma_mag)):
-        return None
-    variances = sigma_mag ** 2
-    return np.asarray([
-        [variances[0] + variances[1], -variances[1], 0.0],
-        [-variances[1], variances[1] + variances[2], -variances[2]],
-        [0.0, -variances[2], variances[2] + variances[3]],
-    ])
-
-
-def _normalise_probability_rows(values: np.ndarray, alpha: float) -> np.ndarray:
-    values = np.maximum(np.asarray(values, dtype=np.float64), 0.0)
-    values += float(alpha)
-    totals = values.sum(axis=1, keepdims=True)
-    return np.divide(
-        values, totals, out=np.full_like(values, 1.0 / values.shape[1]),
-        where=totals > 0.0,
-    )
-
-
-def _softmax(values: np.ndarray) -> np.ndarray:
-    shifted = np.asarray(values, dtype=np.float64)
-    shifted = shifted - np.max(shifted)
-    result = np.exp(np.clip(shifted, -700.0, 0.0))
-    total = float(np.sum(result))
-    return result / total if total > 0.0 else np.full_like(result, 1.0 / result.size)
-
-
-def _logsumexp(values: np.ndarray) -> float:
-    values = np.asarray(values, dtype=np.float64)
-    maximum = float(np.max(values))
-    return maximum + float(np.log(np.sum(np.exp(values - maximum))))
-
-
-def _flux_ratios(colors: np.ndarray) -> np.ndarray:
-    vis_y, y_j, j_h = np.asarray(colors, dtype=np.float64)
-    return np.power(10.0, 0.4 * np.asarray([
-        0.0, vis_y, vis_y + y_j, vis_y + y_j + j_h,
-    ]))
-
-
-def _source_node_log_likelihood(
-    row: dict[str, str],
-    locus_colors: np.ndarray,
-    bp_rp_nodes: np.ndarray,
-    bp_rp: float | None,
-    bp_rp_sigma: float | None,
-) -> np.ndarray:
-    measurements = [_raw_measurement(row, band) for band in ("vis", "y", "j", "h")]
-    valid = np.asarray([item is not None for item in measurements])
-    if np.count_nonzero(valid) < 2:
-        return np.full(locus_colors.shape[0], -np.inf)
-    flux = np.asarray([
-        item[0] if item is not None else 0.0 for item in measurements
-    ])
-    error = np.asarray([
-        item[1] if item is not None else 1.0 for item in measurements
-    ])
-    result = np.empty(locus_colors.shape[0], dtype=np.float64)
-    for index, colors in enumerate(locus_colors):
-        ratios = _flux_ratios(colors)
-        weights = 1.0 / error[valid] ** 2
-        amplitude = float(np.sum(flux[valid] * ratios[valid] * weights))
-        denominator = float(np.sum(ratios[valid] ** 2 * weights))
-        amplitude = max(amplitude / max(denominator, 1e-20), 0.0)
-        residual = (flux[valid] - amplitude * ratios[valid]) / error[valid]
-        score = -0.5 * (_LATENT_NU + 1.0) * float(
-            np.sum(np.log1p(residual ** 2 / _LATENT_NU))
-        )
-        if bp_rp is not None and bp_rp_sigma is not None and bp_rp_sigma > 0:
-            score -= 0.5 * ((bp_rp - bp_rp_nodes[index]) / bp_rp_sigma) ** 2
-        result[index] = score
-    return result
-
-
-def _robust_color_covariance(
-    residuals: np.ndarray, measurement_covariances: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    if residuals.shape[0] < 8:
-        return np.eye(3, dtype=np.float64) * 0.02 ** 2, np.ones(residuals.shape[0], dtype=bool)
-    center = np.median(residuals, axis=0)
-    scale = np.maximum(
-        1.4826 * np.median(np.abs(residuals - center), axis=0), 0.01,
-    )
-    keep = np.all(np.abs(residuals - center) <= 4.0 * scale, axis=1)
-    clipped = residuals[keep] - np.median(residuals[keep], axis=0)
-    covariance = np.cov(clipped, rowvar=False)
-    covariance -= np.mean(measurement_covariances[keep], axis=0)
-    return _positive_semidefinite_covariance(covariance, floor=0.01 ** 2), keep
-
-
 def _weighted_color_summary(
     colors: np.ndarray, weights: np.ndarray,
 ) -> dict[str, Any]:
@@ -1122,7 +927,7 @@ def _weighted_color_summary(
         "effective_weight": total,
         "effective_n": float(total * total / max(np.sum(weights ** 2), 1e-20)),
     }
-    for index, name in enumerate(_LATENT_COLOR_ORDER):
+    for index, name in enumerate(_COLOR_ORDER):
         values = colors[:, index]
         order = np.argsort(values)
         sorted_values = values[order]
@@ -1144,7 +949,7 @@ def _fit_straight_star_magnitude_law(
     gaia_meta: dict[str, Any],
     q1_counts: dict[str, Any],
 ) -> tuple[StraightMagnitudeLaw, dict[str, Any]]:
-    """Fit a common Gaia-G/Q1-VIS slope with Q1 setting the VIS level."""
+    """Fit the Q1 PHZ VIS count law; fit Gaia G separately to compare."""
     edges = np.asarray(q1_counts["edges"], dtype=np.float64)
     centres = 0.5 * (edges[:-1] + edges[1:])
     widths = np.diff(edges)
@@ -1157,10 +962,9 @@ def _fit_straight_star_magnitude_law(
         and (value := _finite(row.get("g_mag"))) is not None
     ], dtype=np.float64)
     # The fixed Gaia fields contain only a few thousand sources.  Searching
-    # for a 2.5-mag straight region in 0.1-mag cells makes Poisson structure,
-    # rather than the broad count law, decide whether activation succeeds.
-    # Gaia informs the shared slope only, so fit it at a stable 0.5-mag
-    # resolution while retaining the native Q1 0.1-mag bins and normalization.
+    # for a 2.5-mag straight region in 0.1-mag cells would make Poisson
+    # structure decide the comparison, so Gaia is fitted at a stable 0.5-mag
+    # resolution; the Q1 law keeps its native 0.1-mag bins.
     gaia_edges = np.arange(
         float(Config.STAR_MAG_BRIGHT),
         float(Config.STAR_MAG_FAINT) + 0.5 * _GAIA_COUNT_FIT_BIN_WIDTH_MAG,
@@ -1191,16 +995,6 @@ def _fit_straight_star_magnitude_law(
     ], dtype=np.float64)
 
     try:
-        gaia_region = fit_straight_region(
-            gaia_centres, gaia_density, gaia_sigma,
-            minimum_span_mag=2.5, minimum_r_squared=0.99,
-        )
-    except ValueError as exc:
-        raise ValueError(
-            "Gaia G_AB counts have no 2.5-mag straight region at 0.5-mag "
-            "resolution with R² >= 0.99"
-        ) from exc
-    try:
         q1_region = fit_straight_region(
             centres, q1_density, q1_sigma,
             minimum_span_mag=2.5, minimum_r_squared=0.99,
@@ -1210,334 +1004,208 @@ def _fit_straight_star_magnitude_law(
             "Q1 PHZ_STAR_PROB VIS counts have no 2.5-mag straight region "
             "at 0.1-mag resolution with R² >= 0.99"
         ) from exc
-    gaia_slice = slice(gaia_region.start, gaia_region.stop)
-    q1_slice = slice(q1_region.start, q1_region.stop)
-    slope, intercepts, covariance, r_squared, rms = fit_shared_slope([
-        (
-            gaia_centres[gaia_slice], gaia_density[gaia_slice],
-            gaia_sigma[gaia_slice],
-        ),
-        (
-            centres[q1_slice], q1_density[q1_slice],
-            q1_sigma[q1_slice],
-        ),
-    ])
-    q1_intercept = intercepts[1]
-    law_covariance = (
-        (float(covariance[0, 0]), float(covariance[0, 2])),
-        (float(covariance[2, 0]), float(covariance[2, 2])),
-    )
     law = StraightMagnitudeLaw(
-        slope=slope,
-        intercept=q1_intercept,
+        slope=q1_region.slope,
+        intercept=q1_region.intercept,
         mag_bright=float(Config.STAR_MAG_BRIGHT),
         mag_faint=float(Config.STAR_MAG_FAINT),
         fit_bright=float(centres[q1_region.start]),
         fit_faint=float(centres[q1_region.stop - 1]),
-        covariance=law_covariance,
-        r_squared=r_squared,
-        rms_log10_density=rms,
+        covariance=(
+            (float(q1_region.covariance[0, 0]), float(q1_region.covariance[0, 1])),
+            (float(q1_region.covariance[1, 0]), float(q1_region.covariance[1, 1])),
+        ),
+        r_squared=q1_region.r_squared,
+        rms_log10_density=q1_region.rms,
         source=(
-            "shared slope from native Gaia G_AB and Euclid Q1 PHZ; "
-            "Q1 PHZ_STAR_PROB sets VIS normalization"
+            "straight region of the Euclid Q1 PHZ_STAR_PROB-weighted VIS "
+            "counts; Gaia G_AB counts are a comparison only"
         ),
     )
-    diagnostics = {
-        "gaia": {
-            "band": "Gaia G_AB",
-            "bin_width_mag": _GAIA_COUNT_FIT_BIN_WIDTH_MAG,
-            "fit_bright": float(gaia_centres[gaia_region.start]),
-            "fit_faint": float(gaia_centres[gaia_region.stop - 1]),
-            "r_squared": float(gaia_region.r_squared),
-            "rms_log10_density": float(gaia_region.rms),
-            "intercept": float(intercepts[0]),
-        },
+    diagnostics: dict[str, Any] = {
         "q1": {
             "band": "Euclid VIS",
             "bin_width_mag": float(np.median(widths)),
             "fit_bright": float(centres[q1_region.start]),
             "fit_faint": float(centres[q1_region.stop - 1]),
+            "slope": float(q1_region.slope),
+            "intercept": float(q1_region.intercept),
             "r_squared": float(q1_region.r_squared),
             "rms_log10_density": float(q1_region.rms),
-            "intercept": float(q1_intercept),
         },
-        "shared_slope": float(slope),
-        "shared_r_squared": float(r_squared),
-        "shared_rms_log10_density": float(rms),
+        "gaia": None,
+    }
+    # Comparison: Gaia's own straight region and slope. It never enters the
+    # law, so a Gaia sample without a clean straight region only loses the
+    # comparison.
+    try:
+        gaia_region = fit_straight_region(
+            gaia_centres, gaia_density, gaia_sigma,
+            minimum_span_mag=2.5, minimum_r_squared=0.99,
+        )
+    except ValueError:
+        return law, diagnostics
+    slope_sigma = math.sqrt(
+        max(float(gaia_region.covariance[0, 0]), 0.0)
+        + max(float(q1_region.covariance[0, 0]), 0.0)
+    )
+    diagnostics["gaia"] = {
+        "band": "Gaia G_AB",
+        "role": "comparison only",
+        "bin_width_mag": _GAIA_COUNT_FIT_BIN_WIDTH_MAG,
+        "fit_bright": float(gaia_centres[gaia_region.start]),
+        "fit_faint": float(gaia_centres[gaia_region.stop - 1]),
+        "slope": float(gaia_region.slope),
+        "intercept": float(gaia_region.intercept),
+        "r_squared": float(gaia_region.r_squared),
+        "rms_log10_density": float(gaia_region.rms),
+        "slope_difference_sigma": (
+            (float(gaia_region.slope) - float(q1_region.slope)) / slope_sigma
+            if slope_sigma > 0.0 else None
+        ),
     }
     return law, diagnostics
 
 
-def _fit_star_population_latent() -> dict[str, Any]:
-    """Fit PHZ number counts plus a Gaia-anchored stellar color locus."""
+_COLOR_SNR_FLOOR = 5.0
+_COLOR_BANDS = ("vis", "y", "j", "h")
+
+
+def _star_color_rows(rows: list[dict[str, str]]) -> dict[str, Any]:
+    """Select the Q1 point sources whose colours calibrate the stellar colours.
+
+    A row needs POINT_LIKE_PROB ≥ 0.9, a PHZ star probability (its weight), a
+    VIS PSF magnitude (the binning variable, as for the counts) and aperture
+    fluxes at S/N ≥ 5 in all four bands, so its magnitude errors are small
+    enough to linearise. Stars in the colour range are bright in NISP: the
+    rows this cut removes (~20% at every magnitude) are almost all MER rows
+    reporting absurd errors (tens to hundreds of µJy on a few-µJy-σ source).
+    """
+    magnitude: list[float] = []
+    color: list[list[float]] = []
+    mag_sigma: list[np.ndarray] = []
+    weight: list[float] = []
+    fluxes: list[list[float]] = []
+    rejected = {
+        "not_point_like": 0, "no_phz_weight": 0, "no_psf_magnitude": 0,
+        "incomplete_flux": 0, "low_snr": 0,
+    }
+    for row in rows:
+        probability = _finite(row.get("point_like_prob"))
+        if probability is None or not 0.9 <= probability <= 1.0:
+            rejected["not_point_like"] += 1
+            continue
+        star_weight = _finite(row.get("phz_star_prob"))
+        if star_weight is None or not 0.0 < star_weight <= 1.0:
+            rejected["no_phz_weight"] += 1
+            continue
+        psf_magnitude = _finite(row.get("mag_vis_psf"))
+        if psf_magnitude is None:
+            rejected["no_psf_magnitude"] += 1
+            continue
+        measurements = [_raw_measurement(row, band) for band in _COLOR_BANDS]
+        if any(item is None for item in measurements):
+            rejected["incomplete_flux"] += 1
+            continue
+        flux = np.asarray([item[0] for item in measurements if item is not None])
+        error = np.asarray([item[1] for item in measurements if item is not None])
+        if np.any(flux <= 0.0) or np.any(flux / error < _COLOR_SNR_FLOOR):
+            rejected["low_snr"] += 1
+            continue
+        band_magnitude = _AB_ZEROPOINT_UJY_MAG - 2.5 * np.log10(flux)
+        magnitude.append(psf_magnitude)
+        color.append(list(-np.diff(band_magnitude)))
+        mag_sigma.append(magnitude_errors(flux, error))
+        weight.append(star_weight)
+        fluxes.append([*flux, *error])
+    return {
+        "magnitude": np.asarray(magnitude, dtype=np.float64),
+        "color": np.asarray(color, dtype=np.float64).reshape(-1, 3),
+        "mag_sigma": np.asarray(mag_sigma, dtype=np.float64).reshape(-1, 4),
+        "weight": np.asarray(weight, dtype=np.float64),
+        # VIS/Y/J/H aperture fluxes then errors [µJy], for the re-noising check.
+        "fluxes": np.asarray(fluxes, dtype=np.float64).reshape(-1, 8),
+        "rejected": rejected,
+    }
+
+
+def _renoised_colors(
+    colors: np.ndarray, fluxes: np.ndarray, rng: np.random.Generator,
+) -> np.ndarray | None:
+    """Colours of a star at ``colors`` measured with one row's flux errors.
+
+    The star keeps the row's VIS flux; the NISP fluxes follow from the
+    colours, every band gets its own Gaussian flux error, and the colours are
+    remeasured (None if a noised flux is not positive).
+    """
+    vis_flux = fluxes[0]
+    offsets = np.concatenate(([0.0], np.cumsum(colors)))
+    true_flux = vis_flux * np.power(10.0, 0.4 * offsets)
+    noised = true_flux + fluxes[4:] * rng.standard_normal(4)
+    if np.any(noised <= 0.0):
+        return None
+    return -np.diff(-2.5 * np.log10(noised))
+
+
+def _fit_star_population_euclid() -> dict[str, Any]:
+    """Fit PHZ number counts plus Euclid-only point-source colours."""
     faint = float(Config.STAR_MAG_FAINT)
     bright = float(Config.STAR_MAG_BRIGHT)
-    splice = _GAIA_COUNT_LIMIT_MAG
     gaia_rows = _read_rows(gaia_catalog_path())
     euclid_rows = _read_rows(euclid_catalog_path())
     meta = json.loads(gaia_catalog_meta_path().read_text())
+    euclid_meta = json.loads(euclid_catalog_meta_path().read_text())
     _require_current_gaia_field_sampling(meta, euclid_rows)
+    if int(euclid_meta.get("version") or 0) != Q1_STELLAR_COLOR_SAMPLE_VERSION:
+        raise ValueError(
+            "Stellar colour cache is stale; press Query MER + PHZ to refresh "
+            "the Euclid-only colour sample"
+        )
     q1_counts = read_q1_phz_star_counts(bright=bright, faint=faint)
     magnitude_law, magnitude_fit_diagnostics = (
         _fit_straight_star_magnitude_law(gaia_rows, meta, q1_counts)
     )
-    gaia_usable = [
-        row for row in gaia_rows
-        if _finite(row.get("bp_rp")) is not None
-        and _finite(row.get("g_mag")) is not None
-        and row.get("central_selected_star") != "1"
-    ]
-    by_id = {str(row.get("source_id")): row for row in gaia_usable}
-    matched: list[tuple[dict[str, str], dict[str, str]]] = []
-    for row in euclid_rows:
-        gaia = by_id.get(str(row.get("gaia_id") or "").strip())
-        if gaia is None or row.get("type") != "star":
-            continue
-        if all(_raw_measurement(row, band) is not None for band in ("vis", "y", "j", "h")):
-            matched.append((row, gaia))
-    high_quality: list[tuple[dict[str, str], dict[str, str]]] = []
-    for row, gaia in matched:
-        snr = [
-            abs(flux / error)
-            for band in ("vis", "y", "j", "h")
-            if (measurement := _raw_measurement(row, band)) is not None
-            for flux, error in [measurement]
-        ]
-        if len(snr) == 4 and min(snr) >= 5.0:
-            high_quality.append((row, gaia))
-    if len(high_quality) < 32:
-        raise ValueError("too few raw-flux Gaia-Euclid matches for latent color fit")
 
-    bp_values = np.asarray([float(row["bp_rp"]) for row in gaia_usable])
-    quantiles = np.linspace(0.0, 1.0, _LATENT_NODE_COUNT + 1)
-    bp_edges = np.quantile(bp_values, quantiles)
-    bp_edges = np.maximum.accumulate(bp_edges)
-    for index in range(1, bp_edges.size):
-        if bp_edges[index] <= bp_edges[index - 1]:
-            bp_edges[index] = bp_edges[index - 1] + 1e-6
-    bp_nodes = 0.5 * (bp_edges[:-1] + bp_edges[1:])
-    all_temperatures = [
-        float(row["temperature_k"]) for row in gaia_usable
-        if _finite(row.get("temperature_k")) is not None
-    ]
-    temperature_fallback = (
-        float(np.median(all_temperatures)) if all_temperatures else 5800.0
-    )
-    temperature_nodes = np.asarray([
-        float(np.median([
-            float(row["temperature_k"])
-            for row in gaia_usable
-            if _finite(row.get("temperature_k")) is not None
-            and bp_edges[index] <= float(row["bp_rp"]) <= bp_edges[index + 1]
-        ]))
-        if any(
-            _finite(row.get("temperature_k")) is not None
-            and bp_edges[index] <= float(row["bp_rp"]) <= bp_edges[index + 1]
-            for row in gaia_usable
-        ) else temperature_fallback
-        for index in range(_LATENT_NODE_COUNT)
-    ])
-
-    match_bp = np.asarray([float(gaia["bp_rp"]) for _row, gaia in high_quality])
-    match_colors = np.asarray([
-        [
-            float(row["mag_vis"]) - float(row["mag_y_e"]),
-            float(row["mag_y_e"]) - float(row["mag_j_e"]),
-            float(row["mag_j_e"]) - float(row["mag_h_e"]),
-        ]
-        for row, _gaia in high_quality
-    ])
-    locus = np.asarray([
-        np.median(match_colors[
-            (match_bp >= bp_edges[index]) & (match_bp <= bp_edges[index + 1])
-        ], axis=0)
-        if np.any((match_bp >= bp_edges[index]) & (match_bp <= bp_edges[index + 1]))
-        else np.median(match_colors, axis=0)
-        for index in range(_LATENT_NODE_COUNT)
-    ])
-    expected_color = np.column_stack([
-        np.interp(match_bp, bp_nodes, locus[:, index])
-        for index in range(3)
-    ])
-    measurement_covariances = np.asarray([
-        _color_measurement_covariance(row)
-        for row, _gaia in high_quality
-    ])
-    intrinsic_covariance, kept = _robust_color_covariance(
-        match_colors - expected_color, measurement_covariances,
-    )
-
-    vis_g_bp = np.asarray([float(gaia["bp_rp"]) for row, gaia in high_quality])
-    vis_g_offsets = np.asarray([
-        float(row["mag_vis"]) - float(gaia["g_mag"])
-        for row, gaia in high_quality
-    ])
-    offset_order = np.argsort(vis_g_bp)
-    offset_bp = vis_g_bp[offset_order]
-    offset_values = vis_g_offsets[offset_order]
-    offset_locus = np.asarray([
-        float(np.median(offset_values[
-            (offset_bp >= bp_edges[index]) & (offset_bp <= bp_edges[index + 1])
-        ]))
-        if np.any((offset_bp >= bp_edges[index]) & (offset_bp <= bp_edges[index + 1]))
-        else float(np.median(offset_values))
-        for index in range(_LATENT_NODE_COUNT)
-    ])
-
-    magnitude_edges = _fixed_width_edges(bright, faint, 0.5)
-    node_weights = np.full(
-        (magnitude_edges.size - 1, _LATENT_NODE_COUNT),
-        1.0 / _LATENT_NODE_COUNT,
-        dtype=np.float64,
-    )
-    for row in gaia_usable:
-        g_mag = _finite(row.get("g_mag"))
-        bp_rp = _finite(row.get("bp_rp"))
-        if g_mag is None or bp_rp is None or g_mag > splice:
-            continue
-        vis_mag = g_mag + float(np.interp(bp_rp, bp_nodes, offset_locus))
-        if not bright <= vis_mag <= splice:
-            continue
-        bin_index = int(np.searchsorted(magnitude_edges, vis_mag, side="right") - 1)
-        bin_index = max(0, min(bin_index, node_weights.shape[0] - 1))
-        node_index = max(0, min(
-            int(np.searchsorted(bp_edges, bp_rp, side="right") - 1),
-            _LATENT_NODE_COUNT - 1,
-        ))
-        node_weights[bin_index, node_index] += 1.0
-    node_weights = _normalise_probability_rows(node_weights, alpha=0.5)
-
-    euclid_records: list[dict[str, Any]] = []
-    missing_flux = 0
-    missing_probability = 0
-    invalid_probability = 0
-    usable_probability_rows = 0
-    for row in euclid_rows:
-        probability = _finite(row.get("point_like_prob"))
-        if probability is None:
-            missing_probability += 1
-            continue
-        if not 0.0 <= probability <= 1.0:
-            invalid_probability += 1
-            continue
-        usable_probability_rows += 1
-        measurements = [_raw_measurement(row, band) for band in ("vis", "y", "j", "h")]
-        if sum(item is not None for item in measurements) < 2:
-            missing_flux += 1
-            continue
-        euclid_records.append({
-            "row": row,
-            "probability": probability,
-            "bp_rp": float(by_id[str(row.get("gaia_id") or "")]["bp_rp"])
-            if str(row.get("gaia_id") or "") in by_id else None,
-            "bp_rp_sigma": _gaia_bp_rp_sigma(
-                by_id[str(row.get("gaia_id") or "")]
-            ) if str(row.get("gaia_id") or "") in by_id else 0.03,
-        })
-
-    # The flux likelihood is independent of the magnitude-bin mixture weights.
-    # Cache it once; recomputing 17 node scores for every EM iteration makes a
-    # large cached fixed-field sample needlessly expensive.
-    for record in euclid_records:
-        magnitude = _finite(record["row"].get("mag_vis"))
-        record["likelihood"] = (
-            _source_node_log_likelihood(
-                record["row"], locus, bp_nodes,
-                record["bp_rp"], record["bp_rp_sigma"],
-            )
-            if magnitude is not None and splice < magnitude <= faint
-            else None
+    selected = _star_color_rows(euclid_rows)
+    row_count = int(selected["weight"].size)
+    if row_count < 200:
+        raise ValueError(
+            f"only {row_count} Q1 point sources are usable for stellar colours; "
+            "at least 200 are required"
         )
+    color_model = build_star_color_model(
+        selected["magnitude"], selected["color"], selected["mag_sigma"],
+        selected["weight"], mag_bright=bright, mag_faint=faint,
+    )
+    sampler = StarColorModel.from_payload(color_model)
 
-    converged = False
-    objective_change = float("inf")
-    previous_objective: float | None = None
-    _iteration = -1
-    for _iteration in range(50):
-        accum = np.full_like(node_weights, 0.5)
-        objective = 0.0
-        for record in euclid_records:
-            magnitude = _finite(record["row"].get("mag_vis"))
-            if magnitude is None or not splice < magnitude <= faint:
-                continue
-            bin_index = int(np.searchsorted(magnitude_edges, magnitude, side="right") - 1)
-            bin_index = max(0, min(bin_index, node_weights.shape[0] - 1))
-            likelihood = record["likelihood"]
-            if likelihood is None:
-                continue
-            log_scores = (
-                np.log(np.maximum(node_weights[bin_index], 1e-20))
-                + likelihood
-            )
-            objective += float(record["probability"]) * _logsumexp(log_scores)
-            posterior = _softmax(log_scores)
-            accum[bin_index] += float(record["probability"]) * posterior
-        for index in range(node_weights.shape[0]):
-            if float(np.sum(accum[index])) <= 20.0:
-                nearest = min(
-                    range(node_weights.shape[0]),
-                    key=lambda other: abs(other - index)
-                    if float(np.sum(accum[other])) > 20.0 else 10 ** 9,
-                )
-                accum[index] = accum[nearest]
-        node_weights = _normalise_probability_rows(accum, alpha=0.0)
-        if previous_objective is not None:
-            objective_change = abs(objective - previous_objective) / max(
-                abs(previous_objective), 1.0,
-            )
-        previous_objective = objective
-        if objective_change < 1e-5:
-            converged = True
-            break
-
+    # Per observed row: its raw colours, one posterior draw of its true
+    # colours (the same deconvolution generation uses) and that draw measured
+    # again with the row's own flux errors, which must reproduce the raw
+    # distribution.
+    diagnostic_rng = np.random.default_rng(71591)
     latent_colors: list[np.ndarray] = []
-    latent_weights: list[float] = []
-    dirty_colors: list[np.ndarray] = []
-    dirty_weights: list[float] = []
     predictive_colors: list[np.ndarray] = []
     predictive_weights: list[float] = []
-    diagnostic_rng = np.random.default_rng(71591)
-    for record in euclid_records:
-        row = record["row"]
-        magnitude = _finite(row.get("mag_vis"))
-        if magnitude is None or not splice < magnitude <= faint:
-            continue
-        bin_index = max(0, min(
-            int(np.searchsorted(magnitude_edges, magnitude, side="right") - 1),
-            node_weights.shape[0] - 1,
-        ))
-        likelihood = record["likelihood"]
-        if likelihood is None:
-            continue
-        posterior = _softmax(np.log(np.maximum(node_weights[bin_index], 1e-20)) + likelihood)
-        latent_base = posterior @ locus + _draw_zero_mean_gaussian(
-            diagnostic_rng, intrinsic_covariance,
+    for index in range(row_count):
+        location, intrinsic = sampler.bin_moments[
+            sampler.serving_bin(float(selected["magnitude"][index]))
+        ]
+        latent = deconvolved_draw(
+            location, intrinsic, selected["color"][index],
+            sampler.noise_covariance[index], diagnostic_rng,
         )
-        latent_colors.append(latent_base)
-        latent_weights.append(float(record["probability"]))
-        if all(_finite(row.get(key)) is not None for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")):
-            measured = np.asarray([
-                float(row["mag_vis"]) - float(row["mag_y_e"]),
-                float(row["mag_y_e"]) - float(row["mag_j_e"]),
-                float(row["mag_j_e"]) - float(row["mag_h_e"]),
-            ])
-            dirty_colors.append(measured)
-            dirty_weights.append(float(record["probability"]))
-            measurement_covariance = _color_measurement_covariance(row)
-            if measurement_covariance is not None:
-                measurement_covariance = _positive_semidefinite_covariance(
-                    measurement_covariance, floor=0.0,
-                )
-                predictive_covariance = _positive_semidefinite_covariance(
-                    intrinsic_covariance + measurement_covariance, floor=0.0,
-                )
-                predictive_noise = _draw_zero_mean_gaussian(
-                    diagnostic_rng, predictive_covariance,
-                )
-                predictive_colors.append(
-                    latent_base + predictive_noise
-                )
-                predictive_weights.append(float(record["probability"]))
+        latent_colors.append(latent)
+        predictive = _renoised_colors(
+            latent, selected["fluxes"][index], diagnostic_rng,
+        )
+        if predictive is not None:
+            predictive_colors.append(predictive)
+            predictive_weights.append(float(selected["weight"][index]))
+    latent_weights = list(selected["weight"])
+    dirty_colors = list(selected["color"])
+    dirty_weights = list(selected["weight"])
+
     magnitude_bins = np.asarray(q1_counts["edges"], dtype=np.float64)
     counts = np.asarray([
         float(item["expected_stars"]) for item in q1_counts["bins"]
@@ -1549,63 +1217,43 @@ def _fit_star_population_latent() -> dict[str, Any]:
     total_count = float(np.sum(counts))
     if total_count <= 0.0:
         raise ValueError("Q1 PHZ stellar counts have zero total probability weight")
-    color_model = {
-        "kind": "gaia_euclid_latent_locus_v1",
-        "bp_rp_edges": bp_edges.tolist(),
-        "bp_rp_nodes": bp_nodes.tolist(),
-        "temperature_nodes_k": temperature_nodes.tolist(),
-        "locus_colors": locus.tolist(),
-        "g_to_vis_offset": offset_locus.tolist(),
-        "intrinsic_color_covariance": intrinsic_covariance.tolist(),
-        "magnitude_edges": magnitude_edges.tolist(),
-        "magnitude_node_weights": node_weights.tolist(),
-        "measurement_model": {
-            "euclid_flux_likelihood": "student_t",
-            "student_t_degrees_of_freedom": _LATENT_NU,
-            "gaia_bp_rp_sigma_default_mag": 0.03,
-            "gaia_euclid_flux_errors_independent": True,
-        },
-    }
+    populated_bins = int(np.sum(
+        np.asarray(color_model["bin_weight"]) >= color_model["min_bin_weight"]
+    ))
     payload: dict[str, Any] = {
         "version": _STAR_POPULATION_VERSION,
         "kind": "star_population_fit",
-        "valid": bool(converged and np.all(np.isfinite(intrinsic_covariance))),
-        "warnings": [] if converged else ["latent node mixture did not converge"],
+        "valid": True,
+        "warnings": [],
         "coverage_notes": [
             (
                 f"normalized VIS counts with PHZ_STAR_PROB over "
                 f"{float(q1_counts['footprint_area_deg2']):g} deg² of Q1"
             ),
-            f"used {len(high_quality):,} high-S/N Gaia-Euclid matches for the locus",
-            f"excluded {missing_flux:,} Euclid rows with fewer than two usable flux bands",
-            f"probability coverage {usable_probability_rows:,}/{len(euclid_rows):,}; "
-            f"missing {missing_probability:,}, invalid {invalid_probability:,}",
+            (
+                f"colours from {row_count:,} Q1 point sources (no Gaia match); "
+                f"{populated_bins} of {len(color_model['bin_source'])} 0.5-mag "
+                "bins sampled on their own, the rest use the nearest one"
+            ),
         ],
         "coverage": {
-            "gaia_rows": len(gaia_rows),
-            "gaia_usable_rows": len(gaia_usable),
-            "matched_rows": len(matched),
-            "high_quality_matched_rows": len(high_quality),
             "euclid_rows": len(euclid_rows),
-            "usable_probability_rows": usable_probability_rows,
-            "missing_probability_rows": missing_probability,
-            "invalid_probability_rows": invalid_probability,
-            "incomplete_flux_rows": missing_flux,
-            "negative_flux_rows": int(sum(
-                any(
-                    (_finite(row.get(f"flux_{band}_aper_uJy")) or 0.0) < 0.0
-                    for band in ("vis", "y", "j", "h")
-                ) for row in euclid_rows
-            )),
+            "color_rows": row_count,
+            "color_weight": float(np.sum(selected["weight"])),
+            "rejected_rows": selected["rejected"],
+            "count_check_gaia_rows": len(gaia_rows),
         },
         "color_sample_provenance": {
-            "field_count": int(meta["field_count"]),
-            "radius_deg": float(meta["radius_deg"]),
-            "area_arcmin2": float(meta["area_arcmin2"]),
-            "sampling_kind": meta.get("sampling_kind"),
-            "fields": meta.get("fields"),
-            "random_centres": meta.get("random_centres"),
-            "role": "Gaia-Euclid color and temperature locus only",
+            "version": int(euclid_meta["version"]),
+            "field_count": int(euclid_meta["field_count"]),
+            "radius_deg": float(euclid_meta["radius_deg"]),
+            "area_arcmin2": float(euclid_meta["area_arcmin2"]),
+            "sampling_kind": euclid_meta.get("sampling_kind"),
+            "fields": euclid_meta.get("fields"),
+            "random_centres": euclid_meta.get("random_centres"),
+            "rows_per_bracket_limit": euclid_meta.get("rows_per_bracket_limit"),
+            "selection": euclid_meta.get("selection"),
+            "role": "Euclid point-source colours only",
         },
         "population_provenance": {
             "survey": q1_counts["survey"],
@@ -1636,54 +1284,22 @@ def _fit_star_population_latent() -> dict[str, Any]:
                 classification_variance=classification_variance,
             ),
         },
-        "gaia": {
-            "rows": len(gaia_usable),
-            "bp_rp_quantiles": _quantiles(bp_values),
-            "temperature_quantiles_k": _quantiles(np.asarray([
-                float(row["temperature_k"]) for row in gaia_usable
-                if _finite(row.get("temperature_k")) is not None
-            ])),
-        },
-        "euclid_mapping": {
-            "matched_stars": len(matched),
-            "feature_order": ["intercept", "bp_rp", "g_minus_20"],
-            "g_to_band_offset_coefficients": {
-                "mag_vis": [float(np.median(vis_g_offsets)), 0.0, 0.0],
-                "mag_y_e": [0.0, 0.0, 0.0],
-                "mag_j_e": [0.0, 0.0, 0.0],
-                "mag_h_e": [0.0, 0.0, 0.0],
-            },
-            "residual_covariance": np.eye(4).tolist(),
-        },
         "classification_weighting": {
             "population_selection": "POINT_LIKE_PROB >= 0.9 over Q1",
             "population_star_weight": "PHZ_STAR_PROB over selected Q1 rows",
-            "color_locus_star_weight": (
-                "POINT_LIKE_PROB in the fixed Q1 matched sample"
-            ),
-            "missing_probability_rows": missing_probability,
-            "invalid_probability_rows": invalid_probability,
-            "usable_probability_rows": usable_probability_rows,
+            "color_star_weight": "PHZ_STAR_PROB in the fixed Q1 colour sample",
         },
         "color_model": color_model,
         "fit": {
-            "latent_node_count": _LATENT_NODE_COUNT,
-            "iterations": _iteration + 1,
-            "converged": converged,
-            "objective_change": objective_change,
-            "matched_rows": len(matched),
-            "high_quality_matched_rows": len(high_quality),
-            "euclid_flux_rows": len(euclid_records),
-            "usable_probability_rows": usable_probability_rows,
-            "missing_probability_rows": missing_probability,
-            "invalid_probability_rows": invalid_probability,
-            "incomplete_flux_rows": missing_flux,
-            "intrinsic_rows": int(np.count_nonzero(kept)),
+            "color_rows": row_count,
+            "populated_bins": populated_bins,
             "selection": {
-                "color_mixture_gaia_g_max": splice,
-                "color_mixture_euclid_vis_min_exclusive": splice,
-                "color_mixture_euclid_vis_max": faint,
-                "locus_min_band_snr": 5.0,
+                "point_like_prob_min": 0.9,
+                "color_band_snr_min": _COLOR_SNR_FLOOR,
+                "binning_magnitude": "VIS PSF",
+                "flux_fields": [
+                    f"flux_{band}_aper_uJy" for band in _COLOR_BANDS
+                ],
             },
         },
         "fingerprint_inputs": {
@@ -1699,18 +1315,18 @@ def _fit_star_population_latent() -> dict[str, Any]:
                     "area_deg2", "fields", "random_centres",
                 )
             },
-            "fit_version": "q1-phz-gaia-shared-straight-counts-latent-locus-v5",
+            "fit_version": _STAR_FIT_VERSION,
             "selection": {
                 "bright_limit": bright,
                 "faint_limit": faint,
                 "population_selection": "POINT_LIKE_PROB >= 0.9",
                 "population_probability_field": "PHZ_STAR_PROB",
-                "color_probability_field": "POINT_LIKE_PROB",
+                "color_probability_field": "PHZ_STAR_PROB",
                 "flux_fields": [
-                    f"flux_{band}_aper_uJy" for band in ("vis", "y", "j", "h")
+                    f"flux_{band}_aper_uJy" for band in _COLOR_BANDS
                 ],
                 "error_fields": [
-                    f"fluxerr_{band}_aper_uJy" for band in ("vis", "y", "j", "h")
+                    f"fluxerr_{band}_aper_uJy" for band in _COLOR_BANDS
                 ],
             },
         },
@@ -1737,7 +1353,7 @@ def _fit_star_population_latent() -> dict[str, Any]:
         and (value := _finite(row.get("g_mag"))) is not None
     ], dtype=np.float64)
     gaia_fit = magnitude_fit_diagnostics["gaia"]
-    gaia_bin_width = float(gaia_fit["bin_width_mag"])
+    gaia_bin_width = _GAIA_COUNT_FIT_BIN_WIDTH_MAG
     gaia_edges = _fixed_width_edges(bright, faint, gaia_bin_width)
     gaia_centres = 0.5 * (gaia_edges[:-1] + gaia_edges[1:])
     gaia_counts, _ = np.histogram(gaia_g_ab, bins=gaia_edges)
@@ -1746,9 +1362,12 @@ def _fit_star_population_latent() -> dict[str, Any]:
         / float(meta["area_arcmin2"])
         / np.diff(gaia_edges)
     )
-    gaia_fitted_density = np.power(
-        10.0,
-        magnitude_law.slope * gaia_centres + float(gaia_fit["intercept"]),
+    gaia_fitted_density = (
+        np.power(
+            10.0,
+            float(gaia_fit["slope"]) * gaia_centres + float(gaia_fit["intercept"]),
+        ).tolist()
+        if gaia_fit is not None else None
     )
     latent_array = np.asarray(latent_colors)
     latent_weight_array = np.asarray(latent_weights)
@@ -1765,16 +1384,16 @@ def _fit_star_population_latent() -> dict[str, Any]:
             "fitted": fitted_vis_density.tolist(),
             "gaia_x": gaia_centres.tolist(),
             "gaia_observed": gaia_density.tolist(),
-            "gaia_fitted": gaia_fitted_density.tolist(),
+            "gaia_fitted": gaia_fitted_density,
             "fit_ranges": {
                 "q1": [
                     float(magnitude_fit_diagnostics["q1"]["fit_bright"]),
                     float(magnitude_fit_diagnostics["q1"]["fit_faint"]),
                 ],
-                "gaia": [
-                    float(gaia_fit["fit_bright"]),
-                    float(gaia_fit["fit_faint"]),
-                ],
+                "gaia": (
+                    [float(gaia_fit["fit_bright"]), float(gaia_fit["fit_faint"])]
+                    if gaia_fit is not None else None
+                ),
             },
             "sampling_interval": [bright, faint],
             "label": "Q1 PHZ probability-weighted stellar density",
@@ -1783,7 +1402,7 @@ def _fit_star_population_latent() -> dict[str, Any]:
         },
         "parameters": {},
     }
-    for index, key in enumerate(_LATENT_COLOR_ORDER):
+    for index, key in enumerate(_COLOR_ORDER):
         observed_latent = latent_array[:, index] if latent_array.size else np.asarray([])
         dirty = dirty_array[:, index] if dirty_array.size else np.asarray([])
         fitted_values = fitted_colors[:, index]
@@ -1854,7 +1473,7 @@ def _fit_star_population_latent() -> dict[str, Any]:
     measured_summary = _weighted_color_summary(dirty_array, dirty_weight_array)
     quality_colors: dict[str, Any] = {}
     quality_pass = True
-    for key in _LATENT_COLOR_ORDER:
+    for key in _COLOR_ORDER:
         latent_stats = latent_summary.get(key, {})
         measured_stats = measured_summary.get(key, {})
         predictive_stats = predictive_summary.get(key, {})
@@ -1875,17 +1494,12 @@ def _fit_star_population_latent() -> dict[str, Any]:
         quality_pass &= median_error <= 0.08 and 0.80 <= width_ratio <= 1.25
     payload["posterior_predictive"] = {
         "colors": quality_colors,
-        "negative_flux_rows_retained": int(sum(
-            any(
-                (_finite(record["row"].get(f"flux_{band}_aper_uJy")) or 0.0) < 0.0
-                for band in ("vis", "y", "j", "h")
-            ) for record in euclid_records
-        )),
+        "low_snr_rows_rejected": int(selected["rejected"]["low_snr"]),
     }
     payload["quality_gates"] = {
         "global_median_error_max_mag": 0.08,
         "robust_width_ratio_range": [0.80, 1.25],
-        "passed": bool(quality_pass and converged),
+        "passed": bool(quality_pass),
     }
     payload["valid"] = bool(payload["valid"] and quality_pass)
     payload["fingerprint_inputs"]["catalog_digest"] = hashlib.sha256(
@@ -1938,4 +1552,4 @@ def fit_star_population(
             "stellar fitting requires flux_y_aper_uJy/fluxerr_y_aper_uJy "
             "and the corresponding VIS/J/H fields"
         )
-    return _fit_star_population_latent()
+    return _fit_star_population_euclid()

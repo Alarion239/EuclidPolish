@@ -269,11 +269,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")
     ap.add_argument("--star-prior-json", default="",
-                    help="Activated versioned Gaia/Euclid stellar-prior JSON.")
+                    help="Activated versioned Euclid stellar-prior JSON.")
     ap.add_argument(
         "--star-prior-file",
         default="",
-        help="Path to the activated Gaia/Euclid stellar-prior JSON artifact.",
+        help="Path to the activated Euclid stellar-prior JSON artifact.",
     )
     ap.add_argument("--lens-density-arcmin2", type=float,
                     default=Config.LENS_DENSITY_ARCMIN2,

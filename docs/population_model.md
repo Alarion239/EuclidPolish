@@ -13,43 +13,55 @@ assumption, not a fitted claim about galaxy clustering.
 
 ## Stars
 
-The active stellar artifact uses one straight differential-count law,
+The stellar model uses Euclid data alone. Gaia DR3 counts are only overlaid
+for comparison.
+
+**Counts.** One straight differential-count law,
 
 \[
 \log_{10}(dN/dA/dm)=a_\star m+b_\star,
 \]
 
-over VIS 12--25. It first requires `POINT_LIKE_PROB >= 0.9`; in each
+over VIS 12--25. The Q1 query first requires `POINT_LIKE_PROB >= 0.9`; in each
 0.1-mag VIS PSF-flux bin it reports both `SUM(POINT_LIKE_PROB)` as the expected
 number of point sources without PHZ and `SUM(PHZ_STAR_PROB)` as the PHZ stellar
 expectation. Both are divided by the released 63.1 deg² Q1 deep-field footprint
 and the bin width. The raw number passing the point-source cut is retained
 separately. The three deep fields are included; the separate
-LDN 1641 commissioning field is excluded. No Gaia count enters this
-normalization. Consecutive positive-count bins are searched automatically for
-the widest interval spanning at least 2.5 mag with (R^2\geq0.99). Native Gaia
-`G_AB` and Q1 PHZ VIS intervals are fitted with one shared slope and separate
-intercepts; the Q1 intercept alone normalizes the final VIS law. Its analytical
-12--25 integral sets the generator surface density.
+LDN 1641 commissioning field is excluded. Consecutive positive-count bins of
+the PHZ-weighted counts are searched automatically for the widest interval
+spanning at least 2.5 mag with \(R^2\geq0.99\); the slope and intercept of
+that straight region are the law. Its analytical 12--25 integral sets the
+generator surface density.
 
-The WebUI magnitude-density diagnostic additionally overlays the cached-cone
-Gaia G distribution. It applies only the Gaia (E)DR3 Vega-to-AB zero-point
-offset and does not transform Gaia G into VIS. Its surface density uses the
-area of the field-centred Gaia cones. Gaia informs the shared count slope but
-not the active Q1 normalization.
+**Gaia comparison.** Native Gaia `G_AB` counts in three fixed 0.35-degree cones,
+one at the centre of each Q1 deep field (EDF-N, EDF-S, EDF-F), are binned at
+0.5 mag and given their own straight-region fit. The fit records Gaia's slope
+and its difference from the Q1 slope in standard errors; it never enters the
+law. The diagnostic applies only the Gaia (E)DR3 Vega-to-AB zero-point offset
+and does not transform Gaia G into VIS. The cones are retrieved synchronously
+from the ARI Gaia DR3 TAP mirror; any TAP overflow fails closed instead of
+caching a truncated sample.
 
-Gaia remains useful for a different quantity: matched Gaia--Euclid sources
-constrain the temperature/colour locus. Gaia sampling uses three fixed
-0.35-degree cones, one at the centre of each Q1 deep field (EDF-N, EDF-S,
-EDF-F); the matched Euclid colour sample (`POINT_LIKE_PROB >= 0.9`, stratified
-by VIS PSF magnitude) is drawn from the same cones. The cones are retrieved synchronously from the ARI Gaia DR3 TAP mirror;
-any TAP overflow fails closed instead of caching a truncated sample. Euclid flux errors use the fitted
-heavy-tailed likelihood, and local `POINT_LIKE_PROB` weights the colour-locus
-fit. The generator inverse-CDF samples the fitted finite-domain straight law
-and then the magnitude-conditioned latent colour model for the four Euclid
-bands. The photometric basis follows the Gaia DR3 synthetic photometry work
-([Gaia DR3 synthetic photometry](https://arxiv.org/abs/2206.06215));
-the exact artifact version and cuts are project validation choices.
+**Colours.** A star of VIS magnitude \(m\) adopts the colours (VIS−Y, Y−J,
+J−H) of one real Q1 point source in the 0.5-mag VIS-PSF bin holding \(m\),
+drawn by its `PHZ_STAR_PROB`. The colour sample is Euclid alone: point sources
+(`POINT_LIKE_PROB >= 0.9`, up to 500 per 0.5-mag bin, no Gaia match required)
+in the same three fixed fields, with 3-FWHM aperture fluxes at S/N ≥ 5 in all
+four bands. Measurement noise is removed by one-component extreme
+deconvolution (Bovy, Hogg & Roweis 2011) within the bin: the intrinsic
+covariance is the observed covariance (robust 16–84 widths with the 4σ-clipped
+correlation) minus the mean reported noise covariance, and a drawn row's true
+colours are sampled from their Gaussian posterior. This is the galaxy colour
+forest's resampling with magnitude as the only condition, so the leaves
+reduce to magnitude bins. Unlike the galaxy forest it deconvolves the three
+colours jointly and in magnitudes: stars lie on a tight locus (Y−J and J−H
+follow VIS−Y) that per-band deconvolution, or a Gaussian in flux-ratio space,
+would widen. Bins with less than 25 star weight (the saturated bright end,
+the faint end where Q1 stops classifying point sources) use their nearest
+populated bin. A posterior-predictive gate re-noises every deconvolved row
+with its own flux errors and requires the median and 16–84 width of each
+colour to match the raw catalogue.
 
 ## Active Euclid-only galaxy model
 

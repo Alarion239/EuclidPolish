@@ -12,8 +12,8 @@ export const queryStars = () => runJob({
   url: STAR_URL.query, label: "Query stars · MER + PHZ + Gaia",
   question: {
     title: "Query stars (MER + PHZ + Gaia)?", confirmLabel: "Query",
-    message: "Queries the Q1 stellar count brackets and the fixed-field Gaia–Euclid colour sample from the "
-      + "Euclid archive. No galaxy selection is used.",
+    message: "Queries the Q1 stellar count brackets and the fixed-field Euclid colour sample from the "
+      + "Euclid archive, and Gaia DR3 counts over the same fields for comparison. No galaxy selection is used.",
   },
 });
 
@@ -21,7 +21,7 @@ export const fitStars = () => runJob({
   url: STAR_URL.fit, label: "Fit stellar prior from cached data",
   question: {
     title: "Fit the stellar prior from the cached data?", confirmLabel: "Fit",
-    message: "Refits the magnitude law and the colours from the cached Q1 counts and Gaia–Euclid sample. "
+    message: "Refits the magnitude law and the colours from the cached Q1 counts and Euclid colour sample. "
       + "The fit becomes a candidate; the active prior changes only when you activate it.",
   },
 });

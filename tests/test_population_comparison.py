@@ -370,7 +370,7 @@ def test_population_parameter_payload_plots_every_available_parameter():
 
     assert payload["counts"] == {"galaxy": 2, "star": 1}
     assert payload["density_arcmin2"]["galaxy"] == 1.0
-    assert {"objects_per_field", "mag_vis", "z", "temperature_k"} <= set(
+    assert {"objects_per_field", "mag_vis", "z"} <= set(
         payload["parameters"]
     )
 

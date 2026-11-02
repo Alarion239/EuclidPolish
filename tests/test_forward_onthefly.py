@@ -26,6 +26,7 @@ from euclid_polish.training.forward_onthefly import (
     member_psf_sets,
 )
 from scripts.train_ensemble import build_specs, parse_args
+from tests._star_fixtures import fixture_star_color_model
 
 FIELD = 128                                  # compact fixture field
 CROP = int(Config.DEFAULT_HR_CROP_SIZE)
@@ -54,28 +55,8 @@ def _stellar_prior_payload():
         r_squared=1.0, rms_log10_density=0.0, source="fixture",
     )
     return {
-        "gaia": {
-            "bp_rp_quantiles": [0.0, 2.0],
-            "temperature_quantiles_k": [7500.0, 4000.0],
-        },
-        "euclid_mapping": {
-            "g_to_band_offset_coefficients": {
-                key: [0.0, 0.0, 0.0]
-                for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
-            },
-            "residual_covariance": np.eye(4).tolist(),
-        },
         "population": {"magnitude_distribution": law.to_payload()},
-        "color_model": {
-            "kind": "gaia_euclid_latent_locus_v1",
-            "bp_rp_edges": [0.0, 1.0, 2.0],
-            "bp_rp_nodes": [0.5, 1.5],
-            "temperature_nodes_k": [7000.0, 4200.0],
-            "locus_colors": [[0.2, 0.1, 0.05], [0.8, 0.3, 0.1]],
-            "intrinsic_color_covariance": (np.eye(3) * 0.01).tolist(),
-            "magnitude_edges": [12.0, 18.5, 25.0],
-            "magnitude_node_weights": [[0.5, 0.5], [0.5, 0.5]],
-        },
+        "color_model": fixture_star_color_model(),
     }
 
 

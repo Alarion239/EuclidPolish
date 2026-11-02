@@ -259,8 +259,6 @@ _PARAM_META = {
     "re_arcsec": ("half-light radius", "arcsec"),
     "logmass": ("stellar mass", "log₁₀ M☉"),
     "mass_scale": ("TNG mass scale", "ratio"),
-    "temperature_k": ("stellar temperature", "K"),
-    "extinction_av": ("stellar extinction Aᵥ", "mag"),
 }
 
 _SHARED_PARAMETERS = {
@@ -2487,7 +2485,7 @@ def query_euclid_population(
         *[
             key for key in _PARAM_META if key not in {
                 "objects_per_field", "flux_vis_e", "z", "re_arcsec",
-                "logmass", "mass_scale", "temperature_k", "extinction_av",
+                "logmass", "mass_scale",
             }
         ],
         *EUCLID_MER_STUDY_COLUMNS,

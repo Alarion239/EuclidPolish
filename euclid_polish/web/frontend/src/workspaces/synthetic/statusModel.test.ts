@@ -132,7 +132,7 @@ describe("groups, gate and records", () => {
   it("states the gate and names the ingredients the records predate", () => {
     expect(gateSummary(OVERVIEW)).toEqual({
       ready: false, headline: "Blocked by 1",
-      blockers: ["activate a valid Gaia+Euclid stellar calibration before generating fields"], predates: ["Stars"],
+      blockers: ["activate a valid Euclid stellar calibration before generating fields"], predates: ["Stars"],
     });
     const ready = gateSummary({ ...OVERVIEW, gate: { ...OVERVIEW.gate, ready: true, blockers: [], message: null } });
     expect(ready.headline).toBe("Ready to generate");

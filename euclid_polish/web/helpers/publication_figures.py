@@ -663,8 +663,8 @@ def render_star_population_calibration(
     The density panel shows the Q1 PHZ VIS counts and the Q1-normalised
     straight law; the three colour panels separate the fitted true-colour
     population, inferred true colours, noise-simulated colours, and raw
-    catalogue colours. ``include_gaia`` adds the native Gaia G_AB counts and
-    their Gaia-intercept shared-slope fit to the density panel — the paper's
+    catalogue colours. ``include_gaia`` adds, for comparison, the native Gaia
+    G_AB counts and their own straight-region fit to the density panel — the paper's
     figure (``paper_figures/build_figures.py``) keeps them; the console plate
     does not (the Gaia counts were deleted from the console).
     """
@@ -725,7 +725,7 @@ def render_star_population_calibration(
         if include_gaia and x_gaia_fit.size:
             ax_density.plot(
                 x_gaia_fit, y_gaia_fit, color=TNG, linewidth=2.1,
-                linestyle=(0, (6, 3)), label="Gaia-intercept shared-slope fit",
+                linestyle=(0, (6, 3)), label="Gaia straight-region fit (comparison)",
                 zorder=3,
             )
         fit_ranges = density.get("fit_ranges") or {}
@@ -738,7 +738,7 @@ def render_star_population_calibration(
                     color=color, alpha=0.055, linewidth=0,
                 )
         ax_density.set_title(
-            "Shared-slope stellar brightness laws" if include_gaia
+            "Stellar brightness law and Gaia comparison" if include_gaia
             else "Stellar brightness law", loc="left")
         ax_density.set_xlabel(str(density.get("x_label") or "VIS PSF magnitude [AB]"))
         ax_density.set_ylabel(str(density.get("unit") or "stars arcmin$^{-2}$ mag$^{-1}$"))
@@ -804,7 +804,7 @@ def render_star_population_calibration(
         )
         provenance = calibration.get("population_provenance") or {}
         fig.suptitle(
-            "Stellar population calibration · Q1 PHZ × Gaia DR3 × Euclid MER"
+            "Stellar population calibration · Q1 PHZ × Euclid MER (Gaia DR3 comparison)"
             if include_gaia else
             "Stellar population calibration · Q1 PHZ × Euclid MER",
             x=0.075, y=0.985, ha="left",

@@ -53,7 +53,7 @@ GALAXY_BLOCKER = (
 )
 GALAXY_DENSITY_BLOCKER = "empirical PHZ galaxy population has no finite density"
 STAR_BLOCKER = (
-    "activate a valid Gaia+Euclid stellar calibration before generating fields"
+    "activate a valid Euclid stellar calibration before generating fields"
 )
 
 #: Last remote TNG radius-manifest validation, cached by ``routes/tng.py``

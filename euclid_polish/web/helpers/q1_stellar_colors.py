@@ -1,8 +1,10 @@
-"""Deterministic Q1 stellar colour sample for the Gaia-Euclid locus.
+"""Deterministic Q1 stellar colour sample, plus Gaia cones for the counts.
 
-Population density comes from the separate Q1 magnitude-bracket counts.  This
-sample is stratified by magnitude and exists only to calibrate colours; it
-never defines a sky density and never selects random field centres.
+Population density comes from the separate Q1 magnitude-bracket counts.  The
+Euclid sample is stratified by magnitude and exists only to calibrate colours
+(Euclid data alone: no Gaia match is required); it never defines a sky density
+and never selects random field centres. The Gaia DR3 cones over the same
+fixed fields serve only the star-count slope check.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_uJy, uJy_to_ab_mag
 from euclid_polish.sky.observation.q1_fields import Q1_FIELDS
 
-Q1_STELLAR_COLOR_SAMPLE_VERSION = 1
+Q1_STELLAR_COLOR_SAMPLE_VERSION = 2
 Q1_STELLAR_COLOR_MAG_BIN_WIDTH = 0.5
 Q1_STELLAR_COLOR_ROWS_PER_BIN = 500
 Q1_STELLAR_COLOR_FIELD_RADIUS_DEG = 0.35
@@ -101,7 +103,8 @@ def _euclid_color_query(lower: float, upper: float) -> str:
     bright_flux = float(ab_mag_to_uJy(lower))
     return f"""
     SELECT TOP {Q1_STELLAR_COLOR_ROWS_PER_BIN}
-        mer.object_id, mer.gaia_id, mer.point_like_prob,
+        mer.object_id, mer.point_like_prob,
+        mer.flux_vis_psf, mer.fluxerr_vis_psf,
         mer.flux_vis_3fwhm_aper, mer.fluxerr_vis_3fwhm_aper,
         mer.flux_y_3fwhm_aper, mer.fluxerr_y_3fwhm_aper,
         mer.flux_j_3fwhm_aper, mer.fluxerr_j_3fwhm_aper,
@@ -115,7 +118,6 @@ def _euclid_color_query(lower: float, upper: float) -> str:
       AND mer.flux_vis_psf <= {bright_flux:.16g}
       AND mer.point_like_prob >= 0.9
       AND mer.point_like_prob <= 1.0
-      AND mer.gaia_id IS NOT NULL
     ORDER BY mer.object_id
     """
 
@@ -142,11 +144,17 @@ def _launch_euclid(
 def _euclid_record(raw: Any) -> dict[str, Any]:
     record: dict[str, Any] = {
         "object_id": _identifier(_field(raw, "object_id")),
-        "gaia_id": _identifier(_field(raw, "gaia_id")),
         "type": "star",
         "point_like_prob": _finite(_field(raw, "point_like_prob")),
         "phz_star_prob": _finite(_field(raw, "phz_star_prob")),
     }
+    psf_flux = _finite(_field(raw, "flux_vis_psf"))
+    record["flux_vis_psf_uJy"] = psf_flux
+    record["fluxerr_vis_psf_uJy"] = _finite(_field(raw, "fluxerr_vis_psf"))
+    record["mag_vis_psf"] = (
+        float(uJy_to_ab_mag(psf_flux))
+        if psf_flux is not None and psf_flux > 0.0 else None
+    )
     for band in ("vis", "y", "j", "h"):
         flux = _finite(_field(raw, f"flux_{band}_3fwhm_aper"))
         error = _finite(_field(raw, f"fluxerr_{band}_3fwhm_aper"))
@@ -217,7 +225,7 @@ def query_q1_stellar_color_sample(
         results = _launch_euclid(_euclid_color_query(lower, upper), relogin)
         for raw in results:
             record = _euclid_record(raw)
-            if record["object_id"] and record["gaia_id"]:
+            if record["object_id"]:
                 euclid_rows[record["object_id"]] = record
 
     service = pyvo_dal.TAPService(GAIA_TAP_URL)
@@ -227,7 +235,7 @@ def query_q1_stellar_color_sample(
         if progress:
             progress(
                 bin_count + field_index, total,
-                f"Gaia DR3 colours · {name}",
+                f"Gaia DR3 counts · {name}",
             )
         result = service.run_sync(_gaia_query(ra, dec), maxrec=GAIA_SYNC_MAXREC)
         query_status = str(result.query_status or "").upper()
@@ -286,8 +294,8 @@ def query_q1_stellar_color_sample(
         "magnitude_bracket_width": width,
         "rows_per_bracket_limit": Q1_STELLAR_COLOR_ROWS_PER_BIN,
         "selection": (
-            "fixed Q1 calibration fields; POINT_LIKE_PROB >= 0.9; Gaia ID; "
-            "stratified by VIS PSF magnitude"
+            "fixed Q1 calibration fields; POINT_LIKE_PROB >= 0.9; "
+            "stratified by VIS PSF magnitude; no Gaia match required"
         ),
     }
     gaia_meta = {
@@ -298,9 +306,11 @@ def query_q1_stellar_color_sample(
         "query_mode": "sync",
         "sync_maxrec": GAIA_SYNC_MAXREC,
         "rows": len(gaia_rows),
+        "role": "star-count slope check only; never enters the colours",
     }
     euclid_columns = [
-        "object_id", "gaia_id", "type", "point_like_prob", "phz_star_prob",
+        "object_id", "type", "point_like_prob", "phz_star_prob",
+        "mag_vis_psf", "flux_vis_psf_uJy", "fluxerr_vis_psf_uJy",
         "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
         *[
             key
@@ -331,7 +341,7 @@ def query_q1_stellar_color_sample(
     for temporary, target in replacements:
         os.replace(temporary, target)
     if progress:
-        progress(total, total, "Q1 Gaia-Euclid colour sample cached")
+        progress(total, total, "Q1 stellar colour sample and Gaia cones cached")
     return {"euclid": euclid_meta, "gaia": gaia_meta}
 
 

@@ -10,7 +10,7 @@ idealised ground-truth object: the starfull HR target the training generator
 builds (its starless scene plus the scene's point sources).
 
 Galaxies and lenses draw from the activated Euclid joint galaxy-population
-artifact and stars from the activated Gaia+Euclid stellar prior — the
+artifact and stars from the activated Euclid stellar prior — the
 populations synthetic generation uses. The console freezes both at submit and
 stages them as JSON files beside the job script
 (``--joint-galaxy-population-file`` / ``--star-prior-file``); a direct run

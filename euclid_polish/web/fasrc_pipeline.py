@@ -1408,7 +1408,7 @@ class PosterCutoutStep(FASRCPipelineStep):
             stars = population_calibration.active_star()
             if not stars:
                 raise ValueError(
-                    "activate a valid Gaia+Euclid stellar calibration before "
+                    "activate a valid Euclid stellar calibration before "
                     f"rendering a poster {mode}"
                 )
             prepared["_star_prior_json"] = json.dumps(
@@ -1669,7 +1669,7 @@ class EnsembleTrainStep(FASRCPipelineStep):
             )
         elif uses_forward_onthefly:
             raise ValueError(
-                "activate a valid Gaia+Euclid stellar calibration before "
+                "activate a valid Euclid stellar calibration before "
                 "on-the-fly training"
             )
         return prepared
@@ -2061,7 +2061,7 @@ class SyntheticGenerateStep(RunPipelineStep):
         stars = star_status.get("active") or {}
         if not star_status.get("is_active") or not stars:
             raise ValueError(
-                "activate a valid Gaia+Euclid stellar calibration before "
+                "activate a valid Euclid stellar calibration before "
                 "generating fields"
             )
         prepared["_star_prior_json"] = json.dumps(

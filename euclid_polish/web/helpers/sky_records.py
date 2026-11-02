@@ -288,7 +288,7 @@ def split_geometry(records_dir: str, subset: str) -> dict[str, Any]:
 #: Numeric columns sent per source in the compact (table / map) rows.
 _SOURCE_NUMBERS = (
     "x_pix", "y_pix", "flux_vis_e", "flux_y_e", "flux_j_e", "flux_h_e", "z",
-    "re_arcsec", "theta_E_arcsec", "orientation", "temperature_k",
+    "re_arcsec", "theta_E_arcsec", "orientation",
     "mag_y_e", "mag_j_e", "mag_h_e", "target_vis_mag",
 )
 _SOURCE_TEXT = ("render", "subhalo_id", "source_subhalo_id", "sfr_class")

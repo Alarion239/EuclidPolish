@@ -82,8 +82,7 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "brightness_transfer",
                # Per-band stellar magnitudes (empty for galaxies/lenses); the
                # forward op re-injects fixed stars with their sampled colour.
-               "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
-               "temperature_k", "extinction_av"]
+               "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e"]
 
 
 def source_is_off_field(source: dict[str, Any]) -> bool:
@@ -368,8 +367,6 @@ def _star_row(field_index: int, star: dict[str, Any]) -> dict[str, Any]:
         "mag_y_e": _num(star.get("mag_y_e")),
         "mag_j_e": _num(star.get("mag_j_e")),
         "mag_h_e": _num(star.get("mag_h_e")),
-        "temperature_k": _num(star.get("temperature_k")),
-        "extinction_av": _num(star.get("extinction_av")),
     }
 
 
@@ -454,8 +451,7 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
               "aperture_radius_arcsec", "aperture_diameter_arcsec",
               "aperture_psf_fwhm_arcsec",
               "brightness_scale",
-              "mag_y_e", "mag_j_e", "mag_h_e", "temperature_k",
-              "extinction_av"):
+              "mag_y_e", "mag_j_e", "mag_h_e"):
         v = row.get(k, "")
         out[k] = float(v) if v not in ("", None) else None
     out["population_prior"] = row.get("population_prior") or None

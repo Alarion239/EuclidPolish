@@ -155,7 +155,7 @@ describe("status", () => {
     const Status = await tab("Status");
     const { container } = show(<Status />, "/synthetic/status");
     expect(await screen.findByText("Blocked by 1")).toBeTruthy();
-    expect(screen.getAllByText(/activate a valid Gaia\+Euclid stellar calibration/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/activate a valid Euclid stellar calibration/).length).toBeGreaterThan(0);
     const generate = screen.getByRole("button", { name: "Generate validate+test on FASRC" }) as HTMLButtonElement;
     expect(generate.disabled).toBe(true);
     const blocks = within(screen.getByRole("region", { name: "Blocks generation" }));
@@ -586,12 +586,12 @@ describe("stars", () => {
     // 6,040 stars / 1,201.5 arcmin² = 5.03 against the 5.084 prior: −1.1%, inside the 5% tolerance.
     expect(summaries[0].textContent).toBe("Generated 5.03 vs prior 5.08 stars arcmin⁻² (−1.1%), trusted window VIS 18.0–23.0");
     expect(summaries[0].querySelector("[data-tone=warn]")).toBeNull();
-    for (const label of ["Q1 PHZ stars · ≈403k", "Q1 point sources · ≈520k", "Gaia-matched Q1 stars · 3,456",
+    for (const label of ["Q1 PHZ stars · ≈403k", "Q1 point sources · ≈520k", "Q1 point sources (colours) · 3,456",
       "generated stars (test + validate) · 6,040 in 1,201 arcmin²"]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy();
     }
     expect(container.querySelectorAll(".rl-panel")).toHaveLength(7);
-    expect(screen.getByText(/^Q1 footprint 63\.1 deg² · colours from the Gaia-matched stars in 3 fixed Q1 fields/)).toBeTruthy();
+    expect(screen.getByText(/^Q1 footprint 63\.1 deg² · colours from the Q1 point sources in 3 fixed Q1 fields/)).toBeTruthy();
     // The model's colour draws are forward noised with the Q1 flux errors.
     expect(screen.getByRole("button", { name: "model (VIS law · colour draws with Q1 noise)" })).toBeTruthy();
     expect(screen.getByText(/the model's colour draws and the generated stars are compared over the Q1 colour sample's VIS 17\.1–21\.3 with Q1 measurement noise \(flux errors borrowed from 3,456 Q1 stars at the same VIS\)$/)).toBeTruthy();
@@ -624,7 +624,7 @@ describe("stars", () => {
     expect(params().get("view")).toBeNull();
   });
 
-  it("Prior drawer: the fit sample in one sentence, Fit and Activate behind confirmations, the Gaia fields collapsed", async () => {
+  it("Prior drawer: the fit sample in one sentence, Fit and Activate behind confirmations, the colour fields collapsed", async () => {
     const Stars = await tab("Stars");
     const { container } = show(<Stars />, "/synthetic/stars?prior=1");
     fireEvent.click(await screen.findByRole("button", { name: "Activate stellar prior" }));
@@ -634,9 +634,9 @@ describe("stars", () => {
     await answer(/Fit the stellar prior/, "Fit");
     await waitFor(() => expect(posts("/api/star-distribution/fit")).toHaveLength(1));
     const drawer = container.querySelector("#syn-drawer-prior") as HTMLElement;
-    expect(drawer.querySelector(".syn-sentence")?.textContent).toBe("Colours fitted on 2,398 stars with S/N ≥ 5 in all bands, of 3,456 matched");
+    expect(drawer.querySelector(".syn-sentence")?.textContent).toBe("Colours fitted on 2,398 Q1 point sources with S/N ≥ 5 in all bands, of 3,462 in the fixed-field sample");
     expect(container.querySelectorAll(".ui-summary")).toHaveLength(1);        // the page keeps ONE summary line
-    const details = within(drawer).getByText("Inputs: the Gaia colour fields").closest("details")!;
+    const details = within(drawer).getByText("Inputs: the fixed colour fields").closest("details")!;
     expect(details.open).toBe(false);
     expect(within(details).getAllByRole("row")).toHaveLength(4);             // header + the three fixed fields
     const onSky = within(details).getAllByRole("link", { name: "On sky" }).map((a) => a.getAttribute("href") ?? "");

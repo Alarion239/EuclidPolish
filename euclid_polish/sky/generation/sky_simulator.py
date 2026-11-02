@@ -242,8 +242,6 @@ def inject_random_stars(
         stars.append({
             "type": "star", "x_pix": x_pix, "y_pix": y_pix,
             **{_STAR_MAG_KEYS[name]: value for name, value in band_mags.items()},
-            "temperature_k": sed.temperature_k,
-            "extinction_av": sed.extinction_av,
         })
     return stars
 
@@ -1307,8 +1305,6 @@ class SkySimulator:
             "x_pix": float(x_pix),
             "y_pix": float(y_pix),
             **{_STAR_MAG_KEYS[name]: value for name, value in band_mags.items()},
-            "temperature_k": sed.temperature_k,
-            "extinction_av": sed.extinction_av,
         }
 
     def _colored_lens_component(

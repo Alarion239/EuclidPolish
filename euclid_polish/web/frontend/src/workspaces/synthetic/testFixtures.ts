@@ -22,8 +22,8 @@ const tick = (state: "current" | "predates" | "unknown", detail: string) => ({
 export const OVERVIEW: OverviewPayload = {
   computed_at: "2026-09-26T12:00:00+00:00",
   gate: {
-    step: "synthetic_generate", ready: false, message: "activate a valid Gaia+Euclid stellar calibration before generating fields",
-    blockers: [{ id: "star-prior", message: "activate a valid Gaia+Euclid stellar calibration before generating fields" }],
+    step: "synthetic_generate", ready: false, message: "activate a valid Euclid stellar calibration before generating fields",
+    blockers: [{ id: "star-prior", message: "activate a valid Euclid stellar calibration before generating fields" }],
     to: "/synthetic/records",
   },
   items: [
@@ -286,11 +286,11 @@ export function starPayload(patch: Partial<StarPayload> = {}): StarPayload {
     authenticated: true,
     color_sample: { cached: true, euclid: { rows: 3462, field_count: 3 }, gaia: { rows: 5963, field_count: 3 } },
     calibration: { candidate: { valid: true, warnings: ["refit after the Q1 counts changed"], coverage_notes: ["three fixed fields"],
-      euclid_mapping: { matched_stars: 3456 } }, is_active: false },
+      coverage: { color_rows: 3456 } }, is_active: false },
     q1_counts: { footprint_area_deg2: 63.1, selected_point_sources: 536780, expected_point_sources: 519611.8, expected_stars: 403069.7,
       bins: [1, 2, 3], edges: [14, 14.1, 14.2, 14.3], selection: "POINT_LIKE_PROB ≥ 0.9" },
     distribution: {
-      matched_stars: 3456, high_quality_stars: 2398, pointlike_over_0_9: 3456, training_included: false,
+      color_sample_rows: 3462, color_rows_used: 2398, pointlike_over_0_9: 3456, training_included: false,
       density_comparison: {
         area_arcmin2: 4156.3, gaia_area_arcmin2: 4156.3, model_density_arcmin2: 5.084, model_sample_count: 50000, euclid_vis_count: 3462,
         model_color_noise: { applied: true, donors: 3456, vis_window: [17.06, 21.3] },

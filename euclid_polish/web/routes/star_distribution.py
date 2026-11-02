@@ -1,4 +1,4 @@
-"""Routes for the Q1 PHZ × Gaia × Euclid stellar workspace."""
+"""Routes for the Q1 PHZ × Euclid stellar workspace (Gaia: a count comparison)."""
 from __future__ import annotations
 
 import io
@@ -130,9 +130,9 @@ def register(app):
                 f"PHZ stars over {counts['footprint_area_deg2']:.1f} deg²\n"
             )
             cap.write(
-                "Fixed-Q1 Gaia-Euclid colour sample: "
-                f"{colors['euclid']['rows']} Euclid rows and "
-                f"{colors['gaia']['rows']} Gaia rows; "
+                "Fixed-Q1 Euclid colour sample: "
+                f"{colors['euclid']['rows']} point sources; "
+                f"{colors['gaia']['rows']} Gaia rows for the count comparison; "
                 "density still comes only from Q1 magnitude brackets\n"
             )
             return {"q1_counts": counts, "color_sample": colors}
@@ -151,8 +151,8 @@ def register(app):
             return jsonify({
                 "ok": False,
                 "error": (
-                    "No current fixed-Q1 Euclid-Gaia colour sample is cached. "
-                    "Query the stellar MER + PHZ and Gaia data on this page first."
+                    "No current fixed-Q1 Euclid colour sample is cached. "
+                    "Query the stellar MER + PHZ data on this page first."
                 ),
             }), 400
         try:
@@ -180,8 +180,8 @@ def register(app):
             cap.write(
                 f"Q1 PHZ expected stars {q1['expected_stars']:.1f} over "
                 f"{q1['footprint_area_deg2']:.1f} deg²; "
-                f"matched {fit['euclid_mapping']['matched_stars']} cached "
-                "Euclid-Gaia stars for colours only\n"
+                f"colours from {fit['coverage']['color_rows']} cached Q1 "
+                "point sources\n"
             )
             return {"q1_phz_counts": q1, "fit": fit}
 

@@ -39,7 +39,7 @@ export type TruthSource = {
   flux_vis_e: number | null; flux_y_e: number | null; flux_j_e: number | null; flux_h_e: number | null;
   mag_vis: number | null; mag_y_e: number | null; mag_j_e: number | null; mag_h_e: number | null;
   target_vis_mag: number | null; z: number | null; re_arcsec: number | null; theta_E_arcsec: number | null;
-  orientation: number | null; temperature_k: number | null;
+  orientation: number | null;
   subhalo_id: string | null; source_subhalo_id: string | null; sfr_class: string | null;
 };
 export type SourceCounts = { galaxy: number; star: number; lens: number; other: number; off_field: number };
