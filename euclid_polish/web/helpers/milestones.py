@@ -39,6 +39,7 @@ from euclid_polish.training.trainer import TRAINING_LOG_FILENAME
 from euclid_polish.web import remote
 from euclid_polish.web.helpers import atomic_files
 from euclid_polish.web.helpers import ensemble_viz as ev
+from euclid_polish.web.helpers import model_catalog
 from euclid_polish.web.helpers import universal_models as um
 
 _SPEC = re.compile(r"^milestone:(member_\d+)@(\d+)$")
@@ -251,6 +252,8 @@ def report_payload() -> dict[str, Any]:
     members = []
     for path in sorted(scores_dir().glob("member_*.json")):
         member = path.stem
+        if not model_catalog.in_panel(member):
+            continue
         steps = read_scores(member).get("steps") or {}
         rows = []
         for key in sorted(steps, key=int):
@@ -261,7 +264,8 @@ def report_payload() -> dict[str, Any]:
         resolution = {}
         for band, rep in reports.items():
             models = {spec: _knee_scan(m) for spec, m in (rep.get("models") or {}).items()
-                      if not spec.startswith("milestone:") or spec.startswith(f"milestone:{member}@")}
+                      if spec.startswith(f"milestone:{member}@")
+                      or (not spec.startswith("milestone:") and model_catalog.is_panel_spec(spec))}
             if any(spec.startswith("milestone:") for spec in models):
                 meta = rep.get("meta") or {}
                 resolution[band] = {"jwst_filter": meta.get("jwst_filter"),

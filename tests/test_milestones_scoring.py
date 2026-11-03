@@ -202,13 +202,16 @@ def test_the_console_payload_joins_scores_and_jwst_scans(tmp_path, monkeypatch):
             {"multiple": 3.0, "sb": 24.5, "resolution_coherence": None}]
     (res / "resolution_H_E.json").write_text(json.dumps({"meta": {"jwst_filter": "F200W", "euclid_noise_sb": 25.7},
         "models": {"milestone:member_257@8000000": {"knee_scan": scan}, "milestone:member_999@1": {"knee_scan": scan},
-                   "production": {"knee_scan": scan}}}))
+                   "production": {"knee_scan": scan}, "universal:member_218": {"knee_scan": scan},
+                   "universal:member_258": {"knee_scan": scan}}}))
+    (scores / "member_249.json").write_text(json.dumps({"identity": {}, "steps": {"200000": {"mean": 60.0}}}))
     out = milestones.report_payload()
     (m,) = out["members"]
     assert m["member"] == "member_257" and [r["step"] for r in m["steps"]] == [200000, 8000000]
     assert m["steps"][1]["spec"] == "milestone:member_257@8000000" and m["steps"][1]["hours"] == 37.3
     assert set(m["resolution"]) == {"H_E"}
     models = m["resolution"]["H_E"]["models"]
-    assert set(models) == {"milestone:member_257@8000000", "production"}        # another run's milestones left out
+    # another run's milestones and a reference before the panel's first model left out
+    assert set(models) == {"milestone:member_257@8000000", "production", "universal:member_258"}
     assert models["production"] == [{"multiple": 1.0, "sb": 25.7, "arcsec": 1.105}]
     assert m["resolution"]["H_E"]["jwst_filter"] == "F200W"
