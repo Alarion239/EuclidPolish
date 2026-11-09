@@ -1,0 +1,194 @@
+% POLISHing Euclid -- network diagram of the production model (Universal 257).
+% Compile:  latexmk -pdf model_diagram.tex   (thumbnails: make_thumbs.py)
+% Verified against euclid_polish/training/models/{wdsr,output_knee}.py,
+% and ckpt/ensemble/member_257/origin.json (16 blocks, 8 knees, learned knee).
+\documentclass[tikz,border=2pt]{standalone}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usetikzlibrary{arrows.meta,calc,positioning,decorations.pathreplacing,backgrounds,fit}
+
+% ---------------------------------------------------------------- palette
+% colour-blind-safe (Okabe--Ito derived), muted for print
+\definecolor{cKnee}{HTML}{8E6BB8}   % multi-knee stretch / learned knee
+\definecolor{cConv}{HTML}{3A7DBF}   % plain convolution
+\definecolor{cRes}{HTML}{E69F00}    % residual block
+\definecolor{cShuf}{HTML}{2E9E73}   % pixel shuffle (sub-pixel upsampling)
+\definecolor{cSkip}{HTML}{6F8C99}   % per-band slice
+\definecolor{cLine}{HTML}{3B3B3B}
+
+\tikzset{
+  >={Stealth[length=4.2pt,width=3.4pt]},
+  flow/.style={->,line width=0.7pt,draw=cLine},
+  oplab/.style={font=\scriptsize,text=black,align=center,inner sep=1pt},
+  dimlab/.style={font=\scriptsize,text=black!65,align=center,inner sep=1pt},
+  sumnode/.style={circle,draw=cLine,line width=0.7pt,fill=white,minimum size=11pt,inner sep=0pt},
+  headbox/.style={rounded corners=2pt,draw=cKnee!80!black,line width=0.6pt,fill=cKnee!12,
+                  align=center,font=\scriptsize,inner sep=3pt},
+  panel/.style={font=\small\bfseries,anchor=north west,inner sep=0pt},
+  group/.style={rounded corners=3pt,draw=black!40,dashed,line width=0.5pt},
+}
+
+% \fmap{name}{x}{y}{thickness = channels}{height = spatial}{colour}
+% A feature-map cuboid: front face (thickness x height), oblique depth = width.
+% Anchors: name-w (front west mid), name-e (side-face mid, same y),
+%          name-n (top-face mid), name-s (front south mid).
+\newcommand{\fmap}[6]{%
+  \pgfmathsetmacro{\fx}{#2}\pgfmathsetmacro{\fy}{#3}%
+  \pgfmathsetmacro{\ft}{#4}\pgfmathsetmacro{\fh}{#5}%
+  \pgfmathsetmacro{\fdx}{0.30*\fh}\pgfmathsetmacro{\fdy}{0.22*\fh}%
+  \begin{scope}[line width=0.4pt,draw=#6!55!black,line join=round]
+    \filldraw[fill=#6!22] (\fx,\fy+0.5*\fh) -- ++(\ft,0) -- ++(\fdx,\fdy) -- ++(-\ft,0) -- cycle;
+    \filldraw[fill=#6!60] (\fx+\ft,\fy-0.5*\fh) -- ++(0,\fh) -- ++(\fdx,\fdy) -- ++(0,-\fh) -- cycle;
+    \filldraw[fill=#6!40] (\fx,\fy-0.5*\fh) rectangle ++(\ft,\fh);
+  \end{scope}
+  \coordinate (#1-w) at (\fx,\fy);
+  \coordinate (#1-e) at (\fx+\ft+\fdx,\fy);
+  \coordinate (#1-n) at (\fx+0.5*\ft+0.5*\fdx,\fy+0.5*\fh+\fdy);
+  \coordinate (#1-s) at (\fx+0.5*\ft,\fy-0.5*\fh);
+}
+
+% \imstack{name}{x}{y}{size}{image}: a colour image in front of three blank
+% planes (the four band planes of the cube)
+\newcommand{\imstack}[5]{%
+  \pgfmathsetmacro{\bx}{#2}\pgfmathsetmacro{\by}{#3}\pgfmathsetmacro{\bs}{#4}%
+  \foreach \k in {3,2,1}{%
+    \filldraw[fill=white,draw=black!45,line width=0.35pt]
+      ({\bx+0.09*\k},{\by-0.5*\bs+0.09*\k}) rectangle ++(\bs,\bs);
+  }%
+  \node[inner sep=0pt,anchor=south west] at (\bx,\by-0.5*\bs)
+    {\includegraphics[width=\bs cm]{thumbs/#5.png}};
+  \draw[black!70,line width=0.35pt] (\bx,\by-0.5*\bs) rectangle ++(\bs,\bs);
+  \coordinate (#1-w) at (\bx,\by);
+  \coordinate (#1-e) at (\bx+\bs+0.27,\by);
+  \coordinate (#1-s) at (\bx+0.5*\bs,\by-0.5*\bs);
+  \coordinate (#1-n) at (\bx+0.5*\bs+0.135,\by+0.5*\bs+0.27);
+}
+
+\begin{document}
+\begin{tikzpicture}[font=\scriptsize]
+
+% ===================================================================== (a)
+\def\hL{1.20}   % LR spatial size (H x W)
+\def\hH{2.00}   % SR spatial size (2H x 2W); cuboid sizes are schematic
+\def\tB{0.09}   % 4 channels
+\def\tK{0.13}   % 8 channels
+\def\tS{0.19}   % 16 channels
+\def\tF{0.27}   % 32 channels
+
+\node[panel] at (0,2.45) {(a) Network};
+
+% legend (top right)
+\coordinate (leg) at (5.55,2.275);
+\foreach \c/\t in
+  {cKnee/asinh stretch \& knee,cConv/convolution,cRes/residual block,cShuf/pixel shuffle $\times2$,cSkip/band slice}{%
+  \fill[\c!40,draw=\c!55!black,line width=0.4pt] ($(leg)+(0,-0.075)$) rectangle ++(0.20,0.15);
+  \node[anchor=west,font=\scriptsize,inner sep=1pt] (lt) at ($(leg)+(0.23,0)$) {\t};
+  \coordinate (leg) at ($(lt.east)+(0.32,0)$);
+}
+
+% --- input
+\imstack{in}{0}{0}{\hL}{lr_rgb}
+\node[dimlab,below=3pt of in-s,xshift=4pt] {Euclid LR, $0.1''$\,px$^{-1}$\\ VIS, $Y_E$, $J_E$, $H_E$ (e$^-$)\\[1pt] $H\!\times\!W\!\times\!4$};
+
+% --- multi-knee stretch
+\fmap{S}{3.00}{0}{\tF}{\hL}{cKnee}
+\draw[flow] (in-e) -- (S-w)
+  node[oplab,midway,above=1pt] {multi-knee\\ stretch}
+  node[oplab,midway,below=1pt,xshift=2pt] {$\operatorname{asinh}(x_b/q_j)$};
+\node[dimlab,above=1pt of S-n] {$32 = 8 \times 4$};
+
+% --- entry conv
+\fmap{F0}{4.45}{0}{\tF}{\hL}{cConv}
+\draw[flow] (S-e) -- (F0-w) node[oplab,midway,above=1pt] {conv\\ $3\!\times\!3$};
+\node[dimlab,above=1pt of F0-n] {32};
+
+% --- residual trunk
+\fmap{R1}{5.40}{0}{\tF}{\hL}{cRes}
+\fmap{R2}{6.35}{0}{\tF}{\hL}{cRes}
+\fmap{R16}{7.60}{0}{\tF}{\hL}{cRes}
+\draw[flow] (F0-e) -- (R1-w);
+\draw[flow] (R1-e) -- (R2-w);
+\node[inner sep=0pt,font=\small] at ($(R2-e)!0.5!(R16-w)+(0,0.03)$) {$\cdots$};
+\node[dimlab,above=1pt of R1-n] {32};
+\node[dimlab,above=1pt of R2-n] {32};
+\node[dimlab,above=1pt of R16-n] {32};
+\draw[decorate,decoration={brace,amplitude=4pt,mirror},line width=0.5pt,black!65]
+  ($(R1-s)+(-0.18,-0.08)$) -- ($(R16-s)+(0.32,-0.08)$)
+  node[dimlab,midway,below=5pt] {16 residual blocks (b)};
+
+% --- tail conv + pixel shuffle
+\fmap{T}{8.95}{0}{\tS}{\hL}{cConv}
+\draw[flow] (R16-e) -- (T-w) node[oplab,midway,above=1pt] {conv\\ $3\!\times\!3$};
+\node[dimlab,above=1pt of T-n] {$16 = 4\!\cdot\!2^2$};
+\fmap{M}{10.65}{0}{\tB}{\hH}{cShuf}
+\draw[flow] (T-e) -- (M-w) node[oplab,midway,above=1pt] {pixel\\ shuffle\\ $\times2$};
+\node[dimlab,above=1pt of M-n] {4};
+\node[dimlab,below=3pt of M-s,xshift=3pt] {$2H\!\times\!2W\!\times\!4$};
+
+% --- sum, learned knee, output
+\node[sumnode] (sum) at (11.74,0) {$+$};
+\draw[flow] (M-e) -- (sum);
+\node[headbox,text width=2.42cm] (knee) at (13.72,0)
+  {learned\\ output knee\\[3pt] $\hat{x}_b = k_b \sinh y_b$\\[2pt] \mbox{$10^{-2}\le k_b\le 10^{4}$\,e$^-$}};
+\draw[flow] (sum) -- (knee.west) node[oplab,midway,above=1pt] {$y$};
+
+\imstack{out}{15.30}{0}{\hH}{sr_rgb}
+\draw[flow] (knee.east) -- (out-w);
+\node[dimlab,below=3pt of out-s,xshift=4pt] {SR, $0.05''$\,px$^{-1}$, e$^-$\\[1pt] $2H\!\times\!2W\!\times\!4$};
+
+% --- per-band skip (band b drawn; one independent copy per band)
+\def\ys{-3.45}
+\fmap{K}{4.80}{\ys}{\tK}{\hL}{cSkip}
+\fmap{KC}{6.45}{\ys}{\tB}{\hL}{cConv}
+\fmap{KS}{8.25}{\ys}{0.05}{\hH}{cShuf}
+\fmap{KA}{10.65}{\ys}{\tB}{\hH}{cShuf}
+\draw[flow,rounded corners=4pt] ($(S-s)+(0.06,0)$) |- (K-w)
+  node[oplab,pos=0.73,above=1pt] {band $b$\\ at 8 knees};
+\node[dimlab,above=1pt of K-n] {8};
+\node[dimlab,below=3pt of K-s,xshift=7pt] {$H\!\times\!W\!\times\!8$};
+\draw[flow] (K-e) -- (KC-w) node[oplab,midway,above=1pt] {conv\\ $5\!\times\!5$};
+\node[dimlab,above=1pt of KC-n] {4};
+\draw[flow] (KC-e) -- (KS-w) node[oplab,midway,above=1pt] {pixel\\ shuffle $\times2$};
+\node[dimlab,above=1pt of KS-n] {1};
+\node[dimlab,below=3pt of KS-s,xshift=-5pt] {$2H\!\times\!2W\!\times\!1$};
+\draw[flow] (KS-e) -- (KA-w);
+\node[oplab,above=1pt] at ($(KS-e)!0.5!(KA-w)+(0.07,0)$) {concatenate\\ the 4 bands};
+\node[dimlab,above=1pt of KA-n] {4};
+\node[dimlab,below=3pt of KA-s,xshift=3pt] {$2H\!\times\!2W\!\times\!4$};
+\draw[flow,rounded corners=4pt] (KA-e) -| (sum.south);
+\begin{scope}[on background layer]
+  \node[group,fill=cSkip!7,inner sep=0pt,
+        fit={($(K-w)+(-0.25,-1.50)$) ($(KS-e)+(0.14,1.95)$)}] (skipbox) {};
+\end{scope}
+\node[dimlab,anchor=north west,align=left,text=black!75] at ($(skipbox.north west)+(0.08,-0.07)$)
+  {per-band skip, $\times4$};
+
+% ===================================================================== (b)
+\def\yb{-7.05}
+\node[panel] at (0,\yb+1.70) {(b) Residual block};
+\def\hb{1.05}
+\fmap{bx}{0.20}{\yb}{\tF}{\hb}{cRes}
+\fmap{b1}{2.15}{\yb}{0.58}{\hb}{cConv}
+\fmap{b2}{4.10}{\yb}{0.24}{\hb}{cConv}
+\fmap{b3}{5.60}{\yb}{\tF}{\hb}{cConv}
+\node[sumnode] (bsum) at (6.80,\yb) {$+$};
+\draw[flow] (bx-e) -- (b1-w) node[oplab,midway,above=1pt] {conv $1\!\times\!1$\\ ReLU};
+\draw[flow] (b1-e) -- (b2-w) node[oplab,midway,above=1pt] {conv\\ $1\!\times\!1$};
+\draw[flow] (b2-e) -- (b3-w) node[oplab,midway,above=1pt] {conv\\ $3\!\times\!3$};
+\draw[flow] (b3-e) -- (bsum);
+\draw[flow] (bsum) -- ++(0.55,0);
+\draw[flow,rounded corners=4pt] ($(bx-s)+(0.04,0)$) -- ++(0,-0.40) -| (bsum.south);
+\node[dimlab,above=1pt of bx-n] {32};
+\node[dimlab,above=1pt of b1-n] {192};
+\node[dimlab,above=1pt of b2-n] {25};
+\node[dimlab,above=1pt of b3-n] {32};
+\node[dimlab,anchor=west,align=left,text width=8.2cm,text=black!75] at (8.40,\yb-0.10)
+  {Wide activation ($6\times$) before the ReLU, then a linear low-rank
+   ($0.8\times$) bottleneck. Every convolution in the network is
+   weight-normalised; there is no batch normalisation. 0.32\,M parameters;
+   receptive field 37 LR px ($3.7''$).};
+
+\end{tikzpicture}
+\end{document}
