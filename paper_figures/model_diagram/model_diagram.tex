@@ -82,58 +82,60 @@
 % ===================================================================== (a)
 \def\hL{1.45}   % LR grid
 \def\hH{2.35}   % SR grid
+\def\ys{-3.15}  % skip row
+\def\yi{-2.65}  % centre of the input image
+\def\yo{-2.80}  % centre of the output image
+\def\lrs{1.65}  % LR image side; the SR image is exactly twice this
 
 \node[panel] at (0,2.05) {(a)};
 
-% input
-\imstack{in}{0}{0}{1.70}{lr_rgb}
+% input (lower left), Г turn up and into the stretch
+\imstack{in}{0}{\yi}{\lrs}{lr_rgb}
 \node[oplab,below=2pt of in-s,xshift=3pt] {LR, 4 bands};
-
-% stretch: 32 = 8 knees x 4 bands
-\fmap{S}{3.20}{0}{0.72}{\hL}{cLR}
-\slabs{3.20}{0}{0.72}{\hL}{8}{cLR}
-\draw[flow] (in-e) -- (S-w) node[oplab,midway,above=1pt] {asinh\\ 8 knees};
+\fmap{S}{2.70}{0}{0.72}{\hL}{cLR}
+\slabs{2.70}{0}{0.72}{\hL}{8}{cLR}
+\draw[flow,rounded corners=5pt] ($(in-s)+(0.105,\lrs+0.21)$) -- (0.5*\lrs+0.105,0) -- (S-w)
+  node[oplab,pos=0.55,above=1pt] {asinh\\ 8 knees};
 \node[chlab,above=1pt of S-n] {32};
 
 % entry conv
-\fmap{F}{5.15}{0}{0.72}{\hL}{cLR}
-\draw[flow] (S-e) -- (F-w) node[oplab,midway,above=1pt] {conv};
+\fmap{F}{4.65}{0}{0.72}{\hL}{cLR}
+\draw[flow] (S-e) -- (F-w) node[oplab,midway,above=1pt] {conv\\ $3\!\times\!3$};
 \node[chlab,above=1pt of F-n] {32};
 
 % residual trunk
 \node[opbox,draw=cRes!75!black,fill=cRes!35,minimum width=1.85cm,minimum height=\hL cm]
-  (res) at (7.52,0) {residual\\ block $\times16$};
+  (res) at (7.02,0) {residual\\ block $\times16$};
 \draw[flow] (F-e) -- (res.west);
 
 % tail conv + shuffle
-\fmap{T}{9.25}{0}{0.59}{\hL}{cLR}
-\draw[flow] (res.east) -- (T-w) node[oplab,midway,above=1pt] {conv};
+\fmap{T}{8.80}{0}{0.59}{\hL}{cLR}
+\draw[flow] (res.east) -- (T-w) node[oplab,midway,above=1pt] {conv\\ $3\!\times\!3$};
 \node[chlab,above=1pt of T-n] {16};
-\fmap{M}{11.60}{0}{0.33}{\hH}{cHR}
+\fmap{M}{11.10}{0}{0.33}{\hH}{cHR}
 \draw[flow] (T-e) -- (M-w) node[oplab,midway,above=1pt] {pixel\\ shuf\/f\/le};
 \node[chlab,above=1pt of M-n] {4};
 
-% sum, knee, output
-\node[sumnode] (sum) at (13.05,0) {$+$};
+% sum, knee, Г turn down into the output (exactly 2x the input image)
+\node[sumnode] (sum) at (12.55,0) {$+$};
 \draw[flow] (M-e) -- (sum);
-\node[opbox,draw=cKnee!80!black,fill=cKnee!18,minimum height=\hL cm] (knee) at (14.50,0)
+\node[opbox,draw=cKnee!80!black,fill=cKnee!18,minimum height=\hL cm] (knee) at (13.95,0)
   {learned knee\\[2pt] $k_b \sinh y$};
 \draw[flow] (sum) -- (knee.west);
-\imstack{out}{15.82}{0}{2.00}{sr_rgb}
-\draw[flow] (knee.east) -- (out-w);
+\imstack{out}{14.48}{\yo}{2*\lrs}{sr_rgb}
+\draw[flow,rounded corners=5pt] (knee.east) -- (14.48+\lrs+0.105,0) -- ($(out-s)+(0.105,2*\lrs+0.21)$);
 \node[oplab,below=2pt of out-s,xshift=3pt] {SR, 4 bands};
 
 % per-band skip
-\def\ys{-3.15}
-\fmap{K}{5.15}{\ys}{0.46}{\hL}{cLR}
-\slabs{5.15}{\ys}{0.46}{\hL}{8}{cLR}
-\fmap{KC}{7.00}{\ys}{0.33}{\hL}{cLR}
-\fmap{KS}{9.10}{\ys}{0.07}{\hH}{cHR}
-\fmap{KA}{11.60}{\ys}{0.33}{\hH}{cHR}
+\fmap{K}{4.65}{\ys}{0.46}{\hL}{cLR}
+\slabs{4.65}{\ys}{0.46}{\hL}{8}{cLR}
+\fmap{KC}{6.55}{\ys}{0.33}{\hL}{cLR}
+\fmap{KS}{8.65}{\ys}{0.07}{\hH}{cHR}
+\fmap{KA}{11.10}{\ys}{0.33}{\hH}{cHR}
 \draw[flow,rounded corners=4pt] ($(S-s)+(0.06,0)$) |- (K-w)
   node[oplab,pos=0.72,above=1pt] {band $b$};
 \node[chlab,above=1pt of K-n] {8};
-\draw[flow] (K-e) -- (KC-w) node[oplab,midway,above=1pt] {conv};
+\draw[flow] (K-e) -- (KC-w) node[oplab,midway,above=1pt] {conv\\ $5\!\times\!5$};
 \node[chlab,above=1pt of KC-n] {4};
 \draw[flow] (KC-e) -- (KS-w) node[oplab,midway,above=1pt] {pixel\\ shuf\/f\/le};
 \node[chlab,above=1pt of KS-n] {1};
@@ -146,7 +148,7 @@
 
 % ===================================================================== (b)
 % same notation as (a); 192 -> 1.06, 32 -> .72, 25 -> .67
-\def\yb{-6.40}
+\def\yb{-6.62}
 \def\hb{1.30}
 \node[panel] at (0,\yb+1.45) {(b)};
 \fmap{bx}{1.40}{\yb}{0.72}{\hb}{cLR}
