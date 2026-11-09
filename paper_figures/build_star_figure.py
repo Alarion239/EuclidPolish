@@ -129,7 +129,7 @@ def main() -> None:
             color=MUTED, **small)
     ax.text(24.9, 6, "law", ha="right", color=MODEL, **small)
     ax.text(0.5 * (law.fit_bright + law.fit_faint), 0.025, "Q1", ha="center", color=Q1, **small)
-    ax.text(12.3, 6e-4, r"\textit{Gaia}", ha="left", color=GAIA, **small)
+    ax.text(13.8, 5e-3, r"\textit{Gaia}", ha="center", color=GAIA, **small)
 
     # (b, c, d) colors against magnitude
     edges = np.arange(17.0, 23.51, 0.5)
