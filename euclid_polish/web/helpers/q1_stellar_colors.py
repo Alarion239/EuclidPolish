@@ -10,12 +10,15 @@ fixed fields serve only the star-count slope check.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import math
 import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 import numpy as np
 from astroquery.esa.euclid import Euclid
@@ -33,6 +36,18 @@ Q1_STELLAR_COLOR_FIELDS = tuple((f.ra, f.dec, f.name) for f in Q1_FIELDS)
 GAIA_TAP_PROVIDER = "ARI Gaia TAP"
 GAIA_TAP_URL = "https://gaia.ari.uni-heidelberg.de/tap"
 GAIA_SYNC_MAXREC = 10_000
+#: IRSA mirrors the Q1 MER and PHZ catalogues (values identical to ESA's to
+#: float precision, checked on 3462 cached rows); the colour query falls back
+#: to it while the ESA archive is down.
+IRSA_TAP_SYNC = "https://irsa.ipac.caltech.edu/TAP/sync"
+IRSA_TIMEOUT_S = 600
+_COLOR_COLUMNS = """mer.object_id, mer.point_like_prob,
+        mer.flux_vis_psf, mer.fluxerr_vis_psf,
+        mer.flux_vis_3fwhm_aper, mer.fluxerr_vis_3fwhm_aper,
+        mer.flux_y_3fwhm_aper, mer.fluxerr_y_3fwhm_aper,
+        mer.flux_j_3fwhm_aper, mer.fluxerr_j_3fwhm_aper,
+        mer.flux_h_3fwhm_aper, mer.fluxerr_h_3fwhm_aper,
+        cls.phz_star_prob"""
 
 
 def q1_stellar_color_catalog_path() -> Path:
@@ -103,13 +118,7 @@ def _euclid_color_query(lower: float, upper: float) -> str:
     bright_flux = float(ab_mag_to_uJy(lower))
     return f"""
     SELECT TOP {Q1_STELLAR_COLOR_ROWS_PER_BIN}
-        mer.object_id, mer.point_like_prob,
-        mer.flux_vis_psf, mer.fluxerr_vis_psf,
-        mer.flux_vis_3fwhm_aper, mer.fluxerr_vis_3fwhm_aper,
-        mer.flux_y_3fwhm_aper, mer.fluxerr_y_3fwhm_aper,
-        mer.flux_j_3fwhm_aper, mer.fluxerr_j_3fwhm_aper,
-        mer.flux_h_3fwhm_aper, mer.fluxerr_h_3fwhm_aper,
-        cls.phz_star_prob
+        {_COLOR_COLUMNS}
     FROM catalogue.mer_catalogue AS mer
     LEFT OUTER JOIN catalogue.phz_classification AS cls
       ON mer.object_id = cls.object_id
@@ -120,6 +129,71 @@ def _euclid_color_query(lower: float, upper: float) -> str:
       AND mer.point_like_prob <= 1.0
     ORDER BY mer.object_id
     """
+
+
+def _irsa_color_query(lower: float, upper: float, ra: float, dec: float) -> str:
+    """The ESA bracket query on IRSA's Q1 tables, for ONE fixed field.
+
+    IRSA rejects OR-ed CONTAINS, so each field is its own query; the union
+    of the per-field ``TOP n ... ORDER BY object_id`` results holds the
+    union's own first ``n`` ids, so :func:`_irsa_bracket_rows` reproduces
+    the ESA selection exactly.
+    """
+    faint_flux = float(ab_mag_to_uJy(upper))
+    bright_flux = float(ab_mag_to_uJy(lower))
+    radius = Q1_STELLAR_COLOR_FIELD_RADIUS_DEG
+    return f"""
+    SELECT TOP {Q1_STELLAR_COLOR_ROWS_PER_BIN}
+        {_COLOR_COLUMNS}
+    FROM euclid_q1_mer_catalogue AS mer
+    LEFT OUTER JOIN euclid_q1_phz_classification AS cls
+      ON mer.object_id = cls.object_id
+    WHERE CONTAINS(POINT('ICRS', mer.ra, mer.dec),
+                   CIRCLE('ICRS', {ra}, {dec}, {radius})) = 1
+      AND mer.flux_vis_psf > {faint_flux:.16g}
+      AND mer.flux_vis_psf <= {bright_flux:.16g}
+      AND mer.point_like_prob >= 0.9
+      AND mer.point_like_prob <= 1.0
+    ORDER BY mer.object_id
+    """
+
+
+def _launch_irsa(query: str) -> list[dict[str, str]]:
+    """Run one IRSA TAP sync query; the CSV rows (values as text)."""
+    data = urlencode({
+        "QUERY": query, "LANG": "ADQL", "FORMAT": "csv", "REQUEST": "doQuery",
+    }).encode()
+    with urlopen(IRSA_TAP_SYNC, data=data, timeout=IRSA_TIMEOUT_S) as response:
+        text = response.read().decode("utf-8")
+    if text.lstrip().startswith("<"):
+        # IRSA reports query errors as a VOTable, not an HTTP status.
+        raise RuntimeError(f"IRSA rejected the query: {text[:300]}")
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+def _irsa_bracket_rows(lower: float, upper: float) -> list[dict[str, str]]:
+    merged: dict[str, dict[str, str]] = {}
+    for ra, dec, _name in Q1_STELLAR_COLOR_FIELDS:
+        for row in _launch_irsa(_irsa_color_query(lower, upper, ra, dec)):
+            merged[_identifier(row.get("object_id"))] = row
+    ordered = sorted((key for key in merged if key), key=int)
+    return [merged[key] for key in ordered[:Q1_STELLAR_COLOR_ROWS_PER_BIN]]
+
+
+def _color_bracket_rows(
+    lower: float, upper: float, relogin: Callable[[], bool] | None,
+) -> tuple[Any, str]:
+    """One magnitude bracket's rows and the archive that served them."""
+    try:
+        return _launch_euclid(_euclid_color_query(lower, upper), relogin), "ESA"
+    except Exception as esa_error:  # noqa: BLE001 - try the IRSA mirror
+        try:
+            return _irsa_bracket_rows(lower, upper), "IRSA"
+        except Exception as irsa_error:  # noqa: BLE001 - report both below
+            raise RuntimeError(
+                f"Q1 stellar-colour query failed on both archives: "
+                f"ESA: {esa_error}; IRSA: {irsa_error}"
+            ) from irsa_error
 
 
 def _launch_euclid(
@@ -218,11 +292,13 @@ def query_q1_stellar_color_sample(
         raise ValueError("Stellar colour range must divide into 0.5-mag brackets")
     total = bin_count + len(Q1_STELLAR_COLOR_FIELDS)
     euclid_rows: dict[str, dict[str, Any]] = {}
+    archives: set[str] = set()
     for index in range(bin_count):
         lower, upper = bright + index * width, bright + (index + 1) * width
         if progress:
             progress(index, total, f"Q1 stellar colours {lower:g} <= VIS < {upper:g}")
-        results = _launch_euclid(_euclid_color_query(lower, upper), relogin)
+        results, archive = _color_bracket_rows(lower, upper, relogin)
+        archives.add(archive)
         for raw in results:
             record = _euclid_record(raw)
             if record["object_id"]:
@@ -291,6 +367,7 @@ def query_q1_stellar_color_sample(
         **common,
         "catalog_version": Q1_STELLAR_COLOR_SAMPLE_VERSION,
         "rows": len(euclid_rows),
+        "archive": "+".join(sorted(archives)),
         "magnitude_bracket_width": width,
         "rows_per_bracket_limit": Q1_STELLAR_COLOR_ROWS_PER_BIN,
         "selection": (
