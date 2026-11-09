@@ -16,7 +16,6 @@
 \definecolor{cHR}{HTML}{2E9E73}     % feature maps, SR grid
 \definecolor{cRes}{HTML}{E69F00}    % residual block
 \definecolor{cKnee}{HTML}{8E6BB8}   % learned output knee
-\definecolor{cConv}{HTML}{3A7DBF}   % convolution (panel b)
 \definecolor{cLine}{HTML}{3B3B3B}
 
 \tikzset{
@@ -146,27 +145,30 @@
 \node[chlab,anchor=north west] at ($(skipbox.north west)+(0.06,-0.05)$) {per band, $\times4$};
 
 % ===================================================================== (b)
-\def\yb{-6.30}
-\def\xb{3.40}
-\node[panel] at (0,\yb+1.55) {(b)};
-\coordinate (bin) at (\xb,\yb);
-\node[opbox,draw=cConv!70!black,fill=cConv!22,minimum height=1.90cm]
-  (c1) at (\xb+2.25,\yb) {conv $1\!\times\!1$\\[2pt] ReLU};
-\node[opbox,draw=cConv!70!black,fill=cConv!22,minimum height=0.60cm]
-  (c2) at (\xb+4.65,\yb) {conv $1\!\times\!1$};
-\node[opbox,draw=cConv!70!black,fill=cConv!22,minimum height=0.66cm]
-  (c3) at (\xb+6.90,\yb) {conv $3\!\times\!3$};
-\node[sumnode] (bsum) at (\xb+8.65,\yb) {$+$};
-\draw[flow] (bin) -- (c1.west) node[chlab,midway,above=1pt] {32};
-\draw[flow] (c1.east) -- (c2.west) node[chlab,midway,above=1pt] {192};
-\draw[flow] (c2.east) -- (c3.west) node[chlab,midway,above=1pt] {25};
-\draw[flow] (c3.east) -- (bsum) node[chlab,midway,above=1pt] {32};
-\draw[flow] (bsum) -- ++(0.75,0) node[chlab,midway,above=1pt] {32};
-\draw[flow,rounded corners=5pt] ($(bin)+(0.30,0)$) -- ++(0,-1.25) -| (bsum.south)
+% same notation as (a): grey cuboids = feature maps (thickness ~ log2 channels),
+% operations on the arrows. 192 -> .89, 32 -> .61, 25 -> .57
+\def\yb{-6.40}
+\def\xb{3.60}
+\node[panel] at (0,\yb+1.50) {(b)};
+\fmap{bx}{\xb}{\yb}{0.61}{\hL}{cLR}
+\fmap{b1}{\xb+2.35}{\yb}{0.89}{\hL}{cLR}
+\fmap{b2}{\xb+4.65}{\yb}{0.57}{\hL}{cLR}
+\fmap{b3}{\xb+6.60}{\yb}{0.61}{\hL}{cLR}
+\node[sumnode] (bsum) at (\xb+8.25,\yb) {$+$};
+\draw[flow] (bx-e) -- (b1-w) node[oplab,midway,above=1pt] {conv $1\!\times\!1$\\ ReLU};
+\draw[flow] (b1-e) -- (b2-w) node[oplab,midway,above=1pt] {conv\\ $1\!\times\!1$};
+\draw[flow] (b2-e) -- (b3-w) node[oplab,midway,above=1pt] {conv\\ $3\!\times\!3$};
+\draw[flow] (b3-e) -- (bsum);
+\draw[flow] (bsum) -- ++(0.70,0);
+\draw[flow,rounded corners=5pt] ($(bx-s)+(0.04,0)$) -- ++(0,-0.50) -| (bsum.south)
   node[oplab,pos=0.25,above=1pt] {identity};
+\node[chlab,above=1pt of bx-n] {32};
+\node[chlab,above=1pt of b1-n] {192};
+\node[chlab,above=1pt of b2-n] {25};
+\node[chlab,above=1pt of b3-n] {32};
 \begin{scope}[on background layer]
   \node[rounded corners=4pt,draw=cRes!80!black,line width=0.7pt,fill=cRes!8,inner sep=0pt,
-        fit={($(bin)+(-0.30,-1.55)$) ($(bsum)+(1.05,1.20)$)}] (bbox) {};
+        fit={($(bx-w)+(-0.40,-1.35)$) ($(bsum)+(1.00,1.30)$)}] (bbox) {};
 \end{scope}
 \node[oplab,anchor=south west,text=cRes!60!black,inner sep=0pt] at ($(bbox.north west)+(0.05,0.08)$)
   {\textbf{residual block}};
