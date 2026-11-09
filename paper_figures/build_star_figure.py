@@ -154,6 +154,8 @@ def main() -> None:
         ax.plot(centres, qq[:, 0], color=Q1, lw=0.6, ls=(0, (2, 1.2)))
         ax.plot(centres, qq[:, 2], color=Q1, lw=0.6, ls=(0, (2, 1.2)))
         ax.set_xlim(17, 23.5)
+        lo, hi = ax.get_ylim()
+        ax.set_ylim(lo, hi + 0.22 * (hi - lo))  # headroom: the panel tag sits on empty axes
         ax.set_xlabel(r"VIS magnitude [AB]")
         ax.set_ylabel(label + " [mag]")
 

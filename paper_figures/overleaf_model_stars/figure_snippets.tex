@@ -1,0 +1,129 @@
+% =====================================================================
+%  WHERE THE NEW FIGURES (AND TEXT) GO IN POLISHingEuclid.tex
+%
+%  Line numbers refer to "POLISHingEuclid (2).tex" (the 11-09 export).
+%  If they have moved, search for the FIND text instead.
+%
+%  Upload first (keep the folder names):
+%    images/star_population.pdf          new star figure
+%    images/thumbs/lr_rgb.png            diagram thumbnails; your preamble
+%    images/thumbs/sr_rgb.png            already points \mdthumbs here
+%  and append references_new.bib to your references.bib.
+%
+%  You can then delete images/fig03_stellar_population_calibration.png.
+% =====================================================================
+
+
+% ---------------------------------------------------------------------
+%  1. STAR FIGURE
+%     Section: Methods > Training data > Distributions & Transformations
+%
+%  FIND (lines 336-341), right after the galaxy figure:
+%
+%    \begin{figure}
+%        \centering
+%        \includegraphics[width=1\linewidth]{images/fig03_stellar_population_calibration.png}
+%        \caption{Star population}
+%        \label{fig:staaaars}
+%    \end{figure}
+%
+%  REPLACE WITH the block below.
+%  It is figure* now: the plate is one row of four panels, as wide as the
+%  page (7.1 in, drawn at 1:1, so the fonts match the text).
+%  The label is unchanged, so \ref{fig:staaaars} keeps working.
+%  A figure* lands at the top of a page at the earliest one page after
+%  where it sits in the source, so keep it close to the star paragraphs.
+% ---------------------------------------------------------------------
+\begin{figure*}
+    \centering
+    \includegraphics[width=\textwidth]{images/star_population.pdf}
+    \caption{Star population of the training scenes, fitted to Q1 alone.
+    (a) VIS counts of Q1 point sources weighted by their photometric-redshift star probability (blue), the straight law fitted in the shaded range (solid) and its extrapolation (dashed).
+    \textit{Gaia} DR3 $G$-band counts in the Q1 deep fields (open squares) are shown for comparison only.
+    (b--d) VIS$-Y_{\rm E}$, $Y_{\rm E}-J_{\rm E}$ and $J_{\rm E}-H_{\rm E}$ against VIS magnitude for the $4{,}042$ Q1 stars with S/N\,$\geq5$ in all bands (blue) and for model stars drawn at the same magnitudes and re-observed with each star's Q1 errors (orange).}
+    \label{fig:staaaars}
+\end{figure*}
+
+
+% ---------------------------------------------------------------------
+%  2. STAR TEXT (for completeness)
+%
+%  INSERT the two star paragraphs from model_and_stars_options.tex
+%  (lines 11-71: "STARS, paragraph 1" and "STARS, paragraph 2")
+%  AFTER line 325:
+%
+%    We use extreme deconvolution method \citep{Bovy2011} to remove the
+%    measurement noise from each region.
+%
+%  i.e. just above your "MORE MORE MORE PLOTS!" note.
+% ---------------------------------------------------------------------
+
+
+% ---------------------------------------------------------------------
+%  3. MODEL SUBSECTION
+%
+%  FIND (lines 349-357):
+%
+%    \subsection{Training}
+%    \subsubsection{Choices}
+%    \begin{itemize}
+%        \item asinh knee
+%        \item loss
+%        \item training steps
+%        \item depth
+%    \end{itemize}
+%    \subsubsection{Combiner model}
+%
+%  REPLACE WITH \subsection{Model}\label{sec:model} and its four paragraphs
+%  from model_and_stars_options.tex (lines 86-204).
+%  Then move the architecture figure* (section 4 below) so it sits right
+%  after the first Model paragraph (architecture), not after the last one.
+% ---------------------------------------------------------------------
+
+
+% ---------------------------------------------------------------------
+%  4. ARCHITECTURE FIGURE (the TikZ figure*, lines 359-445)
+%
+%  Option A (recommended: three edits, your TikZ otherwise untouched)
+%
+%  (i)  line 390, FIND:
+%         \node[mdsum] (sum) at (12.55,0) {$+$};
+%       REPLACE WITH:
+\node[mdsum] (sum) at (12.75,0) {$+$};
+%
+%  (ii) line 392, FIND:
+%         \node[mdbox,draw=mdKnee!80!black,fill=mdKnee!18,minimum height=\hL cm] (knee) at (13.95,0)
+%       REPLACE WITH:
+\node[mdbox,draw=mdKnee!80!black,fill=mdKnee!18,minimum height=\hL cm] (knee) at (14.45,0)
+%       (these two moves open up the arrow from the sum into the knee box,
+%       which was squashed to nothing)
+%
+%  (iii) line 443, FIND:
+%         \caption{...}
+%       REPLACE WITH:
+\caption{The reconstruction network.
+(a) The four-band input on the $0.1''$ grid is stretched with $\mathrm{arcsinh}$ at eight knees, giving $32$ channels.
+The shared trunk (a $3\times3$ convolution, $16$ residual blocks, a second $3\times3$ convolution and a pixel shuffle) predicts a correction that is added to a per-band path, in which each band is upsampled from its own eight channels by a $5\times5$ convolution and a pixel shuffle.
+A learned knee $k_b$ for each band converts the sum to electrons on the $0.05''$ grid.
+Numbers above the blocks are channel counts; gray blocks lie on the input grid and green blocks on the output grid.
+(b) One residual block: a $1\times1$ convolution widens $32$ channels to $192$ before the ReLU, a linear $1\times1$ convolution narrows them to $25$, and a $3\times3$ convolution returns $32$ channels, which are added to the block input.
+The thumbnails show a Q1 lens candidate and its reconstruction (R\,=\,$H_{\rm E}$, G\,=\,mean of $Y_{\rm E}$ and $J_{\rm E}$, B\,=\,VIS).}
+%
+%  Option B: replace the whole block (lines 359-445, \begin{figure*} ...
+%  \end{figure*}) with architecture_figure.tex. Same result; it only
+%  differs from yours in comments and the two coordinates above.
+%
+%  Option C: use the prebuilt PDF instead of TikZ. Replace lines 359-445
+%  with the block below (keep the caption from (iii)). The PDF is drawn at
+%  the page width (512.8 pt), so it is shown at 1:1. You can then delete
+%  the "TIKZ PREAMBLE" (from %%%% TIKZ PREAMBLE down to the end of the
+%  \mdimstack definition) and the thumbs. Downside: the diagram no longer
+%  changes when you edit the TikZ.
+%
+%    \begin{figure*}
+%        \centering
+%        \includegraphics[width=\textwidth]{images/model_diagram.pdf}
+%        \caption{...}   % caption from (iii)
+%        \label{fig:architecture}
+%    \end{figure*}
+% ---------------------------------------------------------------------
