@@ -380,3 +380,23 @@ def test_irsa_mosaic_url_picks_the_background_subtracted_mosaic(monkeypatch):
     assert jwst_euclid._irsa_mosaic_url("102021501", "H_E")[0] == url and len(seen) == 2
     assert jwst_euclid._irsa_mosaic_url("1; DROP", "VIS")[0] is None
     jwst_euclid._IRSA_URLS.clear()
+
+
+def test_irsa_download_decompresses_gzip_cutouts(monkeypatch, tmp_path):
+    import gzip
+    import io
+
+    plain = b"SIMPLE  =                    T" + b" " * 2850
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    for body in (plain, gzip.compress(plain)):
+        monkeypatch.setattr(jwst_euclid, "urlopen", lambda url, timeout=None, b=body: Response(b))
+        out = tmp_path / "cut.fits"
+        jwst_euclid._irsa_download("https://irsa/x.fits?center=1,2", str(out))
+        assert out.read_bytes() == plain

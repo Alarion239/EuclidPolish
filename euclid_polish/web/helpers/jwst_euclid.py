@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import gzip
 import hashlib
 import json
 import math
@@ -945,10 +946,17 @@ def _irsa_text(url: str, params: Mapping[str, str] | None = None) -> str:
 
 
 def _irsa_download(url: str, output_file: str) -> None:
-    """Stream an IRSA file (an IBE cutout URL) to ``output_file`` atomically."""
+    """Stream an IRSA file (an IBE cutout URL) to ``output_file`` atomically.
+
+    IBE serves some cutouts gzip-compressed (``application/gzip``, e.g. the
+    LDN1641 tiles); those are decompressed so the file is plain FITS.
+    """
     with atomic_files.temporary_sibling(Path(output_file), ".fits") as temporary:
-        with urlopen(url, timeout=_IRSA_TIMEOUT_S) as response, open(temporary, "wb") as out:
-            shutil.copyfileobj(response, out)
+        with urlopen(url, timeout=_IRSA_TIMEOUT_S) as response:
+            payload = response.read()
+        if payload[:2] == b"\x1f\x8b":
+            payload = gzip.decompress(payload)
+        temporary.write_bytes(payload)
         os.replace(temporary, output_file)
 
 
