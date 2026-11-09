@@ -1,0 +1,210 @@
+% =====================================================================
+%  Stars (goes in Methods > Training data > Distributions & Transformations,
+%  after the galaxy-color paragraph) and the new Model subsection
+%  (replaces "Training", "Choices" and "Combiner model").
+%  Three options per paragraph. Option 1 compiles; 2 and 3 sit inside
+%  \iffalse ... \fi, so swap them in by moving the \iffalse lines.
+%  New bib keys: references_new.bib.
+% =====================================================================
+
+
+% ---------------------------------------------------------------------
+%  STARS, paragraph 1: counts
+% ---------------------------------------------------------------------
+% Option 1 (why first)
+Stars are the second population in our scenes.
+They are not what we are after, but each one drops the full PSF into the field (wings, diffraction spikes and, for the bright ones, a saturated core), and the network must learn to fold all of it back into a single point.
+To count them, we take every Q1 source that MER classifies as point-like, over the full $63.1\,\mathrm{deg}^2$, and weight it by its photometric-redshift star probability, so that compact galaxies count only in proportion to their chance of being stars.
+These counts lie on an almost straight line in log density between VIS $\approx18$ and $21$.
+Brighter than VIS $\approx17.5$ the stars saturate and drop out of the sample, and fainter than VIS $\approx22$ the point-source classification is no longer complete.
+We fit the line over that range (slope $0.156$\,dex\,mag$^{-1}$) and extend it from VIS $=12$ to $25$, which gives $5.1$ stars per arcmin$^2$ (Figure~\ref{fig:staaaars}a).
+\textit{Gaia} DR3 counts take no part in the fit, yet they follow the line to $\sim\!10\%$ between $G=16$ and $21$ and fall below it only for the rare stars brighter than $G\approx14$.
+The extrapolation is thus checked at the bright end, while the faint end remains an assumption that Q1 cannot test.
+
+\iffalse
+% Option 2 (data first, numbers inline)
+We draw star brightnesses from Q1 alone.
+Across the $63.1\,\mathrm{deg}^2$ of Q1 we count the sources that MER classifies as point-like, weighting each by its photometric-redshift star probability, in bins of VIS PSF magnitude.
+The counts follow a straight line in log density only between VIS $18.2$ and $21.1$: brighter stars saturate and leave the catalogue, and fainter ones become hard to tell from galaxies.
+We fit the line in this range and extrapolate it over $12<\mathrm{VIS}<25$, for a total density of $5.1$\,arcmin$^{-2}$ (Figure~\ref{fig:staaaars}a).
+\textit{Gaia} DR3 serves only as a check: its counts agree with the line to $\sim\!10\%$ for $16<G<21$ and drop below it only for the few stars brighter than $G\approx14$.
+Q1 and \textit{Gaia} thus pin the counts down between roughly 16th and 21st magnitude, while the faint end rests on the extrapolation alone.
+\fi
+
+\iffalse
+% Option 3 (shortest)
+Stars matter for training because they bring the PSF, its spikes and saturated cores into the scenes.
+We count them among the Q1 point sources, each weighted by its photometric-redshift star probability.
+Between VIS $18$ and $21$ the counts follow a straight line in log density, and outside this range saturation and incomplete classification bend them down (Figure~\ref{fig:staaaars}a).
+We fit the line in that range and extend it over $12<\mathrm{VIS}<25$ ($5.1$ stars per arcmin$^2$); \textit{Gaia} DR3 counts, used only as a cross-check, agree with it to $\sim\!10\%$ for $16<G<21$.
+\fi
+
+
+% ---------------------------------------------------------------------
+%  STARS, paragraph 2: colors (and placement)
+% ---------------------------------------------------------------------
+% Option 1 (why first)
+Each star also needs fluxes in the three NISP bands, which we set through its colors VIS$-Y_{\rm E}$, $Y_{\rm E}-J_{\rm E}$ and $J_{\rm E}-H_{\rm E}$.
+These depend on brightness: in Q1 the median VIS$-Y_{\rm E}$ grows from $0.3$ at VIS $=17$ to about $1.2$ by VIS $=21$ (Figure~\ref{fig:staaaars}b).
+We therefore resample real stars, as we do for galaxies, but with brightness as the only condition: a synthetic star takes the colors of a Q1 star from the same $0.5$-mag bin, picked in proportion to its star probability.
+The pool holds $4{,}042$ point sources detected at S/N\,$\geq5$ in all four bands, and in each bin we remove their measurement noise with extreme deconvolution \citep{Bovy2011} applied to the three colors together.
+Stars outside the populated range, VIS $17$--$23.5$, borrow the nearest bin, and all stars are placed at random, with a new set drawn every time a field is used in training.
+Re-observed with the Q1 errors, the model reproduces the measured color widths to within $7\%$ (Figure~\ref{fig:staaaars}b--d).
+
+\iffalse
+% Option 2 (method first)
+Star colors are drawn the same way as galaxy colors, but conditioned on brightness alone.
+We bin $4{,}042$ Q1 point sources with S/N\,$\geq5$ in all bands into $0.5$-mag bins of VIS magnitude, and a synthetic star copies the VIS$-Y_{\rm E}$, $Y_{\rm E}-J_{\rm E}$ and $J_{\rm E}-H_{\rm E}$ of a real star from its bin, weighted by star probability.
+Within each bin, extreme deconvolution \citep{Bovy2011} of the three colors jointly removes the measurement noise, so the copies carry the intrinsic scatter rather than the catalogue errors.
+The bins are populated from VIS $17$ to $23.5$; outside this range we use the nearest bin.
+This keeps the strong trend with brightness, from blue bright stars (VIS$-Y_{\rm E}\approx0.3$) to red faint ones ($\approx1.2$), and with the Q1 errors added back it matches the measured color widths to $7\%$ (Figure~\ref{fig:staaaars}b--d).
+Stars are placed at random, and a fresh set is drawn every time a field enters training.
+\fi
+
+\iffalse
+% Option 3 (shortest)
+For colors we resample real Q1 stars: a synthetic star of a given VIS magnitude copies the three colors of a Q1 point source from the same $0.5$-mag bin, after the measurement noise has been removed by extreme deconvolution \citep{Bovy2011}.
+This follows the strong reddening of stars towards faint magnitudes and, once the Q1 errors are added back, reproduces the observed color widths to within $7\%$ (Figure~\ref{fig:staaaars}b--d).
+Positions are random and are redrawn each time a field is used for training.
+\fi
+
+
+% ---------------------------------------------------------------------
+%  STAR FIGURE (replaces images/fig03_stellar_population_calibration.png)
+% ---------------------------------------------------------------------
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{images/star_population.pdf}
+    \caption{Star population of the training scenes, fitted to Q1 alone.
+    (a) VIS counts of Q1 point sources weighted by their photometric-redshift star probability (blue), the straight law fitted in the shaded range (solid) and its extrapolation (dashed).
+    \textit{Gaia} DR3 $G$-band counts in the Q1 deep fields (open squares) are shown for comparison only.
+    (b, c) VIS$-Y_{\rm E}$ and $Y_{\rm E}-J_{\rm E}$ against VIS magnitude for the $4{,}042$ Q1 stars with S/N\,$\geq5$ in all bands (blue) and for model stars drawn at the same magnitudes and re-observed with each star's Q1 errors (orange).
+    (d) The same stars in the color--color plane, with 50\% and 90\% contours.
+    $J_{\rm E}-H_{\rm E}$, not shown, behaves alike.}
+    \label{fig:staaaars}
+\end{figure}
+
+
+% =====================================================================
+\subsection{Model}\label{sec:model}
+% =====================================================================
+
+% ---------------------------------------------------------------------
+%  MODEL, paragraph 1: architecture
+% ---------------------------------------------------------------------
+% Option 1 (why first)
+Our model is a residual convolutional network of the WDSR type \citep{Yu2018}, the design that POLISH is built on \citep{Connor2022}.
+We keep it small, since a survey-wide reconstruction needs a model that is cheap to run.
+It takes the four MER bands on the $0.1''$ grid and returns all four on a $0.05''$ grid (Figure~\ref{fig:architecture}).
+A shared trunk mixes the bands: after an entry convolution, $16$ residual blocks widen their $32$ feature maps to $192$ before each nonlinearity and narrow them again afterwards, and a sub-pixel convolution \citep{Shi2016} doubles the sampling.
+Beside the trunk, each band has a short path that upsamples it from that band's input alone; the trunk adds its correction on top, so information moves between bands only inside the trunk.
+With about $3\times10^5$ parameters and no fully connected layers, the model runs on images of any size.
+
+\iffalse
+% Option 2 (input/output first)
+Our network turns a four-band Euclid image on the $0.1''$ MER grid into a four-band reconstruction on a $0.05''$ grid.
+Like POLISH \citep{Connor2022}, it follows the WDSR design \citep{Yu2018}, a residual convolutional network whose blocks expand the features before each nonlinearity and compress them after it.
+Two paths run side by side (Figure~\ref{fig:architecture}a).
+The main path mixes all bands from its first layer, passes them through $16$ residual blocks of $32$ feature maps (Figure~\ref{fig:architecture}b) and doubles the sampling with a sub-pixel convolution \citep{Shi2016}.
+The second path is a light upsampler for each band that sees only that band, and the main path adds its correction to it.
+At about $315{,}000$ parameters, the model is small enough to sweep through large mosaics quickly.
+\fi
+
+\iffalse
+% Option 3 (shortest)
+We use a WDSR-type residual network \citep{Yu2018}, as in POLISH \citep{Connor2022}, extended to four input and four output bands (Figure~\ref{fig:architecture}).
+A shared trunk of $16$ residual blocks with $32$ feature maps mixes the bands, and a sub-pixel convolution \citep{Shi2016} doubles the sampling from $0.1''$ to $0.05''$.
+A parallel path upsamples each band from its own input, so the trunk only has to learn the correction.
+With $\sim\!3\times10^5$ parameters, inference stays fast enough for survey-scale use.
+\fi
+
+
+% ---------------------------------------------------------------------
+%  MODEL, paragraph 2: dynamic range (input knees, learned output knee)
+% ---------------------------------------------------------------------
+% Option 1 (why first)
+The light in our scenes covers a huge range, from small fractions of an electron per pixel in the outskirts of faint galaxies to more than $10^5$ electrons in the cores of bright stars.
+POLISH++ compresses such a range with a single $\mathrm{arcsinh}$ \citep{Wu2026}, but one knee cannot serve all of it: set high, it leaves faint light close to zero, and set low, it squeezes the bright cores together.
+We instead stretch every band with $\mathrm{arcsinh}$ at eight knees, one per decade from $10^{-3}$ to $10^{4}$ electrons, and give the network all $32$ stretched images at once.
+Each brightness level then shows up with useful contrast in at least one channel.
+At the output, the network predicts one stretched image per band, and a last layer turns it back into electrons using a knee per band that is learned along with the weights.
+
+\iffalse
+% Option 2 (mechanism first)
+The input is not a single image per band but eight.
+Each band is stretched with $\mathrm{arcsinh}$ at knees of $10^{-3}$, $10^{-2}$, \ldots, $10^{4}$ electrons, and the $32$ results are stacked as input channels.
+Low knees bring out the faint outskirts and the noise, high knees keep the structure inside bright cores, and the network learns how to combine them.
+This replaces the single stretch of POLISH++ \citep{Wu2026}, which forces a choice between the two ends of a dynamic range that spans more than seven decades in our images.
+The output is one image per band, mapped back to electrons by an inverse stretch whose knee the network learns separately for each band.
+\fi
+
+\iffalse
+% Option 3 (shortest)
+To handle the dynamic range of Euclid images, we stretch each band with $\mathrm{arcsinh}$ at eight knees from $10^{-3}$ to $10^{4}$ electrons and feed all $32$ images to the network, so that faint outskirts and bright cores both keep their contrast.
+The network outputs one stretched image per band, which a final layer converts to electrons with a learned knee for each band.
+\fi
+
+
+% ---------------------------------------------------------------------
+%  MODEL, paragraph 3: loss
+% ---------------------------------------------------------------------
+% Option 1 (why first)
+The loss looks at every brightness level too.
+We stretch both the reconstruction and the target at the same eight knees and take the mean squared error separately for each of the $32$ band--knee pairs.
+A plain sum of these errors would be dominated by the lowest knees, and by VIS among the bands, so we combine them through their geometric mean, which amounts to maximizing the PSNR averaged over all bands and knees.
+Inside the stretch we also add the band's per-pixel sky noise to reconstruction and target alike, so that errors below the noise are counted in units of the noise and the network gains little by inventing faint structure.
+A last term keeps the residual free of any preferred direction.
+Sub-pixel upsampling tends to leave faint patterns aligned with the pixel grid \citep{Odena2016}, so we penalize residual power that, over many batches, is stronger in some directions than in others at the same scale.
+Together these terms give faint outskirts, bright cores and all four bands a comparable say in training.
+
+\iffalse
+% Option 2 (mechanism first)
+Training minimizes a sum of two terms.
+The first compares reconstruction and target after stretching both at the eight input knees: we compute the mean squared error for each band and knee and combine the $32$ values by their geometric mean, which is equivalent to maximizing the average PSNR and prevents the faintest knees, or the VIS band, from taking over.
+Inside this stretch both images are offset by the band's sky noise level, so that sub-noise errors are measured in noise units rather than magnified.
+The second term targets a known artifact of sub-pixel upsamplers, faint grids aligned with the pixels \citep{Odena2016}.
+It penalizes residual power that, averaged over many training batches, prefers some directions over others at the same spatial scale.
+With both terms the network is pushed towards accurate, noise-limited and isotropic reconstructions.
+\fi
+
+\iffalse
+% Option 3 (shortest)
+The loss compares reconstruction and target after stretching both at the eight knees, combining the $32$ per-band, per-knee squared errors by their geometric mean so that no band or brightness range dominates.
+The sky noise is added inside the stretch, so errors below the noise do not count more than the noise itself.
+A small penalty on direction-dependent residual power suppresses the faint pixel-aligned grids typical of sub-pixel upsampling \citep{Odena2016}.
+\fi
+
+
+% ---------------------------------------------------------------------
+%  MODEL, paragraph 4: training
+% ---------------------------------------------------------------------
+% Option 1 (why first)
+We do not ask the network for unlimited resolution: the target is the noiseless synthetic sky on the $0.05''$ grid, smoothed by a Gaussian of $0.066''$ FWHM, the size of the NEXUS F200W PSF (Table~\ref{tab:imaging}).
+Input images are produced on the fly, so each time one of the $6{,}400$ training fields is used it gets a new PSF, noise realization, set of stars and artifacts, and the network never sees the same input twice.
+We train on $12.8''$ crops in batches of four, with random rotations by multiples of $90^\circ$ and flips, using Adam \citep{Kingma2015} and a learning rate that warms up to $5\times10^{-4}$ and then decays along a cosine \citep{Loshchilov2017} to $2\times10^{-5}$ over $1.5\times10^{7}$ steps.
+This takes about $70$ hours on one A100 GPU.
+In shorter runs, extra depth did not pay off: for the same GPU time, a $16$-block network trained for more steps beat a $32$-block one, and $64$ blocks brought nothing.
+Training length did matter, adding $0.2$--$0.4$\,dB of test PSNR per doubling of steps, so we spent the compute on one long run.
+
+\iffalse
+% Option 2 (choices first, mentions the ensemble)
+The training target is the noiseless synthetic sky on the $0.05''$ grid, smoothed by a $0.066''$ Gaussian, about the resolution of NIRCam F200W, which also makes our reconstructions directly comparable with NEXUS.
+Inputs are simulated during training: every visit to one of the $6{,}400$ training fields draws a new PSF, noise, stars and artifacts.
+Crops of $12.8''$ are fed in batches of four, randomly rotated and flipped, and the weights are fitted with Adam \citep{Kingma2015}, the learning rate following a short warm-up and a cosine decay \citep{Loshchilov2017} over $1.5\times10^{7}$ steps (about $70$ GPU hours on an A100).
+We chose this set-up after comparing alternatives at smaller budgets.
+Deeper networks were slower without being better, and an ensemble of $18$ networks merged by a learned combiner was first matched, then beaten, by a single network trained for longer.
+The number of training steps proved to be the main lever, worth $0.2$--$0.4$\,dB of PSNR per doubling.
+\fi
+
+\iffalse
+% Option 3 (shortest)
+The target is the noiseless sky at $0.05''$, smoothed to $0.066''$ FWHM, similar to the NIRCam F200W PSF.
+Input images are re-simulated at every visit to a training field, with a new PSF, noise, stars and artifacts.
+We train on $12.8''$ crops in batches of four with random rotations and flips, using Adam \citep{Kingma2015} and a cosine learning-rate decay \citep{Loshchilov2017} over $1.5\times10^{7}$ steps, about $70$ hours on one A100 GPU.
+Longer training helped more than a deeper network.
+\fi
+
+
+% ---------------------------------------------------------------------
+%  ARCHITECTURE FIGURE: see architecture_figure.tex (tikz + new caption).
+% ---------------------------------------------------------------------

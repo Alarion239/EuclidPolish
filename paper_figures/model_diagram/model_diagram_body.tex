@@ -40,9 +40,9 @@
 \node[mdch,above=1pt of M-n] {4};
 
 % sum, knee, Г turn down into the output (exactly 2x the input image)
-\node[mdsum] (sum) at (12.55,0) {$+$};
+\node[mdsum] (sum) at (12.75,0) {$+$};
 \draw[mdflow] (M-e) -- (sum);
-\node[mdbox,draw=mdKnee!80!black,fill=mdKnee!18,minimum height=\hL cm] (knee) at (13.95,0)
+\node[mdbox,draw=mdKnee!80!black,fill=mdKnee!18,minimum height=\hL cm] (knee) at (14.45,0)
   {learned knee\\[2pt] $k_b \sinh y$};
 \draw[mdflow] (sum) -- (knee.west);
 \mdimstack{out}{14.48}{\yo}{2*\lrs}{sr_rgb}
