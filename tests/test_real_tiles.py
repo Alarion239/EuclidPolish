@@ -125,9 +125,12 @@ def test_cache_tile_uses_the_containing_q1_tile_and_registers_nisp(store, monkey
     assert abs(dec - fx.NEXUS_DEC) * 3600 < 0.1
     (entry,) = real_tiles.list_entries("tile")                 # listing invalidated
     assert entry.id == manifest["id"] and entry.model_ready
-    # raw bands are reused on a second call
-    real_tiles.cache_tile(fx.NEXUS_RA, fx.NEXUS_DEC)
+    assert entry.label.startswith("Tile ") and entry.extras["group"] is None
+    # raw bands are reused on a second call; a label + group name the tile
+    real_tiles.cache_tile(fx.NEXUS_RA, fx.NEXUS_DEC, label="Lens A 42", group="lenses")
     assert calls == list(Config.LR_INPUT_BAND_NAMES)
+    (entry,) = real_tiles.list_entries("tile")
+    assert entry.label == "Lens A 42" and entry.extras["group"] == "lenses"
 
 
 def test_cache_tile_refuses_positions_outside_q1(store, monkeypatch):

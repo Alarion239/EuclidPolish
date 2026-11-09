@@ -511,12 +511,14 @@ def _tile_entries() -> list[TileEntry]:
             continue
         entries.append(TileEntry(
             source="tile", id=directory.name,
-            label=f"Tile {float(manifest['ra']):.5f}, {float(manifest['dec']):+.5f}",
+            label=str(manifest.get("label") or "").strip()
+            or f"Tile {float(manifest['ra']):.5f}, {float(manifest['dec']):+.5f}",
             ra=float(manifest["ra"]), dec=float(manifest["dec"]),
             shape=tuple(manifest.get("shape") or (TILE_SIDE, TILE_SIDE))[:2],
             polygon=manifest.get("polygon"),
             extras={"euclid_tile_index": manifest.get("euclid_tile_index"),
-                    "created": manifest.get("created"), "size_arcsec": manifest.get("size_arcsec")},
+                    "created": manifest.get("created"), "size_arcsec": manifest.get("size_arcsec"),
+                    "group": manifest.get("group")},
         ))
     return entries
 
@@ -1016,7 +1018,8 @@ def _vis_grid(path: Path, ra: float, dec: float, side: int) -> tuple[np.ndarray,
 
 
 def cache_tile(ra: float, dec: float, *,
-               progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
+               progress: Callable[[int, int, str], None] | None = None,
+               label: str | None = None, group: str | None = None) -> dict[str, Any]:
     """Cache a 25.6″ four-band real tile at ``(ra, dec)``.
 
     Q1 coverage is checked first against the committed MER polygons; each
@@ -1026,7 +1029,8 @@ def cache_tile(ra: float, dec: float, *,
     onto its WCS (the NEXUS tile machinery), all in electrons (MAGZERO).
     Writes ``lr_e.npy`` (256, 256, 4) float32, ``lr.fits`` (4, 256, 256) with
     the VIS celestial WCS, ``raw/<band>.fits`` and ``manifest.json``. Raw
-    bands already on disk are reused.
+    bands already on disk are reused. ``label`` names the tile in listings
+    (default: its position) and ``group`` tags a batch (e.g. a catalogue).
     """
     ra, dec = float(ra) % 360.0, float(dec)
     q1_tile = jwst_euclid.choose_q1_tile(ra, dec, TILE_SIZE_ARCSEC)
@@ -1091,6 +1095,10 @@ def cache_tile(ra: float, dec: float, *,
         "registration": {"reference_band": "VIS", "method": "bilinear WCS sampling",
                          "source_padding_vis_pixels": TILE_PADDING},
     }
+    if label:
+        manifest["label"] = str(label)
+    if group:
+        manifest["group"] = str(group)
     jwst_euclid._write_json(directory / "manifest.json", manifest)
     invalidate("tile")
     tick(total, total, f"cached real tile {identifier}")

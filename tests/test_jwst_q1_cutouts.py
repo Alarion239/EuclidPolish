@@ -319,3 +319,64 @@ def test_legacy_real_field_bands_come_from_the_containing_q1_tile(tmp_path, monk
                                            lambda *_a: None)
     assert calls == list(Config.LR_INPUT_BAND_NAMES)
     assert cube.shape == (real_field.FIELD_SIZE, real_field.FIELD_SIZE, 4)
+
+
+def test_cutouts_fall_back_to_irsa_when_the_esa_archive_is_down(monkeypatch, tmp_path):
+    """IRSA serves the same Q1 MER mosaics (bit-identical cutouts, same
+    MAGZERO + WCS), so an ESA outage must not stop tile caching."""
+    monkeypatch.setattr(q1_mer_tiles, "load_tiles", lambda *_a: _two_tiles())
+    monkeypatch.setattr(jwst_euclid, "_mosaic_product",
+                        lambda *a: (None, "mosaic lookup failed: TAP down"))
+    monkeypatch.setattr(jwst_euclid, "_irsa_mosaic_url",
+                        lambda tile, band: (f"https://irsa/MER/{tile}/{band}.fits", ""))
+    calls = []
+
+    def fake_download(url, output_file):
+        calls.append(url)
+        Path(output_file).write_bytes(b"x" * 2880)
+
+    monkeypatch.setattr(jwst_euclid, "_irsa_download", fake_download)
+    ok, error = jwst_euclid.fetch_q1_cutout(ra=10.55, dec=0.0, band_name="J_E",
+                                            output_file=str(tmp_path / "j.fits"),
+                                            cutout_size_vis_pixels=264)
+    assert ok, error
+    (url,) = calls
+    assert url.startswith("https://irsa/MER/111/J_E.fits?")
+    assert "center=10.55" in url and "size=26.4arcsec" in url
+
+
+def test_irsa_failure_reports_both_archives(monkeypatch, tmp_path):
+    monkeypatch.setattr(q1_mer_tiles, "load_tiles", lambda *_a: _two_tiles())
+    monkeypatch.setattr(jwst_euclid, "_mosaic_product", lambda *a: (None, "ESA down"))
+    monkeypatch.setattr(jwst_euclid, "_irsa_mosaic_url", lambda tile, band: (None, "IRSA down"))
+    ok, error = jwst_euclid.fetch_q1_cutout(ra=10.55, dec=0.0, band_name="VIS",
+                                            output_file=str(tmp_path / "v.fits"),
+                                            cutout_size_vis_pixels=264)
+    assert not ok and "ESA down" in error and "IRSA down" in error
+
+
+def test_irsa_mosaic_url_picks_the_background_subtracted_mosaic(monkeypatch):
+    jwst_euclid._IRSA_URLS.clear()
+    seen = []
+    links = (
+        "<TD>https://irsa.ipac.caltech.edu/ibe/cutout</TD>"
+        "<TD>https://irsa.ipac.caltech.edu/ibe/data/euclid/q1/MER/102021501/NISP/"
+        "EUC_MER_MOSAIC-NIR-H-RMS_TILE102021501-1_00.00.fits</TD>"
+        "<TD>https://irsa.ipac.caltech.edu/ibe/data/euclid/q1/MER/102021501/NISP/"
+        "EUC_MER_BGSUB-MOSAIC-NIR-H_TILE102021501-2_00.00.fits</TD>")
+
+    def fake_text(url, params=None):
+        seen.append((url, params))
+        if params is not None:
+            return ("obs_id,energy_bandpassname,access_url\n102021501_NISP,H,"
+                    "https://irsa.ipac.caltech.edu/datalink/links?ID=x\n")
+        return links
+
+    monkeypatch.setattr(jwst_euclid, "_irsa_text", fake_text)
+    url, error = jwst_euclid._irsa_mosaic_url("102021501", "H_E")
+    assert error == "" and url.endswith("EUC_MER_BGSUB-MOSAIC-NIR-H_TILE102021501-2_00.00.fits")
+    query = seen[0][1]["QUERY"]
+    assert "obs_id = '102021501_NISP'" in query and "energy_bandpassname = 'H'" in query
+    assert jwst_euclid._irsa_mosaic_url("102021501", "H_E")[0] == url and len(seen) == 2
+    assert jwst_euclid._irsa_mosaic_url("1; DROP", "VIS")[0] is None
+    jwst_euclid._IRSA_URLS.clear()

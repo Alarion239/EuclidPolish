@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import astropy.units as u
@@ -888,6 +889,18 @@ def fetch_q1_cutout(
         tile = choose_q1_tile(ra, dec, side_arcsec)
     if tile is None:
         return False, f"({ra:.5f}, {dec:+.5f}) is outside the Q1 MER tile footprints"
+    ok, esa_error = _esa_q1_cutout(config, tile, ra, dec, side_arcsec, output_file)
+    if ok:
+        return True, None
+    ok, irsa_error = _irsa_q1_cutout(tile.tile, band_name, ra, dec, side_arcsec, output_file)
+    if ok:
+        return True, None
+    return False, f"ESA: {esa_error}; IRSA: {irsa_error}"
+
+
+def _esa_q1_cutout(config: DownloadConfig, tile: q1_mer_tiles.Q1Tile, ra: float, dec: float,
+                   side_arcsec: float, output_file: str) -> tuple[bool, str | None]:
+    """One band's cutout from the ESA Euclid archive (``Euclid.get_cutout``)."""
     product, error = _mosaic_product(tile.tile, config.instrument, config.filter_name)
     if product is None:
         return False, error
@@ -904,6 +917,86 @@ def fetch_q1_cutout(
         return False, f"get_cutout failed: {type(exc).__name__}: {exc}"
     if not (os.path.exists(output_file) and os.path.getsize(output_file) > 0):
         return False, "downloaded file is empty"
+    return True, None
+
+
+# ---------------------------------------------------------------------------
+# IRSA mirror of the Q1 MER mosaics (fallback while the ESA archive is down)
+# ---------------------------------------------------------------------------
+# IRSA serves the same DpdMerBksMosaic files; its IBE cutouts were checked
+# bit-identical to ESA ``get_cutout`` (same MAGZERO and WCS) on 2026-11-08.
+
+_IRSA_TAP_SYNC = "https://irsa.ipac.caltech.edu/TAP/sync"
+#: band name → (obscore obs_id suffix, energy_bandpassname)
+_IRSA_BANDS: dict[str, tuple[str, str]] = {
+    "VIS": ("VIS", "VIS"), "Y_E": ("NISP", "Y"), "J_E": ("NISP", "J"), "H_E": ("NISP", "H"),
+}
+_IRSA_URLS: dict[tuple[str, str], str] = {}
+_IRSA_MOSAIC_URL = re.compile(r"https://[^\s<>\"']*/EUC_MER_BGSUB-MOSAIC-[^\s<>\"'/]*\.fits")
+_IRSA_TIMEOUT_S = 120
+
+
+def _irsa_text(url: str, params: Mapping[str, str] | None = None) -> str:
+    """GET (or form-POST ``params`` to) an IRSA endpoint; the response text.
+    A seam so tests never reach IRSA."""
+    data = urlencode(dict(params)).encode() if params is not None else None
+    with urlopen(url, data=data, timeout=_IRSA_TIMEOUT_S) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def _irsa_download(url: str, output_file: str) -> None:
+    """Stream an IRSA file (an IBE cutout URL) to ``output_file`` atomically."""
+    with atomic_files.temporary_sibling(Path(output_file), ".fits") as temporary:
+        with urlopen(url, timeout=_IRSA_TIMEOUT_S) as response, open(temporary, "wb") as out:
+            shutil.copyfileobj(response, out)
+        os.replace(temporary, output_file)
+
+
+def _irsa_mosaic_url(tile_id: str, band_name: str) -> tuple[str | None, str]:
+    """The IRSA URL of one band's background-subtracted MER mosaic (cached)."""
+    if not str(tile_id).isdigit():
+        return None, f"bad Q1 tile id {tile_id!r}"
+    if band_name not in _IRSA_BANDS:
+        return None, f"no IRSA mapping for band {band_name!r}"
+    key = (str(tile_id), band_name)
+    with _MOSAIC_LOCK:
+        cached = _IRSA_URLS.get(key)
+    if cached:
+        return cached, ""
+    suffix, bandpass = _IRSA_BANDS[band_name]
+    query = ("SELECT obs_id, energy_bandpassname, access_url FROM ivoa.obscore "
+             "WHERE obs_collection = 'euclid_DpdMerBksMosaic' "
+             f"AND obs_id = '{int(tile_id)}_{suffix}' AND energy_bandpassname = '{bandpass}'")
+    try:
+        rows = list(csv.DictReader(_irsa_text(
+            _IRSA_TAP_SYNC, {"QUERY": query, "LANG": "ADQL", "FORMAT": "csv"}).splitlines()))
+        links = [row["access_url"] for row in rows if (row.get("access_url") or "").strip()]
+        if not links:
+            return None, f"IRSA has no {bandpass} mosaic for Q1 tile {tile_id}"
+        urls = _IRSA_MOSAIC_URL.findall(_irsa_text(links[0].strip()))
+    except Exception as exc:  # noqa: BLE001 - archive errors become the (ok, error) contract
+        return None, f"IRSA lookup failed: {type(exc).__name__}: {exc}"
+    if not urls:
+        return None, f"IRSA datalink lists no BGSUB mosaic for {tile_id} {bandpass}"
+    with _MOSAIC_LOCK:
+        _IRSA_URLS[key] = urls[0]
+    return urls[0], ""
+
+
+def _irsa_q1_cutout(tile_id: str, band_name: str, ra: float, dec: float,
+                    side_arcsec: float, output_file: str) -> tuple[bool, str | None]:
+    """One band's cutout from IRSA's copy of the MER mosaic (IBE cutout)."""
+    url, error = _irsa_mosaic_url(tile_id, band_name)
+    if url is None:
+        return False, error
+    query = urlencode({"center": f"{ra:.8f},{dec:.8f}", "size": f"{side_arcsec:g}arcsec"},
+                      safe=",")
+    try:
+        _irsa_download(f"{url}?{query}", output_file)
+    except Exception as exc:  # noqa: BLE001 - archive errors become the (ok, error) contract
+        return False, f"IRSA cutout failed: {type(exc).__name__}: {exc}"
+    if not (os.path.exists(output_file) and os.path.getsize(output_file) > 0):
+        return False, "IRSA cutout is empty"
     return True, None
 
 
