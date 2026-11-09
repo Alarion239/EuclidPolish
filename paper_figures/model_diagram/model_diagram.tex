@@ -109,7 +109,7 @@
 \draw[flow] (res.east) -- (T-w) node[oplab,midway,above=1pt] {conv};
 \node[chlab,above=1pt of T-n] {16};
 \fmap{M}{10.50}{0}{0.28}{\hH}{cHR}
-\draw[flow] (T-e) -- (M-w) node[oplab,midway,above=1pt] {pixel\\ shuffle};
+\draw[flow] (T-e) -- (M-w) node[oplab,midway,above=1pt] {pixel\\ shuf\/f\/le};
 \node[chlab,above=1pt of M-n] {4};
 
 % sum, knee, output
@@ -134,7 +134,7 @@
 \node[chlab,above=1pt of K-n] {8};
 \draw[flow] (K-e) -- (KC-w) node[oplab,midway,above=1pt] {conv};
 \node[chlab,above=1pt of KC-n] {4};
-\draw[flow] (KC-e) -- (KS-w) node[oplab,midway,above=1pt] {pixel\\ shuffle};
+\draw[flow] (KC-e) -- (KS-w) node[oplab,midway,above=1pt] {pixel\\ shuf\/f\/le};
 \node[chlab,above=1pt of KS-n] {1};
 \draw[flow] (KS-e) -- (KA-w) node[oplab,pos=0.58,above=1pt] {concat};
 \node[chlab,above=1pt of KA-n] {4};
