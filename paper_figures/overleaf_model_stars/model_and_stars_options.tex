@@ -25,7 +25,7 @@ The extrapolation is thus checked at the bright end, while the faint end remains
 % Option 2 (data first, numbers inline)
 We draw star brightnesses from Q1 alone.
 Across the $63.1\,\mathrm{deg}^2$ of Q1 we count the sources that MER classifies as point-like, weighting each by its photometric-redshift star probability, in bins of VIS PSF magnitude.
-The counts follow a straight line in log density only between VIS $18.2$ and $21.1$: brighter stars saturate and leave the catalogue, and fainter ones become hard to tell from galaxies.
+The counts follow a straight line in log density only between VIS $18.2$ and $21.1$: brighter stars saturate and leave the catalog, and fainter ones become hard to tell from galaxies.
 We fit the line in this range and extrapolate it over $12<\mathrm{VIS}<25$, for a total density of $5.1$\,arcmin$^{-2}$ (Figure~\ref{fig:staaaars}a).
 \textit{Gaia} DR3 serves only as a check: its counts agree with the line to $\sim\!10\%$ for $16<G<21$ and drop below it only for the few stars brighter than $G\approx14$.
 Q1 and \textit{Gaia} thus pin the counts down between roughly 16th and 21st magnitude, while the faint end rests on the extrapolation alone.
@@ -55,7 +55,7 @@ Re-observed with the Q1 errors, the model reproduces the measured color widths t
 % Option 2 (method first)
 Star colors are drawn the same way as galaxy colors, but conditioned on brightness alone.
 We bin $4{,}042$ Q1 point sources with S/N\,$\geq5$ in all bands into $0.5$-mag bins of VIS magnitude, and a synthetic star copies the VIS$-Y_{\rm E}$, $Y_{\rm E}-J_{\rm E}$ and $J_{\rm E}-H_{\rm E}$ of a real star from its bin, weighted by star probability.
-Within each bin, extreme deconvolution \citep{Bovy2011} of the three colors jointly removes the measurement noise, so the copies carry the intrinsic scatter rather than the catalogue errors.
+Within each bin, extreme deconvolution \citep{Bovy2011} of the three colors jointly removes the measurement noise, so the copies carry the intrinsic scatter rather than the catalog errors.
 The bins are populated from VIS $17$ to $23.5$; outside this range we use the nearest bin.
 This keeps the strong trend with brightness, from blue bright stars (VIS$-Y_{\rm E}\approx0.3$) to red faint ones ($\approx1.2$), and with the Q1 errors added back it matches the measured color widths to $7\%$ (Figure~\ref{fig:staaaars}b--d).
 Stars are placed at random, and a fresh set is drawn every time a field enters training.
