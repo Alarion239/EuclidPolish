@@ -1,0 +1,100 @@
+% POLISHing Euclid -- network diagram: the tikzpicture (needs model_diagram_preamble.tex).
+% Natural width 18.1 cm = the AASTeX two-column \textwidth: use it in a figure*.
+\begin{tikzpicture}
+
+% ===================================================================== (a)
+\def\hL{1.45}   % LR grid
+\def\hH{2.35}   % SR grid
+\def\ys{-3.15}  % skip row
+\def\yi{-2.65}  % centre of the input image
+\def\yo{-2.80}  % centre of the output image
+\def\lrs{1.65}  % LR image side; the SR image is exactly twice this
+
+\node[mdpanel] at (0,2.05) {(a)};
+
+% input (lower left), Г turn up and into the stretch
+\mdimstack{in}{0}{\yi}{\lrs}{lr_rgb}
+\node[mdop,below=2pt of in-s,xshift=3pt] {LR, 4 bands};
+\mdfmap{S}{2.70}{0}{0.72}{\hL}{mdLR}
+\mdslabs{2.70}{0}{0.72}{\hL}{8}{mdLR}
+\draw[mdflow,rounded corners=5pt] ($(in-s)+(0.105,\lrs+0.21)$) -- (0.5*\lrs+0.105,0) -- (S-w)
+  node[mdop,pos=0.55,above=1pt] {asinh\\ 8 knees};
+\node[mdch,above=1pt of S-n] {32};
+
+% entry conv
+\mdfmap{F}{4.65}{0}{0.72}{\hL}{mdLR}
+\draw[mdflow] (S-e) -- (F-w) node[mdop,midway,above=1pt] {conv\\ $3\!\times\!3$};
+\node[mdch,above=1pt of F-n] {32};
+
+% residual trunk
+\node[mdbox,draw=mdRes!75!black,fill=mdRes!35,minimum width=1.85cm,minimum height=\hL cm]
+  (res) at (7.02,0) {residual\\ block $\times16$};
+\draw[mdflow] (F-e) -- (res.west);
+
+% tail conv + shuffle
+\mdfmap{T}{8.80}{0}{0.59}{\hL}{mdLR}
+\draw[mdflow] (res.east) -- (T-w) node[mdop,midway,above=1pt] {conv\\ $3\!\times\!3$};
+\node[mdch,above=1pt of T-n] {16};
+\mdfmap{M}{11.10}{0}{0.33}{\hH}{mdHR}
+\draw[mdflow] (T-e) -- (M-w) node[mdop,midway,above=1pt] {pixel\\ shuf\/f\/le};
+\node[mdch,above=1pt of M-n] {4};
+
+% sum, knee, Г turn down into the output (exactly 2x the input image)
+\node[mdsum] (sum) at (12.55,0) {$+$};
+\draw[mdflow] (M-e) -- (sum);
+\node[mdbox,draw=mdKnee!80!black,fill=mdKnee!18,minimum height=\hL cm] (knee) at (13.95,0)
+  {learned knee\\[2pt] $k_b \sinh y$};
+\draw[mdflow] (sum) -- (knee.west);
+\mdimstack{out}{14.48}{\yo}{2*\lrs}{sr_rgb}
+\draw[mdflow,rounded corners=5pt] (knee.east) -- (14.48+\lrs+0.105,0) -- ($(out-s)+(0.105,2*\lrs+0.21)$);
+\node[mdop,below=2pt of out-s,xshift=3pt] {SR, 4 bands};
+
+% per-band skip
+\mdfmap{K}{4.65}{\ys}{0.46}{\hL}{mdLR}
+\mdslabs{4.65}{\ys}{0.46}{\hL}{8}{mdLR}
+\mdfmap{KC}{6.55}{\ys}{0.33}{\hL}{mdLR}
+\mdfmap{KS}{8.65}{\ys}{0.07}{\hH}{mdHR}
+\mdfmap{KA}{11.10}{\ys}{0.33}{\hH}{mdHR}
+\draw[mdflow,rounded corners=4pt] ($(S-s)+(0.06,0)$) |- (K-w)
+  node[mdop,pos=0.72,above=1pt] {band $b$};
+\node[mdch,above=1pt of K-n] {8};
+\draw[mdflow] (K-e) -- (KC-w) node[mdop,midway,above=1pt] {conv\\ $5\!\times\!5$};
+\node[mdch,above=1pt of KC-n] {4};
+\draw[mdflow] (KC-e) -- (KS-w) node[mdop,midway,above=1pt] {pixel\\ shuf\/f\/le};
+\node[mdch,above=1pt of KS-n] {1};
+\draw[mdflow] (KS-e) -- (KA-w) node[mdop,midway,above=1pt] {concat};
+\node[mdch,above=1pt of KA-n] {4};
+\draw[mdflow,rounded corners=4pt] (KA-e) -| (sum.south);
+\node[rounded corners=3pt,draw=black!45,dashed,line width=0.6pt,inner sep=0pt,
+      fit={($(K-w)+(-0.28,-1.30)$) ($(KS-e)+(0.18,2.08)$)}] (skipbox) {};
+\node[mdch,anchor=north west] at ($(skipbox.north west)+(0.08,-0.06)$) {per band, $\times4$};
+
+% ===================================================================== (b)
+% same notation as (a); 192 -> 1.06, 32 -> .72, 25 -> .67
+\def\yb{-6.62}
+\def\hb{1.30}
+\node[mdpanel] at (0,\yb+1.45) {(b)};
+\mdfmap{bx}{1.40}{\yb}{0.72}{\hb}{mdLR}
+\mdfmap{b1}{4.65}{\yb}{1.06}{\hb}{mdLR}
+\mdfmap{b2}{8.05}{\yb}{0.67}{\hb}{mdLR}
+\mdfmap{b3}{10.95}{\yb}{0.72}{\hb}{mdLR}
+\node[mdsum] (bsum) at (13.05,\yb) {$+$};
+\mdfmap{bo}{14.00}{\yb}{0.72}{\hb}{mdLR}
+\draw[mdflow] (bx-e) -- (b1-w) node[mdop,midway,above=1pt] {conv $1\!\times\!1$\\ ReLU};
+\draw[mdflow] (b1-e) -- (b2-w) node[mdop,midway,above=1pt] {conv $1\!\times\!1$};
+\draw[mdflow] (b2-e) -- (b3-w) node[mdop,midway,above=1pt] {conv $3\!\times\!3$};
+\draw[mdflow] (b3-e) -- (bsum);
+\draw[mdflow] (bsum) -- (bo-w);
+\draw[mdflow,rounded corners=5pt] ($(bx-s)+(0.06,0)$) -- ++(0,-0.48) -| (bsum.south)
+  node[mdop,pos=0.25,above=1pt] {identity};
+\node[mdch,above=1pt of bx-n] {32};
+\node[mdch,above=1pt of b1-n] {192};
+\node[mdch,above=1pt of b2-n] {25};
+\node[mdch,above=1pt of b3-n] {32};
+\node[mdch,above=1pt of bo-n] {32};
+\node[rounded corners=4pt,draw=mdRes!85!black,line width=0.8pt,inner sep=0pt,
+      fit={(0.62,\yb-1.20) (18.00,\yb+1.45)}] (bbox) {};
+\node[font=\fontsize{9}{10.5}\selectfont\bfseries,text=mdRes!65!black,align=center,inner sep=0pt]
+  at (16.75,\yb+0.12) {residual\\ block};
+
+\end{tikzpicture}%

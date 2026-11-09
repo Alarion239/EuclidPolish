@@ -1,0 +1,72 @@
+% POLISHing Euclid -- network diagram of Universal 257: PREAMBLE part.
+% Paste into the paper preamble (or \input it). Needs tikz + graphicx + amsmath.
+% Set \mdthumbs to the folder holding lr_rgb.png and sr_rgb.png.
+% Verified against euclid_polish/training/models/{wdsr,output_knee}.py and
+% ckpt/ensemble/member_257/origin.json. Grey = LR-grid feature maps, green =
+% SR grid, orange = residual block, purple = learned knee; slab thickness =
+% 0.07 + 0.13 log2(channels) cm. Fonts fixed at 9/8 pt whatever the base size.
+\usepackage{tikz}
+\usepackage{graphicx}
+\providecommand{\mdthumbs}{images/thumbs}
+\usetikzlibrary{arrows.meta,calc,positioning,backgrounds,fit}
+
+\definecolor{mdLR}{HTML}{8A9BA8}     % feature maps, LR grid
+\definecolor{mdHR}{HTML}{2E9E73}     % feature maps, SR grid
+\definecolor{mdRes}{HTML}{E69F00}    % residual block
+\definecolor{mdKnee}{HTML}{8E6BB8}   % learned output knee
+\definecolor{mdLine}{HTML}{2B2B2B}
+
+\tikzset{
+  >={Stealth[length=4.6pt,width=3.8pt]},
+  mdflow/.style={->,line width=0.75pt,draw=mdLine},
+  mdop/.style={font=\fontsize{9}{10.5}\selectfont,align=center,inner sep=1.5pt},
+  mdch/.style={font=\fontsize{8}{9.5}\selectfont,text=black!60,inner sep=1pt},
+  mdsum/.style={circle,draw=mdLine,line width=0.75pt,fill=white,minimum size=12pt,inner sep=0pt},
+  mdbox/.style={rounded corners=2pt,line width=0.7pt,align=center,font=\fontsize{9}{10.5}\selectfont,inner sep=4pt},
+  mdpanel/.style={font=\fontsize{9}{10.5}\selectfont\bfseries,anchor=north west,inner sep=0pt},
+}
+
+% \mdfmap{name}{x}{y}{thickness}{height}{colour}: feature-map cuboid.
+% Anchors: -w front west, -e back edge of the side face, -n top, -s bottom.
+\newcommand{\mdfmap}[6]{%
+  \pgfmathsetmacro{\mdFx}{#2}\pgfmathsetmacro{\mdFy}{#3}%
+  \pgfmathsetmacro{\mdFt}{#4}\pgfmathsetmacro{\mdFh}{#5}%
+  \pgfmathsetmacro{\mdFdx}{0.30*\mdFh}\pgfmathsetmacro{\mdFdy}{0.22*\mdFh}%
+  \begin{scope}[line width=0.5pt,draw=#6!50!black,line join=round]
+    \filldraw[fill=#6!22] (\mdFx,\mdFy+0.5*\mdFh) -- ++(\mdFt,0) -- ++(\mdFdx,\mdFdy) -- ++(-\mdFt,0) -- cycle;
+    \filldraw[fill=#6!62] (\mdFx+\mdFt,\mdFy-0.5*\mdFh) -- ++(0,\mdFh) -- ++(\mdFdx,\mdFdy) -- ++(0,-\mdFh) -- cycle;
+    \filldraw[fill=#6!42] (\mdFx,\mdFy-0.5*\mdFh) rectangle ++(\mdFt,\mdFh);
+  \end{scope}
+  \coordinate (#1-w) at (\mdFx,\mdFy);
+  \coordinate (#1-e) at (\mdFx+\mdFt+\mdFdx,\mdFy);
+  \coordinate (#1-n) at (\mdFx+0.5*\mdFt+0.5*\mdFdx,\mdFy+0.5*\mdFh+\mdFdy);
+  \coordinate (#1-s) at (\mdFx+0.5*\mdFt,\mdFy-0.5*\mdFh);
+}
+
+% \mdslabs{x}{y}{thickness}{height}{n}{colour}: n equal slabs (the 8 knees)
+\newcommand{\mdslabs}[6]{%
+  \pgfmathsetmacro{\mdSx}{#1}\pgfmathsetmacro{\mdSy}{#2}%
+  \pgfmathsetmacro{\mdSt}{#3}\pgfmathsetmacro{\mdSh}{#4}%
+  \pgfmathsetmacro{\mdSdx}{0.30*\mdSh}\pgfmathsetmacro{\mdSdy}{0.22*\mdSh}%
+  \pgfmathtruncatemacro{\mdSn}{#5-1}%
+  \foreach \i in {1,...,\mdSn}{%
+    \pgfmathsetmacro{\mdXi}{\mdSx+\i*\mdSt/#5}%
+    \draw[#6!50!black,line width=0.35pt]
+      (\mdXi,\mdSy-0.5*\mdSh) -- (\mdXi,\mdSy+0.5*\mdSh) -- ++(\mdSdx,\mdSdy);
+  }%
+}
+
+% \mdimstack{name}{x}{y}{size}{image}: colour image in front of three planes
+\newcommand{\mdimstack}[5]{%
+  \pgfmathsetmacro{\mdBx}{#2}\pgfmathsetmacro{\mdBy}{#3}\pgfmathsetmacro{\mdBs}{#4}%
+  \foreach \k in {3,2,1}{%
+    \filldraw[fill=white,draw=black!50,line width=0.4pt]
+      ({\mdBx+0.07*\k},{\mdBy-0.5*\mdBs+0.07*\k}) rectangle ++(\mdBs,\mdBs);
+  }%
+  \node[inner sep=0pt,anchor=south west] at (\mdBx,\mdBy-0.5*\mdBs)
+    {\includegraphics[width=\mdBs cm]{\mdthumbs/#5.png}};
+  \draw[black!80,line width=0.4pt] (\mdBx,\mdBy-0.5*\mdBs) rectangle ++(\mdBs,\mdBs);
+  \coordinate (#1-w) at (\mdBx,\mdBy);
+  \coordinate (#1-e) at (\mdBx+\mdBs+0.21,\mdBy);
+  \coordinate (#1-s) at (\mdBx+0.5*\mdBs,\mdBy-0.5*\mdBs);
+}
