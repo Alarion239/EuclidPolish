@@ -293,6 +293,48 @@ def test_noisy_draw_variance_matches_deconvolved_intrinsic(tmp_path):
     assert deconvolved < clean + 0.5 * noise_ratio**2
 
 
+def _legacy_payload(payload: dict) -> dict:
+    """The same fit as a version-1 (per-band deconvolution) artifact."""
+    legacy = json.loads(json.dumps(payload))
+    legacy["version"] = 1
+    legacy["rows"].pop("vis_snr_zlib_base64")
+    legacy["rows"].pop("vis_snr_sha256")
+    return legacy
+
+
+def test_joint_deconvolution_keeps_the_correlation_between_bands(tmp_path):
+    """Noisy rows must come back as correlated across bands as the same
+    galaxies measured without noise. The per-band (version-1) posterior
+    adds independent scatter to each band and loses most of it."""
+
+    def band_correlation(noise_sigma_ratio: float, directory: Path, *, legacy: bool) -> float:
+        directory.mkdir()
+        rows = synthetic_rows(
+            n_rows=1200, seed=9, noise_sigma_ratio=noise_sigma_ratio,
+            intrinsic_sigma=0.2, magnitude_range=(21.9, 22.1),
+        )
+        payload, _ = fit_fixture(directory, rows, tree_count=8, min_leaf_weight=100.0)
+        sampler = ConditionalColorSFRSampler(_legacy_payload(payload) if legacy else payload)
+        rng = np.random.default_rng(2)
+        draws = np.asarray([sampler.sample(22.0, 0.3, rng).ratios for _ in range(2500)])
+        return float(np.corrcoef(draws[:, 0], draws[:, 1])[0, 1])
+
+    clean = band_correlation(1e-7, tmp_path / "clean", legacy=False)
+    joint = band_correlation(0.35, tmp_path / "joint", legacy=False)
+    per_band = band_correlation(0.35, tmp_path / "per_band", legacy=True)
+    assert clean > 0.5
+    assert joint == pytest.approx(clean, abs=0.15)
+    assert per_band < clean - 0.3
+
+
+def test_version_one_artifacts_still_load_and_sample(tmp_path):
+    payload, _ = fit_fixture(tmp_path, synthetic_rows())
+    sampler = ConditionalColorSFRSampler(_legacy_payload(payload))
+    assert sampler.version == 1
+    draw = sampler.sample(22.0, 0.3, np.random.default_rng(0))
+    assert all(value > 0.0 for value in draw.ratios)
+
+
 def test_negative_fluxes_are_kept_and_draw_positive_ratios(tmp_path):
     rows = synthetic_rows(
         n_rows=240,

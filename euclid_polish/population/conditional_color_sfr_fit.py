@@ -103,6 +103,7 @@ class ColorSFRRows(NamedTuple):
     sfr_valid: np.ndarray
     sfr_class: np.ndarray
     catalog_rows: int
+    vis_snr: np.ndarray
 
 
 def read_color_sfr_rows(
@@ -124,6 +125,7 @@ def read_color_sfr_rows(
     log_sfr: list[float] = []
     sfr_valid: list[bool] = []
     sfr_class: list[int] = []
+    vis_snr: list[float] = []
     catalog_rows = 0
     with catalog_path.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
@@ -237,6 +239,7 @@ def read_color_sfr_rows(
             log_sfr.append(row_log_sfr)
             sfr_valid.append(row_sfr_valid)
             sfr_class.append(row_class)
+            vis_snr.append(flux_vis / fluxerr_vis)
 
     return ColorSFRRows(
         magnitude=np.asarray(magnitude, dtype=np.float64),
@@ -249,6 +252,7 @@ def read_color_sfr_rows(
         sfr_valid=np.asarray(sfr_valid, dtype=bool),
         sfr_class=np.asarray(sfr_class, dtype=np.uint8),
         catalog_rows=catalog_rows,
+        vis_snr=np.asarray(vis_snr, dtype=np.float64),
     )
 
 
@@ -434,6 +438,7 @@ def fit_conditional_color_sfr_payload(
         "sfr_rank": (sfr_rank_array, "<f4"),
         "sfr_valid": (sfr_valid_array.astype(np.uint8), "|u1"),
         "sfr_class": (sfr_class_array, "|u1"),
+        "vis_snr": (selected.vis_snr, "<f4"),
     }
     for name, (values, dtype) in row_arrays.items():
         rows_section[f"{name}_zlib_base64"] = encode_array(values, dtype)
@@ -485,7 +490,9 @@ def fit_conditional_color_sfr_payload(
         "activity_threshold_logssfr": COLOR_SFR_ACTIVITY_THRESHOLD_LOGSSFR,
         "pathological_logssfr": COLOR_SFR_PATHOLOGICAL_LOGSSFR,
         "deconvolution": (
-            "analytic one-component extreme deconvolution within the forest "
+            "analytic one-component extreme deconvolution, JOINT over the "
+            "three ratios (3x3 intrinsic and per-row noise covariances, the "
+            "shared VIS error included), within the forest "
             "neighbourhood, on ROBUST statistics (weighted-median location, "
             "16-84 half-width observed spread, trimmed weighted-mean "
             "reported noise variance over rows at or below 25x the "

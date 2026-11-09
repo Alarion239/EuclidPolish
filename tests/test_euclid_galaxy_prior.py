@@ -123,6 +123,7 @@ def current_color_sfr_model(n_rows: int = 12) -> dict:
         ("sfr_rank", sfr_rank, "<f4"),
         ("sfr_valid", sfr_valid, "|u1"),
         ("sfr_class", sfr_class, "|u1"),
+        ("vis_snr", np.full(n_rows, 50.0), "<f4"),
     ):
         rows[f"{name}_zlib_base64"] = encode_array(values, dtype)
         rows[f"{name}_sha256"] = array_sha256(values, dtype)

@@ -46,7 +46,12 @@ import numpy as np
 
 from euclid_polish.population._codec import decode_array
 
-COLOR_SFR_MODEL_VERSION = 1
+#: 2: rows carry the VIS S/N and the deconvolution is JOINT over the three
+#: ratios (full 3×3 intrinsic and noise covariances). 1: per-band
+#: deconvolution — the active artifact of 2026-09-13; kept loadable until a
+#: version-2 candidate is activated, then this legacy path can go.
+COLOR_SFR_MODEL_VERSION = 2
+COLOR_SFR_SUPPORTED_VERSIONS = (1, 2)
 COLOR_SFR_MODEL_KIND = "conditional_color_sfr_forest"
 #: Ensemble size; every tree contributes its leaf population to a draw.
 COLOR_SFR_FOREST_TREES = 50
@@ -245,7 +250,8 @@ class ConditionalColorSFRSampler:
     """Load-time-validated forest sampler over real catalogue rows."""
 
     def __init__(self, payload: dict[str, Any]):
-        if int(payload.get("version") or 0) != COLOR_SFR_MODEL_VERSION:
+        self.version = int(payload.get("version") or 0)
+        if self.version not in COLOR_SFR_SUPPORTED_VERSIONS:
             raise ValueError("colour+SFR model has an unsupported version")
         if payload.get("kind") != COLOR_SFR_MODEL_KIND:
             raise ValueError("colour+SFR model has the wrong kind")
@@ -296,6 +302,13 @@ class ConditionalColorSFRSampler:
                 rows["sfr_class_zlib_base64"], (row_count,), "|u1",
                 sha256=rows.get("sfr_class_sha256"), name="SFR classes",
             )
+            self._vis_snr = (
+                decode_array(
+                    rows["vis_snr_zlib_base64"], (row_count,), "<f4",
+                    sha256=rows.get("vis_snr_sha256"), name="VIS S/N",
+                ).astype(np.float64)
+                if self.version >= 2 else None
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("colour+SFR row table is malformed") from exc
         valid = self._sfr_valid
@@ -317,6 +330,10 @@ class ConditionalColorSFRSampler:
             ))
             and np.all(self._sfr_class[~valid] == SFR_CLASS_UNKNOWN)
             and bool(np.any(valid))
+            and (
+                self._vis_snr is None
+                or bool(np.all(np.isfinite(self._vis_snr) & (self._vis_snr > 0.0)))
+            )
         ):
             raise ValueError("colour+SFR row table is invalid")
 
@@ -444,6 +461,69 @@ class ConditionalColorSFRSampler:
             intrinsic[band] = max(observed_variance - noise_variance, 0.0)
         return location, intrinsic
 
+    def _row_noise_covariance(self, row: int) -> np.ndarray:
+        """3×3 noise covariance of one row's ratios.
+
+        The diagonal is the catalogue variance (NISP and VIS terms); the
+        off-diagonal is the shared VIS-flux error, r_a·r_b / SNR_VIS².
+        """
+        ratio = self._ratio[row]
+        covariance = np.outer(ratio, ratio) / self._vis_snr[row] ** 2
+        covariance[np.diag_indices(3)] = self._ratio_var[row]
+        return covariance
+
+    def _joint_neighborhood_moments(
+        self,
+        rows: np.ndarray,
+        weights: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Robust (location, 3×3 intrinsic covariance) of a neighbourhood.
+
+        Per band, the location and observed spread are the weighted median
+        and 16–84 half-width (as in the per-band version). The correlations
+        come from the rows whose reported errors are sane in all three bands
+        (≤ 25× each band's median), with each band clipped to its weighted
+        2–98% range. Observed covariance minus the mean noise covariance
+        (shared-VIS terms included) of the same sane rows is the intrinsic
+        covariance, projected onto the positive-semidefinite cone.
+        """
+        values = self._ratio[rows]
+        variances = self._ratio_var[rows]
+        location = np.empty(3)
+        spread = np.empty(3)
+        for band in range(3):
+            low, mid, high = weighted_quantile(values[:, band], weights, (0.16, 0.5, 0.84))
+            location[band] = mid
+            spread[band] = 0.5 * (high - low)
+        median_variance = np.array([
+            float(weighted_quantile(variances[:, band], weights, 0.5)) for band in range(3)
+        ])
+        sane = np.all(variances <= 25.0 * np.maximum(median_variance, 1e-300), axis=1)
+        if int(np.sum(sane)) < 3:
+            sane = np.ones(rows.size, dtype=bool)
+        w = weights[sane]
+        clipped = values[sane].copy()
+        for band in range(3):
+            lo, hi = weighted_quantile(clipped[:, band], w, (0.02, 0.98))
+            clipped[:, band] = np.clip(clipped[:, band], lo, hi)
+        centred = clipped - np.average(clipped, axis=0, weights=w)
+        moment = (centred * w[:, None]).T @ centred / np.sum(w)
+        scale = np.sqrt(np.maximum(np.diag(moment), 1e-300))
+        correlation = np.clip(moment / np.outer(scale, scale), -1.0, 1.0)
+        observed = correlation * np.outer(spread, spread)
+        snr = self._vis_snr[rows][sane]
+        ratio = values[sane]
+        noise = np.einsum("n,na,nb->ab", w / snr**2, ratio, ratio) / np.sum(w)
+        noise[np.diag_indices(3)] = np.average(variances[sane], axis=0, weights=w)
+        intrinsic = observed - noise
+        eigenvalues, eigenvectors = np.linalg.eigh(0.5 * (intrinsic + intrinsic.T))
+        # Floor at 1e-6 of the largest eigenvalue rather than 0: an exactly
+        # singular intrinsic covariance would pull even noise-free rows to the
+        # neighbourhood median along its null directions.
+        floor = 1e-6 * max(float(eigenvalues[-1]), 0.0)
+        intrinsic = (eigenvectors * np.maximum(eigenvalues, floor)) @ eigenvectors.T
+        return location, 0.5 * (intrinsic + intrinsic.T)
+
     def _deconvolved_ratios(
         self,
         rows: np.ndarray,
@@ -451,7 +531,24 @@ class ConditionalColorSFRSampler:
         row: int,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        """Posterior draw of the chosen row's true ratios (analytic XD)."""
+        """Posterior draw of the chosen row's true ratios (analytic XD).
+
+        Version 2: one 3×3 Gaussian posterior, so correlated intrinsic
+        colours and correlated (shared-VIS) noise are handled jointly.
+        Version 1 (legacy): three independent per-band posteriors.
+        """
+        if self._vis_snr is not None:
+            location, intrinsic = self._joint_neighborhood_moments(rows, weights)
+            noise = self._row_noise_covariance(row)
+            total = intrinsic + noise
+            jitter = 1e-12 * max(float(np.trace(total)), 1e-300)
+            gain = np.linalg.solve(total + jitter * np.eye(3), intrinsic).T
+            mean = location + gain @ (self._ratio[row] - location)
+            posterior = intrinsic - gain @ intrinsic
+            values, vectors = np.linalg.eigh(0.5 * (posterior + posterior.T))
+            root = vectors * np.sqrt(np.maximum(values, 0.0))
+            draws = mean + root @ rng.standard_normal(3)
+            return np.maximum(draws, self.ratio_floor)
         location, intrinsic = self._neighborhood_moments(rows, weights)
         row_variance = self._ratio_var[row]
         gain = np.divide(

@@ -12,7 +12,7 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.population.conditional_color_sfr import (
-    COLOR_SFR_MODEL_VERSION,
+    COLOR_SFR_SUPPORTED_VERSIONS,
     ConditionalColorSFRSampler,
 )
 from euclid_polish.population.conditional_color_sfr_fit import (
@@ -179,7 +179,7 @@ def _validated_joint_galaxy_candidate() -> dict[str, Any] | None:
         or radius_law.version != RADIUS_MODEL_VERSION
         or aperture_fwhm.version != APERTURE_FWHM_MODEL_VERSION
         or int(source["color_sfr_model"].get("version") or 0)
-        != COLOR_SFR_MODEL_VERSION
+        not in COLOR_SFR_SUPPORTED_VERSIONS
         or color_sampler.row_count < 2
         or len(str(source.get("fingerprint") or "")) != 64
         or not source.get("valid")
