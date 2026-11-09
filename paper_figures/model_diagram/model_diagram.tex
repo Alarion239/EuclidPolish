@@ -46,6 +46,20 @@
   \coordinate (#1-s) at (\fx+0.5*\ft,\fy-0.5*\fh);
 }
 
+% \slabs{x}{y}{thickness}{height}{n}{colour}: split a cuboid's front and top
+% faces into n equal slabs along its thickness (e.g. the 8 knee groups).
+\newcommand{\slabs}[6]{%
+  \pgfmathsetmacro{\sx}{#1}\pgfmathsetmacro{\sy}{#2}%
+  \pgfmathsetmacro{\st}{#3}\pgfmathsetmacro{\sh}{#4}%
+  \pgfmathsetmacro{\sdx}{0.30*\sh}\pgfmathsetmacro{\sdy}{0.22*\sh}%
+  \pgfmathtruncatemacro{\sn}{#5-1}%
+  \foreach \i in {1,...,\sn}{%
+    \pgfmathsetmacro{\xi}{\sx+\i*\st/#5}%
+    \draw[#6!55!black,line width=0.3pt]
+      (\xi,\sy-0.5*\sh) -- (\xi,\sy+0.5*\sh) -- ++(\sdx,\sdy);
+  }%
+}
+
 % \imstack{name}{x}{y}{size}{image}: colour image in front of three planes
 \newcommand{\imstack}[5]{%
   \pgfmathsetmacro{\bx}{#2}\pgfmathsetmacro{\by}{#3}\pgfmathsetmacro{\bs}{#4}%
@@ -75,44 +89,46 @@
 \node[oplab,below=3pt of in-s,xshift=4pt] {LR, 4 bands};
 
 % stretch
-\fmap{S}{2.75}{0}{0.27}{\hL}{cLR}
+\fmap{S}{2.75}{0}{0.61}{\hL}{cLR}
+\slabs{2.75}{0}{0.61}{\hL}{8}{cLR}
 \draw[flow] (in-e) -- (S-w) node[oplab,midway,above=1pt] {asinh\\ 8 knees};
 \node[chlab,above=1pt of S-n] {32};
 
 % entry conv
-\fmap{F}{4.15}{0}{0.27}{\hL}{cLR}
+\fmap{F}{4.45}{0}{0.61}{\hL}{cLR}
 \draw[flow] (S-e) -- (F-w) node[oplab,midway,above=1pt] {conv};
 \node[chlab,above=1pt of F-n] {32};
 
 % residual trunk (one box)
 \node[opbox,draw=cRes!70!black,fill=cRes!30,minimum width=1.95cm,minimum height=1.20cm]
-  (res) at (6.30,0) {residual\\ block $\times16$};
+  (res) at (6.80,0) {residual\\ block $\times16$};
 \draw[flow] (F-e) -- (res.west);
 
 % tail conv + shuffle
-\fmap{T}{8.05}{0}{0.19}{\hL}{cLR}
+\fmap{T}{8.55}{0}{0.50}{\hL}{cLR}
 \draw[flow] (res.east) -- (T-w) node[oplab,midway,above=1pt] {conv};
 \node[chlab,above=1pt of T-n] {16};
-\fmap{M}{9.70}{0}{0.09}{\hH}{cHR}
+\fmap{M}{10.50}{0}{0.28}{\hH}{cHR}
 \draw[flow] (T-e) -- (M-w) node[oplab,midway,above=1pt] {pixel\\ shuffle};
 \node[chlab,above=1pt of M-n] {4};
 
 % sum, knee, output
-\node[sumnode] (sum) at (10.80,0) {$+$};
+\node[sumnode] (sum) at (11.80,0) {$+$};
 \draw[flow] (M-e) -- (sum);
-\node[opbox,draw=cKnee!80!black,fill=cKnee!15,minimum height=1.20cm] (knee) at (12.20,0)
+\node[opbox,draw=cKnee!80!black,fill=cKnee!15,minimum height=1.20cm] (knee) at (13.20,0)
   {learned knee\\[2pt] $k_b \sinh y$};
 \draw[flow] (sum) -- (knee.west);
-\imstack{out}{13.65}{0}{\hH}{sr_rgb}
+\imstack{out}{14.65}{0}{\hH}{sr_rgb}
 \draw[flow] (knee.east) -- (out-w);
 \node[oplab,below=3pt of out-s,xshift=4pt] {SR, 4 bands};
 
 % per-band skip
 \def\ys{-3.05}
-\fmap{K}{4.15}{\ys}{0.13}{\hL}{cLR}
-\fmap{KC}{5.75}{\ys}{0.09}{\hL}{cLR}
-\fmap{KS}{7.40}{\ys}{0.05}{\hH}{cHR}
-\fmap{KA}{9.70}{\ys}{0.09}{\hH}{cHR}
+\fmap{K}{4.45}{\ys}{0.39}{\hL}{cLR}
+\slabs{4.45}{\ys}{0.39}{\hL}{8}{cLR}
+\fmap{KC}{6.35}{\ys}{0.28}{\hL}{cLR}
+\fmap{KS}{8.30}{\ys}{0.06}{\hH}{cHR}
+\fmap{KA}{10.50}{\ys}{0.28}{\hH}{cHR}
 \draw[flow,rounded corners=4pt] ($(S-s)+(0.06,0)$) |- (K-w)
   node[oplab,pos=0.70,above=1pt] {band $b$};
 \node[chlab,above=1pt of K-n] {8};
@@ -131,7 +147,7 @@
 
 % ===================================================================== (b)
 \def\yb{-6.30}
-\def\xb{2.90}
+\def\xb{3.40}
 \node[panel] at (0,\yb+1.55) {(b)};
 \coordinate (bin) at (\xb,\yb);
 \node[opbox,draw=cConv!70!black,fill=cConv!22,minimum height=1.90cm]
