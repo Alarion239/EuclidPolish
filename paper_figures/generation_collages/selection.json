@@ -1,0 +1,66 @@
+{
+ "real": [
+  "023",
+  "141",
+  "066",
+  "192"
+ ],
+ "synthetic": [
+  43,
+  35,
+  19,
+  4
+ ],
+ "white_pct": 99.7,
+ "q_fields": 40,
+ "pairs": [
+  {
+   "field": 46,
+   "cx": 78,
+   "cy": 327,
+   "hw": 64,
+   "what": "grand-design spiral",
+   "q": 20
+  },
+  {
+   "field": 79,
+   "cx": 127,
+   "cy": 261,
+   "hw": 64,
+   "what": "tidally disturbed spiral",
+   "q": 20
+  },
+  {
+   "field": 53,
+   "cx": 325,
+   "cy": 423,
+   "hw": 64,
+   "what": "spiral with a companion",
+   "q": 20
+  },
+  {
+   "field": 81,
+   "cx": 348,
+   "cy": 215,
+   "hw": 64,
+   "what": "dusty edge-on disk",
+   "q": 20
+  },
+  {
+   "field": 35,
+   "cx": 197,
+   "cy": 115,
+   "hw": 64,
+   "what": "clumpy irregular",
+   "q": 20
+  },
+  {
+   "field": 44,
+   "cx": 240,
+   "cy": 84,
+   "hw": 64,
+   "what": "red edge-on disk",
+   "q": 20
+  }
+ ]
+}
