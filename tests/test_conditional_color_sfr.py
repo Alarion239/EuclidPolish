@@ -11,12 +11,15 @@ import pytest
 from euclid_polish.photometry import ab_mag_to_uJy
 from euclid_polish.population.conditional_color_sfr import (
     COLOR_SFR_MODEL_VERSION,
+    COLOR_SFR_SPLIT_CENSOR_LOGSFR,
     ConditionalColorSFRSampler,
     ratios_to_colors,
     weighted_mid_quantiles,
 )
 from euclid_polish.population.conditional_color_sfr_fit import (
+    color_sfr_split_problem,
     fit_conditional_color_sfr_payload,
+    read_color_sfr_rows,
 )
 from euclid_polish.population.euclid_galaxy_prior import (
     RADIUS_MODEL_VERSION,
@@ -253,29 +256,41 @@ def test_zero_noise_draws_reproduce_real_rows_exactly(tmp_path):
 
 
 def test_noisy_draw_variance_matches_deconvolved_intrinsic(tmp_path):
-    intrinsic_sigma = 0.2
+    """Deconvolving noisy rows gives back the spread of the same galaxies
+    measured without noise (not the raw spread, which adds the noise).
+
+    The reference is a noise-free fit of the same fixture rather than an
+    analytic variance: the neighbourhood's robust 16–84 spread under-reads
+    the variance of the fixture's two-population (quenched offset) mixture,
+    so only a like-for-like comparison isolates the noise removal. Leaves of
+    100 keep the neighbourhood statistics stable (a 30-row neighbourhood's
+    spread estimate swings by ±2× between seeds).
+    """
     noise_ratio = 0.35
-    rows = synthetic_rows(
-        n_rows=400,
-        noise_sigma_ratio=noise_ratio,
-        intrinsic_sigma=intrinsic_sigma,
-        magnitude_range=(21.9, 22.1),
-    )
-    payload, _ = fit_fixture(tmp_path, rows, tree_count=4)
-    sampler = ConditionalColorSFRSampler(payload)
 
-    rng = np.random.default_rng(2)
-    draws = np.asarray([
-        sampler.sample(22.0, 0.3, rng).ratios for _ in range(2500)
-    ])
+    def draw_variance(noise_sigma_ratio: float, directory: Path) -> float:
+        directory.mkdir()
+        rows = synthetic_rows(
+            n_rows=1200, seed=8,
+            noise_sigma_ratio=noise_sigma_ratio,
+            intrinsic_sigma=0.2,
+            magnitude_range=(21.9, 22.1),
+        )
+        payload, _ = fit_fixture(
+            directory, rows, tree_count=8, min_leaf_weight=100.0,
+        )
+        sampler = ConditionalColorSFRSampler(payload)
+        rng = np.random.default_rng(2)
+        draws = np.asarray([
+            sampler.sample(22.0, 0.3, rng).ratios for _ in range(2500)
+        ])
+        return float(np.var(draws[:, 0]))
 
-    # The quenched/star-forming offset (0.6 split at 1/3 weight) contributes
-    # bimodal variance 0.6^2 * (1/3)(2/3) = 0.08 on top of intrinsic 0.04;
-    # the reported-noise 0.1225 must be removed by the deconvolution.
-    expected_variance = intrinsic_sigma**2 + 0.36 * (1.0 / 3.0) * (2.0 / 3.0)
-    observed_variance = float(np.var(draws[:, 0]))
-    assert observed_variance == pytest.approx(expected_variance, rel=0.25)
-    assert observed_variance < expected_variance + 0.5 * noise_ratio**2
+    clean = draw_variance(1e-7, tmp_path / "clean")
+    deconvolved = draw_variance(noise_ratio, tmp_path / "noisy")
+    assert deconvolved == pytest.approx(clean, rel=0.2)
+    # The raw rows would carry clean + 0.1225; the noise must be gone.
+    assert deconvolved < clean + 0.5 * noise_ratio**2
 
 
 def test_negative_fluxes_are_kept_and_draw_positive_ratios(tmp_path):
@@ -421,6 +436,34 @@ def test_mean_colors_track_the_fixture_trend(tmp_path):
     assert colors.shape == (2, 3)
     # Fixture ratios rise with magnitude, so VIS-Y is redder at 24 than 20.
     assert colors[1, 0] > colors[0, 0]
+
+
+def test_sfr_tail_is_censored_in_the_split_target_only(tmp_path):
+    """A junk log-SFR tail must not set the SFR target's scale, but the
+    sampled SFRs stay the raw PHZ values."""
+    rows = synthetic_rows(240)
+    for index in range(0, 240, 20):
+        # sSFR ≈ −250: valid (below the pathological limit), absurd SFR.
+        rows[index]["phz_pp_median_sfr"] = (
+            float(rows[index]["phz_pp_median_stellarmass"]) - 250.0
+        )
+    catalog_path, _ = write_fixture_catalog(tmp_path, rows)
+    selected = read_color_sfr_rows(catalog_path, radius_law=fixture_radius_law())
+    _, targets = color_sfr_split_problem(selected)
+    raw_sfr = selected.log_sfr[selected.sfr_valid]
+    assert raw_sfr.min() < -200.0
+    # The ordinary (quenched vs star-forming) SFR spread must survive
+    # standardization; an uncensored tail would squash it to ~0.02 sigma.
+    sfr_target = targets[:, 3]
+    ordinary = selected.sfr_valid & (selected.log_sfr > -50.0)
+    assert np.std(sfr_target[ordinary]) > 0.3
+
+    payload, _ = fit_fixture(tmp_path, rows)
+    assert payload["sfr_split_censor_logsfr"] == COLOR_SFR_SPLIT_CENSOR_LOGSFR
+    sampler = ConditionalColorSFRSampler(payload)
+    rng = np.random.default_rng(3)
+    draws = [sampler.sample(19.2, 0.6, rng).log_sfr for _ in range(400)]
+    assert min(draws) < -200.0
 
 
 def test_ratios_to_colors_matches_ab_definition():

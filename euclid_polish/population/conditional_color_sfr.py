@@ -51,7 +51,19 @@ COLOR_SFR_MODEL_KIND = "conditional_color_sfr_forest"
 #: Ensemble size; every tree contributes its leaf population to a draw.
 COLOR_SFR_FOREST_TREES = 50
 #: Minimum effective galaxy weight per leaf (sets the smoothing scale).
-COLOR_SFR_MIN_LEAF_WEIGHT = 25.0
+#: Chosen by 5-fold CV of the neighbourhood's CRPS on held-out Q1 rows
+#: (scripts/tune_color_sfr_forest.py, 2026-11-08): 200 doubles the skill of
+#: the original 25 (+0.013 ± 0.001 paired), whose small leaves predicted the
+#: VIS ≥ 25 rows worse than the unconditional distribution; 400 ties overall
+#: but loses at the bright end, larger leaves lose everywhere.
+COLOR_SFR_MIN_LEAF_WEIGHT = 200.0
+#: Fraction of the inputs considered at each split: 0.67 → two of the three
+#: (sklearn takes int(0.67·3) = 2). Same CV: a hair better than all three.
+COLOR_SFR_MAX_FEATURES = 0.67
+#: Log SFR is censored from below at this value in the SPLIT TARGET only
+#: (PHZ reports an unphysical tail to ≈ −246 that would otherwise dominate
+#: the target's standard deviation); sampled SFRs stay the raw PHZ values.
+COLOR_SFR_SPLIT_CENSOR_LOGSFR = -5.0
 #: Seeded forest growth so refits on identical inputs are identical.
 COLOR_SFR_FIT_SEED = 20260913
 #: asinh softening (ratio units) for the split-criterion colour transform.

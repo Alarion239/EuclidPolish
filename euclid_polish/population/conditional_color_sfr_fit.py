@@ -36,11 +36,13 @@ from euclid_polish.population.conditional_color_sfr import (
     COLOR_SFR_FEATURE_NAMES,
     COLOR_SFR_FIT_SEED,
     COLOR_SFR_FOREST_TREES,
+    COLOR_SFR_MAX_FEATURES,
     COLOR_SFR_MIN_LEAF_WEIGHT,
     COLOR_SFR_MODEL_KIND,
     COLOR_SFR_MODEL_VERSION,
     COLOR_SFR_PATHOLOGICAL_LOGSSFR,
     COLOR_SFR_RATIO_FLOOR,
+    COLOR_SFR_SPLIT_CENSOR_LOGSFR,
     COLOR_SFR_VIS_SNR_FLOOR,
     SFR_CLASS_QUENCHED,
     SFR_CLASS_STAR_FORMING,
@@ -250,6 +252,71 @@ def read_color_sfr_rows(
     )
 
 
+def color_sfr_split_problem(
+    selected: ColorSFRRows,
+    *,
+    sfr_censor_logsfr: float = COLOR_SFR_SPLIT_CENSOR_LOGSFR,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Forest inputs and standardized split-criterion targets.
+
+    Targets are the asinh-softened NISP/VIS ratios plus log SFR. Missing SFRs
+    are imputed FIT-TIME-ONLY by k-NN over (magnitude, colours) so SFR has a
+    voice in where the regime boundaries fall; sampled SFR values always come
+    from real SFR-valid rows (the sampler's borrow policy). Log SFR is
+    censored from below at ``sfr_censor_logsfr`` first: PHZ's
+    unphysical tail (to log SFR ≈ −246) would otherwise inflate the SFR
+    standard deviation used to standardize the target and mute SFR in the
+    split choice. The censor touches the split target only.
+    """
+    log_sfr = np.maximum(selected.log_sfr, float(sfr_censor_logsfr))
+    valid = selected.sfr_valid
+    softened = np.arcsinh(selected.ratio / COLOR_SFR_ASINH_SOFTENING)
+    knn_features = np.column_stack((selected.magnitude, softened))
+    feature_scale = np.maximum(np.std(knn_features, axis=0), 1e-6)
+    knn_features = knn_features / feature_scale[None, :]
+    filled_log_sfr = log_sfr.copy()
+    missing = ~valid
+    if np.any(missing):
+        neighbors = KNeighborsRegressor(
+            n_neighbors=int(min(32, int(np.sum(valid)))),
+            weights="distance",
+        )
+        neighbors.fit(knn_features[valid], log_sfr[valid])
+        filled_log_sfr[missing] = neighbors.predict(knn_features[missing])
+
+    targets = np.column_stack((softened, filled_log_sfr))
+    target_scale = np.maximum(np.std(targets, axis=0), 1e-9)
+    targets = (targets - np.mean(targets, axis=0)) / target_scale[None, :]
+    features = np.column_stack((
+        selected.magnitude,
+        selected.log_radius,
+        selected.resolved.astype(np.float64),
+    ))
+    return features, targets
+
+
+def color_sfr_forest(
+    total_weight: float,
+    *,
+    tree_count: int = COLOR_SFR_FOREST_TREES,
+    min_leaf_weight: float = COLOR_SFR_MIN_LEAF_WEIGHT,
+    max_features: float = COLOR_SFR_MAX_FEATURES,
+    fit_seed: int = COLOR_SFR_FIT_SEED,
+) -> RandomForestRegressor:
+    """The unfitted forest; ``min_leaf_weight`` is in galaxy-weight units."""
+    leaf_fraction = float(
+        min(0.5, max(1e-9, float(min_leaf_weight) / float(total_weight)))
+    )
+    return RandomForestRegressor(
+        n_estimators=int(tree_count),
+        bootstrap=True,
+        min_weight_fraction_leaf=leaf_fraction,
+        max_features=float(max_features),
+        random_state=int(fit_seed),
+        n_jobs=-1,
+    )
+
+
 def fit_conditional_color_sfr_payload(
     catalog_path: str | Path,
     meta_path: str | Path,
@@ -259,6 +326,7 @@ def fit_conditional_color_sfr_payload(
     require_catalog_version: bool = True,
     tree_count: int = COLOR_SFR_FOREST_TREES,
     min_leaf_weight: float = COLOR_SFR_MIN_LEAF_WEIGHT,
+    max_features: float = COLOR_SFR_MAX_FEATURES,
     fit_seed: int = COLOR_SFR_FIT_SEED,
     minimum_rows: int = 200,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -294,7 +362,6 @@ def fit_conditional_color_sfr_payload(
         raise ValueError("The cached Euclid catalogue row count is stale")
 
     magnitude_array = selected.magnitude
-    log_radius_array = selected.log_radius
     resolved_array = selected.resolved.astype(np.float64)
     ratio_array = selected.ratio
     ratio_var_array = selected.ratio_var
@@ -310,43 +377,16 @@ def fit_conditional_color_sfr_payload(
         log_sfr_array[sfr_valid_array], weight_array[sfr_valid_array],
     )
 
-    # Split-criterion targets: asinh-softened ratios plus log SFR, with
-    # missing SFRs imputed FIT-TIME-ONLY by k-NN over (magnitude, colours) so
-    # SFR has a voice in where the regime boundaries fall. Sampled SFR values
-    # always come from real SFR-valid rows (the sampler's borrow policy).
-    softened = np.arcsinh(ratio_array / COLOR_SFR_ASINH_SOFTENING)
-    knn_features = np.column_stack((magnitude_array, softened))
-    feature_scale = np.maximum(np.std(knn_features, axis=0), 1e-6)
-    knn_features = knn_features / feature_scale[None, :]
-    filled_log_sfr = log_sfr_array.copy()
-    missing = ~sfr_valid_array
-    if np.any(missing):
-        neighbors = KNeighborsRegressor(
-            n_neighbors=int(min(32, int(np.sum(sfr_valid_array)))),
-            weights="distance",
-        )
-        neighbors.fit(
-            knn_features[sfr_valid_array], log_sfr_array[sfr_valid_array],
-        )
-        filled_log_sfr[missing] = neighbors.predict(knn_features[missing])
-
-    targets = np.column_stack((softened, filled_log_sfr))
-    target_scale = np.maximum(np.std(targets, axis=0), 1e-9)
-    targets = (targets - np.mean(targets, axis=0)) / target_scale[None, :]
-    features = np.column_stack(
-        (magnitude_array, log_radius_array, resolved_array),
-    )
+    features, targets = color_sfr_split_problem(selected)
     total_weight = float(np.sum(weight_array))
-    leaf_fraction = float(
-        min(0.5, max(1e-9, float(min_leaf_weight) / total_weight))
+    forest = color_sfr_forest(
+        total_weight,
+        tree_count=tree_count,
+        min_leaf_weight=min_leaf_weight,
+        max_features=max_features,
+        fit_seed=fit_seed,
     )
-    forest = RandomForestRegressor(
-        n_estimators=int(tree_count),
-        bootstrap=True,
-        min_weight_fraction_leaf=leaf_fraction,
-        random_state=int(fit_seed),
-        n_jobs=-1,
-    )
+    leaf_fraction = float(forest.min_weight_fraction_leaf)
     forest.fit(features, targets, sample_weight=weight_array)
     leaf_ids = forest.apply(features)
 
@@ -408,6 +448,8 @@ def fit_conditional_color_sfr_payload(
         "row_count": row_count,
         "tree_count": int(tree_count),
         "min_leaf_weight": float(min_leaf_weight),
+        "max_features": float(max_features),
+        "sfr_split_censor_logsfr": COLOR_SFR_SPLIT_CENSOR_LOGSFR,
         "fit_seed": int(fit_seed),
         "vis_snr_floor": COLOR_SFR_VIS_SNR_FLOOR,
         "selection": _SELECTION,
@@ -456,6 +498,8 @@ def fit_conditional_color_sfr_payload(
         "weight_policy": _WEIGHT_POLICY,
         "min_leaf_weight": float(min_leaf_weight),
         "min_weight_fraction_leaf": leaf_fraction,
+        "max_features": float(max_features),
+        "sfr_split_censor_logsfr": COLOR_SFR_SPLIT_CENSOR_LOGSFR,
         "fit_seed": int(fit_seed),
         "sklearn_version": str(sklearn.__version__),
         "catalog_version": catalog_version,
