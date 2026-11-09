@@ -178,58 +178,147 @@ def sheets():
 
 
 # ----------------------------------------------------------------- final figures
+# Article style: LaTeX text in Latin Modern (the paper's font), one row label /
+# column header instead of per-panel titles, images pre-rendered at ~600 dpi and
+# embedded unresampled (interpolation="none"), so the PDF keeps every pixel.
+ARTICLE_RC = {
+    "text.usetex": True,
+    "text.latex.preamble": r"\usepackage[T1]{fontenc}\usepackage{lmodern}",
+    "font.family": "serif",
+    "font.size": 8,
+    "pdf.fonttype": 42,
+}
+FS_HEAD, FS_SMALL = 8.0, 6.5          # pt at final size (AAS minimum 6 pt)
+HALO = [pe.withStroke(linewidth=1.4, foreground="black")]
+
+
+def upsample(rgb: np.ndarray, size: int, smooth: bool) -> np.ndarray:
+    """RGB [0,1] -> uint8 at ``size`` px: Lanczos for the HR truth (a smooth
+    image), nearest for Euclid's native 0.1" pixels."""
+    from PIL import Image
+    im = Image.fromarray((np.clip(rgb, 0, 1) * 255 + 0.5).astype(np.uint8))
+    return np.asarray(im.resize((size, size), Image.LANCZOS if smooth else Image.NEAREST))
+
+
+def show(ax, rgb, n, *, smooth=False, px_inch=600):
+    """Draw ``rgb`` (native ``n`` px) filling ``ax``; data coordinates stay in
+    native pixels (0..n) so scale bars and markers use them."""
+    w_in = ax.get_position().width * ax.figure.get_size_inches()[0]
+    size = int(np.ceil(w_in * px_inch / n)) * n
+    ax.imshow(upsample(rgb, size, smooth), origin="lower", interpolation="none",
+              extent=(0, n, 0, n))
+    ax.set_xlim(0, n); ax.set_ylim(0, n)
+    ax.set_xticks([]); ax.set_yticks([])
+    for s in ax.spines.values():
+        s.set_visible(False)
+
+
+def band_key(ax):
+    x = 0.035
+    for name, colr in zip(("VIS", r"$Y{+}J$", r"$H$"), KEY_COLOURS):
+        t = ax.text(x, 0.035, name, transform=ax.transAxes, color=colr, fontsize=FS_SMALL,
+                    va="bottom", path_effects=HALO)
+        ax.figure.canvas.draw()
+        bb = t.get_window_extent().transformed(ax.transAxes.inverted())
+        x = bb.x1 + 0.035
+
+
+def scale_bar(ax, n, arcsec, pix):
+    length = arcsec / pix
+    x1 = n * 0.955; x0 = x1 - length; y = n * 0.06
+    ax.plot([x0, x1], [y, y], color="white", lw=1.4, solid_capstyle="butt",
+            path_effects=[pe.withStroke(linewidth=2.8, foreground="black")])
+    ax.text((x0 + x1) / 2, y + n * 0.022, rf"${arcsec:g}''$", color="white", ha="center",
+            va="bottom", fontsize=FS_SMALL, path_effects=HALO)
+
+
+def compass(ax, n):
+    """North up, east left (Q1 MER mosaics, TAN with CD = diag(-0.1", 0.1"))."""
+    cx, cy, a = n * 0.93, n * 0.07, n * 0.09
+    for dx, dy, lab in ((0, a, "N"), (-a, 0, "E")):
+        ax.annotate("", xy=(cx + dx, cy + dy), xytext=(cx, cy),
+                    arrowprops=dict(arrowstyle="-|>", color="white", lw=0.8, mutation_scale=5,
+                                    shrinkA=0, shrinkB=0))
+        ax.text(cx + 1.4 * dx, cy + 1.4 * dy, lab, color="white", fontsize=FS_SMALL,
+                ha="center", va="center", path_effects=HALO)
+
+
+def coord_label(identifier: str) -> str:
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+    e = real_tiles.get_entry("archive", identifier)
+    c = SkyCoord(e.ra * u.deg, e.dec * u.deg)
+    ra = c.ra.to_string(unit=u.hour, sep=":", precision=1, pad=True)
+    dec = c.dec.to_string(sep=":", precision=0, alwayssign=True, pad=True)
+    return rf"{e.field}\enspace {ra}\enspace ${dec[0]}${dec[1:]}"
+
+
 def final():
     sel = json.loads((OUT / "selection.json").read_text())
-    # --- Euclid vs synthetic: 2 rows x 4 full fields, one stretch for all
+    plt.rcParams.update(ARTICLE_RC)
+
+    # --- Euclid vs synthetic: 2 rows x 4 fields, one stretch for all panels
     reals = [calibrated(real_field(i)) for i in sel["real"]]
     syns = [calibrated(syn("dirty", i)) for i in sel["synthetic"]]
     white = np.percentile(np.concatenate([intensity(c).ravel() for c in reals]), sel["white_pct"])
-    ncol, gap = 4, 0.006
-    w = (1 - (ncol - 1) * gap) / ncol
-    h = w                                     # square panels; figure aspect follows
-    fig = plt.figure(figsize=(FIG_W, FIG_W * (2 * h + gap)))
-    hfrac = h / (2 * h + gap); gfrac = gap / (2 * h + gap)
-    for row, (cubes, title) in enumerate(((reals, "Euclid Q1"), (syns, "Synthetic"))):
+    lab_w, g = 0.20, 0.03                      # inches: row-label strip, gap
+    p = (FIG_W - lab_w - 3 * g) / 4
+    H = 2 * p + g
+    fig = plt.figure(figsize=(FIG_W, H))
+    for row, (cubes, name) in enumerate(((reals, "Euclid Q1"), (syns, "Synthetic"))):
+        y0 = (1 - row) * (p + g)
+        fig.text(lab_w * 0.45 / FIG_W, (y0 + p / 2) / H, rf"\textbf{{{name}}}", rotation=90,
+                 ha="center", va="center", fontsize=FS_HEAD)
         for k, cal in enumerate(cubes):
-            ax = fig.add_axes([k * (w + gap), (1 - row) * (hfrac + gfrac), w, hfrac])
-            n = cal.shape[0]
-            cal = cal[(n - 255) // 2:(n - 255) // 2 + 255, (n - 255) // 2:(n - 255) // 2 + 255]
-            panel(ax, lupton(cal, white=white, q=sel["q_fields"]), title=title,
-                  key=(k == 0), bar_arcsec=5.0 if k == ncol - 1 else None, pix=0.1)
-    fig.savefig(OUT / "euclid_vs_synthetic.png", dpi=300, facecolor="white")
+            ax = fig.add_axes([(lab_w + k * (p + g)) / FIG_W, y0 / H, p / FIG_W, p / H])
+            n0 = cal.shape[0]; o = (n0 - 255) // 2
+            cal = cal[o:o + 255, o:o + 255]
+            show(ax, lupton(cal, white=white, q=sel["q_fields"]), 255)
+            if row == 0:
+                ax.text(0.035, 0.035, coord_label(sel["real"][k]), transform=ax.transAxes,
+                        color="0.9", fontsize=FS_SMALL, ha="left", va="bottom", path_effects=HALO)
+                if k == 3:
+                    compass(ax, 255)
+            if row == 1 and k == 3:
+                band_key(ax)
+            if row == 1 and k == 3:
+                scale_bar(ax, 255, 5.0, 0.1)
     fig.savefig(OUT / "euclid_vs_synthetic.pdf", facecolor="white")
+    fig.savefig(OUT / "euclid_vs_synthetic.png", dpi=300, facecolor="white")
     plt.close(fig)
 
-    # --- HR / LR pairs: rows of two pairs (HR | LR), one stretch per pair
+    # --- HR / LR pairs: 3 rows x 2 pairs, column headers once, one stretch per pair
     pairs = sel["pairs"]
-    npair_row = 2
-    nrow = (len(pairs) + npair_row - 1) // npair_row
-    ncol = 2 * npair_row
-    gap, pgap = 0.004, 0.018                  # inside a pair / between pairs
-    w = (1 - (npair_row - 1) * pgap - npair_row * gap) / ncol
-    fig_h = FIG_W * (nrow * w + (nrow - 1) * pgap)
-    fig = plt.figure(figsize=(FIG_W, fig_h))
-    hf = w * FIG_W / fig_h; vgap = pgap * FIG_W / fig_h
-    for p, rec in enumerate(pairs):
-        r, c = divmod(p, npair_row)
+    head, g, G, rg = 0.17, 0.03, 0.12, 0.06    # inches: header strip, in-pair, between pairs, rows
+    p = (FIG_W - G - 2 * g) / 4
+    nrow = (len(pairs) + 1) // 2
+    H = head + nrow * p + (nrow - 1) * rg
+    fig = plt.figure(figsize=(FIG_W, H))
+    xs = [0, p + g, 2 * p + g + G, 3 * p + 2 * g + G]
+    heads = (r"\textbf{HR truth}\enspace $0.05''$\,px$^{-1}$",
+             r"\textbf{Simulated Euclid}\enspace $0.1''$\,px$^{-1}$")
+    for c in range(4):
+        fig.text((xs[c] + p / 2) / FIG_W, (H - head / 2) / H, heads[c % 2], ha="center",
+                 va="center", fontsize=FS_HEAD)
+    for i, rec in enumerate(pairs):
+        r, c = divmod(i, 2)
         hr = calibrated(syn("hr", rec["field"]))
         lr = calibrated(syn("dirty", rec["field"]))
-        hw = rec["hw"]
-        cx, cy = rec["cx"], rec["cy"]
+        hw, cx, cy = rec["hw"], rec["cx"], rec["cy"]
         hc = hr[cy - hw:cy + hw, cx - hw:cx + hw]
-        lc = lr[cy // 2 - hw // 2:cy // 2 + hw // 2, cx // 2 - hw // 2:cx // 2 + hw // 2]
-        lc = np.repeat(np.repeat(lc, 2, 0), 2, 1) / 4.0      # native 0.1" pixels on the HR grid
-        white = rec.get("white_scale", 1.0) * np.percentile(intensity(hc), 99.8)
-        x0 = c * (2 * w + gap + pgap)
-        y0 = 1 - (r + 1) * hf - r * vgap
-        for k, (img, title, interp) in enumerate(((hc, "HR truth", "lanczos"),
-                                                  (lc, "Simulated Euclid", "nearest"))):
-            ax = fig.add_axes([x0 + k * (w + gap), y0, w, hf])
-            panel(ax, lupton(img, white=white, q=rec.get("q", 30.0)), title=title,
-                  key=(k == 1), bar_arcsec=(rec.get("bar", 1.0) if k == 0 else None), pix=0.05,
-                  interp=interp)
-    fig.savefig(OUT / "hr_lr_pairs.png", dpi=300, facecolor="white")
+        lc = lr[cy // 2 - hw // 2:cy // 2 + hw // 2, cx // 2 - hw // 2:cx // 2 + hw // 2] / 4.0
+        wht = rec.get("white_scale", 1.0) * np.percentile(intensity(hc), 99.8)
+        q = rec.get("q", 30.0)
+        y0 = H - head - (r + 1) * p - r * rg
+        for k, (img, n, smooth) in enumerate(((hc, 2 * hw, True), (lc, hw, False))):
+            ax = fig.add_axes([xs[2 * c + k] / FIG_W, y0 / H, p / FIG_W, p / H])
+            show(ax, lupton(img, white=wht, q=q), n, smooth=smooth)
+            if i == 0 and k == 0:
+                scale_bar(ax, n, 1.0, 0.05)
+            if i == 1 and k == 1:
+                band_key(ax)
     fig.savefig(OUT / "hr_lr_pairs.pdf", facecolor="white")
+    fig.savefig(OUT / "hr_lr_pairs.png", dpi=300, facecolor="white")
     plt.close(fig)
     print("final figures written to", OUT)
 
