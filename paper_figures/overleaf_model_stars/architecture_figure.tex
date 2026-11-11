@@ -3,10 +3,11 @@
 % already in your preamble, and images/thumbs/{lr_rgb,sr_rgb}.png.
 % Only change to the drawing: the sum node and the learned-knee box moved right
 % (12.55 -> 12.75, 13.95 -> 14.45), so the arrow between them is visible.
+% No blank lines inside the tikzpicture: with the linenumbers class option each
+% one would end the build with "Improper \prevdepth".
 \begin{figure*}
 \centering
 \begin{tikzpicture}
-
 % ===================================================================== (a)
 \def\hL{1.45}   % LR grid
 \def\hH{2.35}   % SR grid
@@ -14,9 +15,7 @@
 \def\yi{-2.65}  % centre of the input image
 \def\yo{-2.80}  % centre of the output image
 \def\lrs{1.65}  % LR image side; the SR image is exactly twice this
-
 \node[mdpanel] at (0,2.05) {(a)};
-
 % input (lower left), Г turn up and into the stretch
 \mdimstack{in}{0}{\yi}{\lrs}{lr_rgb}
 \node[mdop,below=2pt of in-s,xshift=3pt] {LR, 4 bands};
@@ -25,17 +24,14 @@
 \draw[mdflow,rounded corners=5pt] ($(in-s)+(0.105,\lrs+0.21)$) -- (0.5*\lrs+0.105,0) -- (S-w)
   node[mdop,pos=0.55,above=1pt] {asinh\\ 8 knees};
 \node[mdch,above=1pt of S-n] {32};
-
 % entry conv
 \mdfmap{F}{4.65}{0}{0.72}{\hL}{mdLR}
 \draw[mdflow] (S-e) -- (F-w) node[mdop,midway,above=1pt] {conv\\ $3\!\times\!3$};
 \node[mdch,above=1pt of F-n] {32};
-
 % residual trunk
 \node[mdbox,draw=mdRes!75!black,fill=mdRes!35,minimum width=1.85cm,minimum height=\hL cm]
   (res) at (7.02,0) {residual\\ block $\times16$};
 \draw[mdflow] (F-e) -- (res.west);
-
 % tail conv + shuffle
 \mdfmap{T}{8.80}{0}{0.59}{\hL}{mdLR}
 \draw[mdflow] (res.east) -- (T-w) node[mdop,midway,above=1pt] {conv\\ $3\!\times\!3$};
@@ -43,7 +39,6 @@
 \mdfmap{M}{11.10}{0}{0.33}{\hH}{mdHR}
 \draw[mdflow] (T-e) -- (M-w) node[mdop,midway,above=1pt] {pixel\\ shuf\/f\/le};
 \node[mdch,above=1pt of M-n] {4};
-
 % sum, knee, Г turn down into the output (exactly 2x the input image)
 \node[mdsum] (sum) at (12.75,0) {$+$};
 \draw[mdflow] (M-e) -- (sum);
@@ -53,7 +48,6 @@
 \mdimstack{out}{14.48}{\yo}{2*\lrs}{sr_rgb}
 \draw[mdflow,rounded corners=5pt] (knee.east) -- (14.48+\lrs+0.105,0) -- ($(out-s)+(0.105,2*\lrs+0.21)$);
 \node[mdop,below=2pt of out-s,xshift=3pt] {SR, 4 bands};
-
 % per-band skip
 \mdfmap{K}{4.65}{\ys}{0.46}{\hL}{mdLR}
 \mdslabs{4.65}{\ys}{0.46}{\hL}{8}{mdLR}
@@ -73,7 +67,6 @@
 \node[rounded corners=3pt,draw=black!45,dashed,line width=0.6pt,inner sep=0pt,
       fit={($(K-w)+(-0.28,-1.30)$) ($(KS-e)+(0.18,2.08)$)}] (skipbox) {};
 \node[mdch,anchor=north west] at ($(skipbox.north west)+(0.08,-0.06)$) {per band, $\times4$};
-
 % ===================================================================== (b)
 % same notation as (a); 192 -> 1.06, 32 -> .72, 25 -> .67
 \def\yb{-6.62}
@@ -101,7 +94,6 @@
       fit={(0.62,\yb-1.20) (18.00,\yb+1.45)}] (bbox) {};
 \node[font=\fontsize{9}{10.5}\selectfont\bfseries,text=mdRes!65!black,align=center,inner sep=0pt]
   at (16.75,\yb+0.12) {residual\\ block};
-
 \end{tikzpicture}
 \caption{The reconstruction network.
 (a) The four-band input on the $0.1''$ grid is stretched with $\mathrm{arcsinh}$ at eight knees, giving $32$ channels.
