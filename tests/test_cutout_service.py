@@ -176,11 +176,11 @@ def test_viewer_page_is_served_cross_origin_isolated(tile_files):
         page = await client.get("/")
         assert page.status == 200 and "POLISH" in await page.text()
         assert page.headers["Cross-Origin-Opener-Policy"] == "same-origin"
-        assert page.headers["Cross-Origin-Embedder-Policy"] == "require-corp"
+        assert page.headers["Cross-Origin-Embedder-Policy"] == "credentialless"
         for path in ("/static/viewer.js", "/static/tiles.json", "/static/m257.onnx"):
             resp = await client.get(path)
             assert resp.status == 200, path
-            assert resp.headers["Cross-Origin-Embedder-Policy"] == "require-corp"
+            assert resp.headers["Cross-Origin-Embedder-Policy"] == "credentialless"
 
     _with_client(tile_files, check)
 

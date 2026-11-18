@@ -20,14 +20,31 @@ const BANDS = ["VIS", "Y_E", "J_E", "H_E"];
 // points balanced like the console's "vivid" mode (poster galaxy levels).
 const SIGMA = { VIS: 29.81, Y_E: 9.4, J_E: 9.9, H_E: 9.69 };
 const WHITE_BALANCE = { VIS: 1.0, Y_E: 0.2088, J_E: 0.2929, H_E: 0.3799 };
+// [name, RA, Dec, map field of view in degrees]
 const PRESETS = [
-  ["Poster galaxy (EDF-N)", 273.2308875, 68.3636556],
-  ["EDF-N centre", 270.0791195, 66.0000139],
-  ["EDF-S centre", 61.2735175, -48.4999861],
-  ["EDF-F centre", 52.9869358, -27.9999861],
-  ["LDN 1641 (Orion)", 85.8353297, -8.4999861],
+  ["Poster galaxy (EDF-N)", 273.2308875, 68.3636556, 0.04],
+  ["EDF-N", 270.0791195, 66.0000139, 3],
+  ["EDF-S", 61.2735175, -48.4999861, 5],
+  ["EDF-F", 52.9869358, -27.9999861, 3],
+  ["LDN 1641 (Orion)", 85.8353297, -8.4999861, 1],
 ];
 const ORT_DIST = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/";
+// The map: Aladin Lite showing Euclid's own pre-rendered HiPS (no model, no
+// cutouts). The first survey that answers is used; CDS's colour HiPS is the
+// nicer one, ESA's VIS HiPS the fallback.
+const ALADIN_URL = "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js";
+const SURVEYS = [
+  { id: "cds-color", label: "Euclid Q1 colour (CDS)", url: "https://alasky.cds.unistra.fr/Euclid/Q1/CDS_P_Euclid_Q1_color" },
+  // ESA's PNG tiles are a near-black linear stretch; its FITS tiles (ADU/s, sky σ ≈ 0.003)
+  // are stretched here instead.
+  { id: "esa-vis", label: "Euclid VIS (ESA)", url: "https://esdchips.esac.esa.int/Euclid/Q1_MER/VIS/ESAC_P_EUC_VIS",
+    format: "fits", color: { colormap: "grayscale", stretch: "asinh", minCut: -0.003, maxCut: 0.3 } },
+];
+// Zooming the map in to one Euclid pixel (0.1″) per screen pixel switches to the
+// POLISH view; zooming that out past ENTER/EXIT (hysteresis) switches back.
+const ENTER_ZOOM = 0.5;        // screen px per SR px: 1 screen px = 0.1″
+const EXIT_ZOOM = 0.4;
+const SR_ARCSEC = 0.05;
 const FETCH_CONCURRENCY = 4;
 const CACHE_BLOCKS = 48;
 const D2R = Math.PI / 180;
@@ -37,6 +54,7 @@ const canvas = $("view");
 const ctx = canvas.getContext("2d");
 
 const state = {
+  view: "map",           // map | detail
   tiles: [],
   tile: null,            // {id, width, height, wcs, bands}
   cx: 0, cy: 0,          // view centre, tile LR pixel coordinates (0-based, float)
@@ -50,7 +68,8 @@ const state = {
   hover: null,
 };
 const blocks = new Map();      // key → block
-let session = null, providerName = "", modelMs = [];
+const map = { A: null, al: null, survey: null, ready: null };
+let session = null, providerName = "", modelMs = [], modelPromise = null;
 let fetchQueue = [], fetching = 0, inferChain = Promise.resolve(), pendingInfer = 0;
 let drawScheduled = false;
 
@@ -118,11 +137,155 @@ async function openTile(id) {
 
 async function goTo(ra, dec) {
   const t = locateTile(ra, dec);
-  if (!t) { setStatus(`No Q1 tile covers RA ${ra.toFixed(4)}, Dec ${dec.toFixed(4)}`, true); return; }
+  if (!t) { setStatus(`No Q1 tile covers RA ${ra.toFixed(4)}, Dec ${dec.toFixed(4)}`, true); return false; }
   await openTile(t.tile);
   [state.cx, state.cy] = world2pix(state.tile.wcs, ra, dec);
   saveHash();
   schedule();
+  return true;
+}
+
+// ─────────────────────────────── map ⇄ POLISH view ───────────────────────────────
+
+function setView(view) {
+  state.view = view;
+  document.body.classList.toggle("map-mode", view === "map");
+  document.body.classList.toggle("detail-mode", view === "detail");
+}
+
+// Switch to the POLISH view at (ra, dec); stays on the map outside Q1 coverage.
+async function enterDetail(ra, dec, zoom) {
+  if (!locateTile(ra, dec)) {
+    $("hint").innerHTML = "<span>No Euclid Q1 data here — zoom in on an <b>outlined</b> tile.</span>";
+    return false;
+  }
+  state.zoom = Math.max(ENTER_ZOOM, zoom);
+  statusError = "";
+  setView("detail");
+  await goTo(ra, dec);
+  ensureModel();
+  return true;
+}
+
+function enterMap(ra, dec, fov) {
+  setView("map");
+  statusError = "";
+  if (map.al) {
+    map.al.gotoRaDec(ra, dec);
+    map.al.setFoV(fov);
+  }
+  saveHash();
+  updateMapStatus();
+}
+
+function detailToMap() {
+  if (!state.tile) { enterMap(PRESETS[0][1], PRESETS[0][2], PRESETS[0][3]); return; }
+  const [ra, dec] = pix2world(state.tile.wcs, state.cx, state.cy);
+  enterMap(ra, dec, (canvas.clientWidth * SR_ARCSEC) / state.zoom / 3600);
+}
+
+// Map zoom expressed as the POLISH view's zoom (screen px per 0.05″ SR pixel).
+function mapZoom() {
+  const [fov] = map.al.getFov();
+  return SR_ARCSEC / ((fov * 3600) / Math.max(1, $("map").clientWidth));
+}
+
+function mapCentre() {
+  const [ra, dec] = map.al.getRaDec();
+  return [ra, dec];
+}
+
+async function loadMap() {
+  const A = (await import(ALADIN_URL)).default;
+  await A.init;
+  map.A = A;
+  const [ra, dec] = [PRESETS[0][1], PRESETS[0][2]];
+  map.al = A.aladin($("map"), {
+    survey: [], target: `${ra} ${dec}`, fov: PRESETS[0][3], projection: "TAN", cooFrame: "ICRS",
+    hipsList: [], log: false, samp: false, showReticle: false, showCooGrid: false,
+    showCooGridControl: false, showProjectionControl: false, showLayersControl: false,
+    showFullscreenControl: false, showSettingsControl: false, showShareControl: false,
+    showSimbadPointerControl: false, showColorPickerControl: false, showContextMenu: false,
+    showFrame: false, showFov: false, showCooLocation: true, showZoomControl: true, showStatusBar: true,
+    backgroundColor: "rgb(11,13,16)",
+  });
+  map.al.contextMenu = null;
+  const overlay = A.graphicOverlay({ color: "#6cb6ff", lineWidth: 1, opacity: 0.55, name: "Q1 tiles" });
+  map.al.addOverlay(overlay);
+  for (const t of state.tiles) overlay.add(A.polygon(t.polygon.map(([r, d]) => [r, d])));
+  for (const s of SURVEYS) $("survey").add(new Option(s.label, s.id));
+  $("survey").addEventListener("change", (e) => setSurvey(e.target.value));
+  setSurvey(await firstLiveSurvey());
+  // Aladin's WASM core is borrowed while it fires these events: calling back into
+  // it (getFov, getRaDec, setFoV…) from inside the callback throws "recursive use
+  // of an object". Handle them on the next tick instead, coalesced.
+  let pending = false;
+  const later = () => {
+    if (pending) return;
+    pending = true;
+    setTimeout(() => { pending = false; onMapMove(); }, 0);
+  };
+  map.al.on("zoomChanged", later);
+  map.al.on("positionChanged", (p) => { if (!p || !p.dragging) later(); });
+}
+
+async function firstLiveSurvey() {
+  for (const s of SURVEYS) {
+    try {
+      const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 5000);
+      const resp = await fetch(`${s.url}/properties`, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (resp.ok) return s.id;
+    } catch { /* try the next one */ }
+  }
+  return SURVEYS[SURVEYS.length - 1].id;
+}
+
+function setSurvey(id) {
+  const s = SURVEYS.find((x) => x.id === id) || SURVEYS[0];
+  map.survey = s;
+  $("survey").value = s.id;
+  const layer = map.A.HiPS(s.url, { name: s.label, imgFormat: s.format || "png" });
+  map.al.setBaseImageLayer(layer);
+  if (s.color) {
+    layer.setColormap(s.color.colormap, { stretch: s.color.stretch });
+    layer.setCuts(s.color.minCut, s.color.maxCut);
+  }
+  updateMapStatus();
+}
+
+function onMapMove() {
+  if (state.view !== "map" || !map.al) return;
+  updateMapStatus();
+  saveHash();
+  if (mapZoom() >= ENTER_ZOOM) {
+    const [ra, dec] = mapCentre();
+    enterDetail(ra, dec, mapZoom()).catch((e) => setStatus(String(e.message || e), true));
+  }
+}
+
+function updateMapStatus() {
+  if (state.view !== "map") return;
+  if (!map.al) { setStatus(statusError || "Loading the map…", !!statusError); return; }
+  const arcsecPerPx = (map.al.getFov()[0] * 3600) / Math.max(1, $("map").clientWidth);
+  const [ra, dec] = mapCentre();
+  const covered = !!locateTile(ra, dec);
+  const scale = arcsecPerPx >= 60 ? `${(arcsecPerPx / 60).toFixed(1)}′/px` : `${arcsecPerPx.toFixed(arcsecPerPx < 10 ? 2 : 0)}″/px`;
+  setStatus(`Map · ${map.survey ? map.survey.label : ""} · ${scale}`);
+  $("hint").innerHTML = covered
+    ? `<span>Zoom in to <b>0.1″/px</b> to super-resolve (now ${scale})</span><button id="enter-now">Super-resolve here</button>`
+    : "<span>Euclid Q1 coverage is outlined. <b>Zoom in</b> on it to super-resolve.</span>";
+  const btn = document.getElementById("enter-now");
+  if (btn) btn.onclick = () => enterDetail(ra, dec, ENTER_ZOOM);
+}
+
+function ensureModel() {
+  if (!modelPromise) {
+    modelPromise = loadModel()
+      .then(() => { for (const blk of blocks.values()) if (blk.state === "lr") queueInfer(blk); schedule(); })
+      .catch((e) => { modelPromise = null; setStatus(String(e.message || e), true); });
+  }
+  return modelPromise;
 }
 
 // After a pan, move to the tile that holds the view centre deepest.
@@ -210,7 +373,7 @@ function crop(src, n, channels, off, size) {
 
 function queueInfer(blk) {
   const tta = state.tta;
-  if (blk.sr[tta] || !blk.input) return;
+  if (blk.sr[tta] || !blk.input || !session) return;      // ensureModel re-queues once loaded
   blk.inferQueued = true;
   pendingInfer++;
   inferChain = inferChain.then(async () => {
@@ -396,7 +559,7 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0d10";
   ctx.fillRect(0, 0, w, h);
-  if (!state.tile) return;
+  if (!state.tile || state.view !== "detail") return;
 
   const v = viewRect(), tile = state.tile;
   const i0 = Math.max(0, Math.floor(v.x0 / B)), i1 = Math.min(Math.ceil(tile.width / B) - 1, Math.floor(v.x1 / B));
@@ -413,9 +576,12 @@ function draw() {
   const split = swipe ? state.divider * w : w;
   const fullKind = (state.mode === "lr") !== state.blink ? "lr" : "sr";
   ctx.imageSmoothingEnabled = false;
+  // Block edges snapped to device pixels, shared by neighbours: no hairline seams.
+  const snap = (v) => Math.round(v * dpr) / dpr;
   for (const blk of visible) {
-    const [sx, sy] = toScreen(blk.i * B, (blk.j + 1) * B);
-    const size = B / lrPerScreenPx();
+    const [ax, ay] = toScreen(blk.i * B, (blk.j + 1) * B);
+    const [bx] = toScreen((blk.i + 1) * B, blk.j * B);
+    const sx = snap(ax), sy = snap(ay), size = snap(bx) - sx;
     const lr = blockCanvas(blk, "lr"), sr = blockCanvas(blk, "sr");
     const left = swipe || fullKind === "lr" ? lr : sr;
     drawClipped(left, sx, sy, size, 0, split);
@@ -446,7 +612,7 @@ function draw() {
 function drawClipped(img, sx, sy, size, xa, xb) {
   if (!img || xb <= xa || sx >= xb || sx + size <= xa) return;
   ctx.save();
-  ctx.beginPath(); ctx.rect(xa, sy, xb - xa, size); ctx.clip();
+  ctx.beginPath(); ctx.rect(Math.max(xa, sx), sy, Math.min(xb, sx + size) - Math.max(xa, sx), size); ctx.clip();
   ctx.drawImage(img, sx, sy, size, size);
   ctx.restore();
 }
@@ -533,9 +699,15 @@ function updateStatus(visible) {
 // ───────────────────────────────── interaction ─────────────────────────────────
 
 function saveHash() {
+  if (state.view === "map") {
+    if (!map.al) return;
+    const [ra, dec] = mapCentre();
+    history.replaceState(null, "", `#ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}&fov=${map.al.getFov()[0].toPrecision(4)}`);
+    return;
+  }
   if (!state.tile) return;
   const [ra, dec] = pix2world(state.tile.wcs, state.cx, state.cy);
-  history.replaceState(null, "", `#ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}&z=${state.zoom}`);
+  history.replaceState(null, "", `#ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}&z=${+state.zoom.toPrecision(4)}`);
 }
 
 function parseWhere(text) {
@@ -554,19 +726,30 @@ function parseWhere(text) {
 async function onSearch(ev) {
   ev.preventDefault();
   statusError = "";
-  const where = parseWhere($("where").value);
-  if (!where) { setStatus("Enter 'RA Dec' in degrees, 'hh mm ss dd mm ss', or 'tile x y'", true); return; }
+  const text = $("where").value.trim();
+  const where = parseWhere(text);
   try {
+    if (!where) {                                  // an object name: Sesame, via Aladin
+      if (!text || !map.al) { setStatus("Enter a name, 'RA Dec' in degrees, or 'tile x y'", true); return; }
+      map.al.gotoObject(text, {
+        success: ([ra, dec]) => enterMap(ra, dec, 0.05),
+        error: () => setStatus(`Could not resolve "${text}"`, true),
+      });
+      return;
+    }
     if (where.tile) {
+      setView("detail"); ensureModel();
       await openTile(where.tile); state.cx = where.x; state.cy = where.y; saveHash(); schedule();
-    } else {
-      await goTo(where.ra, where.dec);
+    } else if (!(await enterDetail(where.ra, where.dec, Math.max(state.zoom, 1)))) {
+      enterMap(where.ra, where.dec, 0.2);
+      setStatus(`No Euclid Q1 data at RA ${where.ra.toFixed(4)}, Dec ${where.dec.toFixed(4)}`, true);
     }
   } catch (e) { setStatus(String(e.message || e), true); }
 }
 
 function setZoom(z, sx, sy) {
-  z = Math.max(1 / 16, Math.min(8, z));
+  if (z < EXIT_ZOOM) { state.zoom = EXIT_ZOOM; detailToMap(); return; }
+  z = Math.min(8, z);
   if (sx != null) {                               // keep the point under the cursor fixed
     const [x, y] = fromScreen(sx, sy);
     state.zoom = z;
@@ -577,11 +760,18 @@ function setZoom(z, sx, sy) {
 }
 
 function bindUi() {
-  for (const [name, ra, dec] of PRESETS) $("presets").add(new Option(name, `${ra} ${dec}`));
+  PRESETS.forEach(([name], i) => $("presets").add(new Option(name, String(i))));
   $("presets").addEventListener("change", (e) => {
     if (!e.target.value) return;
-    $("where").value = e.target.value; e.target.value = "";
-    $("search").requestSubmit();
+    const [, ra, dec, fov] = PRESETS[+e.target.value];
+    e.target.value = "";
+    enterMap(ra, dec, fov);
+  });
+  $("tomap").addEventListener("click", detailToMap);
+  $("enter").addEventListener("click", () => {
+    if (!map.al) return;
+    const [ra, dec] = mapCentre();
+    enterDetail(ra, dec, Math.max(ENTER_ZOOM, mapZoom()));
   });
   $("search").addEventListener("submit", onSearch);
   document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
@@ -618,7 +808,7 @@ function bindUi() {
     setZoom(state.zoom * Math.pow(2, -e.deltaY / 300), e.offsetX, e.offsetY);
   }, { passive: false });
   window.addEventListener("keydown", (e) => {
-    if (e.target.tagName === "INPUT") return;
+    if (e.target.tagName === "INPUT" || state.view !== "detail") return;
     if (e.key === "1") setMode("swipe");
     else if (e.key === "2") setMode("lr");
     else if (e.key === "3") setMode("sr");
@@ -637,20 +827,27 @@ function setMode(mode) {
 
 async function main() {
   bindUi();
-  const tilesReq = fetch("static/tiles.json").then((r) => r.json());
-  const modelReq = loadModel().catch((e) => setStatus(String(e.message || e), true));
-  state.tiles = (await tilesReq).tiles;
+  setView("map");
+  state.tiles = (await fetch("static/tiles.json").then((r) => r.json())).tiles;
   const hash = new URLSearchParams(location.hash.slice(1));
-  const ra = +hash.get("ra"), dec = +hash.get("dec");
-  if (hash.get("z")) state.zoom = +hash.get("z");
-  if (hash.has("ra") && Number.isFinite(ra) && Number.isFinite(dec)) await goTo(ra, dec);
-  else await goTo(PRESETS[0][1], PRESETS[0][2]);
-  await modelReq;
-  for (const blk of blocks.values()) if (blk.state === "lr") queueInfer(blk);
-  schedule();
+  const hasPos = hash.has("ra") && Number.isFinite(+hash.get("ra")) && Number.isFinite(+hash.get("dec"));
+  const [ra, dec] = hasPos ? [+hash.get("ra"), +hash.get("dec")] : [PRESETS[0][1], PRESETS[0][2]];
+  try {
+    await loadMap();
+  } catch (e) {                                  // no WebGL2 or Aladin unreachable: POLISH view only
+    console.error("map unavailable", e);
+    statusError = "";
+    await enterDetail(ra, dec, hash.get("z") ? +hash.get("z") : 1);
+    setStatus("Map unavailable here (needs WebGL2); showing the POLISH view only", true);
+    return;
+  }
+  if (hasPos && hash.get("z")) {
+    if (await enterDetail(ra, dec, +hash.get("z"))) return;
+  }
+  enterMap(ra, dec, hash.get("fov") ? +hash.get("fov") : PRESETS[0][3]);
 }
 
 // For checks from the console: the block cache and the model call.
-window.polish = { state, blocks, superResolve: (e, tta) => superResolve(e, tta), decodeFrame };
+window.polish = { state, blocks, map, superResolve: (e, tta) => superResolve(e, tta), decodeFrame };
 
 main().catch((e) => setStatus(String(e.message || e), true));

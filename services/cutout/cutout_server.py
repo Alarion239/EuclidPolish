@@ -426,10 +426,13 @@ async def viewer_page(_request: web.Request) -> web.FileResponse:
 async def isolation_middleware(request: web.Request, handler):
     """Cross-origin isolation for the viewer: multi-threaded WebAssembly (the
     model's CPU fallback) needs SharedArrayBuffer, which needs COOP + COEP.
-    Every subresource the page loads is same-origin or sends CORP (jsDelivr)."""
+    ``credentialless`` rather than ``require-corp``: the map (Aladin Lite)
+    loads HiPS tiles and assets from CDS/ESA servers that send CORS but not
+    CORP. Browsers without credentialless (Safari) are simply not isolated and
+    the model's CPU fallback runs single-threaded there."""
     response = await handler(request)
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-    response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+    response.headers["Cross-Origin-Embedder-Policy"] = "credentialless"
     response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
     if request.path == "/" or request.path.startswith("/static/"):
         response.headers.setdefault("Cache-Control", "no-cache")

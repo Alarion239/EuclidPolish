@@ -39,27 +39,47 @@
     background: rgba(20,23,28,.94); border: 1px solid var(--line); border-radius: 8px; color: var(--muted); display: none; }
   #about.show { display: block; }
   #about p { margin: 0 0 6px; } #about b { color: var(--text); font-weight: 600; }
+  #map { position: absolute; inset: 0; }
+  body.map-mode #view, body.map-mode #hud { display: none; }
+  body.detail-mode #map { visibility: hidden; }
+  body.map-mode .detail-only, body.detail-mode .map-only { display: none !important; }
+  #hint { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 20; display: flex;
+    gap: 10px; align-items: center; padding: 6px 10px 6px 14px; border-radius: 999px; font-size: 12px;
+    background: rgba(20,23,28,.92); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  #hint b { color: var(--text); font-weight: 600; }
+  #hint button { padding: 3px 10px; border-radius: 999px; }
+  body.detail-mode #hint { display: none; }
+  #status { z-index: 20; } #about { z-index: 30; }
   @media (max-width: 640px) {
     header { padding: 8px 12px; } input[type=range] { width: 80px; }
     #status { top: 36px; bottom: auto; max-width: calc(100% - 24px); }
     #hud { font-size: 11px; right: 12px; white-space: pre-wrap; }
+    #hint { top: auto; bottom: 64px; white-space: normal; width: calc(100% - 24px); border-radius: 10px; }
   }
 </style>
 </head>
-<body>
+<body class="map-mode">
 <header>
   <h1>Euclid Q1 · <b>POLISH</b> super-resolution</h1>
   <form id="search" class="group">
-    <input id="where" type="text" spellcheck="false" placeholder="RA Dec (deg) or tile x y" aria-label="Position">
+    <input id="where" type="text" spellcheck="false" placeholder="Name, RA Dec, or tile x y" aria-label="Position">
     <button type="submit">Go</button>
     <select id="presets" aria-label="Presets"><option value="">Places…</option></select>
   </form>
-  <div class="group" role="group" aria-label="Compare">
+  <div class="group map-only">
+    <select id="survey" aria-label="Map imagery"></select>
+    <button id="enter" title="Super-resolve the centre of the map">Super-resolve here</button>
+  </div>
+  <div class="group detail-only">
+    <button id="tomap" title="Back to the map (or zoom out)">← Map</button>
+  </div>
+  <div class="group detail-only" role="group" aria-label="Compare">
     <button data-mode="swipe" class="on" title="Drag the divider (1)">Swipe</button>
     <button data-mode="lr" title="Euclid only (2)">Euclid</button>
     <button data-mode="sr" title="POLISH only (3)">POLISH</button>
   </div>
   <div class="group">
+    <span class="group detail-only">
     <select id="colour" aria-label="Colour">
       <option value="colour">Colour (H · YJ · VIS)</option>
       <option value="vis">VIS grey</option>
@@ -67,18 +87,22 @@
     <label>Brightness <input id="white" type="range" min="0" max="100" value="50"></label>
     <label title="Average over 8 rotations/flips: removes the faint grid pattern, 8× slower">
       <input id="tta" type="checkbox"> TTA×8</label>
+    </span>
     <button id="info" title="About">?</button>
   </div>
 </header>
 <div id="stage">
+  <div id="map"></div>
   <canvas id="view"></canvas>
+  <div id="hint"><span>Euclid Q1 coverage is outlined. <b>Zoom in</b> to super-resolve.</span></div>
   <div id="hud"></div>
-  <div id="status">Loading model…</div>
+  <div id="status">Loading…</div>
   <div id="about">
     <p><b>What is this?</b> Euclid Q1 MER images (0.1″ pixels, VIS + NISP Y/J/H) fetched as you pan, and
       super-resolved to 0.05″ pixels by the POLISH model running on your own GPU (WebGPU) or CPU.</p>
-    <p><b>Use:</b> drag to pan, scroll to zoom, drag the divider to compare, keys 1/2/3 switch views,
-      B blinks.</p>
+    <p><b>Use:</b> browse the map (Euclid's own pre-rendered HiPS, no model). Zoom in until a screen pixel
+      is a Euclid pixel (0.1″) and the page switches to live data: drag the divider to compare, keys 1/2/3
+      switch views, B blinks. Zoom out to go back to the map.</p>
     <p><b>Caveat:</b> the right side is a model reconstruction trained on simulations, not an observation.
       On real sky it is known to lose some faint flux (~7–10%) and can add faint texture.</p>
   </div>

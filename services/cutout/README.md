@@ -12,6 +12,12 @@ ONNX Runtime Web 1.31.1 (WebGPU, else multi-threaded WebAssembly; the page is
 cross-origin isolated for that), and shows Euclid against POLISH with a swipe
 divider. `static/m257.onnx` comes from `scripts/export_onnx.py`;
 `static/tiles.json` is the project's Q1 tile index (a test keeps them equal).
+Far out, the page is a map: Aladin Lite 3.8.2 showing Euclid's own HiPS
+(CDS Q1 colour when CDS answers, else ESA's VIS FITS HiPS) with the Q1 tile
+outlines, and no cutouts or model. Zooming in to 0.1″ per screen pixel inside
+the outlines switches to the POLISH view (the model loads then); zooming out
+past 0.125″/px switches back. The page is cross-origin isolated with
+COEP `credentialless`, since the HiPS servers send CORS but not CORP.
 Checked 2026-11-18: the browser's SR of real blocks equals TensorFlow's
 (block sums to 6 decimals); ~210–300 ms per block on an M4 with WebGPU.
 
