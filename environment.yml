@@ -13,6 +13,7 @@ dependencies:
   # GIL-free PSF warp kernel (euclid_polish/psf/fast_ops.py).
   - numba
   - astropy
+  - aiohttp  # services/cutout server; its tests run in CI
   - scikit-image
   # Fit-time only (colour+SFR forest calibration); generation stays NumPy.
   - scikit-learn
