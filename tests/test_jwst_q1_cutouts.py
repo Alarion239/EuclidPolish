@@ -400,3 +400,23 @@ def test_irsa_download_decompresses_gzip_cutouts(monkeypatch, tmp_path):
         out = tmp_path / "cut.fits"
         jwst_euclid._irsa_download("https://irsa/x.fits?center=1,2", str(out))
         assert out.read_bytes() == plain
+
+
+def test_irsa_mosaic_url_moves_cloud_links_to_the_cutout_host(monkeypatch):
+    """IRSA's datalink now lists its cloud copy, which rejects cutout queries (HTTP 400);
+    the same path on the IBE host serves cutouts."""
+    jwst_euclid._IRSA_URLS.clear()
+    cloud = ("https://irsacloud.ipac.caltech.edu/ibe/data/euclid/q1/MER/102042919/VIS/"
+             "EUC_MER_BGSUB-MOSAIC-VIS_TILE102042919-E2094C_00.00.fits")
+
+    def fake_text(url, params=None):
+        if params is not None:
+            return ("obs_id,energy_bandpassname,access_url\n102042919_VIS,VIS,"
+                    "https://irsa.ipac.caltech.edu/datalink/links?ID=y\n")
+        return f"<TD>{cloud}</TD>"
+
+    monkeypatch.setattr(jwst_euclid, "_irsa_text", fake_text)
+    url, error = jwst_euclid._irsa_mosaic_url("102042919", "VIS")
+    assert error == ""
+    assert url == cloud.replace("https://irsacloud.ipac.caltech.edu/", "https://irsa.ipac.caltech.edu/")
+    jwst_euclid._IRSA_URLS.clear()

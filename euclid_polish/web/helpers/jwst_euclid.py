@@ -935,6 +935,8 @@ _IRSA_BANDS: dict[str, tuple[str, str]] = {
 _IRSA_URLS: dict[tuple[str, str], str] = {}
 _IRSA_MOSAIC_URL = re.compile(r"https://[^\s<>\"']*/EUC_MER_BGSUB-MOSAIC-[^\s<>\"'/]*\.fits")
 _IRSA_TIMEOUT_S = 120
+_IRSA_CLOUD_HOST = "https://irsacloud.ipac.caltech.edu/"
+_IRSA_IBE_HOST = "https://irsa.ipac.caltech.edu/"
 
 
 def _irsa_text(url: str, params: Mapping[str, str] | None = None) -> str:
@@ -986,9 +988,12 @@ def _irsa_mosaic_url(tile_id: str, band_name: str) -> tuple[str | None, str]:
         return None, f"IRSA lookup failed: {type(exc).__name__}: {exc}"
     if not urls:
         return None, f"IRSA datalink lists no BGSUB mosaic for {tile_id} {bandpass}"
+    # Since 2026-11 the datalink points at IRSA's cloud copy, which serves whole files only
+    # (a cutout query there is HTTP 400); IBE on the main host serves the same path with cutouts.
+    url = urls[0].replace(_IRSA_CLOUD_HOST, _IRSA_IBE_HOST, 1)
     with _MOSAIC_LOCK:
-        _IRSA_URLS[key] = urls[0]
-    return urls[0], ""
+        _IRSA_URLS[key] = url
+    return url, ""
 
 
 def _irsa_q1_cutout(tile_id: str, band_name: str, ra: float, dec: float,
