@@ -5,7 +5,7 @@
 \input{architecture_preamble}
 
 %%%% REVIEW COMMENTS (todonotes)
-%% \commentstrue  -> notes show as coloured boxes + a list at the top
+%% \commentstrue  -> notes show as colored boxes + a list at the top
 %% \commentsfalse -> every note disappears; the PDF is the clean paper
 \newif\ifcomments \commentstrue
 \ifcomments
@@ -89,36 +89,36 @@ Thus, these telescopes are mostly used for precision imaging, following up on ob
 
 Several groups have tried to close this gap by sharpening ground-based images with neural networks.
 If such a network were reliable, it could improve the resolution of every existing survey without new observations.
-Recent work super-resolves SDSS and DECaLS images to the quality of the deeper and sharper Hyper Suprime-Cam data \citep{Luo2025}, builds paired data sets of galaxy images for astronomical super-resolution \citep{Miao2024}, and deconvolves ground-based images towards space-like resolution \citep{Akhaury2024}.
+Recent work super-resolves SDSS and DECaLS images to the quality of the deeper and sharper Hyper Suprime-Cam data \citep{Luo2025}, builds paired data sets of galaxy images for astronomical super-resolution \citep{Miao2024}, and deconvolves ground-based images toward space-like resolution \citep{Akhaury2024}.
 Nevertheless, all of these approaches face the same difficulty: the atmospheric point-spread function (PSF) varies significantly and unpredictably with time, position, and wavelength, so the blur that the network must undo is never known exactly.
 As a result, a network trained on one set of conditions can invent structure or bias measurements under another \citep{Akhaury2024}, and there is no wide and sharp reference to check it against.
 
 Radio astronomy shows what becomes possible when the PSF is known.
 An interferometer's PSF is set by the positions of its antennas rather than by the atmosphere, so it is known precisely for every observation.
-\citet{Connor2022} used this to build POLISH, a small residual convolutional network, trained on simulated radio skies, that deconvolves and super-resolves radio images fast enough for the data rate of the upcoming DSA-2000.
-On simulated observations, POLISH was faster and more accurate than the standard iterative CLEAN algorithm, and it recovered sources smaller than the PSF.
-\citet{Wu2026} extended it to POLISH++, which processes wide fields in patches and compresses their dynamic range with an $\mathrm{arcsinh}$ stretch; combined with a lens classifier, it recovered strong-lens arcs at separations close to the size of the PSF.
-These studies show that, given a stable and known PSF, a network trained only on simulations can reconstruct real survey images.
+\citet{Connor2022} used this to build POLISH, a residual convolutional network, trained on simulated radio skies, that deconvolves and super-resolves radio images fast enough for the data rate of the upcoming DSA-2000.
+On simulated observations, POLISH was more accurate than the standard iterative CLEAN algorithm, and it recovered sources smaller than the PSF.
+\citet{Wu2026} extended it to POLISH++, which processes wide fields in patches and compresses their dynamic range with an $\mathrm{arcsinh}$ stretch; combined with a lens classifier, it recovered simulated strong lenses with image separations close to the size of the PSF.
+These studies show that, given a stable and known PSF, a network trained only on simulations can reconstruct real observations.
 
 Euclid is the first optical and near-infrared survey to combine a wide field with a sharp and stable PSF.
-Because Euclid observes from space, its PSF is set by the telescope optics rather than by the atmosphere, and it is modelled accurately because Euclid's weak-lensing measurements require it \citep{Mellier2025}.
+Because Euclid observes from space, its PSF is set by the telescope optics rather than by the atmosphere, and it is modeled accurately because Euclid's weak-lensing measurements require it \citep{Mellier2025}.
 At the same time, its Wide Survey will cover about $14{,}000\,\mathrm{deg}^2$ \citep{Mellier2025}, several thousand times the area of the largest Hubble survey and about a third of the whole sky.
-The first $1900\,\mathrm{deg}^2$ were released as DR1-Foundation in November 2026.
-Euclid will soon be joined by the \emph{Nancy Grace Roman Space Telescope} \citep{Spergel2015}, launched in August 2026, which will add more than $5000\,\mathrm{deg}^2$ of space-based near-infrared imaging.
+The first $1900\,\mathrm{deg}^2$ were released as DR1-Foundation in November 2026\footnote{\url{https://www.cosmos.esa.int/web/euclid/euclid-dr1}}.
+Euclid will soon be joined by the \emph{Nancy Grace Roman Space Telescope} \citep{ROTAC2025}, launched in August 2026, which will add more than $5000\,\mathrm{deg}^2$ of space-based near-infrared imaging.
 For the first time, the super-resolution approach that works for radio surveys can be applied to wide-field optical imaging.
 
 The clearest case for higher resolution over wide areas is the search for strong gravitational lenses.
 These rare systems form when a foreground galaxy, the deflector, bends the light of a background source into arcs or multiple images.
-From the lensed images we can measure the total mass of the deflector, including its dark matter, detect dark subhaloes through small distortions of the arcs, measure the Hubble constant from the time delays of variable sources, and study sources too faint to see without the magnification \citep{Treu2010}.
+From the lensed images we can measure the total mass of the deflector, including its dark matter, detect dark subhalos through small distortions of the arcs, measure the Hubble constant from the time delays of variable sources, and study sources too faint to see without the magnification \citep{Treu2010}.
 Finding gravitational lenses requires separating the arc from the deflector, which becomes impossible when the Einstein radius (the angular radius of the arcs) approaches the size of the PSF.
-For this reason, compact systems are missed and the known population is biased towards massive deflectors \citep{AcevedoBarroso2025}.
+For this reason, compact systems are missed and the known population is biased toward massive deflectors \citep{AcevedoBarroso2025}.
 Euclid's sharp PSF and wide coverage make it well suited to finding these compact lenses: its first $63\,\mathrm{deg}^2$ already doubled the number of lens candidates found in space-based imaging \citep{Walmsley2025}, and the full survey is expected to contain more than $10^5$ lenses \citep{Collett2015_ApJ81120}.
 If Euclid images could be reliably super-resolved, lens candidates with even smaller Einstein radii could be found.
 
 In this work we adapt the POLISH framework to Euclid's visible and near-infrared imaging.
 The model takes the four Euclid bands and reconstructs each field at twice the sampling, from $0.1''$ to $0.05''$ per pixel, while removing noise and the PSF.
 Real Euclid images have no high-resolution counterparts, so we train the network on synthetic skies with a known truth.
-The synthetic skies follow source populations measured in Euclid Q1 and take galaxy morphologies and colours from the TNG50-SKIRT Atlas \citep{Baes2024TNG50SKIRT}; each is turned into a Euclid-like observation with measured PSFs and models of the noise and detector artifacts.
+The synthetic skies follow source populations measured in Euclid Q1 and take galaxy morphologies from the TNG50-SKIRT Atlas \citep{Baes2024TNG50SKIRT} and colors from Q1; each is turned into a Euclid-like observation with measured PSFs and models of the noise and detector artifacts.
 We validate the model on held-out synthetic images and then apply it to real Euclid images, comparing the reconstructions with JWST observations of the same galaxies.
 
 \section{Data}\label{sec:data}
@@ -155,7 +155,7 @@ The bands nevertheless keep different resolutions: the median PSF FWHM in the mo
 These values are $10$--$15\%$ larger than the PSFs of the individual calibrated frames because stacking and resampling broaden the PSF \citep{romelli2025}.
 Because we are working only with the delivered mosaics, every PSF from now on will refer to the measured MER-level PSFs.
 
-We also use the MER RMS maps that accompany each mosaic to model noise levels for synthetic training data; and the MER multi-band catalogue with the Q1 photometric-redshift products to build empirical distributions of galaxies' parameters for our synthetic training data.
+We also use the MER RMS maps that accompany each mosaic to model noise levels for synthetic training data; and the MER multi-band catalog with the Q1 photometric-redshift products to build empirical distributions of galaxies' parameters for our synthetic training data.
 Bright-star photometry is supplemented with \textit{Gaia} DR3 \citep{GaiaDR3}, as Euclid filters quickly become oversaturated by stars of  VIS AB magnitude below $16.5$.
 All Euclid products were retrieved from the ESA Euclid Science Archive and IRSA.
 
@@ -189,9 +189,9 @@ To simulate Euclid observations of a synthetic sky we first need the Euclid poin
 The PSF characterizes how Euclid blurs point sources, influenced by diffraction (including the spikes of the VIS secondary mirror spider mount), optical aberrations, detector effects and pointing instability.
 Rather than adopting an instrument model, we measure the effective PSF (ePSF; \citealt{AndersonKing2000}) directly from bright point sources in the Q1 MER mosaics with \texttt{photutils}.
 Importantly, the ePSF also captures dithering and resampling, which is significant for NISP's $0.3''$ native pixels resampled to $0.1''$ pixels by the MER pipeline.
-We select $\sim$43{,}000 unmasked point-like sources with $16 < \mathrm{VIS} < 19$ from the MER catalogue, extract $51''$ cutouts in all four bands, and reject sources with saturated cores, keeping 17{,}905 stars usable in every band.
+We select $\sim$43{,}000 unmasked point-like sources with $16 < \mathrm{VIS} < 19$ from the MER catalog, extract $51''$ cutouts in all four bands, and reject sources with saturated cores, keeping 17{,}905 stars usable in every band.
 To capture spatial variation we cluster them by sky position into 44 regions of $\sim$400 stars each and build one ePSF per region and band, oversampled by a factor of two ($0.05''$ pixels).
-Finally, we multiply each ePSF stamp by a radial cosine window that brings it smoothly to zero towards the stamp edge, so the kernel has no discontinuity at its boundary.
+Finally, we multiply each ePSF stamp by a radial cosine window that brings it smoothly to zero toward the stamp edge, so the kernel has no discontinuity at its boundary.
 The resulting median FWHMs are $0.15''$ (VIS), $0.36''$ ($Y_E$), $0.38''$ ($J_E$) and $0.39''$ ($H_E$).
 
 Because the mosaics are north-aligned while the PSF is fixed to the instrument, the PSF orientation on the sky depends on the telescope roll angle.
@@ -212,14 +212,14 @@ After convolving the synthetic sky with the PSF, we downsample it by a factor of
 Next, we simulate the noise.
 Each scene draws its noise level from the Q1 MER RMS maps, measured at 294 random extragalactic positions, so the training set spans the real range of survey depths (median RMS of 29.8, 9.4, 9.9 and 9.7\,e$^-$ per pixel in VIS, $Y_E$, $J_E$ and $H_E$).
 On top of the background we add Poisson noise from the sources themselves.
-Because the MER mosaics are built by resampling several dithered exposures, their noise is correlated between neighbouring pixels, most strongly in NISP, where $0.3''$ native pixels are resampled to $0.1''$.
+Because the MER mosaics are built by resampling several dithered exposures, their noise is correlated between neighboring pixels, most strongly in NISP, where $0.3''$ native pixels are resampled to $0.1''$.
 We reproduce this by generating white noise for four exposures on the native detector grid, shifting each by a random sub-pixel dither, resampling it to the mosaic grid and averaging.
 We also vary the depth slightly across each field and occasionally add an edge where the depth steps between two pointings, as seen in the real mosaics.
 
 Finally, we add the artifacts that survive MER processing.
 Most cosmic rays and hot pixels are rejected when the exposures are stacked, so we inject only the small fraction that remains, together with dead pixels and faint streaks that commonly confuse the model.
 We also add straight diffraction spikes across the fields, emulating bright stars far away from the field. 
-Saturation is modelled as in MER, which masks saturated cores by zeroing pixels with a probability that rises with how far they exceed the full-well level.
+Saturation is modeled as in MER, which masks saturated cores by zeroing pixels with a probability that rises with how far they exceed the full-well level.
 \begin{figure*}
     \centering
     \includegraphics[width=1\linewidth]{PSF_Noise/noise_artifacts.png}
@@ -230,8 +230,8 @@ Saturation is modelled as in MER, which masks saturated cores by zeroing pixels 
 We first set the number, brightness and size of the galaxies in each training scene. 
 These distributions must match Euclid's, because any difference would be learned by the network and reflected in the reconstructions of real data.
 
-We start my modelling brightness counts.
-The measure of brightness that MER catalogue provides is VIS flux in 2FWHM aperture, where FWHM is taken of an external ground band, which is about $1.3''$, or $13$ pixels in Euclid VIS resolution.
+We start by modeling brightness counts.
+The measure of brightness that MER catalog provides is VIS flux in 2FWHM aperture, where FWHM is taken of an external ground band, which is about $1.3''$, or $13$ pixels in Euclid VIS resolution.
 We find that galaxy counts grow smoothly toward faint magnitudes with almost-linear density/magnitude law, until Q1 data becomes incomplete near VIS $\approx 25$. 
 We fit this growth with a segmented-linear relation and augment with flat extrapolation up to VIS $=29$.
 
@@ -253,7 +253,7 @@ We use extreme deconvolution method \citep{Bovy2011} to remove the measurement n
 
 Stars constitute the second population in our scenes. 
 Resolving them is not among our goals, and they rather act as artifacts, bringing the PSF, spikes and saturated cores into the scenes. 
-We collect the statistics of density of star-like objects, as reported by PHZ catalogue, binned by AB magnitude in VIS band (Figure~\ref{fig:star_population}a).
+We collect the statistics of density of star-like objects, as reported by PHZ catalog, binned by AB magnitude in VIS band (Figure~\ref{fig:star_population}a).
 This results in an almost-linear law in log density, that falls for objects with magnitude lower than $18$ and higher than $21$.
 We fit a straight line to the linear part, extrapolating a simple magnitude-density dependence.
 As a check, we compare it to Gaia DR3 (even though it's $G$ band differs from Euclid's VIS band): its counts agree with the line to $\sim\!10\%$ for $16 < G < 21$, and drop below it only for the few stars brighter than $G\approx 14$.
@@ -262,7 +262,7 @@ Each synthetic star also needs fluxes in the three NISP bands, which we set thro
 We use an approach similar, to how we modeled galactic distributions. 
 We therefore resample real stars, as we do for galaxies, but with brightness as the only condition: a synthetic star takes the colors of a Q1 star from the same $0.5$-mag bin, picked in proportion to the spectroscopic (PHZ) star probability.
 Within each bin, extreme deconvolution \citep{Bovy2011} of the three colors jointly removes the measurement noise, so the copies carry the intrinsic variance rather than the catalog errors.
-This follows the reddenning trend of stars towards faint magnitudes and, once the Q1 errors are added back, reproduces the observed color widths to within $7\%$ (Figure~\ref{fig:star_population}b--d).
+This follows the reddening trend of stars toward faint magnitudes and, once the Q1 errors are added back, reproduces the observed color widths to within $7\%$ (Figure~\ref{fig:star_population}b--d).
 Positions of stars are random and are drawn on the noise-stage of data (so each galactic field can get different stars after adding noise with different seeds).
 \begin{figure*}
     \centering
