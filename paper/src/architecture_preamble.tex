@@ -61,3 +61,23 @@
   \coordinate (#1-e) at (\mdBx+\mdBs+0.21,\mdBy);
   \coordinate (#1-s) at (\mdBx+0.5*\mdBs,\mdBy-0.5*\mdBs);
 }
+\tikzset{
+  mdline/.style={line width=0.75pt,draw=mdLine},
+  mdfun/.style={rounded corners=6pt,draw=mdKnee!80!black,fill=mdKnee!16,line width=0.7pt,
+    font=\fontsize{9}{10.5}\selectfont,align=center,inner xsep=4pt,inner ysep=3pt},
+  mdleg/.style={font=\fontsize{8}{9.5}\selectfont,text=black!75,inner sep=1pt},
+  mdnote/.style={font=\fontsize{8}{9.5}\selectfont\itshape,text=black!60,inner sep=1pt},
+}
+% Curve glyphs for the pixel-wise functions (small axes + the curve)
+\newcommand{\mdgaxes}{\draw[black!35,line width=0.3pt] (-0.21,0) -- (0.21,0) (0,-0.19) -- (0,0.19);}
+\newcommand{\mdgasinh}{\tikz[baseline=-0.6ex,sharp corners,line cap=round]{\mdgaxes
+  \draw[mdKnee!70!black,line width=0.8pt,samples=41,domain=-0.2:0.2]
+    plot (\x,{0.17*ln(30*\x+sqrt((30*\x)^2+1))/ln(6+sqrt(37))});}}
+\newcommand{\mdgsinh}{\tikz[baseline=-0.6ex,sharp corners,line cap=round]{\mdgaxes
+  \draw[mdKnee!70!black,line width=0.8pt,samples=41,domain=-0.2:0.2]
+    plot (\x,{0.17*sinh(15*\x)/sinh(3)});}}
+\newcommand{\mdgrelu}{\tikz[baseline=-0.6ex,sharp corners,line cap=round]{\mdgaxes
+  \draw[mdKnee!70!black,line width=0.8pt,line join=round] (-0.2,0) -- (0,0) -- (0.17,0.17);}}
+% \mdtwo{line 1}{line 2}: two centred lines, vertically centred on the math
+% axis (AASTeX's tabular pads the box, so a plain \halign is used instead)
+\newcommand{\mdtwo}[2]{$\vcenter{\halign{\hfil##\hfil\cr\strut#1\cr\strut#2\cr}}$}

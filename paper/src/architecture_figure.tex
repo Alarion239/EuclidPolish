@@ -1,106 +1,140 @@
-% Architecture figure: replaces the whole figure* block (tikzpicture + caption)
-% in the draft. Uses the \mdfmap/\mdslabs/\mdimstack macros and colours that are
-% already in your preamble, and images/thumbs/{lr_rgb,sr_rgb}.png.
-% Only change to the drawing: the sum node and the learned-knee box moved right
-% (12.55 -> 12.75, 13.95 -> 14.45), so the arrow between them is visible.
+% Architecture figure: the whole figure* block (tikzpicture + caption).
+% Needs architecture_preamble.tex (colours, styles, \mdfmap/\mdslabs/\mdimstack,
+% the \mdfun pill and the \mdg* curve glyphs) and images/thumbs/{lr,sr}_rgb.png.
+% Conventions: cuboids are feature maps (gray = 0.1'' grid, green = 0.05'' grid,
+% number above = channels); arrows carry the linear steps; the purple pills
+% are the only pixel-wise non-linear functions.
 % No blank lines inside the tikzpicture: with the linenumbers class option each
 % one would end the build with "Improper \prevdepth".
 \begin{figure*}
 \centering
 \begin{tikzpicture}
 % ===================================================================== (a)
-\def\hL{1.45}   % LR grid
-\def\hH{2.35}   % SR grid
-\def\ys{-3.15}  % skip row
-\def\yi{-2.65}  % centre of the input image
-\def\yo{-2.80}  % centre of the output image
-\def\lrs{1.65}  % LR image side; the SR image is exactly twice this
-\node[mdpanel] at (0,2.05) {(a)};
-% input (lower left), Г turn up and into the stretch
+\def\hL{1.45}   % 0.1'' grid
+\def\hH{2.35}   % 0.05'' grid
+\def\ys{3.35}   % per-band row
+\def\lrs{1.25}  % input image side; the output image is exactly twice this
+\def\yi{-2.60}  % centre of the input image
+\def\yo{-3.30}  % centre of the output image
+\def\xs{15.95}  % x of the sum and of the output column
+\node[mdpanel] at (0,6.40) {(a)};
+% ---- legend
+\begin{scope}[shift={(0.90,6.20)}]
+  \mdfmap{lg1}{0}{0}{0.22}{0.42}{mdLR}
+  \node[mdleg,anchor=west] at (0.45,0) {feature maps, $0.1''$ grid};
+  \mdfmap{lg2}{4.10}{0}{0.22}{0.42}{mdHR}
+  \node[mdleg,anchor=west] at (4.55,0) {feature maps, $0.05''$ grid};
+  \node[mdch,anchor=west] at (8.45,0) {32};
+  \node[mdleg,anchor=west] at (8.80,0) {number of channels};
+  \node[mdfun,font=\fontsize{8}{9.5}\selectfont,inner sep=2pt] at (12.20,0) {\mdgrelu};
+  \node[mdleg,anchor=west] at (12.65,0) {pixel-wise non-linear function};
+\end{scope}
+% ---- input, stretch, split
 \mdimstack{in}{0}{\yi}{\lrs}{lr_rgb}
-\node[mdop,below=2pt of in-s,xshift=3pt] {LR, 4 bands};
-\mdfmap{S}{2.70}{0}{0.72}{\hL}{mdLR}
-\mdslabs{2.70}{0}{0.72}{\hL}{8}{mdLR}
-\draw[mdflow,rounded corners=5pt] ($(in-s)+(0.105,\lrs+0.21)$) -- (0.5*\lrs+0.105,0) -- (S-w)
-  node[mdop,pos=0.55,above=1pt] {asinh\\ 8 knees};
-\node[mdch,above=1pt of S-n] {32};
-% entry conv
-\mdfmap{F}{4.65}{0}{0.72}{\hL}{mdLR}
-\draw[mdflow] (S-e) -- (F-w) node[mdop,midway,above=1pt] {conv\\ $3\!\times\!3$};
+\node[mdop,anchor=north west,align=left] at ($(in-s)+(-0.5*\lrs,-0.06)$)
+  {Euclid image $x$\\[-1pt] 4 bands, $0.1''$ pixels};
+\coordinate (riseI) at ($(in-s)+(0.105,\lrs+0.21)$);
+\node[mdfun] (asinh) at ($(riseI)+(0,1.30)$) {\mdgasinh\ \mdtwo{$\mathrm{arcsinh}(x/k_j)$}{8 knees $k_j$}};
+\draw[mdflow] (riseI) -- (asinh.south);
+\coordinate (split) at (asinh.north |- 0,0);
+\fill[mdLine] (split) circle (1.6pt);
+\draw[mdline] (asinh.north) -- (split);
+% ---- shared trunk
+\mdfmap{S}{2.40}{0}{0.72}{\hL}{mdLR}
+\mdslabs{2.40}{0}{0.72}{\hL}{8}{mdLR}
+\draw[mdflow] (split) -- (S-w);
+\node[mdch,above=1pt of S-n] {$4\times8 = 32$};
+\mdfmap{F}{5.60}{0}{0.72}{\hL}{mdLR}
+\draw[mdflow] (S-e) -- (F-w) node[mdop,midway,above=1pt] {$3\!\times\!3$\\ convolution};
 \node[mdch,above=1pt of F-n] {32};
-% residual trunk
-\node[mdbox,draw=mdRes!75!black,fill=mdRes!35,minimum width=1.85cm,minimum height=\hL cm]
-  (res) at (7.02,0) {residual\\ block $\times16$};
+% 16 residual blocks: a stack of three boxes, the front one labelled
+\foreach \k in {2,1}{%
+  \draw[rounded corners=2pt,line width=0.6pt,draw=mdRes!75!black,fill=mdRes!22]
+    ($(7.27,-0.5*\hL)+(0.11*\k,0.11*\k)$) rectangle ++(1.90,\hL);}
+\node[mdbox,draw=mdRes!75!black,fill=mdRes!38,minimum width=1.90cm,minimum height=\hL cm]
+  (res) at (8.22,0) {16\\ residual\\ blocks};
 \draw[mdflow] (F-e) -- (res.west);
-% tail conv + shuffle
-\mdfmap{T}{8.80}{0}{0.59}{\hL}{mdLR}
-\draw[mdflow] (res.east) -- (T-w) node[mdop,midway,above=1pt] {conv\\ $3\!\times\!3$};
+\mdfmap{T}{11.32}{0}{0.59}{\hL}{mdLR}
+\draw[mdflow] (res.east) -- (T-w) node[mdop,midway,above=1pt] {$3\!\times\!3$\\ convolution};
 \node[mdch,above=1pt of T-n] {16};
-\mdfmap{M}{11.10}{0}{0.33}{\hH}{mdHR}
-\draw[mdflow] (T-e) -- (M-w) node[mdop,midway,above=1pt] {pixel\\ shuf\/f\/le};
+\mdfmap{M}{14.42}{0}{0.33}{\hH}{mdHR}
+\draw[mdflow] (T-e) -- (M-w) node[mdop,midway,above=1pt] {upsample $2\times$\\ (pixel shuf\/f\/le)};
 \node[mdch,above=1pt of M-n] {4};
-% sum, knee, Г turn down into the output (exactly 2x the input image)
-\node[mdsum] (sum) at (12.75,0) {$+$};
+\node[mdnote,anchor=north west] at (2.40,-0.98) {shared trunk: all bands mixed};
+% ---- sum, learned knee, output (exactly twice the input image)
+\node[mdsum] (sum) at (\xs,0) {$+$};
 \draw[mdflow] (M-e) -- (sum);
-\node[mdbox,draw=mdKnee!80!black,fill=mdKnee!18,minimum height=\hL cm] (knee) at (14.45,0)
-  {learned knee\\[2pt] $k_b \sinh y$};
-\draw[mdflow] (sum) -- (knee.west);
-\mdimstack{out}{14.48}{\yo}{2*\lrs}{sr_rgb}
-\draw[mdflow,rounded corners=5pt] (knee.east) -- (14.48+\lrs+0.105,0) -- ($(out-s)+(0.105,2*\lrs+0.21)$);
-\node[mdop,below=2pt of out-s,xshift=3pt] {SR, 4 bands};
-% per-band skip
-\mdfmap{K}{4.65}{\ys}{0.46}{\hL}{mdLR}
-\mdslabs{4.65}{\ys}{0.46}{\hL}{8}{mdLR}
-\mdfmap{KC}{6.55}{\ys}{0.33}{\hL}{mdLR}
-\mdfmap{KS}{8.65}{\ys}{0.07}{\hH}{mdHR}
-\mdfmap{KA}{11.10}{\ys}{0.33}{\hH}{mdHR}
-\draw[mdflow,rounded corners=4pt] ($(S-s)+(0.06,0)$) |- (K-w)
-  node[mdop,pos=0.72,above=1pt] {band $b$};
+\node[mdfun] (knee) at (\xs,-1.12) {\mdgsinh\ \mdtwo{$k_b\sinh y_b$}{learned knee $k_b$}};
+\draw[mdflow] (sum) -- (knee.north) node[mdop,midway,right=1pt] {$y_b$};
+\mdimstack{out}{\xs-\lrs-0.105}{\yo}{2*\lrs}{sr_rgb}
+\draw[mdflow] (knee.south) -- ($(out-s)+(0.105,2*\lrs+0.21)$);
+\node[mdop,anchor=north,align=center] at ($(out-s)+(0,-0.06)$)
+  {reconstruction\\[-1pt] 4 bands\\[-1pt] $0.05''$ pixels};
+% ---- per-band path (one copy per band, drawn as a stack of four sheets)
+\foreach \k in {3,2,1}{%
+  \draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white]
+    ($(4.55,1.95)+(0.13*\k,0.13*\k)$) rectangle ++(7.15,3.45);}
+\draw[rounded corners=3pt,line width=0.6pt,draw=black!55,dashed,fill=white]
+  (4.55,1.95) rectangle ++(7.15,3.45);
+\node[mdnote,anchor=south west] at (4.68,2.03) {each band $b$ separately (all 4 in parallel)};
+\mdfmap{K}{5.00}{\ys}{0.46}{\hL}{mdLR}
+\mdslabs{5.00}{\ys}{0.46}{\hL}{8}{mdLR}
+\mdfmap{KC}{7.75}{\ys}{0.33}{\hL}{mdLR}
+\mdfmap{KS}{10.65}{\ys}{0.07}{\hH}{mdHR}
+\mdfmap{KA}{14.42}{\ys}{0.33}{\hH}{mdHR}
+\draw[mdflow,rounded corners=5pt] (split) |- (K-w)
+  node[mdop,pos=0.75,above=1pt] {band $b$ only};
 \node[mdch,above=1pt of K-n] {8};
-\draw[mdflow] (K-e) -- (KC-w) node[mdop,midway,above=1pt] {conv\\ $5\!\times\!5$};
+\draw[mdflow] (K-e) -- (KC-w) node[mdop,midway,above=1pt] {$5\!\times\!5$\\ convolution};
 \node[mdch,above=1pt of KC-n] {4};
-\draw[mdflow] (KC-e) -- (KS-w) node[mdop,midway,above=1pt] {pixel\\ shuf\/f\/le};
+\draw[mdflow] (KC-e) -- (KS-w) node[mdop,midway,above=1pt] {upsample $2\times$\\ (pixel shuf\/f\/le)};
 \node[mdch,above=1pt of KS-n] {1};
-\draw[mdflow] (KS-e) -- (KA-w) node[mdop,midway,above=1pt] {concat};
+\draw[mdflow] (KS-e) -- (KA-w) node[mdop,midway,above=1pt,xshift=4pt] {stack the\\ 4 bands};
 \node[mdch,above=1pt of KA-n] {4};
-\draw[mdflow,rounded corners=4pt] (KA-e) -| (sum.south);
-\node[rounded corners=3pt,draw=black!45,dashed,line width=0.6pt,inner sep=0pt,
-      fit={($(K-w)+(-0.28,-1.30)$) ($(KS-e)+(0.18,2.08)$)}] (skipbox) {};
-\node[mdch,anchor=north west] at ($(skipbox.north west)+(0.08,-0.06)$) {per band, $\times4$};
+\draw[mdflow,rounded corners=5pt] (KA-e) -| (sum.north);
 % ===================================================================== (b)
 % same notation as (a); 192 -> 1.06, 32 -> .72, 25 -> .67
-\def\yb{-6.62}
+\def\yb{-6.05}
 \def\hb{1.30}
-\node[mdpanel] at (0,\yb+1.45) {(b)};
-\mdfmap{bx}{1.40}{\yb}{0.72}{\hb}{mdLR}
-\mdfmap{b1}{4.65}{\yb}{1.06}{\hb}{mdLR}
-\mdfmap{b2}{8.05}{\yb}{0.67}{\hb}{mdLR}
-\mdfmap{b3}{10.95}{\yb}{0.72}{\hb}{mdLR}
-\node[mdsum] (bsum) at (13.05,\yb) {$+$};
-\mdfmap{bo}{14.00}{\yb}{0.72}{\hb}{mdLR}
-\draw[mdflow] (bx-e) -- (b1-w) node[mdop,midway,above=1pt] {conv $1\!\times\!1$\\ ReLU};
-\draw[mdflow] (b1-e) -- (b2-w) node[mdop,midway,above=1pt] {conv $1\!\times\!1$};
-\draw[mdflow] (b2-e) -- (b3-w) node[mdop,midway,above=1pt] {conv $3\!\times\!3$};
+\def\bT{-4.35}  % top of the (b) frame
+\def\bB{-7.45}  % bottom of the (b) frame
+\node[mdpanel] at (0,\bT+0.02) {(b)};
+% zoom wedge from the residual blocks in (a) to the frame of (b)
+\begin{scope}[on background layer]
+  \fill[mdRes!12] (res.south west) -- (res.south east) -- (11.6,\bT) -- (4.2,\bT) -- cycle;
+\end{scope}
+\draw[mdRes!70!black,line width=0.5pt] (res.south west) -- (4.2,\bT) (res.south east) -- (11.6,\bT);
+\draw[rounded corners=4pt,draw=mdRes!85!black,line width=0.9pt,fill=white] (0.62,\bB) rectangle (14.50,\bT);
+\node[font=\fontsize{9}{10.5}\selectfont\bfseries,text=mdRes!65!black,anchor=north west,inner sep=0pt]
+  at (0.80,\bT-0.14) {one residual block \mdseries(16 in a row in panel a)};
+\mdfmap{bx}{1.00}{\yb}{0.72}{\hb}{mdLR}
+\mdfmap{b1}{4.05}{\yb}{1.06}{\hb}{mdLR}
+\node[mdfun] (relu) at (6.55,\yb) {\mdgrelu\ ReLU};
+\mdfmap{b2}{9.15}{\yb}{0.67}{\hb}{mdLR}
+\mdfmap{b3}{12.10}{\yb}{0.72}{\hb}{mdLR}
+\node[mdsum] (bsum) at (13.78,\yb) {$+$};
+\draw[mdflow] (bx-e) -- (b1-w) node[mdop,midway,above=1pt] {$1\!\times\!1$\\ convolution};
+\draw[mdflow] (b1-e) -- (relu.west);
+\draw[mdflow] (relu.east) -- (b2-w) node[mdop,midway,above=1pt] {$1\!\times\!1$\\ convolution};
+\draw[mdflow] (b2-e) -- (b3-w) node[mdop,midway,above=1pt] {$3\!\times\!3$\\ convolution};
 \draw[mdflow] (b3-e) -- (bsum);
-\draw[mdflow] (bsum) -- (bo-w);
+\draw[mdflow] (bsum) -- (14.50,\yb);
 \draw[mdflow,rounded corners=5pt] ($(bx-s)+(0.06,0)$) -- ++(0,-0.48) -| (bsum.south)
-  node[mdop,pos=0.25,above=1pt] {identity};
+  node[mdop,pos=0.25,above=1pt] {block input, added back unchanged};
 \node[mdch,above=1pt of bx-n] {32};
 \node[mdch,above=1pt of b1-n] {192};
 \node[mdch,above=1pt of b2-n] {25};
 \node[mdch,above=1pt of b3-n] {32};
-\node[mdch,above=1pt of bo-n] {32};
-\node[rounded corners=4pt,draw=mdRes!85!black,line width=0.8pt,inner sep=0pt,
-      fit={(0.62,\yb-1.20) (18.00,\yb+1.45)}] (bbox) {};
-\node[font=\fontsize{9}{10.5}\selectfont\bfseries,text=mdRes!65!black,align=center,inner sep=0pt]
-  at (16.75,\yb+0.12) {residual\\ block};
 \end{tikzpicture}
 \caption{The reconstruction network.
-(a) The four-band input on the $0.1''$ grid is stretched with $\mathrm{arcsinh}$ at eight knees, giving $32$ channels.
-The shared trunk (a $3\times3$ convolution, $16$ residual blocks, a second $3\times3$ convolution and a pixel shuffle) predicts a correction that is added to a per-band path, in which each band is upsampled from its own eight channels by a $5\times5$ convolution and a pixel shuffle.
-A learned knee $k_b$ for each band converts the sum to electrons on the $0.05''$ grid.
-Numbers above the blocks are channel counts; gray blocks lie on the input grid and green blocks on the output grid.
-(b) One residual block: a $1\times1$ convolution widens $32$ channels to $192$ before the ReLU, a linear $1\times1$ convolution narrows them to $25$, and a $3\times3$ convolution returns $32$ channels, which are added to the block input.
+(a) The four-band Euclid image $x$ (electrons, $0.1''$ pixels) is stretched with $\mathrm{arcsinh}(x/k_j)$ at eight knees $k_j = 10^{-3}, 10^{-2}, \ldots, 10^{4}$ electrons, giving $4\times8=32$ channels.
+Two paths start from this stack.
+The shared trunk (bottom row) mixes all bands: a $3\times3$ convolution, $16$ residual blocks, a second $3\times3$ convolution and a pixel shuffle, which rearranges each group of four channels into a $2\times2$ patch of pixels on the $0.05''$ grid.
+The per-band path (top row) upsamples each band from its own eight channels with a $5\times5$ convolution and a pixel shuffle, so it never mixes bands.
+The two are added, giving the stretched image $y_b$ for each band $b$, and $k_b \sinh y_b$ with a learned knee $k_b$ turns it back into electrons.
+Gray cuboids are feature maps on the $0.1''$ grid and green ones on the $0.05''$ grid; numbers above them are channel counts.
+Purple boxes are the only pixel-wise non-linear functions; every other step is linear.
+(b) One of the $16$ residual blocks: a $1\times1$ convolution widens $32$ channels to $192$, a ReLU, a $1\times1$ convolution narrows them to $25$, and a $3\times3$ convolution returns $32$ channels, which are added to the block input.
 The thumbnails show a Q1 lens candidate and its reconstruction (R\,=\,$H_{\rm E}$, G\,=\,mean of $Y_{\rm E}$ and $J_{\rm E}$, B\,=\,VIS).}
 \label{fig:architecture}
 \end{figure*}
