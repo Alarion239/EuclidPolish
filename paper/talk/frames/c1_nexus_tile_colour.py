@@ -1,4 +1,4 @@
-"""C1: the cold-open tile (NEXUS f200w-0106) and its payoff.
+"""C1: the barred spiral in NEXUS f200w-0063 (and the 0106 tile), colour composites.
 
 Writes separate, identically framed squares: Euclid (shown at the start, with the envelope mark),
 POLISHed and JWST (dropped on the same spot at the end). Whole 25.5" tile + a zoom on the pair.
@@ -16,13 +16,13 @@ from astropy.wcs import WCS
 
 from style import save_panel
 
-TILE = "f200w-0106"
-VIEWS = {
-    "tile": dict(cx=255, cy=255, hw=255, q=60, bar=5.0),
-    "pair": dict(cx=175, cy=400, hw=100, q=30, bar=1.0),
+TARGETS = {
+    "barred": ("f200w-0063", dict(cx=103, cy=230, hw=70, q=15, bar=1.0)),
+    "tile0106": ("f200w-0106", dict(cx=255, cy=255, hw=255, q=60, bar=5.0)),
+    "pair0106": ("f200w-0106", dict(cx=175, cy=400, hw=100, q=30, bar=1.0)),
 }
-w = WCS(fits.getheader(f"{TILES}/starfull_combiner_{TILE.split('-')[1]}.fits")).celestial
-for view, v in VIEWS.items():
+for view, (TILE, v) in TARGETS.items():
+    w = WCS(fits.getheader(f"{TILES}/starfull_combiner_{TILE.split('-')[1]}.fits")).celestial
     rec = dict(tile=TILE, mode="full", **v)
     (lr, sr, jw), mode = triple_images(rec)
     ra, dec = w.pixel_to_world_values(v["cx"], v["cy"])
