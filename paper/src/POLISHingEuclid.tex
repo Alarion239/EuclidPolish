@@ -4,26 +4,6 @@
 %%%% TIKZ PREAMBLE 
 \input{architecture_preamble}
 
-%%%% REVIEW COMMENTS (todonotes)
-%% \commentstrue  -> notes show as colored boxes + a list at the top
-%% \commentsfalse -> every note disappears; the PDF is the clean paper
-\newif\ifcomments \commentstrue
-\ifcomments
-  \usepackage[colorinlistoftodos,textsize=footnotesize]{todonotes}
-\else
-  \usepackage[disable]{todonotes}
-\fi
-\setuptodonotes{inline,bordercolor=black!40}
-%% \ab{date}{text}: one comment from Aleksandr (as on Overleaf)
-\newcommand{\ab}[2]{\todo[color=orange!25,author={Aleksandr, #1}]{#2}}
-%% \board{text}: transcribed whiteboard sketch
-\newcommand{\board}[1]{\todo[color=violet!15,author={Whiteboard},caption={Whiteboard: intro outline}]{#1}}
-%% \task{text}: open task from the to-do list
-\newcommand{\task}[1]{\todo[color=cyan!20,author={Task}]{#1}}
-%% \opt{paragraph}{n}: label one of the alternative versions of a paragraph (hidden with \commentsfalse)
-\newcommand{\opt}[2]{\par\medskip\noindent\ifcomments{\color{teal!70!black}\sffamily\bfseries\footnotesize #1 --- option #2}\par\noindent\fi}
-
-
 \begin{document}
 
 \title{\lipsum[1]}
@@ -31,7 +11,6 @@
 \author[orcid=0000-0000-0000-0001,sname='North America']{Tundra North America}
 \affiliation{Harvard COllege}
 \email[show]{abelotserkovtsev@college.harvard.edu}  
-
 
 %% Keywords should appear after the \end{abstract} command. 
 %% The AAS Journals now uses Unified Astronomy Thesaurus (UAT) concepts:
@@ -43,40 +22,7 @@
 %% You can use the \uat command to link your UAT concepts back its source.
 \keywords{\uat{Galaxies}{573} --- \uat{Cosmology}{343} --- \uat{High Energy astrophysics}{739} --- \uat{Interstellar medium}{847} --- \uat{Stellar astronomy}{1583} --- \uat{Solar physics}{1476}}
 
-\ifcomments \listoftodos[Review comments] \fi
-
-\task{Intro + presentation, alternating: presentation $\to$ introduction $\to$ presentation $\to$ introduction. A lot more focus on the introduction than in the last presentation; draft the slides.}
-
 \section{Introduction}
-
-\board{Intro outline (whiteboard):
-\begin{itemize}
-  \item \textbf{Wide field} optical imaging surveys: \textbf{always} from the ground. Can't discover cool things without looking at large areas!
-  \item vs.\ space-based imaging with a tiny field of view (e.g.\ Hubble, JWST): expensive!
-  \item $\to$ introduce SR studies on ground imaging (SDSS, HSC, DECaLS, CFHT, SkyMapper\ldots). SDSS and DECaLS: starting to find gravitational lenses (that Tania likes!)
-  \item $\to$ introduce Liam's work: from the ground, but RADIO, which also has a stable PSF.
-  \item $\to$ EUCLID! \textbf{First time}: large-area optical imaging \emph{and} a stable PSF.
-  \item $\to$ also, Roman is upcoming.
-\end{itemize}}
-
-\ab{11 Nov, 12:00 pm}{Paragraph 1: what field --- optical imaging surveys.}
-\ab{11 Nov, 12:00 pm}{History lesson.}
-\ab{11 Nov, 12:00 pm}{Set up the fact that it's been for a while. BUT ALWAYS from the ground.}
-\ab{11 Nov, 12:01 pm}{vs.\ space-based imaging has always had a very, very tiny FOV.}
-\ab{11 Nov, 12:02 pm}{Introduce SR studies on ground imaging.}
-\ab{11 Nov, 12:03 pm}{Introduce Liam's work.}
-
-\ab{11 Nov, 12:05 pm}{RADIO has a stable PSF. We don't!}
-\ab{11 Nov, 12:06 pm}{First time we have large-area optical imaging + a stable PSF.}
-\ab{11 Nov, 12:06 pm}{Euclid is here and Roman is upcoming!!! Should be doing this work now!}
-\ab{11 Nov, 12:06 pm}{Tomorrow is Euclid DR1!!!}
-
-\ab{11 Nov, 11:56 am}{We should add more pretext to this.}
-\ab{11 Nov, 11:56 am}{Biggest selling point: the first time for optical astronomy that we have wide-field space-based imaging --- the key selling point.}
-\ab{11 Nov, 11:56 am}{The first time we could do this.}
-\ab{11 Nov, 11:57 am}{No one before could have done this.}
-
-\task{17 Nov draft: seven paragraphs in the whiteboard order (ground surveys $\to$ space is small $\to$ super-resolution from the ground $\to$ radio/POLISH $\to$ Euclid is the first $\to$ lenses $\to$ this work), three options each. Option 1 stays closest to the 11 Nov text; option 2 tells the history; option 3 is the shortest. Pick one per paragraph (or mix sentences) and delete the rest. New references are marked in references.bib; check them against ADS before submission.}
 
 Since the photographic sky surveys of the mid-twentieth century, mapping large areas of the sky has been the way both to find rare objects and to study galaxy populations with large statistical samples.
 For decades, these surveys have been conducted with ground-based telescopes: the Sloan Digital Sky Survey \citep{York2000}, the Dark Energy Survey \citep{DES2016}, the DESI Legacy Imaging Surveys \citep{Dey2019}, the Hyper Suprime-Cam survey \citep{Aihara2018}, and now the Rubin Observatory's LSST \citep{Ivezic2019}.
@@ -184,7 +130,6 @@ light traces different stellar populations and suffers less dust attenuation tha
 \section{Methods}
 \subsection{Training data}
 \subsubsection{Measuring PSF}
-\subsubsection{Measuring PSF}
 To simulate Euclid observations of a synthetic sky we first need the Euclid point-spread function (PSF).
 The PSF characterizes how Euclid blurs point sources, influenced by diffraction (including the spikes of the VIS secondary mirror spider mount), optical aberrations, detector effects and pointing instability.
 Rather than adopting an instrument model, we measure the effective PSF (ePSF; \citealt{AndersonKing2000}) directly from bright point sources in the Q1 MER mosaics with \texttt{photutils}.
@@ -198,7 +143,6 @@ Because the mosaics are north-aligned while the PSF is fixed to the instrument, 
 To account for that, we augment the ePSFs with random rotations.
 We also apply a small random elastic warp to each kernel, following \citet{Connor2022}, which perturbs the core width (by $\approx 10\%$) and the faint structure while conserving flux.
 This keeps the network from overfitting to our finite set of measured ePSFs, which carry extraction errors and do not resolve all of the PSF variation across the field.
-
 
 \begin{figure*}
     \centering
@@ -299,8 +243,6 @@ The knee for this operation is trained as one of the parameters of the model, op
 Training minimizes a sum of two terms.
 The first compares reconstruction and target after stretching
 
-\task{Architecture figure: work more on the labels so people can read it immediately, with no thinking.}
-
 \input{architecture_figure}
 
 \section{Results}
@@ -340,7 +282,6 @@ Summary
 
 \bibliography{references}{}
 \bibliographystyle{aasjournalv7}
-
 
 \end{document}
 
