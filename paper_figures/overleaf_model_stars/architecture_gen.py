@@ -179,12 +179,13 @@ arrow("(bsum)", f"({f(bR)},{f(yb)})")
 yid = yb - hL / 2 - 0.55
 o(f"\\draw[mdflow,rounded corners=5pt] ($(bx-s)+(0.06,0)$) |- ({f(bsum)},{f(yid)}) -- (bsum.south);")
 o(f"\\node[mdop,above=1pt] at ({f(relu_x + RELU_W/2 + G/2)},{f(yid)}) {{identity}};")
-wl, wr = bL, bR   # the wedge opens onto the whole (b) frame
+# magnification cone: from the residual blocks' bottom edge to (b)'s bottom
+# edge, drawn behind the opaque (b) frame, so it shows only above (b)
 o("\\begin{scope}[on background layer]")
-o(f"  \\fill[mdRes!12] (res.south west) -- (res.south east) -- ({f(wr)},{f(bT)}) -- ({f(wl)},{f(bT)}) -- cycle;")
+o(f"  \\fill[mdRes!12] (res.south west) -- (res.south east) -- ({f(bR)},{f(bB)}) -- ({f(bL)},{f(bB)}) -- cycle;")
+o(f"  \\draw[mdRes!70!black,line width=0.5pt] (res.south west) -- ({f(bL)},{f(bB)}) (res.south east) -- ({f(bR)},{f(bB)});")
 o(f"  \\draw[rounded corners=4pt,draw=mdRes!85!black,line width=0.9pt,fill=white] ({f(bL)},{f(bB)}) rectangle ({f(bR)},{f(bT)});")
 o("\\end{scope}")
-o(f"\\draw[mdRes!70!black,line width=0.5pt] (res.south west) -- ({f(wl)},{f(bT)}) (res.south east) -- ({f(wr)},{f(bT)});")
 o(f"\\node[font=\\fontsize{{9}}{{10.5}}\\selectfont\\bfseries,text=mdRes!65!black,anchor=north west,inner sep=0pt]"
   f" at ({f(bL + P)},{f(bT - 0.15)}) {{one residual block}};")
 o(f"\\node[mdpanel,anchor=north east] at ({f(bL - 0.08)},{f(bT)}) {{(b)}};")
