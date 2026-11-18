@@ -20,6 +20,8 @@
 \newcommand{\board}[1]{\todo[color=violet!15,author={Whiteboard},caption={Whiteboard: intro outline}]{#1}}
 %% \task{text}: open task from the to-do list
 \newcommand{\task}[1]{\todo[color=cyan!20,author={Task}]{#1}}
+%% \opt{paragraph}{n}: label one of the alternative versions of a paragraph (hidden with \commentsfalse)
+\newcommand{\opt}[2]{\par\medskip\noindent\ifcomments{\color{teal!70!black}\sffamily\bfseries\footnotesize #1 --- option #2}\par\noindent\fi}
 
 
 \begin{document}
@@ -69,56 +71,149 @@
 \ab{11 Nov, 12:06 pm}{Euclid is here and Roman is upcoming!!! Should be doing this work now!}
 \ab{11 Nov, 12:06 pm}{Tomorrow is Euclid DR1!!!}
 
-Wide field optical imaging of the sky is important for searching for rare objects and transients, studying large-scale structure, and collecting large-scale statistics of galaxies and their evolution. 
-The first wide field optical surveys were conducted in ..., which enabled the first discoveries of .... 
-Until recently, they had to be done from the ground, with space observations being very limited in the field of view.
-As the spatial resolution of wide field surveys increased, we were able to ...
-SR existed in Radio-astronomy and the attempts were made to use it in optical astronomy, but it was limited by opticals and unstable PSF of ground-based imaging.
-Today, we have Euclid and waiting for Roman, which will image a LOT of the sky in HIGH resolution --- why not increase it even more? :) 
-Euclid is very good for this because it provides large test-bed of homogenious data, supre-resolution of which can be verified with other telescopes on small patches of the sky.   
-This can be a useful step before follow-up.
-
 \ab{11 Nov, 11:56 am}{We should add more pretext to this.}
 \ab{11 Nov, 11:56 am}{Biggest selling point: the first time for optical astronomy that we have wide-field space-based imaging --- the key selling point.}
 \ab{11 Nov, 11:56 am}{The first time we could do this.}
 \ab{11 Nov, 11:57 am}{No one before could have done this.}
 
-An important scientific motivation for improving the angular resolution of wide-field astronomical images is the identification of strong gravitational lenses.
-Strong gravitational lensing occurs when the gravitational field of a massive foreground object, such as a galaxy or cluster, bends light from a more distant source strongly enough to produce multiple images of that source \citep{Treu2010}. 
-These systems allow us to study distant magnified galaxies that would otherwise be too faint to see, as well as the mass distribution of the foreground galaxy or cluster, dark matter, and the geometry of the Universe \citep{Treu2010}. 
-Unfortunately, strong gravitational lenses are rare and often difficult to identify in images with limited angular resolution because the light from the lensed source can blend with that of the foreground deflector. 
-This problem becomes more severe as the angular scale of the lensing system, characterized by its \emph{Einstein radius}, decreases. 
-The resulting underrepresentation of small-Einstein-radius systems limits our ability to study a representative lens population, including systems with lower-mass deflectors and lens--source geometries that differ from those found in more easily separable systems \citep{Treu2010,AcevedoBarroso2025}.
-Improving the detectability of these compact lensing features could therefore reduce this selection bias and help advance the gravitational lensing science.
+\task{17 Nov draft: seven paragraphs in the whiteboard order (ground surveys $\to$ space is small $\to$ super-resolution from the ground $\to$ radio/POLISH $\to$ Euclid is the first $\to$ lenses $\to$ this work), three options each. Option 1 stays closest to the 11 Nov text; option 2 tells the history; option 3 is the shortest. Pick one per paragraph (or mix sentences) and delete the rest. New references are marked in references.bib; check them against ADS before submission.}
 
-The European Space Agency’s \emph{Euclid} mission provides an important opportunity to search for such systems because it combines wide sky coverage, multi-band visible and near-infrared observations, with stable and precise space-based imaging.
-Its primary goals are to study the large-scale structures of the Universe and constrain dark matter and dark energy through weak gravitational lensing and galaxy clustering.
-These goals require low-noise images with sharp, stable and accurately modeled point-spread function --- exactly the combination that makes Euclid well suited to discovering strong gravitational lenses.
-Moreover, one optical and three near-infrared imaging bands can help distinguish a lensed source from its foreground deflector when the two objects have different colors.
-The higher-resolution VIS instrument samples the sky at $0.1^{\prime\prime}$ per pixel, while the three NISP bands are sampled at $0.3^{\prime\prime}$ per pixel \citep{Mellier2025}.
-Although Hubble and JWST provide finer angular resolution in targeted fields, Euclid will provide uniform four-band imaging over approximately $14{,}000\,\mathrm{deg}^{2}$, enabling searches for extremely rare strong gravitational lenses across an unprecedented area of the sky. 
-However, applying image reconstruction across a survey of this scale would require algorithms that are both accurate and computationally efficient.
+%% ---------------------------------------------------------------- P1
+\opt{P1: wide-field surveys, always from the ground}{1}
+Wide-field imaging surveys are how astronomy finds what is rare and measures what is common.
+Rare objects, such as strong gravitational lenses, and the statistics of galaxy populations only emerge when large areas of the sky are observed.
+For decades these surveys have been carried out from the ground, from the Sloan Digital Sky Survey \citep{York2000} to the Dark Energy Survey \citep{DES2016}, the DESI Legacy Imaging Surveys \citep{Dey2019} and the Hyper Suprime-Cam survey \citep{Aihara2018}, with the Rubin Observatory's LSST now starting \citep{Ivezic2019}.
+Each generation went wider and deeper, but all of them observe through the atmosphere, which blurs every image to about $0.6''$ at the best sites and to $1''$ or more at most others.
+Wide-field optical imaging has therefore always been limited in resolution by the atmosphere rather than by the telescope.
 
-A related computational challenge has already motivated the development of efficient reconstruction algorithms in radio astronomy.
-Efficient image reconstruction is essential for next-generation radio surveys, such as the DSA-2000, a radio array expected to process over $80$ terabits per second \citep{Connor2022}. 
-Radio-interferometric reconstruction traditionally relies on iterative algorithms such as CLEAN, which deconvolve the dirty image using the instrument’s point-spread function but are difficult to scale to such data rates. 
-To address this limitation, \citet{Connor2022} introduced POLISH, a feed-forward residual convolutional neural network that performs deconvolution and super-resolution in a single pass, enabling quasi-real-time reconstruction.
-The network was trained on simulated pairs of high-resolution radio skies populated by elliptical Gaussian sources and corresponding dirty images produced by convolution with modeled and perturbed interferometric PSFs, followed by downsampling and noise addition. 
-On simulated DSA-2000 observations, POLISH outperformed traditional CLEAN in PSNR and SSIM and recovered source sizes below the nominal beam scale. 
-These results established a proof of concept for efficient, simulation-trained astronomical deconvolution and super-resolution.
+\opt{P1: wide-field surveys, always from the ground}{2}
+Large optical surveys have a long history, and all of it has been written from the ground.
+Since the photographic sky surveys of the mid-twentieth century, mapping large areas has been the way to find rare objects and to measure galaxy populations with enough statistics.
+Digital surveys turned this into a precision science: SDSS set out to image a quarter of the sky \citep{York2000}, and the Dark Energy Survey \citep{DES2016}, the DESI Legacy Imaging Surveys \citep{Dey2019} and Hyper Suprime-Cam \citep{Aihara2018} went deeper, with LSST now beginning \citep{Ivezic2019}.
+Yet every one of these surveys sees the sky through turbulent air, which spreads the light of each point source over about $0.6''$ at the best sites and over $1''$ or more at typical ones.
+For seventy years, wide meant ground-based, and ground-based meant blurred by the atmosphere.
 
-Building on the original model, \citet{Wu2026} extended the framework with POLISH++, adapting it to the larger images and higher dynamic ranges expected in realistic surveys. 
-To address scalability, POLISH++ introduced patch-wise training and inference, reducing memory requirements while allowing the network to learn contamination from sources outside each patch. 
-It also applies an invertible $\mathrm{arcsinh}$ transformation before training to compress the dynamic range, placing relatively greater emphasis on faint structures than on small absolute errors in the brightest pixels. 
-With these changes, POLISH++ substantially improved source detection and galaxy-shape recovery relative to both image-plane CLEAN and the original POLISH model, although its flux estimates were less accurate than those obtained with CLEAN. 
-When combined with a separately trained lens classifier, POLISH++ recovered simulated strong-lensing morphology at image separations near the DSA-2000 PSF FWHM, supporting its super-resolution capability and demonstrating the potential of POLISH++ as a framework for astronomical image reconstruction.
+\opt{P1: wide-field surveys, always from the ground}{3}
+Wide-field optical surveys find rare objects and measure galaxy populations, and until recently all of them were made from the ground \citep{York2000,DES2016,Dey2019,Aihara2018,Ivezic2019}.
+Their resolution is set by the atmosphere, which blurs images to about $0.6''$ at the best sites and $1''$ or more elsewhere, not by the telescopes.
 
-In this work, we adapt the POLISH/POLISH++ framework to Euclid visible and near-infrared imaging.
-The model takes four Euclid bands as input and reconstructs the observed fields at twice the input sampling, from $0.1''$ to $0.05''$ per pixel, while denoising and removing PSF.
-Because real Euclid observations do not have paired high-resolution targets, we train network on synthetic skies with known high-resolution truth.
-To represent realistic astronomical scenes, we calibrate the source populations against Euclid Q1 measurements and use TNG50-SKIRT galaxies as morphological and color templates \citep{Baes2024TNG50SKIRT}.
-Each synthetic sky is later converted into a Euclid-like observation using empirical point-spread functions and models of noise and detector artifacts.
-After validating the model's performance on synthetic images with known truth, we apply it to real Euclid images, comparing it to James Webb Space Telescope references to assess the quality of reconstructions.
+%% ---------------------------------------------------------------- P2
+\opt{P2: space imaging is sharp but small}{1}
+Space telescopes escape the atmosphere, but so far only over small fields.
+This matters because the sharpest images of galaxies have come only from space, and only for small patches of the sky.
+The \emph{Hubble Space Telescope} resolves structure on scales of $0.1''$, but its cameras cover about ten square arcminutes at a time, and its largest contiguous survey, COSMOS, covers about $2\,\mathrm{deg}^2$ \citep{Scoville2007COSMOS}.
+JWST is sharper still, with a field of view of similar size.
+Observing time on both telescopes is scarce, so they mostly follow up targets that wide ground-based surveys have already found.
+Until now, astronomers have had to choose between images that are wide and images that are sharp.
+
+\opt{P2: space imaging is sharp but small}{2}
+The alternative to the ground has been space, at the price of area.
+Hubble and JWST deliver images several times sharper than any ground-based survey, which is why they are used to study the structure of galaxies and to confirm lens candidates.
+Their fields of view, however, are about ten square arcminutes, so even the largest contiguous Hubble survey, COSMOS, covers only about $2\,\mathrm{deg}^2$ \citep{Scoville2007COSMOS}, less than a thousandth of the area of a wide survey.
+Time on these telescopes is oversubscribed, and covering thousands of square degrees with them is out of reach.
+Space imaging has thus been a tool for following up a few objects, not for finding them.
+
+\opt{P2: space imaging is sharp but small}{3}
+Space telescopes avoid the atmosphere, but Hubble and JWST image only about ten square arcminutes at a time; the largest contiguous Hubble survey, COSMOS, covers about $2\,\mathrm{deg}^2$ \citep{Scoville2007COSMOS}.
+Sharp images have been available for small fields and wide images only at ground-based resolution.
+
+%% ---------------------------------------------------------------- P3
+\opt{P3: super-resolution of ground-based images}{1}
+Several groups have tried to close this gap by sharpening ground-based images with neural networks.
+If such a network were reliable, every existing survey would gain resolution without new observations.
+Recent work maps SDSS and DECaLS images to the quality of the deeper and sharper Hyper Suprime-Cam data \citep{Luo2025}, builds paired data sets of galaxy images for astronomical super-resolution \citep{Miao2024}, and deconvolves ground-based images towards space-like resolution \citep{Akhaury2024}.
+All of these face the same difficulty: the atmospheric point-spread function (PSF) changes from exposure to exposure and across the field, so the blur that the network must undo is never known exactly.
+A network that has learned one set of conditions can invent structure or bias measurements under another \citep{Akhaury2024}, and there is no wide, sharp reference to check it against.
+Super-resolution of ground-based images is therefore possible, but hard to trust over a whole survey.
+
+\opt{P3: super-resolution of ground-based images}{2}
+Machine learning has made super-resolution of ground-based images an active field.
+Networks now translate SDSS and DECaLS images towards Hyper Suprime-Cam quality \citep{Luo2025}, are trained and compared on shared galaxy data sets \citep{Miao2024}, and deconvolve ground-based observations towards a resolution of $0.1''$ \citep{Akhaury2024}.
+These results are encouraging, but they rest on an unstable foundation.
+The atmospheric point-spread function (PSF) varies with time, position and wavelength, so the training pairs can only approximate the blur in any given image, and the network's output can carry biases that are hard to detect \citep{Akhaury2024}.
+From the ground, the main limit on super-resolution is not the network but the unknown PSF.
+
+\opt{P3: super-resolution of ground-based images}{3}
+Neural networks have been trained to sharpen ground-based images \citep{Luo2025,Miao2024,Akhaury2024}, but the atmospheric point-spread function (PSF) changes from exposure to exposure, so the blur they must undo is never known exactly and their outputs can be biased \citep{Akhaury2024}.
+
+%% ---------------------------------------------------------------- P4
+\opt{P4: radio interferometry and POLISH}{1}
+Radio astronomy shows what becomes possible when the PSF is known.
+An interferometer's PSF is set by the positions of its antennas, so it is known precisely for every observation, even from the ground.
+\citet{Connor2022} used this to build POLISH, a feed-forward residual convolutional network that is trained on simulated skies and deconvolves and super-resolves radio images in a single pass, fast enough for the data rate of the DSA-2000.
+On simulated observations POLISH outperformed the standard CLEAN algorithm and recovered sources smaller than the beam.
+\citet{Wu2026} extended it to POLISH++, which processes wide fields in patches and compresses their dynamic range with an $\mathrm{arcsinh}$ stretch; combined with a lens classifier, it recovered strong-lens arcs at separations close to the size of the PSF.
+With a stable, known PSF, a network trained only on simulations can reconstruct real survey images at scale.
+
+\opt{P4: radio interferometry and POLISH}{2}
+Radio interferometry faced the same need for fast, survey-scale reconstruction, but from a better starting point.
+Next-generation arrays such as the DSA-2000 will produce data faster than iterative algorithms such as CLEAN can deconvolve it \citep{Connor2022}.
+Their PSF, however, follows directly from the array geometry and is known for every observation.
+\citet{Connor2022} introduced POLISH, a residual convolutional network trained on simulated sky--image pairs that deconvolves and super-resolves in one pass and beat CLEAN on simulated data.
+POLISH++ \citep{Wu2026} added patch-wise processing for wide fields and an $\mathrm{arcsinh}$ stretch for high dynamic range, and recovered strong-lens morphology near the PSF scale.
+These works established that simulation-trained reconstruction is accurate and fast when the PSF is stable.
+
+\opt{P4: radio interferometry and POLISH}{3}
+In radio astronomy the PSF follows from the array geometry and is known for every observation, and simulation-trained networks already reconstruct survey images: POLISH deconvolves and super-resolves in a single pass \citep{Connor2022}, and POLISH++ extends it to wide fields with high dynamic range and recovers strong-lens arcs near the PSF scale \citep{Wu2026}.
+
+%% ---------------------------------------------------------------- P5
+\opt{P5: Euclid is the first wide survey with a stable PSF}{1}
+Euclid is the first optical and near-infrared survey to combine both conditions: a wide field and a stable, known PSF.
+This is the combination that ground-based surveys and space telescopes have each had only half of.
+Euclid observes from space in one visible and three near-infrared bands, and its PSF is stable and accurately modelled because its weak-lensing measurements require it \citep{Mellier2025}.
+At the same time, its Wide Survey will cover about $14{,}000\,\mathrm{deg}^2$ \citep{Mellier2025}, several thousand times the area of the largest Hubble survey.
+Its first large release, DR1-Foundation, came out in November 2026 with about $1900\,\mathrm{deg}^2$\footnote{\url{https://www.cosmos.esa.int/web/euclid/euclid-dr1}}, and the \emph{Nancy Grace Roman Space Telescope} \citep{Spergel2015}, launched in August 2026, will add more than $5000\,\mathrm{deg}^2$ of space-based near-infrared imaging\footnote{\url{https://www.nasa.gov/missions/roman-space-telescope/core-survey-by-nasas-roman-mission-will-unveil-universes-dark-side/}}.
+For the first time, the approach that works for radio surveys can be applied to wide optical imaging, and the data to do it are arriving now.
+
+\opt{P5: Euclid is the first wide survey with a stable PSF}{2}
+This changed with \emph{Euclid}.
+For the first time, a telescope images a large fraction of the sky from space, with the stable PSF that super-resolution needs.
+Euclid's weak-lensing goals demand a sharp PSF that is stable and accurately modelled across the focal plane \citep{Mellier2025}, and its Wide Survey will cover about $14{,}000\,\mathrm{deg}^2$ in one visible ($I_{\rm E}$) and three near-infrared ($Y_{\rm E}$, $J_{\rm E}$, $H_{\rm E}$) bands \citep{Mellier2025}.
+The first $1900\,\mathrm{deg}^2$ were released as DR1-Foundation in November 2026\footnote{\url{https://www.cosmos.esa.int/web/euclid/euclid-dr1}}, and the Roman Space Telescope \citep{Spergel2015}, launched in August 2026, will survey more than $5000\,\mathrm{deg}^2$ in the near-infrared\footnote{\url{https://www.nasa.gov/missions/roman-space-telescope/core-survey-by-nasas-roman-mission-will-unveil-universes-dark-side/}}.
+No earlier data set could have supported survey-scale super-resolution of optical images; Euclid can, and now is the time to build it.
+
+\opt{P5: Euclid is the first wide survey with a stable PSF}{3}
+\emph{Euclid} is the first wide optical and near-infrared survey made from space: its PSF is stable and accurately modelled \citep{Mellier2025}, and its Wide Survey will cover about $14{,}000\,\mathrm{deg}^2$, of which $1900\,\mathrm{deg}^2$ were released in November 2026\footnote{\url{https://www.cosmos.esa.int/web/euclid/euclid-dr1}}.
+With Roman \citep{Spergel2015}, launched in August 2026, adding more than $5000\,\mathrm{deg}^2$\footnote{\url{https://www.nasa.gov/missions/roman-space-telescope/core-survey-by-nasas-roman-mission-will-unveil-universes-dark-side/}}, survey-scale super-resolution of optical imaging is possible for the first time.
+
+%% ---------------------------------------------------------------- P6
+\opt{P6: strong lenses need the extra resolution}{1}
+Strong gravitational lenses are one of the science cases that gain most from sharper wide-field images.
+A strong lens forms when a massive foreground galaxy or cluster bends the light of a more distant source into multiple images or arcs \citep{Treu2010}.
+Lenses magnify galaxies that would otherwise be too faint to study and measure the mass, including the dark matter, of the deflector and the geometry of the Universe \citep{Treu2010}.
+They are rare, and ground-based surveys have found thousands of candidates \citep{Jacobs2019,Huang2020}, mostly with large Einstein radii, because a small arc blends into the light of its deflector.
+Systems with small Einstein radii, often with lower-mass deflectors, are therefore underrepresented \citep{AcevedoBarroso2025}.
+Euclid is expected to find more than $10^5$ lenses \citep{Collett2015_ApJ81120}, and its first $63\,\mathrm{deg}^2$ already yielded about 500 candidates \citep{Walmsley2025}; sharper images would extend these searches to the smallest and most blended systems.
+
+\opt{P6: strong lenses need the extra resolution}{2}
+The clearest case for higher resolution over wide areas is the search for strong gravitational lenses.
+These rare systems, in which a foreground galaxy splits the light of a background source into arcs or multiple images, measure dark matter in the deflector and magnify sources too faint to see otherwise \citep{Treu2010}.
+Finding them requires separating the arc from the deflector, which becomes impossible when the Einstein radius approaches the PSF size, so compact systems are missed and the known population is biased towards massive deflectors \citep{AcevedoBarroso2025}.
+Euclid's first $63\,\mathrm{deg}^2$ already doubled the number of lens candidates found in space-based imaging \citep{Walmsley2025}, and the full survey is expected to contain more than $10^5$ lenses \citep{Collett2015_ApJ81120}.
+Its four bands help further, because the source and the deflector usually differ in colour.
+Resolution gained beyond Euclid's native sampling translates directly into lenses found at smaller Einstein radii.
+
+\opt{P6: strong lenses need the extra resolution}{3}
+Strong gravitational lenses are a direct beneficiary: they are rare, they measure dark matter and magnify faint sources \citep{Treu2010}, and those with small Einstein radii are missed when the arc blends with the deflector \citep{AcevedoBarroso2025}.
+Euclid is expected to contain more than $10^5$ of them \citep{Collett2015_ApJ81120,Walmsley2025}.
+
+%% ---------------------------------------------------------------- P7
+\opt{P7: this work}{1}
+In this work we adapt the POLISH framework to Euclid's visible and near-infrared imaging.
+The model takes the four Euclid bands and reconstructs each field at twice the sampling, from $0.1''$ to $0.05''$ per pixel, while removing noise and the PSF.
+Real Euclid images have no high-resolution counterparts, so we train the network on synthetic skies with a known truth.
+The synthetic skies follow source populations measured in Euclid Q1 and take galaxy morphologies and colours from the TNG50-SKIRT Atlas \citep{Baes2024TNG50SKIRT}; each is turned into a Euclid-like observation with measured PSFs and models of the noise and detector artifacts.
+We validate the model on synthetic images with known truth and then apply it to real Euclid images, comparing the reconstructions with JWST observations of the same galaxies.
+
+\opt{P7: this work}{2}
+Here we build the first step of such a pipeline for Euclid.
+We adapt POLISH to the four Euclid bands, reconstructing each field on a $0.05''$ grid, twice as fine as the $0.1''$ input, while removing noise and the PSF in a single pass that is fast enough for the full survey.
+Because no sharper images of the whole Euclid sky exist, the network learns from synthetic skies with known truth: galaxies from the TNG50-SKIRT Atlas \citep{Baes2024TNG50SKIRT} and stars, placed according to the populations measured in Euclid Q1, observed through Euclid's measured PSFs, noise and artifacts.
+We test the model on synthetic images, where the truth is known, and on real Euclid Q1 images, where JWST observations of the same field provide a sharper view.
+Section~\ref{sec:data} describes the data, the Methods describe the training set and the model, and the Results follow.
+
+\opt{P7: this work}{3}
+We adapt POLISH to Euclid: a network trained on synthetic skies built from Euclid Q1 populations and TNG50-SKIRT galaxies \citep{Baes2024TNG50SKIRT} reconstructs the four Euclid bands at $0.05''$ per pixel, and we test it on synthetic data and against JWST imaging of the same galaxies.
 
 \section{Data}\label{sec:data}
 We use three data sets:\begin{itemize}
