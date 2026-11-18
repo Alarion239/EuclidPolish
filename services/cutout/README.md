@@ -1,10 +1,19 @@
-# Euclid Q1 cutout server
+# Euclid Q1 cutout server and POLISH viewer
 
 Returns all four MER bands (VIS, Y_E, J_E, H_E) of a pixel window of a Q1 MER
 tile in one response, for the in-browser super-resolution viewer. It reads the
 public `nasa-irsa-euclid-q1` bucket with HTTP range requests, one per image
 row, so it belongs next to the bucket (us-east-1). API and binary format are
 documented at the top of [cutout_server.py](cutout_server.py).
+
+The same service serves the viewer at `/` ([static/](static/)): the page
+fetches 320² blocks (256² kept + 32 px margins), runs member 257 on them with
+ONNX Runtime Web 1.31.1 (WebGPU, else multi-threaded WebAssembly; the page is
+cross-origin isolated for that), and shows Euclid against POLISH with a swipe
+divider. `static/m257.onnx` comes from `scripts/export_onnx.py`;
+`static/tiles.json` is the project's Q1 tile index (a test keeps them equal).
+Checked 2026-11-18: the browser's SR of real blocks equals TensorFlow's
+(block sums to 6 decimals); ~210–300 ms per block on an M4 with WebGPU.
 
 ```bash
 docker build -t euclid-cutout services/cutout

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import sys
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -168,3 +169,25 @@ def test_header_parser_reads_astropy_headers(tile_files):
 
 def test_server_zeropoints_match_the_band_config():
     assert {b.name: b.sim_zeropoint_e for b in Config.BANDS} == pytest.approx(cs.SIM_ZEROPOINT_E, abs=1e-12)
+
+
+def test_viewer_page_is_served_cross_origin_isolated(tile_files):
+    async def check(client, _arrays):
+        page = await client.get("/")
+        assert page.status == 200 and "POLISH" in await page.text()
+        assert page.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+        assert page.headers["Cross-Origin-Embedder-Policy"] == "require-corp"
+        for path in ("/static/viewer.js", "/static/tiles.json", "/static/m257.onnx"):
+            resp = await client.get(path)
+            assert resp.status == 200, path
+            assert resp.headers["Cross-Origin-Embedder-Policy"] == "require-corp"
+
+    _with_client(tile_files, check)
+
+
+def test_viewer_tile_index_matches_the_project_index():
+    root = Path(__file__).resolve().parents[1]
+    source = json.loads((root / "euclid_polish/sky/observation/q1_mer_tiles.json").read_text())
+    served = json.loads((root / "services/cutout/static/tiles.json").read_text())
+    keys = ("tile", "ra", "dec", "polygon", "field")
+    assert served["tiles"] == [{k: t[k] for k in keys} for t in source["tiles"]]

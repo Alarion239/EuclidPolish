@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>POLISH Euclid Viewer</title>
+<meta name="description" content="Euclid Q1 images super-resolved in your browser by the POLISH model.">
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14171c; --line: #262b33; --text: #e6e8eb; --muted: #8b93a0;
+    --accent: #6cb6ff; --sr: #f2c14e; --err: #ff7b72;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 8px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+  header h1 b { color: var(--sr); font-weight: 600; }
+  .group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  input[type=text] { width: 230px; max-width: 60vw; padding: 5px 8px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  select, button { padding: 5px 9px; background: #1c2027; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; font: inherit; cursor: pointer; }
+  button:hover, select:hover { border-color: #3a414c; }
+  button.on { background: #24364d; border-color: var(--accent); }
+  label { color: var(--muted); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  input[type=range] { width: 110px; accent-color: var(--accent); }
+  #stage { position: relative; flex: 1; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  canvas.dragging { cursor: grabbing; }
+  #hud { position: absolute; left: 12px; bottom: 10px; color: var(--muted); font: 12px ui-monospace, monospace;
+    background: rgba(11,13,16,.75); padding: 4px 8px; border-radius: 6px; pointer-events: none; white-space: pre; }
+  #status { position: absolute; right: 12px; bottom: 10px; color: var(--muted); font-size: 12px; text-align: right;
+    background: rgba(11,13,16,.75); padding: 4px 8px; border-radius: 6px; pointer-events: none; max-width: 60%; }
+  #status .err { color: var(--err); }
+  #about { position: absolute; right: 12px; top: 10px; max-width: 340px; padding: 10px 12px; font-size: 12px;
+    background: rgba(20,23,28,.94); border: 1px solid var(--line); border-radius: 8px; color: var(--muted); display: none; }
+  #about.show { display: block; }
+  #about p { margin: 0 0 6px; } #about b { color: var(--text); font-weight: 600; }
+  @media (max-width: 640px) {
+    header { padding: 8px 12px; } input[type=range] { width: 80px; }
+    #status { top: 36px; bottom: auto; max-width: calc(100% - 24px); }
+    #hud { font-size: 11px; right: 12px; white-space: pre-wrap; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Euclid Q1 · <b>POLISH</b> super-resolution</h1>
+  <form id="search" class="group">
+    <input id="where" type="text" spellcheck="false" placeholder="RA Dec (deg) or tile x y" aria-label="Position">
+    <button type="submit">Go</button>
+    <select id="presets" aria-label="Presets"><option value="">Places…</option></select>
+  </form>
+  <div class="group" role="group" aria-label="Compare">
+    <button data-mode="swipe" class="on" title="Drag the divider (1)">Swipe</button>
+    <button data-mode="lr" title="Euclid only (2)">Euclid</button>
+    <button data-mode="sr" title="POLISH only (3)">POLISH</button>
+  </div>
+  <div class="group">
+    <select id="colour" aria-label="Colour">
+      <option value="colour">Colour (H · YJ · VIS)</option>
+      <option value="vis">VIS grey</option>
+    </select>
+    <label>Brightness <input id="white" type="range" min="0" max="100" value="50"></label>
+    <label title="Average over 8 rotations/flips: removes the faint grid pattern, 8× slower">
+      <input id="tta" type="checkbox"> TTA×8</label>
+    <button id="info" title="About">?</button>
+  </div>
+</header>
+<div id="stage">
+  <canvas id="view"></canvas>
+  <div id="hud"></div>
+  <div id="status">Loading model…</div>
+  <div id="about">
+    <p><b>What is this?</b> Euclid Q1 MER images (0.1″ pixels, VIS + NISP Y/J/H) fetched as you pan, and
+      super-resolved to 0.05″ pixels by the POLISH model running on your own GPU (WebGPU) or CPU.</p>
+    <p><b>Use:</b> drag to pan, scroll to zoom, drag the divider to compare, keys 1/2/3 switch views,
+      B blinks.</p>
+    <p><b>Caveat:</b> the right side is a model reconstruction trained on simulations, not an observation.
+      On real sky it is known to lose some faint flux (~7–10%) and can add faint texture.</p>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/ort.all.min.js" crossorigin="anonymous"></script>
+<script type="module" src="static/viewer.js"></script>
+</body>
+</html>

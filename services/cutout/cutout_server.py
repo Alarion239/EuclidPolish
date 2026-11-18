@@ -56,6 +56,7 @@ import struct
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from xml.etree import ElementTree
 
 import aiohttp
@@ -88,6 +89,8 @@ SIM_ZEROPOINT_E: dict[str, float] = {
 
 WCS_KEYS = ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2",
             "CD1_1", "CD1_2", "CD2_1", "CD2_2", "RADESYS", "EQUINOX")
+# The viewer (static/): the page, its script, the tile index and the ONNX model.
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 TILE_RE = re.compile(r"^\d{6,12}$")
 S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 
@@ -395,7 +398,7 @@ def create_app(bucket_url: str | None = None, *, origins: list[str] | None = Non
     if origins is None:
         origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
     concurrency = concurrency or int(os.environ.get("S3_CONCURRENCY", "64"))
-    app = web.Application(middlewares=[cors_middleware(origins)])
+    app = web.Application(middlewares=[isolation_middleware, cors_middleware(origins)])
     app[MAX_CUTOUT] = max_cutout or int(os.environ.get("MAX_CUTOUT", "1024"))
 
     async def lifecycle(app: web.Application):
@@ -409,7 +412,28 @@ def create_app(bucket_url: str | None = None, *, origins: list[str] | None = Non
     app.router.add_get("/health", health)
     app.router.add_get("/v1/tile/{tile}", tile_info)
     app.router.add_get("/v1/cutout", cutout)
+    if STATIC_DIR.is_dir():
+        app.router.add_get("/", viewer_page)
+        app.router.add_static("/static/", STATIC_DIR)
     return app
+
+
+async def viewer_page(_request: web.Request) -> web.FileResponse:
+    return web.FileResponse(STATIC_DIR / "index.html")
+
+
+@web.middleware
+async def isolation_middleware(request: web.Request, handler):
+    """Cross-origin isolation for the viewer: multi-threaded WebAssembly (the
+    model's CPU fallback) needs SharedArrayBuffer, which needs COOP + COEP.
+    Every subresource the page loads is same-origin or sends CORP (jsDelivr)."""
+    response = await handler(request)
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+    response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+    if request.path == "/" or request.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 
 if __name__ == "__main__":
