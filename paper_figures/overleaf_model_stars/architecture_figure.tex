@@ -39,35 +39,33 @@
 \node[mdop,anchor=north] at (16.300,-6.062) {reconstruction\\[-1pt] 4 bands, $0.05''$ grid};
 % ---- per-band path, drawn as four stacked sheets
 \draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (6.120,2.482) rectangle (12.755,6.249);
-\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (5.990,2.352) rectangle (12.625,6.119);
-\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (5.860,2.222) rectangle (12.495,5.989);
-\draw[rounded corners=3pt,line width=0.6pt,draw=black!55,dashed,fill=white] (5.730,2.092) rectangle (12.365,5.859);
-\node[mdnote,anchor=north west] at (5.850,5.759) {each band separately};
-\mdfmap{K}{6.030}{3.567}{0.46}{1.45}{mdLR}
-\mdslabs{6.030}{3.567}{0.46}{1.45}{8}{mdLR}
+\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (6.120,2.352) rectangle (12.755,6.119);
+\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (6.120,2.222) rectangle (12.755,5.989);
+\draw[rounded corners=3pt,line width=0.6pt,draw=black!55,dashed,fill=white] (6.120,2.092) rectangle (12.755,5.859);
+\node[mdnote,anchor=north west] at (6.240,5.759) {each band separately};
+\mdfmap{K}{6.420}{3.567}{0.46}{1.45}{mdLR}
+\mdslabs{6.420}{3.567}{0.46}{1.45}{8}{mdLR}
 \node[mdch,above=1pt of K-n] {8};
-\mdfmap{KC}{8.725}{3.567}{0.33}{1.45}{mdLR}
+\mdfmap{KC}{9.115}{3.567}{0.33}{1.45}{mdLR}
 \node[mdch,above=1pt of KC-n] {4};
-\mdfmap{KS}{11.290}{3.567}{0.07}{2.35}{mdHR}
+\mdfmap{KS}{11.680}{3.567}{0.07}{2.35}{mdHR}
 \node[mdch,above=1pt of KS-n] {1};
 \mdfmap{KA}{14.555}{3.567}{0.33}{2.35}{mdHR}
 \node[mdch,above=1pt of KA-n] {4};
-\draw[mdflow,rounded corners=5pt] (asinh.north) |- (K-w) node[mdop,pos=0.5,anchor=south west,xshift=4pt,yshift=1pt] {band $b$};
+\draw[mdflow,rounded corners=5pt] (asinh.north) |- (K-w);
 \draw[mdflow] (K-e) -- (KC-w) node[mdop,midway,above=1pt] {$5\!\times\!5$ conv};
 \draw[mdflow] (KC-e) -- (KS-w) node[mdop,midway,above=1pt] {upsample};
 \draw[mdflow] (KS-e) -- (KA-w);
 \node[mdop,above=1pt] at (13.655,3.567) {stack};
 \draw[mdflow,rounded corners=5pt] (KA-e) -| (sum.north);
 % ---- legend
-\mdfmap{lg1}{0.10}{6.099}{0.22}{0.42}{mdLR}
-\node[mdleg,anchor=west] at (0.55,6.099) {$0.1''$ grid};
-\mdfmap{lg2}{2.30}{6.099}{0.22}{0.42}{mdHR}
-\node[mdleg,anchor=west] at (2.75,6.099) {$0.05''$ grid};
-\node[mdch,anchor=west] at (0.08,5.479) {32};
-\node[mdleg,anchor=west] at (0.48,5.479) {channels};
-\node[mdfun,inner sep=1.5pt] at (2.43,5.479) {\mdgrelu};
-\node[mdleg,anchor=west] at (2.75,5.479) {non-linear function};
-\node[mdpanel,anchor=south west] at (0,6.549) {(a)};
+\mdfmap{lg0}{1.850}{3.017}{0.22}{0.42}{mdLR}
+\node[mdleg,anchor=west] at (2.300,3.017) {$0.1''$ grid};
+\mdfmap{lg1}{1.850}{2.417}{0.22}{0.42}{mdHR}
+\node[mdleg,anchor=west] at (2.300,2.417) {$0.05''$ grid};
+\node[mdfun,inner sep=1.5pt] at (1.980,1.817) {\mdgrelu};
+\node[mdleg,anchor=west] at (2.300,1.817) {non-linear function};
+\node[mdpanel,anchor=north west] at (0,6.249) {(a)};
 % ===================================================================== (b)
 \mdfmap{bx}{0.800}{-5.614}{0.72}{1.45}{mdLR}
 \node[mdch,above=1pt of bx-n] {32};

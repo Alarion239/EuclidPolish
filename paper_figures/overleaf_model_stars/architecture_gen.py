@@ -11,7 +11,8 @@ V = 0.40    # vertical clearance between rows / items
 P = 0.30    # padding inside frames
 hL, hH = 1.45, 2.35
 CH = 0.30   # height of a channel label above a cuboid
-SHEET = 0.13  # offset of the stacked sheets behind the per-band frame
+SHEET = 0.13  # upward offset of the stacked sheets behind the per-band frame
+              # (straight up, so the arrows in and out cross one edge only)
 RES_OFF = 0.11  # offset of the stacked residual boxes
 PILL_IN_W, PILL_OUT_W, PILL_H = 2.70, 2.40, 1.00
 RELU_W = 1.50
@@ -96,7 +97,7 @@ o(f"\\node[mdop,anchor=north] at ({f(xs)},{f(yo - LRS - 0.06)})"
 ys = TOP(hH) + CH + V + hH / 2                  # its tall cuboids clear M's label
 o("% ---- per-band path, drawn as four stacked sheets")
 xKA = xM
-frame_e = xKA - G - 3 * SHEET                  # front sheet's right edge
+frame_e = xKA - G                              # frame's right edge
 eKS = frame_e - P
 xKS = eKS - W(0.07, hH)
 xKC = xKS - G - W(0.33, hL)
@@ -106,7 +107,7 @@ frame_b = ys - hH / 2 - P
 frame_t = ys + TOP(hH) + CH + P
 for k in (3, 2, 1):
     o(f"\\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white]"
-      f" ({f(frame_w + SHEET*k)},{f(frame_b + SHEET*k)}) rectangle ({f(frame_e + SHEET*k)},{f(frame_t + SHEET*k)});")
+      f" ({f(frame_w)},{f(frame_b + SHEET*k)}) rectangle ({f(frame_e)},{f(frame_t + SHEET*k)});")
 o(f"\\draw[rounded corners=3pt,line width=0.6pt,draw=black!55,dashed,fill=white]"
   f" ({f(frame_w)},{f(frame_b)}) rectangle ({f(frame_e)},{f(frame_t)});")
 o(f"\\node[mdnote,anchor=north west] at ({f(frame_w + 0.12)},{f(frame_t - 0.10)}) {{each band separately}};")
@@ -114,26 +115,25 @@ fmap("K", xK, ys, 0.46, hL, "mdLR", slabs=8, ch="8")
 fmap("KC", xKC, ys, 0.33, hL, "mdLR", ch="4")
 fmap("KS", xKS, ys, 0.07, hH, "mdHR", ch="1")
 fmap("KA", xKA, ys, 0.33, hH, "mdHR", ch="4")
-o(f"\\draw[mdflow,rounded corners=5pt] (asinh.north) |- (K-w) node[mdop,pos=0.5,anchor=south west,xshift=4pt,yshift=1pt] {{band $b$}};")
+o(f"\\draw[mdflow,rounded corners=5pt] (asinh.north) |- (K-w);")
 arrow("(K-e)", "(KC-w)", "$5\\!\\times\\!5$ conv")
 arrow("(KC-e)", "(KS-w)", "upsample")
 arrow("(KS-e)", "(KA-w)")
-o(f"\\node[mdop,above=1pt] at ({f((frame_e + 3*SHEET + xKA)/2)},{f(ys)}) {{stack}};")
+o(f"\\node[mdop,above=1pt] at ({f((frame_e + xKA)/2)},{f(ys)}) {{stack}};")
 o("\\draw[mdflow,rounded corners=5pt] (KA-e) -| (sum.north);")
 
-# legend: top left, above the band-b branch
+# legend: in the corner between the per-band branch and the trunk
 o("% ---- legend")
-yl1 = frame_t + 3 * SHEET - 0.15
-yl2 = yl1 - 0.62
-o(f"\\mdfmap{{lg1}}{{0.10}}{{{f(yl1)}}}{{0.22}}{{0.42}}{{mdLR}}")
-o(f"\\node[mdleg,anchor=west] at (0.55,{f(yl1)}) {{$0.1''$ grid}};")
-o(f"\\mdfmap{{lg2}}{{2.30}}{{{f(yl1)}}}{{0.22}}{{0.42}}{{mdHR}}")
-o(f"\\node[mdleg,anchor=west] at (2.75,{f(yl1)}) {{$0.05''$ grid}};")
-o(f"\\node[mdch,anchor=west] at (0.08,{f(yl2)}) {{32}};")
-o(f"\\node[mdleg,anchor=west] at (0.48,{f(yl2)}) {{channels}};")
-o(f"\\node[mdfun,inner sep=1.5pt] at (2.43,{f(yl2)}) {{\\mdgrelu}};")
-o(f"\\node[mdleg,anchor=west] at (2.75,{f(yl2)}) {{non-linear function}};")
-o(f"\\node[mdpanel,anchor=south west] at (0,{f(yl1 + 0.45)}) {{(a)}};")
+xl = xin + 0.45
+for i, (kind, text) in enumerate([("LR", "$0.1''$ grid"), ("HR", "$0.05''$ grid"),
+                                  ("fun", "non-linear function")]):
+    yl = ys - 0.55 - 0.60 * i
+    if kind == "fun":
+        o(f"\\node[mdfun,inner sep=1.5pt] at ({f(xl + 0.18)},{f(yl)}) {{\\mdgrelu}};")
+    else:
+        o(f"\\mdfmap{{lg{i}}}{{{f(xl + 0.05)}}}{{{f(yl)}}}{{0.22}}{{0.42}}{{md{kind}}}")
+    o(f"\\node[mdleg,anchor=west] at ({f(xl + 0.50)},{f(yl)}) {{{text}}};")
+o(f"\\node[mdpanel,anchor=north west] at (0,{f(frame_t + 3 * SHEET)}) {{(a)}};")
 
 # ------------------------------------------------------------------ (b)
 o("% ===================================================================== (b)")
