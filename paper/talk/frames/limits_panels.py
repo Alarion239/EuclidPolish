@@ -77,9 +77,19 @@ S = srp[2 * (cy - h):2 * (cy + h), 2 * (cx - h):2 * (cx + h)]
 sk = np.median(lr) / 4.0
 kk = np.percentile(up - sk, 50)
 top = np.arcsinh(np.percentile(up - sk, 99.9) / kk)
-for nm, c, lab in (("LIM3_core_1_euclid.png", up, "Euclid · bright nucleus (VIS)"),
-                   ("LIM3_core_2_polished.png", S, "POLISHed")):
+# holes as in the battery (eval/battery holes): within the tile's bright-1 % LR pixels, SR < 1/2 LR/4
+bright = np.repeat(np.repeat(lr[cy - h:cy + h, cx - h:cx + h] > np.percentile(lr, 99), 2, 0), 2, 1)
+hole = bright & (S < 0.5 * up)
+from scipy import ndimage
+edge = hole & ~ndimage.binary_erosion(hole, iterations=1)
+edge = ndimage.binary_dilation(edge, iterations=1)
+print("hole px", int(hole.sum()), "of bright", int(bright.sum()))
+coral = np.array([0xF0, 0x8A, 0x6C]) / 255.0
+for nm, c, lab, mark in (("LIM3_core_1_euclid.png", up, "Euclid · bright nucleus (VIS)", False),
+                         ("LIM3_core_2_polished.png", S, "POLISHed · holes outlined", True)):
     v = np.clip(np.arcsinh((c - sk) / kk) / top, 0, 1)
-    save_panel(np.stack([v] * 3, -1), nm, label=lab, interp="nearest" if "euclid" in nm else "lanczos",
-               bar_arcsec=2.0)
+    rgb = np.stack([v] * 3, -1)
+    if mark:
+        rgb[edge] = coral
+    save_panel(rgb, nm, label=lab, interp="nearest", bar_arcsec=2.0)
 print("ok")
