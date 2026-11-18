@@ -1,0 +1,346 @@
+\documentclass[linenumbers,trackchanges,twocolumn]{aastex701}
+\usepackage{lipsum}
+
+%%%% TIKZ PREAMBLE 
+\input{architecture_preamble}
+
+%%%% REVIEW COMMENTS (todonotes)
+%% \commentstrue  -> notes show as coloured boxes + a list at the top
+%% \commentsfalse -> every note disappears; the PDF is the clean paper
+\newif\ifcomments \commentstrue
+\ifcomments
+  \usepackage[colorinlistoftodos,textsize=footnotesize]{todonotes}
+\else
+  \usepackage[disable]{todonotes}
+\fi
+\setuptodonotes{inline,bordercolor=black!40}
+%% \ab{date}{text}: one comment from Aleksandr (as on Overleaf)
+\newcommand{\ab}[2]{\todo[color=orange!25,author={Aleksandr, #1}]{#2}}
+%% \board{text}: transcribed whiteboard sketch
+\newcommand{\board}[1]{\todo[color=violet!15,author={Whiteboard},caption={Whiteboard: intro outline}]{#1}}
+%% \task{text}: open task from the to-do list
+\newcommand{\task}[1]{\todo[color=cyan!20,author={Task}]{#1}}
+
+
+\begin{document}
+
+\title{\lipsum[1]}
+
+\author[orcid=0000-0000-0000-0001,sname='North America']{Tundra North America}
+\affiliation{Harvard COllege}
+\email[show]{abelotserkovtsev@college.harvard.edu}  
+
+
+%% Keywords should appear after the \end{abstract} command. 
+%% The AAS Journals now uses Unified Astronomy Thesaurus (UAT) concepts:
+%% https://astrothesaurus.org
+%% You will be asked to selected these concepts during the submission process
+%% but this old "keyword" functionality is maintained in case authors want
+%% to include these concepts in their preprints.
+%%
+%% You can use the \uat command to link your UAT concepts back its source.
+\keywords{\uat{Galaxies}{573} --- \uat{Cosmology}{343} --- \uat{High Energy astrophysics}{739} --- \uat{Interstellar medium}{847} --- \uat{Stellar astronomy}{1583} --- \uat{Solar physics}{1476}}
+
+\ifcomments \listoftodos[Review comments] \fi
+
+\task{Intro + presentation, alternating: presentation $\to$ introduction $\to$ presentation $\to$ introduction. A lot more focus on the introduction than in the last presentation; draft the slides.}
+
+\section{Introduction}
+
+\board{Intro outline (whiteboard):
+\begin{itemize}
+  \item \textbf{Wide field} optical imaging surveys: \textbf{always} from the ground. Can't discover cool things without looking at large areas!
+  \item vs.\ space-based imaging with a tiny field of view (e.g.\ Hubble, JWST): expensive!
+  \item $\to$ introduce SR studies on ground imaging (SDSS, HSC, DECaLS, CFHT, SkyMapper\ldots). SDSS and DECaLS: starting to find gravitational lenses (that Tania likes!)
+  \item $\to$ introduce Liam's work: from the ground, but RADIO, which also has a stable PSF.
+  \item $\to$ EUCLID! \textbf{First time}: large-area optical imaging \emph{and} a stable PSF.
+  \item $\to$ also, Roman is upcoming.
+\end{itemize}}
+
+\ab{11 Nov, 12:00 pm}{Paragraph 1: what field --- optical imaging surveys.}
+\ab{11 Nov, 12:00 pm}{History lesson.}
+\ab{11 Nov, 12:00 pm}{Set up the fact that it's been for a while. BUT ALWAYS from the ground.}
+\ab{11 Nov, 12:01 pm}{vs.\ space-based imaging has always had a very, very tiny FOV.}
+\ab{11 Nov, 12:02 pm}{Introduce SR studies on ground imaging.}
+\ab{11 Nov, 12:03 pm}{Introduce Liam's work.}
+
+\ab{11 Nov, 12:05 pm}{RADIO has a stable PSF. We don't!}
+\ab{11 Nov, 12:06 pm}{First time we have large-area optical imaging + a stable PSF.}
+\ab{11 Nov, 12:06 pm}{Euclid is here and Roman is upcoming!!! Should be doing this work now!}
+\ab{11 Nov, 12:06 pm}{Tomorrow is Euclid DR1!!!}
+
+Wide field optical imaging of the sky is important for searching for rare objects and transients, studying large-scale structure, and collecting large-scale statistics of galaxies and their evolution. 
+The first wide field optical surveys were conducted in ..., which enabled the first discoveries of .... 
+Until recently, they had to be done from the ground, with space observations being very limited in the field of view.
+As the spatial resolution of wide field surveys increased, we were able to ...
+SR existed in Radio-astronomy and the attempts were made to use it in optical astronomy, but it was limited by opticals and unstable PSF of ground-based imaging.
+Today, we have Euclid and waiting for Roman, which will image a LOT of the sky in HIGH resolution --- why not increase it even more? :) 
+Euclid is very good for this because it provides large test-bed of homogenious data, supre-resolution of which can be verified with other telescopes on small patches of the sky.   
+This can be a useful step before follow-up.
+
+\ab{11 Nov, 11:56 am}{We should add more pretext to this.}
+\ab{11 Nov, 11:56 am}{Biggest selling point: the first time for optical astronomy that we have wide-field space-based imaging --- the key selling point.}
+\ab{11 Nov, 11:56 am}{The first time we could do this.}
+\ab{11 Nov, 11:57 am}{No one before could have done this.}
+
+An important scientific motivation for improving the angular resolution of wide-field astronomical images is the identification of strong gravitational lenses.
+Strong gravitational lensing occurs when the gravitational field of a massive foreground object, such as a galaxy or cluster, bends light from a more distant source strongly enough to produce multiple images of that source \citep{Treu2010}. 
+These systems allow us to study distant magnified galaxies that would otherwise be too faint to see, as well as the mass distribution of the foreground galaxy or cluster, dark matter, and the geometry of the Universe \citep{Treu2010}. 
+Unfortunately, strong gravitational lenses are rare and often difficult to identify in images with limited angular resolution because the light from the lensed source can blend with that of the foreground deflector. 
+This problem becomes more severe as the angular scale of the lensing system, characterized by its \emph{Einstein radius}, decreases. 
+The resulting underrepresentation of small-Einstein-radius systems limits our ability to study a representative lens population, including systems with lower-mass deflectors and lens--source geometries that differ from those found in more easily separable systems \citep{Treu2010,AcevedoBarroso2025}.
+Improving the detectability of these compact lensing features could therefore reduce this selection bias and help advance the gravitational lensing science.
+
+The European Space Agency’s \emph{Euclid} mission provides an important opportunity to search for such systems because it combines wide sky coverage, multi-band visible and near-infrared observations, with stable and precise space-based imaging.
+Its primary goals are to study the large-scale structures of the Universe and constrain dark matter and dark energy through weak gravitational lensing and galaxy clustering.
+These goals require low-noise images with sharp, stable and accurately modeled point-spread function --- exactly the combination that makes Euclid well suited to discovering strong gravitational lenses.
+Moreover, one optical and three near-infrared imaging bands can help distinguish a lensed source from its foreground deflector when the two objects have different colors.
+The higher-resolution VIS instrument samples the sky at $0.1^{\prime\prime}$ per pixel, while the three NISP bands are sampled at $0.3^{\prime\prime}$ per pixel \citep{Mellier2025}.
+Although Hubble and JWST provide finer angular resolution in targeted fields, Euclid will provide uniform four-band imaging over approximately $14{,}000\,\mathrm{deg}^{2}$, enabling searches for extremely rare strong gravitational lenses across an unprecedented area of the sky. 
+However, applying image reconstruction across a survey of this scale would require algorithms that are both accurate and computationally efficient.
+
+A related computational challenge has already motivated the development of efficient reconstruction algorithms in radio astronomy.
+Efficient image reconstruction is essential for next-generation radio surveys, such as the DSA-2000, a radio array expected to process over $80$ terabits per second \citep{Connor2022}. 
+Radio-interferometric reconstruction traditionally relies on iterative algorithms such as CLEAN, which deconvolve the dirty image using the instrument’s point-spread function but are difficult to scale to such data rates. 
+To address this limitation, \citet{Connor2022} introduced POLISH, a feed-forward residual convolutional neural network that performs deconvolution and super-resolution in a single pass, enabling quasi-real-time reconstruction.
+The network was trained on simulated pairs of high-resolution radio skies populated by elliptical Gaussian sources and corresponding dirty images produced by convolution with modeled and perturbed interferometric PSFs, followed by downsampling and noise addition. 
+On simulated DSA-2000 observations, POLISH outperformed traditional CLEAN in PSNR and SSIM and recovered source sizes below the nominal beam scale. 
+These results established a proof of concept for efficient, simulation-trained astronomical deconvolution and super-resolution.
+
+Building on the original model, \citet{Wu2026} extended the framework with POLISH++, adapting it to the larger images and higher dynamic ranges expected in realistic surveys. 
+To address scalability, POLISH++ introduced patch-wise training and inference, reducing memory requirements while allowing the network to learn contamination from sources outside each patch. 
+It also applies an invertible $\mathrm{arcsinh}$ transformation before training to compress the dynamic range, placing relatively greater emphasis on faint structures than on small absolute errors in the brightest pixels. 
+With these changes, POLISH++ substantially improved source detection and galaxy-shape recovery relative to both image-plane CLEAN and the original POLISH model, although its flux estimates were less accurate than those obtained with CLEAN. 
+When combined with a separately trained lens classifier, POLISH++ recovered simulated strong-lensing morphology at image separations near the DSA-2000 PSF FWHM, supporting its super-resolution capability and demonstrating the potential of POLISH++ as a framework for astronomical image reconstruction.
+
+In this work, we adapt the POLISH/POLISH++ framework to Euclid visible and near-infrared imaging.
+The model takes four Euclid bands as input and reconstructs the observed fields at twice the input sampling, from $0.1''$ to $0.05''$ per pixel, while denoising and removing PSF.
+Because real Euclid observations do not have paired high-resolution targets, we train network on synthetic skies with known high-resolution truth.
+To represent realistic astronomical scenes, we calibrate the source populations against Euclid Q1 measurements and use TNG50-SKIRT galaxies as morphological and color templates \citep{Baes2024TNG50SKIRT}.
+Each synthetic sky is later converted into a Euclid-like observation using empirical point-spread functions and models of noise and detector artifacts.
+After validating the model's performance on synthetic images with known truth, we apply it to real Euclid images, comparing it to James Webb Space Telescope references to assess the quality of reconstructions.
+
+\section{Data}\label{sec:data}
+We use three data sets:\begin{itemize}
+    \item Euclid Q1 provides the images that we reconstruct and the measurements that calibrate our synthetic training data.
+    \item The TNG50-SKIRT Atlas provides high-resolution images of synthetic realistic galaxy morphologies in Euclid bands, for the use in training data.
+    \item NEXUS JWST imaging provides an independent, higher-resolution view of part of a Q1 field, which we use to assess the quality of reconstructions of real data.
+\end{itemize}
+Table~\ref{tab:imaging} summarizes the imaging characteristics of the Euclid and NEXUS data.
+
+\begin{deluxetable*}{lcccccc}
+\tablecaption{Imaging data used in this work.\label{tab:imaging}}
+\tablehead{
+\colhead{Band} & \colhead{Wavelength} & \colhead{Native pixel} & \colhead{Delivered pixel} & \colhead{Native PSF FWHM} & \colhead{Measured PSF FWHM} & \colhead{$5\sigma$ depth} \\
+\colhead{} & \colhead{(nm)} & \colhead{(\arcsec)} & \colhead{(\arcsec)} & \colhead{(\arcsec)} & \colhead{(\arcsec)} & \colhead{(AB mag)}
+}
+\startdata
+Euclid $I_{\rm E}$ & 530--920       & 0.10 & 0.10 & 0.13 & 0.147 & 26.7 \\
+Euclid $Y_{\rm E}$ & 949.6--1212.3  & 0.30 & 0.10 & 0.33 & 0.363 & 24.4 \\
+Euclid $J_{\rm E}$ & 1167.6--1567.0 & 0.30 & 0.10 & 0.35 & 0.379 & 24.4 \\
+Euclid $H_{\rm E}$ & 1521.5--2021.4 & 0.30 & 0.10 & 0.35 & 0.395 & 24.4 \\
+NEXUS F200W        & 1755--2227     & 0.031& 0.03 & 0.066& ---   & 27.7 \\
+  \enddata
+\tablecomments{Euclid bandpasses and wide-survey point-source depths from \citet{Mellier2025}. Euclid PSF FWHMs are medians measured from stars on the Q1 MER mosaics using Photutils. The NEXUS depth is single-epoch Deep-tier $5\sigma$ point-source depth \citep{Shen2024NEXUS}.}
+\end{deluxetable*}
+
+\subsection{Euclid Q1}\label{sec:data_euclid}
+The Euclid data we use comes from the Euclid Quick Data Release Q1 \citep{aussel2025}, which covers $63.1\,\mathrm{deg}^2$ of the three Euclid Deep Fields (North, South, and Fornax) at the depth of a single Euclid Wide Survey visit.
+Q1 is processed with the same pipeline that will be used for the Wide Survey, so training-inference pipeline on it transfers immediately to later releases.
+VIS instrument provides imaging in the broad $I_{\rm E}$ band on $0.1''$ pixel grid and NISP images in $Y_{\rm E}$, $J_{\rm E}$, and $H_{\rm E}$ on $0.3''$ pixel grid \citep{Mellier2025}.
+
+We use products of the MER processing function \citep{romelli2025} that subtracts background, removes part of the noise and artifacts, and resamples all four bands onto a common $0.1''\,\mathrm{pixel}^{-1}$ grid.
+The bands nevertheless keep different resolutions: the median PSF FWHM in the mosaics is $0.15''$ in $I_{\rm E}$ and $0.36''$--$0.40''$ in the NISP bands (Table~\ref{tab:imaging}).
+These values are $10$--$15\%$ larger than the PSFs of the individual calibrated frames because stacking and resampling broaden the PSF \citep{romelli2025}.
+Because we are working only with the delivered mosaics, every PSF from now on will refer to the measured MER-level PSFs.
+
+We also use the MER RMS maps that accompany each mosaic to model noise levels for synthetic training data; and the MER multi-band catalogue with the Q1 photometric-redshift products to build empirical distributions of galaxies' parameters for our synthetic training data.
+Bright-star photometry is supplemented with \textit{Gaia} DR3 \citep{GaiaDR3}, as Euclid filters quickly become oversaturated by stars of  VIS AB magnitude below $16.5$.
+All Euclid products were retrieved from the ESA Euclid Science Archive and IRSA.
+
+\subsection{TNG50-SKIRT Atlas}\label{sec:data_tng}
+Euclid does not resolve galaxy morphology at the scales the network must reconstruct, so we take morphologies from simulation.
+TNG50-1 \citep{Pillepich2019,Nelson2019} is the highest-resolution run of the IllustrisTNG magnetohydrodynamical cosmological simulations.
+The TNG50-SKIRT Atlas \citep{Baes2024TNG50SKIRT}, exteneded by \citet{Kovacic2025} to the four Euclid bands, post-processes every TNG50 galaxy at $z=0$ with stellar mass between $10^{9.8}$ and $10^{12}\,M_\odot$ ($1154$ galaxies, $869$ star-forming and $285$ quiescent) using the SKIRT radiative-transfer code.
+SKIRT accounts for multiple stellar populations, absorption and scattering by interstellar dust, and attenuation in star-forming regions.
+
+Each galaxy is imaged from five observer positions, and each image has $100\,\mathrm{pc}$ pixels over a $160\,\mathrm{kpc}$ field ($1600\times1600$ pixels).
+The images contain no instrumental PSF and no noise, which is ideal for our use case, that requires high-resolution galaxy morphologies \citep{Kovacic2025}.
+We use the resultant $I_{\rm E}Y_{\rm E}J_{\rm E}H_{\rm E}$ images in all five projections for $1140$ of the $1154$ galaxies.
+
+These TNG50 galaxies are used to generate training data with high-resolution galaxies in them: we scale, rotate and change the brightnesses of these galaxies while preserving morphology (matched by star-formation rate) to fit the distribution of Euclid-measured galaxies.
+
+\subsection{JWST NEXUS}\label{sec:data_nexus}
+As a high-resolution reference we use JWST/NIRCam F200W imaging from NEXUS
+\citep{Shen2024NEXUS}, whose field lies entirely within the Euclid Deep Field North and is therefore covered by Q1. 
+We use the Deep-tier Epoch~5 F200W mosaic from the NEXUS Quick Data Release \citep{Zhuang2026NEXUSQDR}, drizzled to $0.03''$\,pixel$^{-1}$. The region we use spans about $12.6'\times11.8'$ ($\mathrm{RA}=268.21^\circ$--$268.71^\circ$, $\mathrm{Dec}=65.10^\circ$--$65.30^\circ$), of which $\sim\!70\,\mathrm{arcmin}^2$ has F200W coverage. 
+At $\sim\!0.07''$, the F200W PSF is about 2.5 times narrower than the $I_{\rm E}$ mosaic PSF ($\sim\!0\farcs17$) and spans only $\sim\!1.4$ pixels of our $0.05''$ reconstructions. 
+Because NEXUS and Q1 observe the same galaxies, F200W lets us check whether structures recovered from real Euclid data appear in a sharper image of the
+same objects. 
+It does not, however, provide photometric truth: at $\sim\!2\,\mu$m the
+light traces different stellar populations and suffers less dust attenuation than in $I_{\rm E}$, so the comparisons are mostly qualitative.
+
+\section{Methods}
+\subsection{Training data}
+\subsubsection{Measuring PSF}
+\subsubsection{Measuring PSF}
+To simulate Euclid observations of a synthetic sky we first need the Euclid point-spread function (PSF).
+The PSF characterizes how Euclid blurs point sources, influenced by diffraction (including the spikes of the VIS secondary mirror spider mount), optical aberrations, detector effects and pointing instability.
+Rather than adopting an instrument model, we measure the effective PSF (ePSF; \citealt{AndersonKing2000}) directly from bright point sources in the Q1 MER mosaics with \texttt{photutils}.
+Importantly, the ePSF also captures dithering and resampling, which is significant for NISP's $0.3''$ native pixels resampled to $0.1''$ pixels by the MER pipeline.
+We select $\sim$43{,}000 unmasked point-like sources with $16 < \mathrm{VIS} < 19$ from the MER catalogue, extract $51''$ cutouts in all four bands, and reject sources with saturated cores, keeping 17{,}905 stars usable in every band.
+To capture spatial variation we cluster them by sky position into 44 regions of $\sim$400 stars each and build one ePSF per region and band, oversampled by a factor of two ($0.05''$ pixels).
+Finally, we multiply each ePSF stamp by a radial cosine window that brings it smoothly to zero towards the stamp edge, so the kernel has no discontinuity at its boundary.
+The resulting median FWHMs are $0.15''$ (VIS), $0.36''$ ($Y_E$), $0.38''$ ($J_E$) and $0.39''$ ($H_E$).
+
+Because the mosaics are north-aligned while the PSF is fixed to the instrument, the PSF orientation on the sky depends on the telescope roll angle.
+To account for that, we augment the ePSFs with random rotations.
+We also apply a small random elastic warp to each kernel, following \citet{Connor2022}, which perturbs the core width (by $\approx 10\%$) and the faint structure while conserving flux.
+This keeps the network from overfitting to our finite set of measured ePSFs, which carry extraction errors and do not resolve all of the PSF variation across the field.
+
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=1\linewidth]{images/psfs_idx0_VIS-Y_E_VIS_figure.png}
+    \caption{measuring the psfs}
+    \label{fig:psfs}
+\end{figure*}
+        
+\subsubsection{Noise \& Artifacts}
+After convolving the synthetic sky with the PSF, we downsample it by a factor of two to the $0.1''$ MER pixel scale.
+Next, we simulate the noise.
+Each scene draws its noise level from the Q1 MER RMS maps, measured at 294 random extragalactic positions, so the training set spans the real range of survey depths (median RMS of 29.8, 9.4, 9.9 and 9.7\,e$^-$ per pixel in VIS, $Y_E$, $J_E$ and $H_E$).
+On top of the background we add Poisson noise from the sources themselves.
+Because the MER mosaics are built by resampling several dithered exposures, their noise is correlated between neighbouring pixels, most strongly in NISP, where $0.3''$ native pixels are resampled to $0.1''$.
+We reproduce this by generating white noise for four exposures on the native detector grid, shifting each by a random sub-pixel dither, resampling it to the mosaic grid and averaging.
+We also vary the depth slightly across each field and occasionally add an edge where the depth steps between two pointings, as seen in the real mosaics.
+
+Finally, we add the artifacts that survive MER processing.
+Most cosmic rays and hot pixels are rejected when the exposures are stacked, so we inject only the small fraction that remains, together with dead pixels and faint streaks that commonly confuse the model.
+We also add straight diffraction spikes across the fields, emulating bright stars far away from the field. 
+Saturation is modelled as in MER, which masks saturated cores by zeroing pixels with a probability that rises with how far they exceed the full-well level.
+\begin{figure*}
+    \centering
+    \includegraphics[width=1\linewidth]{PSF_Noise/noise_artifacts.png}
+    \caption{Noise and Artifacts}
+    \label{fig:noiaseandartifacts}
+\end{figure*}
+\subsubsection{Distributions \& Transformations}
+We first set the number, brightness and size of the galaxies in each training scene. 
+These distributions must match Euclid's, because any difference would be learned by the network and reflected in the reconstructions of real data.
+
+We start my modelling brightness counts.
+The measure of brightness that MER catalogue provides is VIS flux in 2FWHM aperture, where FWHM is taken of an external ground band, which is about $1.3''$, or $13$ pixels in Euclid VIS resolution.
+We find that galaxy counts grow smoothly toward faint magnitudes with almost-linear density/magnitude law, until Q1 data becomes incomplete near VIS $\approx 25$. 
+We fit this growth with a segmented-linear relation and augment with flat extrapolation up to VIS $=29$.
+
+Each galaxy also needs a size, which we draw conditional on its brightness.
+For a sample of $\approx7.5$ million Q1 galaxies whose Sérsic fits passed MER's quality checks, we take the circularized half-light radius $R_e=R_{e,\mathrm{major}}\sqrt{q}$ as the size, where $R_{e,\mathrm{major}}$ is the half-light radius along the major axis and $q$ the axis ratio
+We model the distribution of $R_e$ at a fixed magnitude as log-normal, with a median that decreases as a power law toward fainter magnitudes, and width that is the same at all magnitudes.
+We fit these three parameters to the found and binned Q1 radii between VIS magnitudes $17$ and $25.5$, capping the weight of each magnitude bin so that the numerous faint galaxies do not outweight the rare bright one.
+
+Finally, each galaxy needs colors, which set its brightness in the NISP bands relative to VIS, and a star-formation rate (SFR), which we will use to select the TNG galaxy with similar morphology.
+At fixed brightness and size these quantities have a complex correlated distribution, so we use a non-parametric adaptive model: a random forest.
+It is trained on approximately $8.4\times 10^4$ Q1 galaxies and divides the magnitude--radius space into regions of similar colors and SFR.
+We use extreme deconvolution method \citep{Bovy2011} to remove the measurement noise from each region.
+\begin{figure*}
+    \centering
+    \includegraphics[width=1\linewidth]{images/euclidpolish_galaxy_distributions_2x2.png}
+    \caption{Galaxy population}
+    \label{fig:galaxieees}
+\end{figure*}
+
+Stars constitute the second population in our scenes. 
+Resolving them is not among our goals, and they rather act as artifacts, bringing the PSF, spikes and saturated cores into the scenes. 
+We collect the statistics of density of star-like objects, as reported by PHZ catalogue, binned by AB magnitude in VIS band (Figure~\ref{fig:star_population}a).
+This results in an almost-linear law in log density, that falls for objects with magnitude lower than $18$ and higher than $21$.
+We fit a straight line to the linear part, extrapolating a simple magnitude-density dependence.
+As a check, we compare it to Gaia DR3 (even though it's $G$ band differs from Euclid's VIS band): its counts agree with the line to $\sim\!10\%$ for $16 < G < 21$, and drop below it only for the few stars brighter than $G\approx 14$.
+
+Each synthetic star also needs fluxes in the three NISP bands, which we set through its colors VIS$-Y_{\rm E}$, $Y_{\rm E} - J_{\rm E}$ and $J_{\rm E} - H_{\rm E}$.
+We use an approach similar, to how we modeled galactic distributions. 
+We therefore resample real stars, as we do for galaxies, but with brightness as the only condition: a synthetic star takes the colors of a Q1 star from the same $0.5$-mag bin, picked in proportion to the spectroscopic (PHZ) star probability.
+Within each bin, extreme deconvolution \citep{Bovy2011} of the three colors jointly removes the measurement noise, so the copies carry the intrinsic variance rather than the catalog errors.
+This follows the reddenning trend of stars towards faint magnitudes and, once the Q1 errors are added back, reproduces the observed color widths to within $7\%$ (Figure~\ref{fig:star_population}b--d).
+Positions of stars are random and are drawn on the noise-stage of data (so each galactic field can get different stars after adding noise with different seeds).
+\begin{figure*}
+    \centering
+    \includegraphics[width=\textwidth]{images/star_population.pdf}
+    \caption{Star population of the training scenes}
+    \label{fig:star_population}
+\end{figure*}
+\subsubsection{Resulting pairs}
+\begin{figure*}
+    \centering
+    \includegraphics[width=1\linewidth]{images/fig04_synthetic_lr_sr_hr_fields.png}
+    \caption{Synthetic triplets}
+    \label{fig:synthetictriples}
+\end{figure*}
+\subsection{Model}
+Our model is a residual convolution network based on the WDSR \citep{Yu2018} and extending POLISH \citep{Connor2022}.
+We keep it small, since a survey-wide reconstruction needs a model that is cheap to run.
+It takes the four MER bands on the $0.1''$ grid and returns all four on a $0.05''$ grid (Figure ~\ref{fig:architecture}).
+Two paths run side by side: \begin{itemize}
+    \item The main path mixes all bands from its first layer, passes them through $16$ residual blocks of $32$ feature maps.
+    \item The second path is a light upsamples for each band that sees only that band, and the main path adds its correction to it. 
+\end{itemize}
+With about $3\times 10^5$ parameters and no fully connected layers, the model runs within minutes on large mosaics.
+
+The light in our scenes covers a range of $6$ orders of magnitude.
+POLISH++ compresses such a range with a single $\mathrm{asinh}$ \citep{Wu2026}, but one choice is left: what should be the units in which we pass the images through $\mathrm{asinh}$? 
+Since this operator compresses logarithmically all the values $\gg 1$ and leaves approximately linear values $\approx 0$, it will act differently depending on how we scale the images first.
+Difference of our approach from POLISH++ is in choice of the ``knees``: the normalization constants $$\mathrm{asinh}(\text{pixel} / \text{knee}).$$
+Instead of choosing one, our loss and input use eight: knees of $10^{-3}$, $10^{-2}$, \ldots, $10^{4}$ electrons, covering the full range of usual input data.
+This replaces the single stretch of POLISH++, which forces a single choice for a dynamic range that spans more than seven decades in our images. 
+Since the data inside of the model is transformed with $\mathrm{asinh}$ we should also add a $\text{knee}\cdot\mathrm{sinh}$ operation before the output. 
+The knee for this operation is trained as one of the parameters of the model, optimized for the best output.
+
+Training minimizes a sum of two terms.
+The first compares reconstruction and target after stretching
+
+\task{Architecture figure: work more on the labels so people can read it immediately, with no thinking.}
+
+\input{architecture_figure}
+
+\section{Results}
+\subsection{Metrics}
+A table of models + combiner with their metrics.
+Plots (cross-correlation, error-std).
+\begin{figure*}
+    \centering
+    \includegraphics[width=1\linewidth]{images/fig09_ensemble_diagnostics.png}
+    \caption{METRICS}
+    \label{fig:metrics}
+\end{figure*}
+\subsection{Images}
+Synthetic images +  real images + lenses.
+\begin{figure*}
+    \centering
+    \includegraphics[width=1\linewidth]{images/fig07_nexus_closeup_comparisons.png}
+    \caption{REAL imagEs}
+    \label{fig:realImAges}
+\end{figure*}
+\begin{figure*}
+    \centering
+    \includegraphics[width=1\linewidth]{images/fig04_synthetic_lr_sr_hr_fields.png}
+    \caption{Triplets AGAIN}
+    \label{fig:3plets}
+\end{figure*}
+
+\section{Discussion}
+\begin{itemize}
+    \item Compare to POLISH (ensemble! TNGs!)
+    \item Compare to other SR papers
+    \item Discussion of different architectures
+    \item Future directions, including adaptability to other telescopes (Roman)
+\end{itemize}
+\section{Conclusion}
+Summary
+
+\bibliography{references}{}
+\bibliographystyle{aasjournalv7}
+
+
+\end{document}
+
+% End of file `sample7.tex'.

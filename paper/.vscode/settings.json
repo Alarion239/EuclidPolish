@@ -1,0 +1,51 @@
+{
+  // Same LaTeX Workshop setup as ~/Desktop/Notes: latexmk, PDF in pdfs/, aux files cleaned.
+  // Difference: the .synctex.gz is kept, so Cmd+click in the PDF jumps to the source line.
+  "latex-workshop.latex.tools": [
+    {
+      "name": "latexmk-build",
+      "command": "latexmk",
+      "args": [
+        "-synctex=1",
+        "-interaction=nonstopmode",
+        "-file-line-error",
+        "-pdf",
+        "-outdir=%OUTDIR%",
+        "%DOC%"
+      ],
+      "env": {}
+    },
+    {
+      "name": "cleanup-aux",
+      "command": "sh",
+      "args": [
+        "-c",
+        "cd %OUTDIR% && rm -f *.aux *.bbl *.blg *.idx *.ind *.lof *.lot *.out *.toc *.acn *.acr *.alg *.glg *.glo *.gls *.fls *.log *.fdb_latexmk *.snm *.nav *.bcf *.run.xml *.tdo"
+      ],
+      "env": {}
+    }
+  ],
+  "latex-workshop.latex.recipes": [
+    {
+      "name": "Build & Clean 🔃",
+      "tools": ["latexmk-build", "cleanup-aux"]
+    },
+    {
+      "name": "Build only",
+      "tools": ["latexmk-build"]
+    }
+  ],
+  "latex-workshop.latex.outDir": "%DIR%/../pdfs",
+  "latex-workshop.latex.rootFile.useSubFile": false,
+  "latex-workshop.latex.search.rootFiles.include": ["src/POLISHingEuclid.tex"],
+  "latex-workshop.latex.search.rootFiles.exclude": ["pdfs/**"],
+  "latex-workshop.latex.autoBuild.run": "onSave",
+  "latex-workshop.view.pdf.viewer": "tab",
+  "latex-workshop.view.pdf.ref.viewer": "auto",
+  "latex-workshop.latex.autoClean.run": "never",
+  "latex-workshop.latex.clean.fileTypes": [],
+  "editor.wordWrap": "on",
+  "files.exclude": {
+    "**/.DS_Store": true
+  }
+}
