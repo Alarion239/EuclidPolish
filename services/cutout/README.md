@@ -12,10 +12,14 @@ docker run --rm -p 8080:8080 euclid-cutout
 curl -o cut.bin "localhost:8080/v1/cutout?tile=102158892&x0=9000&y0=9000&size=320"
 ```
 
-Railway: new service from this repo, Root Directory `services/cutout`
-(`railway.toml` picks the Dockerfile and the `/health` check), region
-US East (Virginia). Optional variables: `ALLOWED_ORIGINS`, `S3_CONCURRENCY`,
-`MAX_CUTOUT`.
+Railway: deployed 2026-11-18 as project `euclid-cutout`, service `cutout`,
+at https://cutout-production-538f5738.up.railway.app (`railway up` from this
+directory). `railway.toml` picks the Dockerfile, the `/health` check and the
+US East (Virginia) region, next to the bucket. Variables: `S3_CONCURRENCY=256`
+is set there (S3 answers each range request in ~20–30 ms, so a 320² 4-band
+block, 1,280 row reads, takes ~0.57 s at 64 and ~0.22–0.33 s at 256 once the
+tile's headers are cached; the first block of a tile ~0.85 s). Optional:
+`ALLOWED_ORIGINS`, `MAX_CUTOUT`.
 
-Checked 2026-11-18: a 321² VIS cutout is bit-identical to IRSA's cutout
+Checked 2026-11-18, locally and on Railway: a 321² VIS cutout is bit-identical to IRSA's cutout
 service. Tests: `tests/test_cutout_service.py` (fake bucket, synthetic FITS).
