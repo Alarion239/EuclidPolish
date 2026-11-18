@@ -1,11 +1,18 @@
 """Generate architecture_figure.tex from one set of spacing constants.
 
+    python architecture_gen.py architecture_figure.tex
+
 Scheme: every labelled arrow is G long, every unlabelled arrow g long, rows and
 stacked items are V apart; cuboid geometry follows \\mdfmap (depth 0.30h, 0.22h).
+Layout of (a): a left column (legend, input image, arcsinh box) feeds the
+shared trunk on the lower row; the per-band path branches off right after the
+arcsinh box and runs along the upper row, its last cuboid above the trunk's;
+the output column (sum, learned knee, reconstruction) hangs below the sum.
+(b) sits under the trunk, bottom-aligned with the output column.
 """
 import sys
 
-G = 1.80    # labelled arrow
+G = 1.75    # labelled arrow
 g = 0.50    # unlabelled arrow
 V = 0.40    # vertical clearance between rows / items
 P = 0.30    # padding inside frames
@@ -14,10 +21,12 @@ CH = 0.30   # height of a channel label above a cuboid
 SHEET = 0.13  # upward offset of the stacked sheets behind the per-band frame
               # (straight up, so the arrows in and out cross one edge only)
 RES_OFF = 0.11  # offset of the stacked residual boxes
-PILL_IN_W, PILL_OUT_W, PILL_H = 2.70, 2.40, 1.00
+PILL_IN_W, PILL_OUT_W, PILL_H = 2.45, 2.40, 1.00
 RELU_W = 1.50
-LRS = 1.10  # input thumbnail side; output is twice this
+LRS = 2.20  # side of both thumbnails (same patch of sky, so the same size)
 STACK = 0.21  # \mdimstack back planes
+LABEL2 = 0.80  # height of a two-line image label
+LEG_DY = 0.55  # legend row spacing
 
 def W(t, h):            # total width of a cuboid
     return t + 0.30 * h
@@ -41,16 +50,18 @@ def arrow(a, b, label=None, where="above"):
     o(f"\\draw[mdflow] {a} -- {b}{lab};")
 
 # ------------------------------------------------------------------ (a) trunk
-o("% ---- shared trunk (y = 0); input column on the left")
-x = 0.0
+o("% ---- left column: arcsinh box at the start of the trunk (y = 0)")
 xin = PILL_IN_W / 2
 o(f"\\node[mdfun,minimum width={PILL_IN_W}cm,minimum height={PILL_H}cm] (asinh) at ({f(xin)},0)"
   " {\\mdgasinh\\ \\mdtwo{$\\mathrm{arcsinh}(x/k_j)$}{8 knees}};")
-xS = PILL_IN_W + g
+xsplit = PILL_IN_W + g
+o(f"\\draw[mdline] (asinh.east) -- ({f(xsplit)},0);")
+o(f"\\fill[mdLine] ({f(xsplit)},0) circle (1.6pt);")
+xS = xsplit + g
+o("% ---- shared trunk")
 eS = fmap("S", xS, 0, 0.72, hL, "mdLR", slabs=8, ch="32")
-arrow("(asinh.east)", "(S-w)")
-xF = eS + G
-eF = fmap("F", xF, 0, 0.72, hL, "mdLR", ch="32")
+arrow(f"({f(xsplit)},0)", "(S-w)")
+eF = fmap("F", eS + G, 0, 0.72, hL, "mdLR", ch="32")
 arrow("(S-e)", "(F-w)", "$3\\!\\times\\!3$ conv")
 res_w = 1.90
 res_x0 = eF + g
@@ -72,12 +83,13 @@ xs = eM + g + 0.21
 o(f"\\node[mdsum] (sum) at ({f(xs)},0) {{$+$}};")
 arrow("(M-e)", "(sum)")
 
-# input image under the input function box
-in_top = -PILL_H / 2 - g                    # top of the image stack
-yi = in_top - STACK - LRS / 2
+# input image above the arcsinh box, its label above it
+in_bot = PILL_H / 2 + g
+yi = in_bot + LRS / 2
 o(f"\\mdimstack{{in}}{{{f(xin - LRS/2 - 0.105)}}}{{{f(yi)}}}{{{LRS}}}{{lr_rgb}}")
-o(f"\\draw[mdflow] ({f(xin)},{f(in_top)}) -- (asinh.south);")
-o(f"\\node[mdop,anchor=north] (inlab) at ({f(xin)},{f(yi - LRS/2 - 0.06)})"
+o(f"\\draw[mdflow] ({f(xin)},{f(in_bot)}) -- (asinh.north);")
+in_lab = yi + LRS / 2 + STACK + 0.06
+o(f"\\node[mdop,anchor=south] at ({f(xin)},{f(in_lab)})"
   " {Euclid image $x$\\\\[-1pt] 4 bands, $0.1''$ grid};")
 
 # output column under the sum
@@ -87,22 +99,23 @@ o(f"\\node[mdfun,minimum width={PILL_OUT_W}cm,minimum height={PILL_H}cm] (knee) 
   " {\\mdgsinh\\ \\mdtwo{$k_b\\sinh y_b$}{learned $k_b$}};")
 o("\\draw[mdflow] (sum) -- (knee.north) node[mdop,midway,right=1pt] {$y_b$};")
 out_top = yk - PILL_H / 2 - g
-yo = out_top - STACK - LRS
-o(f"\\mdimstack{{out}}{{{f(xs - LRS - 0.105)}}}{{{f(yo)}}}{{{2*LRS}}}{{sr_rgb}}")
+yo = out_top - STACK - LRS / 2
+o(f"\\mdimstack{{out}}{{{f(xs - LRS/2 - 0.105)}}}{{{f(yo)}}}{{{LRS}}}{{sr_rgb}}")
 o(f"\\draw[mdflow] (knee.south) -- ({f(xs)},{f(out_top)});")
-o(f"\\node[mdop,anchor=north] at ({f(xs)},{f(yo - LRS - 0.06)})"
+out_lab = yo - LRS / 2 - 0.06
+o(f"\\node[mdop,anchor=north] at ({f(xs)},{f(out_lab)})"
   " {reconstruction\\\\[-1pt] 4 bands, $0.05''$ grid};")
+fig_bottom = out_lab - LABEL2
 
 # ------------------------------------------------------------------ (a) per-band row
-ys = TOP(hH) + CH + V + hH / 2                  # its tall cuboids clear M's label
+ys = TOP(hL) + CH + V + P + hH / 2             # its frame clears the trunk's labels
 o("% ---- per-band path, drawn as four stacked sheets")
-xKA = xM
-frame_e = xKA - G                              # frame's right edge
-eKS = frame_e - P
-xKS = eKS - W(0.07, hH)
-xKC = xKS - G - W(0.33, hL)
-xK = xKC - G - W(0.46, hL)
-frame_w = xK - P
+frame_w = xsplit + g
+xK = frame_w + P
+xKC = xK + W(0.46, hL) + G
+xKS = xKC + W(0.33, hL) + G
+frame_e = xKS + W(0.07, hH) + P
+xKA = frame_e + G
 frame_b = ys - hH / 2 - P
 frame_t = ys + TOP(hH) + CH + P
 for k in (3, 2, 1):
@@ -115,31 +128,37 @@ fmap("K", xK, ys, 0.46, hL, "mdLR", slabs=8, ch="8")
 fmap("KC", xKC, ys, 0.33, hL, "mdLR", ch="4")
 fmap("KS", xKS, ys, 0.07, hH, "mdHR", ch="1")
 fmap("KA", xKA, ys, 0.33, hH, "mdHR", ch="4")
-o(f"\\draw[mdflow,rounded corners=5pt] (asinh.north) |- (K-w);")
+o(f"\\draw[mdflow,rounded corners=5pt] ({f(xsplit)},0) |- (K-w);")
 arrow("(K-e)", "(KC-w)", "$5\\!\\times\\!5$ conv")
 arrow("(KC-e)", "(KS-w)", "upsample")
 arrow("(KS-e)", "(KA-w)")
 o(f"\\node[mdop,above=1pt] at ({f((frame_e + xKA)/2)},{f(ys)}) {{stack}};")
 o("\\draw[mdflow,rounded corners=5pt] (KA-e) -| (sum.north);")
+fig_top = frame_t + 3 * SHEET
 
-# legend: in the corner between the per-band branch and the trunk
-o("% ---- legend")
-xl = xin + 0.45
+# legend: top-right corner, above the per-band connector
+o("% ---- legend (top right)")
+o(f"\\node[mdpanel,anchor=north west] at (0,{f(fig_top)}) {{(a)}};")
+xl = xs - 1.55   # ends with the output label
+yl0 = fig_top - 0.30
 for i, (kind, text) in enumerate([("LR", "$0.1''$ grid"), ("HR", "$0.05''$ grid"),
                                   ("fun", "non-linear function")]):
-    yl = ys - 0.55 - 0.60 * i
+    yl = yl0 - LEG_DY * i
     if kind == "fun":
-        o(f"\\node[mdfun,inner sep=1.5pt] at ({f(xl + 0.18)},{f(yl)}) {{\\mdgrelu}};")
+        o(f"\\node[mdfun,inner sep=1.5pt] at ({f(xl + 0.15)},{f(yl)}) {{\\mdgrelu}};")
     else:
-        o(f"\\mdfmap{{lg{i}}}{{{f(xl + 0.05)}}}{{{f(yl)}}}{{0.22}}{{0.42}}{{md{kind}}}")
-    o(f"\\node[mdleg,anchor=west] at ({f(xl + 0.50)},{f(yl)}) {{{text}}};")
-o(f"\\node[mdpanel,anchor=north west] at (0,{f(frame_t + 3 * SHEET)}) {{(a)}};")
+        o(f"\\mdfmap{{lg{i}}}{{{f(xl)}}}{{{f(yl)}}}{{0.22}}{{0.42}}{{md{kind}}}")
+    o(f"\\node[mdleg,anchor=west] at ({f(xl + 0.47)},{f(yl)}) {{{text}}};")
+leg_bottom = yl0 - LEG_DY * 2 - 0.25  # vs the connector at ys
+in_lab_top = in_lab + LABEL2
 
 # ------------------------------------------------------------------ (b)
 o("% ===================================================================== (b)")
-bT = yi - LRS / 2 - 0.06 - 0.80 - V          # below the input label
 bL = 0.50
 title_h = 0.40
+inner = P + title_h + CH + TOP(hL) + hL / 2 + 0.55 + P   # frame height
+bB = fig_bottom
+bT = bB + inner
 yb = bT - P - title_h - CH - TOP(hL)
 x = bL + P
 ebx = fmap("bx", x, yb, 0.72, hL, "mdLR", ch="32")
@@ -160,18 +179,21 @@ arrow("(bsum)", f"({f(bR)},{f(yb)})")
 yid = yb - hL / 2 - 0.55
 o(f"\\draw[mdflow,rounded corners=5pt] ($(bx-s)+(0.06,0)$) |- ({f(bsum)},{f(yid)}) -- (bsum.south);")
 o(f"\\node[mdop,above=1pt] at ({f(relu_x + RELU_W/2 + G/2)},{f(yid)}) {{identity}};")
-bB = yid - P
-o(f"\\begin{{scope}}[on background layer]")
-o(f"  \\fill[mdRes!12] (res.south west) -- (res.south east) -- ({f(bR - 2.5)},{f(bT)}) -- ({f(bL + 3.0)},{f(bT)}) -- cycle;")
+wl, wr = bL, bR   # the wedge opens onto the whole (b) frame
+o("\\begin{scope}[on background layer]")
+o(f"  \\fill[mdRes!12] (res.south west) -- (res.south east) -- ({f(wr)},{f(bT)}) -- ({f(wl)},{f(bT)}) -- cycle;")
+o(f"  \\draw[rounded corners=4pt,draw=mdRes!85!black,line width=0.9pt,fill=white] ({f(bL)},{f(bB)}) rectangle ({f(bR)},{f(bT)});")
 o("\\end{scope}")
-o(f"\\draw[mdRes!70!black,line width=0.5pt] (res.south west) -- ({f(bL + 3.0)},{f(bT)}) (res.south east) -- ({f(bR - 2.5)},{f(bT)});")
-o(f"\\begin{{scope}}[on background layer]\\draw[rounded corners=4pt,draw=mdRes!85!black,line width=0.9pt,fill=white] ({f(bL)},{f(bB)}) rectangle ({f(bR)},{f(bT)});\\end{{scope}}")
+o(f"\\draw[mdRes!70!black,line width=0.5pt] (res.south west) -- ({f(wl)},{f(bT)}) (res.south east) -- ({f(wr)},{f(bT)});")
 o(f"\\node[font=\\fontsize{{9}}{{10.5}}\\selectfont\\bfseries,text=mdRes!65!black,anchor=north west,inner sep=0pt]"
   f" at ({f(bL + P)},{f(bT - 0.15)}) {{one residual block}};")
 o(f"\\node[mdpanel,anchor=north east] at ({f(bL - 0.08)},{f(bT)}) {{(b)}};")
 
-sys.stderr.write(f"sum x={xs:.2f}  out pill left={xs-PILL_OUT_W/2:.2f}  (b) right={bR:.2f}  "
-                 f"frame_w={frame_w:.2f}  K={xK:.2f}  top={frame_t+3*SHEET:.2f}  bottom={bB:.2f}\n")
+sys.stderr.write(
+    f"sum x={xs:.2f} out-pill left={xs-PILL_OUT_W/2:.2f} (b) right={bR:.2f} | "
+    f"KA east={xKA + W(0.33, hH):.2f} legend x={xs - 1.35:.2f} | legend bottom={leg_bottom:.2f} ys={ys:.2f} "
+    f"input-label top={in_lab_top:.2f} | wedge {(-hL/2) - bT:.2f} tall | "
+    f"top={fig_top:.2f} bottom={fig_bottom:.2f}\n")
 
 body = "\n".join(out)
 head = r"""% Architecture figure: the whole figure* block (tikzpicture + caption).
@@ -190,8 +212,8 @@ tail = r"""
 \caption{The reconstruction network.
 (a) The four-band Euclid image $x$ (electrons, $0.1''$ pixels) is stretched with $\mathrm{arcsinh}(x/k_j)$ at eight knees $k_j = 10^{-3}, 10^{-2}, \ldots, 10^{4}$ electrons, giving $4\times8=32$ channels.
 Two paths start from this stack.
-The shared trunk (middle row) mixes all bands: a $3\times3$ convolution, $16$ residual blocks, a second $3\times3$ convolution and a $2\times$ upsampling, which rearranges each group of four channels into a $2\times2$ patch of pixels on the $0.05''$ grid.
-The per-band path (top row) upsamples each band from its own eight channels with a $5\times5$ convolution, so it never mixes bands.
+The shared trunk (lower row) mixes all bands: a $3\times3$ convolution, $16$ residual blocks, a second $3\times3$ convolution and a $2\times$ upsampling, which rearranges each group of four channels into a $2\times2$ patch of pixels on the $0.05''$ grid.
+The per-band path (upper row) upsamples each band from its own eight channels with a $5\times5$ convolution, so it never mixes bands.
 The two are added, giving the stretched image $y_b$ for each band $b$, and $k_b \sinh y_b$ with a learned knee $k_b$ turns it back into electrons.
 Gray cuboids are feature maps on the $0.1''$ grid and green ones on the $0.05''$ grid; numbers above them are channel counts.
 Purple boxes are the only non-linear functions; every other step is linear.

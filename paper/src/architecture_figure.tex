@@ -8,96 +8,99 @@
 \begin{figure*}
 \centering
 \begin{tikzpicture}
-% ---- shared trunk (y = 0); input column on the left
-\node[mdfun,minimum width=2.7cm,minimum height=1.0cm] (asinh) at (1.350,0) {\mdgasinh\ \mdtwo{$\mathrm{arcsinh}(x/k_j)$}{8 knees}};
-\mdfmap{S}{3.200}{0.000}{0.72}{1.45}{mdLR}
-\mdslabs{3.200}{0.000}{0.72}{1.45}{8}{mdLR}
+% ---- left column: arcsinh box at the start of the trunk (y = 0)
+\node[mdfun,minimum width=2.45cm,minimum height=1.0cm] (asinh) at (1.225,0) {\mdgasinh\ \mdtwo{$\mathrm{arcsinh}(x/k_j)$}{8 knees}};
+\draw[mdline] (asinh.east) -- (2.950,0);
+\fill[mdLine] (2.950,0) circle (1.6pt);
+% ---- shared trunk
+\mdfmap{S}{3.450}{0.000}{0.72}{1.45}{mdLR}
+\mdslabs{3.450}{0.000}{0.72}{1.45}{8}{mdLR}
 \node[mdch,above=1pt of S-n] {32};
-\draw[mdflow] (asinh.east) -- (S-w);
-\mdfmap{F}{6.155}{0.000}{0.72}{1.45}{mdLR}
+\draw[mdflow] (2.950,0) -- (S-w);
+\mdfmap{F}{6.355}{0.000}{0.72}{1.45}{mdLR}
 \node[mdch,above=1pt of F-n] {32};
 \draw[mdflow] (S-e) -- (F-w) node[mdop,midway,above=1pt] {$3\!\times\!3$ conv};
 \foreach \k in {2,1}{%
-  \draw[rounded corners=2pt,line width=0.6pt,draw=mdRes!75!black,fill=mdRes!22] ($(7.810,-0.725)+(0.11*\k,0.11*\k)$) rectangle ++(1.9,1.45);}
-\node[mdbox,draw=mdRes!75!black,fill=mdRes!38,minimum width=1.9cm,minimum height=1.45cm] (res) at (8.760,0) {16 residual\\ blocks};
+  \draw[rounded corners=2pt,line width=0.6pt,draw=mdRes!75!black,fill=mdRes!22] ($(8.010,-0.725)+(0.11*\k,0.11*\k)$) rectangle ++(1.9,1.45);}
+\node[mdbox,draw=mdRes!75!black,fill=mdRes!38,minimum width=1.9cm,minimum height=1.45cm] (res) at (8.960,0) {16 residual\\ blocks};
 \draw[mdflow] (F-e) -- (res.west);
-\mdfmap{T}{11.730}{0.000}{0.59}{1.45}{mdLR}
+\mdfmap{T}{11.880}{0.000}{0.59}{1.45}{mdLR}
 \node[mdch,above=1pt of T-n] {16};
-\draw[mdflow] (9.930,0) -- (T-w) node[mdop,midway,above=1pt] {$3\!\times\!3$ conv};
-\mdfmap{M}{14.555}{0.000}{0.33}{2.35}{mdHR}
+\draw[mdflow] (10.130,0) -- (T-w) node[mdop,midway,above=1pt] {$3\!\times\!3$ conv};
+\mdfmap{M}{14.655}{0.000}{0.33}{2.35}{mdHR}
 \node[mdch,above=1pt of M-n] {4};
 \draw[mdflow] (T-e) -- (M-w) node[mdop,midway,above=1pt] {upsample};
-\node[mdsum] (sum) at (16.300,0) {$+$};
+\node[mdsum] (sum) at (16.400,0) {$+$};
 \draw[mdflow] (M-e) -- (sum);
-\mdimstack{in}{0.695}{-1.760}{1.1}{lr_rgb}
-\draw[mdflow] (1.350,-1.000) -- (asinh.south);
-\node[mdop,anchor=north] (inlab) at (1.350,-2.370) {Euclid image $x$\\[-1pt] 4 bands, $0.1''$ grid};
-\node[mdfun,minimum width=2.4cm,minimum height=1.0cm] (knee) at (16.300,-2.592) {\mdgsinh\ \mdtwo{$k_b\sinh y_b$}{learned $k_b$}};
+\mdimstack{in}{0.020}{2.100}{2.2}{lr_rgb}
+\draw[mdflow] (1.225,1.000) -- (asinh.north);
+\node[mdop,anchor=south] at (1.225,3.470) {Euclid image $x$\\[-1pt] 4 bands, $0.1''$ grid};
+\node[mdfun,minimum width=2.4cm,minimum height=1.0cm] (knee) at (16.400,-2.592) {\mdgsinh\ \mdtwo{$k_b\sinh y_b$}{learned $k_b$}};
 \draw[mdflow] (sum) -- (knee.north) node[mdop,midway,right=1pt] {$y_b$};
-\mdimstack{out}{15.095}{-4.902}{2.2}{sr_rgb}
-\draw[mdflow] (knee.south) -- (16.300,-3.592);
-\node[mdop,anchor=north] at (16.300,-6.062) {reconstruction\\[-1pt] 4 bands, $0.05''$ grid};
+\mdimstack{out}{15.195}{-4.902}{2.2}{sr_rgb}
+\draw[mdflow] (knee.south) -- (16.400,-3.592);
+\node[mdop,anchor=north] at (16.400,-6.062) {reconstruction\\[-1pt] 4 bands, $0.05''$ grid};
 % ---- per-band path, drawn as four stacked sheets
-\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (6.120,2.482) rectangle (12.755,6.249);
-\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (6.120,2.352) rectangle (12.755,6.119);
-\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (6.120,2.222) rectangle (12.755,5.989);
-\draw[rounded corners=3pt,line width=0.6pt,draw=black!55,dashed,fill=white] (6.120,2.092) rectangle (12.755,5.859);
-\node[mdnote,anchor=north west] at (6.240,5.759) {each band separately};
-\mdfmap{K}{6.420}{3.567}{0.46}{1.45}{mdLR}
-\mdslabs{6.420}{3.567}{0.46}{1.45}{8}{mdLR}
+\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (3.450,2.134) rectangle (9.985,5.901);
+\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (3.450,2.004) rectangle (9.985,5.771);
+\draw[rounded corners=3pt,line width=0.5pt,draw=black!30,fill=white] (3.450,1.874) rectangle (9.985,5.641);
+\draw[rounded corners=3pt,line width=0.6pt,draw=black!55,dashed,fill=white] (3.450,1.744) rectangle (9.985,5.511);
+\node[mdnote,anchor=north west] at (3.570,5.411) {each band separately};
+\mdfmap{K}{3.750}{3.219}{0.46}{1.45}{mdLR}
+\mdslabs{3.750}{3.219}{0.46}{1.45}{8}{mdLR}
 \node[mdch,above=1pt of K-n] {8};
-\mdfmap{KC}{9.115}{3.567}{0.33}{1.45}{mdLR}
+\mdfmap{KC}{6.395}{3.219}{0.33}{1.45}{mdLR}
 \node[mdch,above=1pt of KC-n] {4};
-\mdfmap{KS}{11.680}{3.567}{0.07}{2.35}{mdHR}
+\mdfmap{KS}{8.910}{3.219}{0.07}{2.35}{mdHR}
 \node[mdch,above=1pt of KS-n] {1};
-\mdfmap{KA}{14.555}{3.567}{0.33}{2.35}{mdHR}
+\mdfmap{KA}{11.735}{3.219}{0.33}{2.35}{mdHR}
 \node[mdch,above=1pt of KA-n] {4};
-\draw[mdflow,rounded corners=5pt] (asinh.north) |- (K-w);
+\draw[mdflow,rounded corners=5pt] (2.950,0) |- (K-w);
 \draw[mdflow] (K-e) -- (KC-w) node[mdop,midway,above=1pt] {$5\!\times\!5$ conv};
 \draw[mdflow] (KC-e) -- (KS-w) node[mdop,midway,above=1pt] {upsample};
 \draw[mdflow] (KS-e) -- (KA-w);
-\node[mdop,above=1pt] at (13.655,3.567) {stack};
+\node[mdop,above=1pt] at (10.860,3.219) {stack};
 \draw[mdflow,rounded corners=5pt] (KA-e) -| (sum.north);
-% ---- legend
-\mdfmap{lg0}{1.850}{3.017}{0.22}{0.42}{mdLR}
-\node[mdleg,anchor=west] at (2.300,3.017) {$0.1''$ grid};
-\mdfmap{lg1}{1.850}{2.417}{0.22}{0.42}{mdHR}
-\node[mdleg,anchor=west] at (2.300,2.417) {$0.05''$ grid};
-\node[mdfun,inner sep=1.5pt] at (1.980,1.817) {\mdgrelu};
-\node[mdleg,anchor=west] at (2.300,1.817) {non-linear function};
-\node[mdpanel,anchor=north west] at (0,6.249) {(a)};
+% ---- legend (top right)
+\node[mdpanel,anchor=north west] at (0,5.901) {(a)};
+\mdfmap{lg0}{14.850}{5.601}{0.22}{0.42}{mdLR}
+\node[mdleg,anchor=west] at (15.320,5.601) {$0.1''$ grid};
+\mdfmap{lg1}{14.850}{5.051}{0.22}{0.42}{mdHR}
+\node[mdleg,anchor=west] at (15.320,5.051) {$0.05''$ grid};
+\node[mdfun,inner sep=1.5pt] at (15.000,4.501) {\mdgrelu};
+\node[mdleg,anchor=west] at (15.320,4.501) {non-linear function};
 % ===================================================================== (b)
-\mdfmap{bx}{0.800}{-5.614}{0.72}{1.45}{mdLR}
+\mdfmap{bx}{0.800}{-5.287}{0.72}{1.45}{mdLR}
 \node[mdch,above=1pt of bx-n] {32};
-\mdfmap{b1}{3.755}{-5.614}{1.06}{1.45}{mdLR}
+\mdfmap{b1}{3.705}{-5.287}{1.06}{1.45}{mdLR}
 \node[mdch,above=1pt of b1-n] {192};
-\node[mdfun,minimum width=1.5cm,minimum height=0.8cm] (relu) at (6.500,-5.614) {\mdgrelu\ ReLU};
-\mdfmap{b2}{9.050}{-5.614}{0.67}{1.45}{mdLR}
+\node[mdfun,minimum width=1.5cm,minimum height=0.8cm] (relu) at (6.450,-5.287) {\mdgrelu\ ReLU};
+\mdfmap{b2}{8.950}{-5.287}{0.67}{1.45}{mdLR}
 \node[mdch,above=1pt of b2-n] {25};
-\mdfmap{b3}{11.955}{-5.614}{0.72}{1.45}{mdLR}
+\mdfmap{b3}{11.805}{-5.287}{0.72}{1.45}{mdLR}
 \node[mdch,above=1pt of b3-n] {32};
-\node[mdsum] (bsum) at (13.820,-5.614) {$+$};
+\node[mdsum] (bsum) at (13.670,-5.287) {$+$};
 \draw[mdflow] (bx-e) -- (b1-w) node[mdop,midway,above=1pt] {$1\!\times\!1$ conv};
 \draw[mdflow] (b1-e) -- (relu.west);
 \draw[mdflow] (relu.east) -- (b2-w) node[mdop,midway,above=1pt] {$1\!\times\!1$ conv};
 \draw[mdflow] (b2-e) -- (b3-w) node[mdop,midway,above=1pt] {$3\!\times\!3$ conv};
 \draw[mdflow] (b3-e) -- (bsum);
-\draw[mdflow] (bsum) -- (14.530,-5.614);
-\draw[mdflow,rounded corners=5pt] ($(bx-s)+(0.06,0)$) |- (13.820,-6.889) -- (bsum.south);
-\node[mdop,above=1pt] at (8.150,-6.889) {identity};
+\draw[mdflow] (bsum) -- (14.380,-5.287);
+\draw[mdflow,rounded corners=5pt] ($(bx-s)+(0.06,0)$) |- (13.670,-6.562) -- (bsum.south);
+\node[mdop,above=1pt] at (8.075,-6.562) {identity};
 \begin{scope}[on background layer]
-  \fill[mdRes!12] (res.south west) -- (res.south east) -- (12.030,-3.570) -- (3.500,-3.570) -- cycle;
+  \fill[mdRes!12] (res.south west) -- (res.south east) -- (14.380,-3.243) -- (0.500,-3.243) -- cycle;
+  \draw[rounded corners=4pt,draw=mdRes!85!black,line width=0.9pt,fill=white] (0.500,-6.862) rectangle (14.380,-3.243);
 \end{scope}
-\draw[mdRes!70!black,line width=0.5pt] (res.south west) -- (3.500,-3.570) (res.south east) -- (12.030,-3.570);
-\begin{scope}[on background layer]\draw[rounded corners=4pt,draw=mdRes!85!black,line width=0.9pt,fill=white] (0.500,-7.189) rectangle (14.530,-3.570);\end{scope}
-\node[font=\fontsize{9}{10.5}\selectfont\bfseries,text=mdRes!65!black,anchor=north west,inner sep=0pt] at (0.800,-3.720) {one residual block};
-\node[mdpanel,anchor=north east] at (0.420,-3.570) {(b)};
+\draw[mdRes!70!black,line width=0.5pt] (res.south west) -- (0.500,-3.243) (res.south east) -- (14.380,-3.243);
+\node[font=\fontsize{9}{10.5}\selectfont\bfseries,text=mdRes!65!black,anchor=north west,inner sep=0pt] at (0.800,-3.393) {one residual block};
+\node[mdpanel,anchor=north east] at (0.420,-3.243) {(b)};
 \end{tikzpicture}
 \caption{The reconstruction network.
 (a) The four-band Euclid image $x$ (electrons, $0.1''$ pixels) is stretched with $\mathrm{arcsinh}(x/k_j)$ at eight knees $k_j = 10^{-3}, 10^{-2}, \ldots, 10^{4}$ electrons, giving $4\times8=32$ channels.
 Two paths start from this stack.
-The shared trunk (middle row) mixes all bands: a $3\times3$ convolution, $16$ residual blocks, a second $3\times3$ convolution and a $2\times$ upsampling, which rearranges each group of four channels into a $2\times2$ patch of pixels on the $0.05''$ grid.
-The per-band path (top row) upsamples each band from its own eight channels with a $5\times5$ convolution, so it never mixes bands.
+The shared trunk (lower row) mixes all bands: a $3\times3$ convolution, $16$ residual blocks, a second $3\times3$ convolution and a $2\times$ upsampling, which rearranges each group of four channels into a $2\times2$ patch of pixels on the $0.05''$ grid.
+The per-band path (upper row) upsamples each band from its own eight channels with a $5\times5$ convolution, so it never mixes bands.
 The two are added, giving the stretched image $y_b$ for each band $b$, and $k_b \sinh y_b$ with a learned knee $k_b$ turns it back into electrons.
 Gray cuboids are feature maps on the $0.1''$ grid and green ones on the $0.05''$ grid; numbers above them are channel counts.
 Purple boxes are the only non-linear functions; every other step is linear.
