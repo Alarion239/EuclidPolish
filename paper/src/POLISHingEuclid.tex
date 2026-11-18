@@ -290,7 +290,7 @@ With about $3\times 10^5$ parameters and no fully connected layers, the model ru
 The light in our scenes covers a range of $6$ orders of magnitude.
 POLISH++ compresses such a range with a single $\mathrm{asinh}$ \citep{Wu2026}, but one choice is left: what should be the units in which we pass the images through $\mathrm{asinh}$? 
 Since this operator compresses logarithmically all the values $\gg 1$ and leaves approximately linear values $\approx 0$, it will act differently depending on how we scale the images first.
-Difference of our approach from POLISH++ is in choice of the ``knees``: the normalization constants $$\mathrm{asinh}(\text{pixel} / \text{knee}).$$
+Difference of our approach from POLISH++ is in choice of the ``knees'': the normalization constants $$\mathrm{asinh}(\text{pixel} / \text{knee}).$$
 Instead of choosing one, our loss and input use eight: knees of $10^{-3}$, $10^{-2}$, \ldots, $10^{4}$ electrons, covering the full range of usual input data.
 This replaces the single stretch of POLISH++, which forces a single choice for a dynamic range that spans more than seven decades in our images. 
 Since the data inside of the model is transformed with $\mathrm{asinh}$ we should also add a $\text{knee}\cdot\mathrm{sinh}$ operation before the output. 
