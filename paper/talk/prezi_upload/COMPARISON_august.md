@@ -16,5 +16,17 @@ New beyond August: pinned first pages of the five papers (POLISH, POLISH++, Eucl
 TNG downsides, the cat-face dive, the Limits card (sky-matched faint-flux chart, bright-nucleus close-up) and the
 closing question returning to the "What we don't trust" card.
 
-Same as August: neighbouring cards show at the screen edge on some stops (cards are narrower than 16:9 and 1456 units
+Measured from the two path lists:
+
+| | August | New |
+|---|---|---|
+| Path steps | 30 | 97 |
+| Camera moves (zoom to object) | 24 | 52, to 43 distinct targets |
+| Fade-ins (images or captions appearing in place) | 0 | 42 |
+| Fade-outs | 6 | 2 (the title lines) |
+| Returns to an earlier object | 0 | 9 (5 cards revisited: lenses, quiz, results, title column, TNG downsides) |
+| Objects on the canvas | 67 | 170 |
+
+Not matched: the flow arrows are teal "→" text, not grey block arrows (Prezi's shape tool does not expose the shape
+for exact placement from code). Same as August: neighbouring cards show at the screen edge on some stops (cards are narrower than 16:9 and 1456 units
 apart).
