@@ -57,6 +57,11 @@ import tensorflow as tf
 
 #: The residual's asinh knee (e⁻ per HR pixel).
 DEFAULT_KNEE_E = 0.01
+#: How far above its ring's mean a direction's moving-average error power may
+#: sit before it costs anything (the ``tolerance`` of ``E``). A dead zone for
+#: the moving average's own scatter and the reference's ≤3 % residual bias;
+#: never derived (2026-11-18: a 0 vs 0.05 pair tests it).
+DEFAULT_TOLERANCE = 0.05
 #: (window px, shortest period px, longest period px, weight) per scale:
 #: 64-px windows for 3-21 px, the same for 2-3 px weighted 0.003 (equal
 #: leverage per unit of anisotropy, see above), 128-px windows for 21-42 px.
@@ -93,7 +98,8 @@ class ResidualIsotropy(tf.Module):
 
     def __init__(self, knee_e: float = DEFAULT_KNEE_E, n_bands: int = 4, window: int = 64,
                  period_min: float = 3.0, period_max: float = 21.0, decay: float = 0.99,
-                 tolerance: float = 0.05, floor_e: float = 1e-4, name: str = "residual_isotropy"):
+                 tolerance: float = DEFAULT_TOLERANCE, floor_e: float = 1e-4,
+                 name: str = "residual_isotropy"):
         super().__init__(name=name)
         w = int(window)
         if not knee_e > 0:
@@ -102,6 +108,8 @@ class ResidualIsotropy(tf.Module):
             raise ValueError(f"need 2 <= period_min < period_max, got {period_min!r}, {period_max!r}")
         if not 0.0 <= decay < 1.0:
             raise ValueError(f"decay must be in [0, 1), got {decay!r}")
+        if not tolerance >= 0.0:
+            raise ValueError(f"tolerance must be non-negative, got {tolerance!r}")
         lo, hi = w / float(period_max), w / float(period_min)
         if lo < 2.0:
             raise ValueError(f"period_max {period_max!r} is too long for a {w}-pixel window")
@@ -220,7 +228,8 @@ class MultiScaleIsotropy(tf.Module):
 
     def __init__(self, scales: Sequence[Sequence[float]] = DEFAULT_SCALES,
                  knee_e: float = DEFAULT_KNEE_E, n_bands: int = 4, decay: float = 0.99,
-                 tolerance: float = 0.05, floor_e: float = 1e-4, name: str = "multi_scale_isotropy"):
+                 tolerance: float = DEFAULT_TOLERANCE, floor_e: float = 1e-4,
+                 name: str = "multi_scale_isotropy"):
         super().__init__(name=name)
         if not scales:
             raise ValueError("need at least one scale")
@@ -262,5 +271,5 @@ class MultiScaleIsotropy(tf.Module):
                          f"{float(np.mean(scale.excess())):.4f}" for scale in self.scales)
 
 
-__all__ = ["DEFAULT_KNEE_E", "DEFAULT_SCALES", "LEGACY_SCALES", "MultiScaleIsotropy", "ResidualIsotropy",
-           "canonical_scales"]
+__all__ = ["DEFAULT_KNEE_E", "DEFAULT_SCALES", "DEFAULT_TOLERANCE", "LEGACY_SCALES",
+           "MultiScaleIsotropy", "ResidualIsotropy", "canonical_scales"]

@@ -58,6 +58,7 @@ from euclid_polish.training.forward_onthefly import (  # noqa: E402
 from euclid_polish.training.inference import checkpoint_step  # noqa: E402
 from euclid_polish.training.isotropy import DEFAULT_KNEE_E as DEFAULT_ISOTROPY_KNEE_E  # noqa: E402
 from euclid_polish.training.isotropy import DEFAULT_SCALES as DEFAULT_ISOTROPY_SCALES  # noqa: E402
+from euclid_polish.training.isotropy import DEFAULT_TOLERANCE as DEFAULT_ISOTROPY_TOLERANCE  # noqa: E402
 from euclid_polish.training.isotropy import LEGACY_SCALES as LEGACY_ISOTROPY_SCALES  # noqa: E402
 from euclid_polish.training.isotropy import canonical_scales  # noqa: E402
 from euclid_polish.training.loss_names import KNEE_LOSS_MODES, LOSS_NAMES  # noqa: E402
@@ -302,6 +303,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Judge each batch's error directions by that batch "
                         "alone, not by the moving average over recent "
                         "batches. Member-spec key: isotropy_per_batch.")
+    p.add_argument("--isotropy-tolerance", type=float, default=None,
+                   help="How far above its ring's mean a direction's error "
+                        "power may sit before the isotropy penalty charges it "
+                        f"(default {DEFAULT_ISOTROPY_TOLERANCE:g}). Member-spec "
+                        "key: isotropy_tolerance.")
     p.add_argument("--loss-knees", default=None,
                    help="Comma-separated knees (e⁻) a single-image multi-knee "
                         "member is SCORED at — a subset of the knees it reads "
@@ -510,6 +516,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "brightness_consistency", "noise_texture_jitter",
                "galaxy_blur_prob", "galaxy_blur_fwhm_max",
                "isotropy_penalty", "isotropy_knee", "isotropy_scales", "isotropy_per_batch",
+               "isotropy_tolerance",
                "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
@@ -637,6 +644,28 @@ def _isotropy_scales(value) -> tuple[tuple[float, float, float, float], ...] | N
     return scales
 
 
+def _isotropy_tolerance(value, penalty: float) -> float | None:
+    """``isotropy_tolerance`` → a non-negative float, or ``None`` (the
+    module default) when unset; only with an isotropy penalty."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        print(f"✗ isotropy_tolerance must be a number, got {value!r}")
+        raise SystemExit(2)
+    try:
+        tolerance = float(value)
+    except (TypeError, ValueError) as exc:
+        print(f"✗ isotropy_tolerance must be a number, got {value!r}")
+        raise SystemExit(2) from exc
+    if not tolerance >= 0.0:
+        print(f"✗ isotropy_tolerance must be non-negative, got {value!r}")
+        raise SystemExit(2)
+    if not penalty:
+        print("✗ isotropy_tolerance needs an isotropy_penalty")
+        raise SystemExit(2)
+    return tolerance
+
+
 def _flag(value, name: str) -> bool:
     """A true/false member knob (JSON bool or the CLI's store_true)."""
     if not isinstance(value, bool):
@@ -734,6 +763,8 @@ def _diversity_kwargs(args, over: dict) -> dict:
     if isotropy_per_batch and not isotropy_penalty:
         print("✗ isotropy_per_batch needs an isotropy_penalty")
         raise SystemExit(2)
+    isotropy_tolerance = _isotropy_tolerance(over.get("isotropy_tolerance", args.isotropy_tolerance),
+                                             isotropy_penalty)
     lupton = _flag(over.get("lupton_loss", args.lupton_loss), "lupton_loss")
     brightness = _flag(over.get("brightness_consistency", args.brightness_consistency),
                        "brightness_consistency")
@@ -788,6 +819,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "isotropy_knee": isotropy_knee,
             "isotropy_scales": isotropy_scales,
             "isotropy_per_batch": isotropy_per_batch,
+            "isotropy_tolerance": isotropy_tolerance,
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
             "forward_onthefly": bool(over.get("forward_onthefly",
@@ -885,6 +917,8 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
                                            if origin.get("isotropy_scales") else LEGACY_ISOTROPY_SCALES)
         if "isotropy_per_batch" not in override and origin.get("isotropy_per_batch") is True:
             identity["isotropy_per_batch"] = True
+        if "isotropy_tolerance" not in override and origin.get("isotropy_tolerance") is not None:
+            identity["isotropy_tolerance"] = float(origin["isotropy_tolerance"])
     # A member created with faster steps keeps them (a member-spec xla/bf16
     # false turns one off).
     for key, field in (("xla", "jit_compile"), ("bf16", "mixed_precision")):
@@ -1173,7 +1207,8 @@ def main() -> int:
                       f"@{s.isotropy_knee or DEFAULT_ISOTROPY_KNEE_E:g}e"
                       " scales=" + ",".join(f"{w:g}:{a:g}:{b:g}:{c:g}" for w, a, b, c in
                                              (s.isotropy_scales or DEFAULT_ISOTROPY_SCALES))
-                      + (" per-batch" if s.isotropy_per_batch else ""))
+                      + (" per-batch" if s.isotropy_per_batch else "")
+                      + (f" tolerance={s.isotropy_tolerance:g}" if s.isotropy_tolerance is not None else ""))
         if s.bootstrap:
             knobs += f" bootstrap={s.bootstrap:g}"
         if s.forward_onthefly:

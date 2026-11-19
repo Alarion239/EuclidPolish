@@ -51,6 +51,7 @@ from euclid_polish.training.forward_onthefly import (
 )
 from euclid_polish.training.isotropy import DEFAULT_KNEE_E as DEFAULT_ISOTROPY_KNEE_E
 from euclid_polish.training.isotropy import DEFAULT_SCALES as DEFAULT_ISOTROPY_SCALES
+from euclid_polish.training.isotropy import DEFAULT_TOLERANCE as DEFAULT_ISOTROPY_TOLERANCE
 from euclid_polish.training.isotropy import canonical_scales
 from euclid_polish.training.models.output_knee import KNEE_MAX_E, KNEE_MIN_E, learned_knee_bounds
 from euclid_polish.training.target_blur import (
@@ -220,11 +221,13 @@ class MemberTrainSpec:
     #: ``isotropy_scales`` ((window, shortest, longest period px, weight) each;
     #: ``None`` = the module default). 0 = off. ``isotropy_per_batch`` scores
     #: each batch against its own spectrum instead of the moving average.
-    #: Recorded in origin.json; continue keeps all four.
+    #: ``isotropy_tolerance`` is the excess's dead zone (``None`` = the module
+    #: default, 0.05). Recorded in origin.json; continue keeps all five.
     isotropy_penalty: float = 0.0
     isotropy_knee: float | None = None
     isotropy_scales: tuple[tuple[float, float, float, float], ...] | None = None
     isotropy_per_batch: bool = False
+    isotropy_tolerance: float | None = None
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
     #: Faster training steps (see ``Model.train``): XLA-compile the gradient
@@ -562,6 +565,9 @@ class EnsembleModel:
                     origin["isotropy_scales"] = [list(scale) for scale in scales]
                     if spec.isotropy_per_batch:
                         origin["isotropy_per_batch"] = True
+                    origin["isotropy_tolerance"] = float(
+                        DEFAULT_ISOTROPY_TOLERANCE if spec.isotropy_tolerance is None
+                        else spec.isotropy_tolerance)
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval
@@ -593,6 +599,8 @@ class EnsembleModel:
                 member_train_kwargs["isotropy_scales"] = spec.isotropy_scales
                 if spec.isotropy_per_batch:
                     member_train_kwargs["isotropy_per_batch"] = True
+                if spec.isotropy_tolerance is not None:
+                    member_train_kwargs["isotropy_tolerance"] = float(spec.isotropy_tolerance)
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"

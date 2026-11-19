@@ -18,6 +18,7 @@ from euclid_polish.model import Model
 from euclid_polish.training.isotropy import (
     DEFAULT_KNEE_E,
     DEFAULT_SCALES,
+    DEFAULT_TOLERANCE,
     LEGACY_SCALES,
     MultiScaleIsotropy,
     ResidualIsotropy,
@@ -381,3 +382,49 @@ def test_the_per_batch_knob_from_member_spec_origin_and_continue(tmp_path, monke
     assert json.loads((base / "member_315" / "origin.json").read_text())["isotropy_per_batch"] is True
     assert ens._models[0].trained["isotropy_per_batch"] is True
     assert _continue_identity("member_315", str(base / "member_315"), {}, {})["isotropy_per_batch"] is True
+
+
+# -- tolerance: the excess's dead zone --------------------------------------------
+
+def test_tolerance_zero_charges_any_excess_and_the_default_ignores_small_ones():
+    iso = ResidualIsotropy(n_bands=1, tolerance=0.0)
+    loose = ResidualIsotropy(n_bands=1)
+    assert loose.tolerance == DEFAULT_TOLERANCE == 0.05
+    # a ring with one direction 4 % above the rest: 0 charges it, 0.05 does not
+    bumped = np.ones((1, iso.n_bins), np.float32)
+    bumped[0, 0] = 1.04
+    excess0 = iso._excess(tf.constant(bumped)).numpy()
+    excess5 = loose._excess(tf.constant(bumped)).numpy()
+    assert excess0[0, 0] > 0 and not excess5.any()
+    with pytest.raises(ValueError, match="tolerance"):
+        ResidualIsotropy(n_bands=1, tolerance=-0.1)
+
+
+def test_the_tolerance_knob_from_member_spec_origin_and_continue(tmp_path, monkeypatch):
+    member = {"asinh_knees": list(KNEES), "learn_output_knee": True, "isotropy_penalty": 0.5,
+              "isotropy_tolerance": 0}
+    spec = build_specs(parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([member])]),
+                       str(tmp_path / "b1"))[0]
+    assert spec.isotropy_tolerance == 0.0
+    plain = build_specs(parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps(
+        [{**member, "isotropy_tolerance": None}])]), str(tmp_path / "b0"))[0]
+    assert plain.isotropy_tolerance is None
+    for bad in ({**member, "isotropy_tolerance": -0.01}, {**member, "isotropy_tolerance": True},
+                {"asinh_knees": list(KNEES), "isotropy_tolerance": 0.0}):
+        with pytest.raises(SystemExit):
+            build_specs(parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps([bad])]),
+                        str(tmp_path / "b2"))
+    monkeypatch.setattr(ens_mod, "Model", _Recorder)
+    base = tmp_path / "ensemble"
+    ens = EnsembleModel(str(base), _models=[])
+    common = {"seed": 1, "target_steps": 10, "run_steps": 10, "loss_norm": "l2", "asinh_knees": KNEES,
+              "knee_loss": "balanced", "output_knee": 10.0, "learn_output_knee": True, "isotropy_penalty": 0.5}
+    ens.train_members("lr", "hr", [MemberTrainSpec(name="member_316", isotropy_tolerance=0.0, **common),
+                                   MemberTrainSpec(name="member_317", **common)])
+    zero = json.loads((base / "member_316" / "origin.json").read_text())
+    default = json.loads((base / "member_317" / "origin.json").read_text())
+    assert zero["isotropy_tolerance"] == 0.0 and default["isotropy_tolerance"] == DEFAULT_TOLERANCE
+    assert ens._models[0].trained["isotropy_tolerance"] == 0.0
+    assert "isotropy_tolerance" not in ens._models[1].trained
+    assert _continue_identity("member_316", str(base / "member_316"), {}, {})["isotropy_tolerance"] == 0.0
+

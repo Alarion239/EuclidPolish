@@ -69,6 +69,7 @@ from euclid_polish.training.inference import (
 from euclid_polish.training.inference import reconstruct_heads
 from euclid_polish.training.isotropy import DEFAULT_KNEE_E as DEFAULT_ISOTROPY_KNEE_E
 from euclid_polish.training.isotropy import DEFAULT_SCALES as DEFAULT_ISOTROPY_SCALES
+from euclid_polish.training.isotropy import DEFAULT_TOLERANCE as DEFAULT_ISOTROPY_TOLERANCE
 from euclid_polish.training.isotropy import MultiScaleIsotropy, canonical_scales
 from euclid_polish.training.loss_names import plateau_guard_applies
 from euclid_polish.training.losses import (
@@ -630,6 +631,7 @@ class Model:
         isotropy_knee: float | None = None,
         isotropy_scales: Sequence[Sequence[float]] | None = None,
         isotropy_per_batch: bool = False,
+        isotropy_tolerance: float | None = None,
         jit_compile: bool = False,
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
@@ -696,7 +698,9 @@ class Model:
         ((window px, shortest period px, longest period px[, weight]) each;
         ``None`` → ``training.isotropy.DEFAULT_SCALES``). ``isotropy_per_batch``
         judges each batch's directions by that batch alone (moving-average
-        decay 0). It needs a learned output knee (electrons out) and live
+        decay 0). ``isotropy_tolerance`` is the dead zone of the excess
+        (``None`` → ``training.isotropy.DEFAULT_TOLERANCE``, 0.05). It
+        needs a learned output knee (electrons out) and live
         training (electrons in).
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
@@ -824,11 +828,15 @@ class Model:
         isotropy = None
         if isotropy_penalty:
             knee = float(isotropy_knee) if isotropy_knee else DEFAULT_ISOTROPY_KNEE_E
+            tolerance = (DEFAULT_ISOTROPY_TOLERANCE if isotropy_tolerance is None
+                         else float(isotropy_tolerance))
             isotropy = MultiScaleIsotropy(scales, knee_e=knee, n_bands=Config.NUM_HR_CHANNELS,
+                                          tolerance=tolerance,
                                           **({"decay": 0.0} if isotropy_per_batch else {}))
             provenance_fields["isotropy_penalty"] = float(isotropy_penalty)
             provenance_fields["isotropy_knee"] = knee
             provenance_fields["isotropy_scales"] = [list(scale) for scale in scales]
+            provenance_fields["isotropy_tolerance"] = tolerance
             if isotropy_per_batch:
                 provenance_fields["isotropy_per_batch"] = True
         loss = self._member_loss(loss_norm, knee_loss, loss_knees, loss_floor, knee_tilt,
