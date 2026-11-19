@@ -27,15 +27,20 @@ const WHITE_BALANCE = { VIS: 1.0, Y_E: 0.2088, J_E: 0.2929, H_E: 0.3799 };
 // VIS 24–27, +1.2 at VIS 18–22), so it shows almost everything blue.
 const ZP_E = { VIS: 34.29662776165843, Y_E: 31.396441190651323, J_E: 31.616441190651326, H_E: 31.566441190651325 };
 const TO_VIS_EQ = Object.fromEntries(Object.entries(ZP_E).map(([b, zp]) => [b, 10 ** (0.4 * (ZP_E.VIS - zp))]));
-// Measured per-pixel MER noise (Q1, 2026-11-18): VIS 21.7, NISP 2.6–2.8 e⁻. The
-// colour mode stretches the mean of R, G, B (Lupton et al. 2004): hue is kept and
-// the asinh knee sits at 5σ of that mean.
+// Measured per-pixel MER noise (Q1, 2026-11-18): VIS 21.7, NISP 2.6–2.8 e⁻.
+// Each channel gets the same asinh stretch in VIS-equivalent units (so the balance
+// is AB at every level), as "vivid" does per channel: bright cores compress toward
+// white instead of saturating into one hue. (A hue-preserving Lupton stretch of
+// the mean was tried first: bright galaxies came out as flat orange blobs.)
 const NOISE_E = { VIS: 21.7, Y_E: 2.6, J_E: 2.8, H_E: 2.7 };
 const SIGMA_AB = Math.hypot(NOISE_E.VIS, Math.hypot(NOISE_E.Y_E * TO_VIS_EQ.Y_E, NOISE_E.J_E * TO_VIS_EQ.J_E) / 2,
                             NOISE_E.H_E * TO_VIS_EQ.H_E) / 3;
-const KNEE_AB = 5 * SIGMA_AB;
-// Black point at 1.5σ of the mean: NISP is ~1.5× noisier than VIS per pixel in AB
-// terms, so without it the Euclid side's sky is a speckle of coloured noise.
+// Knee 600 VIS-equivalent e⁻ (~18σ of H, the noisiest channel at 33 e⁻): about
+// vivid's NISP knees, whose near-linear stretch gives its contrast. A 5σ knee
+// (~170) log-compresses every resolved galaxy into a flat, washed-out disc.
+const KNEE_AB = 600;
+// Black point at 1.5σ of the channel mean: without it the Euclid side's sky is a
+// speckle of coloured noise.
 const BLACK_AB = 1.5 * SIGMA_AB;
 // Releases: IRSA's MER mosaics, served by this server (?release=…). DR1 has no
 // HiPS yet, so its coverage is drawn from its own MOCs.
@@ -93,6 +98,7 @@ const state = {
   divider: 0.5,          // swipe divider, fraction of the canvas width
   colour: "ab",
   white: 3000,           // VIS-equivalent white level, e⁻ per LR pixel
+  saturation: 1,         // AB colour: 0 grey, 1 as stretched, 2 doubled
   tta: false,
   blink: false,
   hover: null,
@@ -648,14 +654,11 @@ function renderBlock(data, n, sb) {
         px[o] = px[o + 1] = px[o + 2] = stretch(v * sb, kV, W);
       } else if (state.colour === "ab") {
         const R = hb[p] * sb * TO_VIS_EQ.H_E, G = (y[p] * TO_VIS_EQ.Y_E + j[p] * TO_VIS_EQ.J_E) * 0.5 * sb, Bl = v * sb;
-        const I = (R + G + Bl) / 3;
-        if (!(I > BLACK_AB)) { px[o] = px[o + 1] = px[o + 2] = 0; px[o + 3] = 255; continue; }
-        let k = Math.asinh((I - BLACK_AB) / KNEE_AB) / (abNorm * I);
-        const m = Math.max(R, G, Bl) * k;
-        if (m > 1) k /= m;                                   // saturate without changing hue
-        px[o] = R > 0 ? Math.min(255, R * k * 255) | 0 : 0;
-        px[o + 1] = G > 0 ? Math.min(255, G * k * 255) | 0 : 0;
-        px[o + 2] = Bl > 0 ? Math.min(255, Bl * k * 255) | 0 : 0;
+        const f = (c) => (c > BLACK_AB ? Math.min(1, Math.asinh((c - BLACK_AB) / KNEE_AB) / abNorm) : 0);
+        const tr = f(R), tg = f(G), tb = f(Bl), L = (tr + tg + tb) / 3, k = state.saturation;
+        px[o] = Math.max(0, Math.min(255, (L + k * (tr - L)) * 255)) | 0;   // saturation: scale
+        px[o + 1] = Math.max(0, Math.min(255, (L + k * (tg - L)) * 255)) | 0; // the departure
+        px[o + 2] = Math.max(0, Math.min(255, (L + k * (tb - L)) * 255)) | 0; // from grey
       } else {
         px[o] = stretch(hb[p] * sb, kR, wR);
         px[o + 1] = stretch((y[p] + j[p]) * 0.5 * sb, kG, wG);
@@ -669,7 +672,7 @@ function renderBlock(data, n, sb) {
 }
 
 function blockCanvas(blk, which) {
-  const key = `${which}:${state.colour}:${state.white}:${state.tta}`;
+  const key = `${which}:${state.colour}:${state.white}:${state.saturation}:${state.tta}`;
   if (blk.canvases[key]) return blk.canvases[key];
   let c = null;
   if (which === "lr" && blk.lr) c = renderBlock(blk.lr, B, 1);
@@ -916,8 +919,14 @@ function bindUi() {
   $("search").addEventListener("submit", onSearch);
   document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
   $("colour").addEventListener("change", (e) => { state.colour = e.target.value; schedule(); });
-  const white = () => { state.white = Math.round(300 * Math.pow(10, (100 - +$("white").value) / 50)); schedule(); };
+  // White level 300 → 3·10⁵ e⁻ (VIS-equivalent per LR pixel): bright nearby galaxies
+  // need the top decade to keep their cores unclipped.
+  const white = () => { state.white = Math.round(300 * Math.pow(10, 3 * (100 - +$("white").value) / 100)); schedule(); };
   $("white").addEventListener("input", white); white();
+  const saturation = () => { state.saturation = +$("saturation").value / 50; schedule(); };
+  $("saturation").addEventListener("input", saturation); saturation();
+  const satLabel = () => { $("saturation").parentElement.hidden = state.colour !== "ab"; };
+  $("colour").addEventListener("change", satLabel); satLabel();
   $("tta").addEventListener("change", (e) => { state.tta = e.target.checked; schedule(); });
   $("info").addEventListener("click", () => $("about").classList.toggle("show"));
 

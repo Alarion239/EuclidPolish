@@ -25,6 +25,7 @@
     border-radius: 6px; font: inherit; cursor: pointer; }
   button:hover, select:hover { border-color: #3a414c; }
   button.on { background: #24364d; border-color: var(--accent); }
+  [hidden] { display: none !important; }
   label { color: var(--muted); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   input[type=range] { width: 110px; accent-color: var(--accent); }
   #stage { position: relative; flex: 1; min-height: 0; }
@@ -91,7 +92,8 @@
       <option value="colour">Colour, console "vivid" balance</option>
       <option value="vis">VIS grey</option>
     </select>
-    <label>Brightness <input id="white" type="range" min="0" max="100" value="50"></label>
+    <label>Brightness <input id="white" type="range" min="0" max="100" value="67"></label>
+    <label>Saturation <input id="saturation" type="range" min="0" max="100" value="50"></label>
     <label title="Average over 8 rotations/flips: removes the faint grid pattern, 8× slower">
       <input id="tta" type="checkbox"> TTA×8</label>
     </span>
