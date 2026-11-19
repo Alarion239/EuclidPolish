@@ -228,6 +228,14 @@ class MemberTrainSpec:
     isotropy_scales: tuple[tuple[float, float, float, float], ...] | None = None
     isotropy_per_batch: bool = False
     isotropy_tolerance: float | None = None
+    #: Weight λ of the real-sky dihedral equivariance penalty
+    #: (``training.equivariance``) on random crops of the real LR tiles in
+    #: ``real_equivariance_tiles`` (a ``.npy``), ``real_equivariance_batch``
+    #: crops per step (``None`` = the training batch). 0 = off. Recorded in
+    #: origin.json; continue keeps all three.
+    real_equivariance: float = 0.0
+    real_equivariance_tiles: str | None = None
+    real_equivariance_batch: int | None = None
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
     #: Faster training steps (see ``Model.train``): XLA-compile the gradient
@@ -568,6 +576,11 @@ class EnsembleModel:
                     origin["isotropy_tolerance"] = float(
                         DEFAULT_ISOTROPY_TOLERANCE if spec.isotropy_tolerance is None
                         else spec.isotropy_tolerance)
+                if spec.real_equivariance:
+                    origin["real_equivariance"] = float(spec.real_equivariance)
+                    origin["real_equivariance_tiles"] = str(spec.real_equivariance_tiles)
+                    if spec.real_equivariance_batch:
+                        origin["real_equivariance_batch"] = int(spec.real_equivariance_batch)
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval
@@ -601,6 +614,11 @@ class EnsembleModel:
                     member_train_kwargs["isotropy_per_batch"] = True
                 if spec.isotropy_tolerance is not None:
                     member_train_kwargs["isotropy_tolerance"] = float(spec.isotropy_tolerance)
+            if spec.real_equivariance:
+                member_train_kwargs["real_equivariance"] = float(spec.real_equivariance)
+                member_train_kwargs["real_equivariance_tiles"] = str(spec.real_equivariance_tiles)
+                if spec.real_equivariance_batch:
+                    member_train_kwargs["real_equivariance_batch"] = int(spec.real_equivariance_batch)
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"

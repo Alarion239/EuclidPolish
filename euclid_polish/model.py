@@ -39,6 +39,11 @@ from euclid_polish.training.brightness import (
     block_noise_factors,
     core_kernel,
 )
+from euclid_polish.training.equivariance import (
+    RealEquivariance,
+    load_real_tiles,
+    real_crop_dataset,
+)
 from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
@@ -632,6 +637,9 @@ class Model:
         isotropy_scales: Sequence[Sequence[float]] | None = None,
         isotropy_per_batch: bool = False,
         isotropy_tolerance: float | None = None,
+        real_equivariance: float = 0.0,
+        real_equivariance_tiles: str | None = None,
+        real_equivariance_batch: int | None = None,
         jit_compile: bool = False,
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
@@ -702,6 +710,15 @@ class Model:
         (``None`` → ``training.isotropy.DEFAULT_TOLERANCE``, 0.05). It
         needs a learned output knee (electrons out) and live
         training (electrons in).
+
+        ``real_equivariance`` λ > 0 adds λ × the real-sky dihedral
+        equivariance penalty (:mod:`~euclid_polish.training.equivariance`):
+        on random crops of the real Euclid LR tiles in
+        ``real_equivariance_tiles`` (``(N, S, S, 4)`` float32 electrons,
+        ``.npy``), the SR of a flipped/rotated crop must be the flipped/rotated
+        SR, scored by this member's own loss. ``real_equivariance_batch`` real
+        crops per step (``None`` → ``batch_size``), each the training crop's
+        LR size. Needs a learned-output-knee member on the live forward.
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
@@ -718,6 +735,14 @@ class Model:
             raise ValueError("brightness_consistency needs a learned-output-knee member "
                              "(electrons out) trained on the live (on-the-fly) forward "
                              "model (electrons in)")
+        if not float(real_equivariance) >= 0.0:
+            raise ValueError(f"real_equivariance must be non-negative, got {real_equivariance!r}")
+        if real_equivariance and not (self._learn_output_knee and forward_onthefly):
+            raise ValueError("real_equivariance needs a learned-output-knee member (electrons "
+                             "out) trained on the live (on-the-fly) forward model (electrons in)")
+        if real_equivariance and not real_equivariance_tiles:
+            raise ValueError("real_equivariance needs real_equivariance_tiles (a .npy of real "
+                             "LR tiles)")
         scales = canonical_scales(isotropy_scales or DEFAULT_ISOTROPY_SCALES)
         if isotropy_penalty and max(scale[0] for scale in scales) > int(hr_crop_size):
             raise ValueError(f"isotropy windows {[int(s[0]) for s in scales]} must fit the "
@@ -786,6 +811,32 @@ class Model:
                 bootstrap_seed=(self._seed if self._seed is not None else 0),
                 target_fwhm_arcsec=target_fwhm)
 
+        equivariance = None
+        equivariance_fields: dict[str, object] = {}
+        if real_equivariance:
+            tiles = load_real_tiles(str(real_equivariance_tiles))
+            real_batch = int(real_equivariance_batch or batch_size)
+            real_crop = int(hr_crop_size) // self._scale
+            real_ds = real_crop_dataset(
+                tiles, crop=real_crop, batch_size=real_batch,
+                seed=(self._seed if self._seed is not None else 0) + 0x5EA1)
+            train_ds = tf.data.Dataset.zip((train_ds, real_ds)).map(
+                lambda pair, real: (pair[0], pair[1], real)).prefetch(2)
+            knee, knees = self._asinh_knee, self._asinh_knees
+            equivariance = RealEquivariance(
+                lambda lr: stretch_pair(lr, lr, knee=knee, knees=knees)[0],
+                lambda hr: stretch_pair(hr, hr, knee=knee, knees=knees)[1],
+                source=_os.path.basename(str(real_equivariance_tiles)))
+            equivariance_fields = {
+                "real_equivariance": float(real_equivariance),
+                "real_equivariance_tiles": str(real_equivariance_tiles),
+                "real_equivariance_n_tiles": int(tiles.shape[0]),
+                "real_equivariance_batch": real_batch,
+            }
+            print(f"  real-sky equivariance: λ={float(real_equivariance):g}, {real_batch} × "
+                  f"{real_crop}² LR crops/step from {int(tiles.shape[0])} tiles "
+                  f"({real_equivariance_tiles})")
+
         valid_ds = self._build_training_pipeline(
             valid_lr_path, valid_hr_path, batch_size, augment=False,
             target_fwhm_arcsec=target_fwhm,
@@ -814,6 +865,7 @@ class Model:
             plateau_lr_enabled = False
         provenance_fields: dict[str, object] = {
             "forward_onthefly": bool(forward_onthefly),
+            **equivariance_fields,
         }
         if forward_onthefly:
             # Live training draws noise from the code's noise model; record it
@@ -900,7 +952,9 @@ class Model:
                                          else None),
                           isotropy=isotropy,
                           isotropy_weight=float(isotropy_penalty),
-                          brightness=brightness)
+                          brightness=brightness,
+                          equivariance=equivariance,
+                          equivariance_weight=float(real_equivariance))
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):

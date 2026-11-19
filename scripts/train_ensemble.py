@@ -308,6 +308,19 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "power may sit before the isotropy penalty charges it "
                         f"(default {DEFAULT_ISOTROPY_TOLERANCE:g}). Member-spec "
                         "key: isotropy_tolerance.")
+    p.add_argument("--real-equivariance", type=float, default=0.0,
+                   help="Learned-knee live member: weight λ of the real-sky "
+                        "dihedral equivariance penalty (euclid_polish.training."
+                        "equivariance): the SR of a flipped/rotated real crop "
+                        "must be the flipped/rotated SR, in units of the "
+                        "member's loss. 0 = off. Member-spec key: real_equivariance.")
+    p.add_argument("--real-equivariance-tiles", default=None,
+                   help="The real LR tiles for --real-equivariance: a .npy of "
+                        "(N, S, S, 4) float32 electrons. Member-spec key: "
+                        "real_equivariance_tiles.")
+    p.add_argument("--real-equivariance-batch", type=int, default=None,
+                   help="Real crops per step (default: the training batch). "
+                        "Member-spec key: real_equivariance_batch.")
     p.add_argument("--loss-knees", default=None,
                    help="Comma-separated knees (e⁻) a single-image multi-knee "
                         "member is SCORED at — a subset of the knees it reads "
@@ -517,6 +530,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "galaxy_blur_prob", "galaxy_blur_fwhm_max",
                "isotropy_penalty", "isotropy_knee", "isotropy_scales", "isotropy_per_batch",
                "isotropy_tolerance",
+               "real_equivariance", "real_equivariance_tiles", "real_equivariance_batch",
                "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
@@ -666,6 +680,45 @@ def _isotropy_tolerance(value, penalty: float) -> float | None:
     return tolerance
 
 
+def _real_equivariance(weight, tiles, batch, *, learn: bool, onthefly: bool,
+                       ) -> tuple[float, str | None, int | None]:
+    """``real_equivariance`` / ``_tiles`` / ``_batch`` → a non-negative
+    weight, the tile file and the crops per step (``None`` = the training
+    batch). Tiles and batch only with a weight; a weight needs tiles, a
+    learned output knee and the live forward."""
+    if isinstance(weight, bool) or isinstance(batch, bool):
+        print(f"✗ real_equivariance / real_equivariance_batch must be numbers, got "
+              f"{weight!r}, {batch!r}")
+        raise SystemExit(2)
+    try:
+        lam = float(weight or 0.0)
+        crops = None if batch in (None, "", 0) else int(batch)
+    except (TypeError, ValueError) as exc:
+        print(f"✗ real_equivariance / real_equivariance_batch must be numbers, got "
+              f"{weight!r}, {batch!r}")
+        raise SystemExit(2) from exc
+    path = str(tiles).strip() if tiles not in (None, "") else None
+    if not lam >= 0.0:
+        print(f"✗ real_equivariance must be non-negative, got {weight!r}")
+        raise SystemExit(2)
+    if crops is not None and crops < 1:
+        print(f"✗ real_equivariance_batch must be positive, got {batch!r}")
+        raise SystemExit(2)
+    if not lam:
+        if path or crops:
+            print("✗ real_equivariance_tiles / real_equivariance_batch need a real_equivariance")
+            raise SystemExit(2)
+        return 0.0, None, None
+    if not path:
+        print("✗ real_equivariance needs real_equivariance_tiles (a .npy of real LR tiles)")
+        raise SystemExit(2)
+    if not (learn and onthefly):
+        print("✗ real_equivariance needs a learned output knee and the live (on-the-fly) "
+              "forward model")
+        raise SystemExit(2)
+    return lam, path, crops
+
+
 def _flag(value, name: str) -> bool:
     """A true/false member knob (JSON bool or the CLI's store_true)."""
     if not isinstance(value, bool):
@@ -765,6 +818,11 @@ def _diversity_kwargs(args, over: dict) -> dict:
         raise SystemExit(2)
     isotropy_tolerance = _isotropy_tolerance(over.get("isotropy_tolerance", args.isotropy_tolerance),
                                              isotropy_penalty)
+    real_equivariance, real_equivariance_tiles, real_equivariance_batch = _real_equivariance(
+        over.get("real_equivariance", args.real_equivariance),
+        over.get("real_equivariance_tiles", args.real_equivariance_tiles),
+        over.get("real_equivariance_batch", args.real_equivariance_batch),
+        learn=bool(learn), onthefly=bool(over.get("forward_onthefly", args.forward_onthefly)))
     lupton = _flag(over.get("lupton_loss", args.lupton_loss), "lupton_loss")
     brightness = _flag(over.get("brightness_consistency", args.brightness_consistency),
                        "brightness_consistency")
@@ -820,6 +878,9 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "isotropy_scales": isotropy_scales,
             "isotropy_per_batch": isotropy_per_batch,
             "isotropy_tolerance": isotropy_tolerance,
+            "real_equivariance": real_equivariance,
+            "real_equivariance_tiles": real_equivariance_tiles,
+            "real_equivariance_batch": real_equivariance_batch,
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
             "forward_onthefly": bool(over.get("forward_onthefly",
@@ -919,6 +980,11 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
             identity["isotropy_per_batch"] = True
         if "isotropy_tolerance" not in override and origin.get("isotropy_tolerance") is not None:
             identity["isotropy_tolerance"] = float(origin["isotropy_tolerance"])
+    if origin.get("real_equivariance"):
+        for key, cast in (("real_equivariance", float), ("real_equivariance_tiles", str),
+                          ("real_equivariance_batch", int)):
+            if key not in override and origin.get(key) is not None:
+                identity[key] = cast(origin[key])
     # A member created with faster steps keeps them (a member-spec xla/bf16
     # false turns one off).
     for key, field in (("xla", "jit_compile"), ("bf16", "mixed_precision")):
@@ -1209,6 +1275,11 @@ def main() -> int:
                                              (s.isotropy_scales or DEFAULT_ISOTROPY_SCALES))
                       + (" per-batch" if s.isotropy_per_batch else "")
                       + (f" tolerance={s.isotropy_tolerance:g}" if s.isotropy_tolerance is not None else ""))
+        if s.real_equivariance:
+            knobs += (f" real_equivariance={s.real_equivariance:g}"
+                      f"({os.path.basename(str(s.real_equivariance_tiles))}"
+                      + (f", {s.real_equivariance_batch}/step" if s.real_equivariance_batch else "")
+                      + ")")
         if s.bootstrap:
             knobs += f" bootstrap={s.bootstrap:g}"
         if s.forward_onthefly:

@@ -863,6 +863,12 @@ def _cached_mosaic_product(tile_id: str, band_name: str) -> dict[str, Any] | Non
                                      str(config.filter_name or "")))
 
 
+#: Archives :func:`fetch_q1_cutout` tries, in order. A batch job can drop
+#: ``"esa"`` while the ESA archive is down: each failed ESA attempt costs ~10 s
+#: before the IRSA fallback.
+Q1_CUTOUT_SOURCES: tuple[str, ...] = ("esa", "irsa")
+
+
 def fetch_q1_cutout(
     *,
     ra: float,
@@ -890,13 +896,18 @@ def fetch_q1_cutout(
         tile = choose_q1_tile(ra, dec, side_arcsec)
     if tile is None:
         return False, f"({ra:.5f}, {dec:+.5f}) is outside the Q1 MER tile footprints"
-    ok, esa_error = _esa_q1_cutout(config, tile, ra, dec, side_arcsec, output_file)
-    if ok:
-        return True, None
-    ok, irsa_error = _irsa_q1_cutout(tile.tile, band_name, ra, dec, side_arcsec, output_file)
-    if ok:
-        return True, None
-    return False, f"ESA: {esa_error}; IRSA: {irsa_error}"
+    errors: list[str] = []
+    for source in Q1_CUTOUT_SOURCES:
+        if source == "esa":
+            ok, error = _esa_q1_cutout(config, tile, ra, dec, side_arcsec, output_file)
+        elif source == "irsa":
+            ok, error = _irsa_q1_cutout(tile.tile, band_name, ra, dec, side_arcsec, output_file)
+        else:
+            raise ValueError(f"unknown Q1 cutout source {source!r}")
+        if ok:
+            return True, None
+        errors.append(f"{source.upper()}: {error}")
+    return False, "; ".join(errors) or "no Q1 cutout source configured"
 
 
 def _esa_q1_cutout(config: DownloadConfig, tile: q1_mer_tiles.Q1Tile, ra: float, dec: float,

@@ -355,6 +355,19 @@ def test_irsa_failure_reports_both_archives(monkeypatch, tmp_path):
     assert not ok and "ESA down" in error and "IRSA down" in error
 
 
+def test_an_irsa_only_source_list_never_asks_esa(monkeypatch, tmp_path):
+    """A batch job skips the ESA archive while it is down (each failed
+    attempt costs ~10 s before the fallback)."""
+    monkeypatch.setattr(q1_mer_tiles, "load_tiles", lambda *_a: _two_tiles())
+    monkeypatch.setattr(jwst_euclid, "Q1_CUTOUT_SOURCES", ("irsa",))
+    monkeypatch.setattr(jwst_euclid, "_mosaic_product", lambda *a: pytest.fail("asked ESA"))
+    monkeypatch.setattr(jwst_euclid, "_irsa_mosaic_url", lambda tile, band: (None, "IRSA down"))
+    ok, error = jwst_euclid.fetch_q1_cutout(ra=10.55, dec=0.0, band_name="VIS",
+                                            output_file=str(tmp_path / "v.fits"),
+                                            cutout_size_vis_pixels=264)
+    assert not ok and error == "IRSA: IRSA down"
+
+
 def test_irsa_mosaic_url_picks_the_background_subtracted_mosaic(monkeypatch):
     jwst_euclid._IRSA_URLS.clear()
     seen = []

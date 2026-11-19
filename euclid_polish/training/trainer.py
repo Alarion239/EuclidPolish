@@ -27,6 +27,7 @@ from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ConfigSnapshot, Process, Stamp
 from euclid_polish.training.brightness import BrightnessConsistency
+from euclid_polish.training.equivariance import RealEquivariance, step_code
 from euclid_polish.training.inference import infer_checkpoint_asinh_knee
 from euclid_polish.training.isotropy import MultiScaleIsotropy, ResidualIsotropy
 from euclid_polish.training.models.common import evaluate
@@ -253,6 +254,8 @@ class Trainer:
         isotropy: ResidualIsotropy | MultiScaleIsotropy | None = None,
         isotropy_weight: float = 0.0,
         brightness: BrightnessConsistency | None = None,
+        equivariance: RealEquivariance | None = None,
+        equivariance_weight: float = 0.0,
     ):
         """
         Initialize the trainer.
@@ -339,6 +342,13 @@ class Trainer:
             reconstruction loss, so it needs no weight. Electrons, like the
             isotropy penalty. The logged ``loss`` stays the reconstruction
             loss.
+        equivariance : RealEquivariance, optional
+            Adds ``equivariance_weight`` × the real-sky dihedral equivariance
+            penalty (:mod:`euclid_polish.training.equivariance`) on the real
+            LR crops each batch then carries as a third element. Needs a
+            model that outputs electrons.
+        equivariance_weight : float
+            λ of the equivariance penalty, in units of the supervised loss.
         """
         self.now = None
         self._batch_stretch = batch_stretch
@@ -351,6 +361,13 @@ class Trainer:
             raise ValueError("the brightness penalty compares electrons: it needs raw batches "
                              "(batch_stretch) and a model that outputs electrons")
         self._brightness = brightness
+        if equivariance is not None and not output_electrons:
+            raise ValueError("the equivariance penalty compares electron outputs: it needs "
+                             "a model that outputs electrons")
+        if not float(equivariance_weight) >= 0.0:
+            raise ValueError(f"equivariance_weight must be non-negative, got {equivariance_weight!r}")
+        self._equivariance = equivariance
+        self._equivariance_weight = float(equivariance_weight)
         if int(steps_per_call) < 1:
             raise ValueError(f"steps_per_call must be at least 1, got {steps_per_call!r}")
         self._steps_per_call = int(steps_per_call)
@@ -465,6 +482,7 @@ class Trainer:
         self._win_spike_norm = tf.Variable(0.0, trainable=False)
         self._win_isotropy_sum = tf.Variable(0.0, trainable=False)
         self._win_brightness_sum = tf.Variable(0.0, trainable=False)
+        self._win_equivariance_sum = tf.Variable(0.0, trainable=False)
         self._win_steps = tf.Variable(0.0, trainable=False)
 
         # Provenance: this checkpoint dir's identity. Resolved lazily on the
@@ -594,13 +612,15 @@ class Trainer:
     def _reset_window(self) -> None:
         for var in (self._win_loss_sum, self._win_gnorm_sum, self._win_gnorm_max,
                     self._win_spike_norm, self._win_isotropy_sum,
-                    self._win_brightness_sum, self._win_steps):
+                    self._win_brightness_sum, self._win_equivariance_sum,
+                    self._win_steps):
             var.assign(0.0)
 
     def _read_window(self) -> dict:
         """The one host sync per validation window: mean loss, mean / max
         pre-clip |g|, the spike norm (largest post-warmup |g|, non-finite
-        counted as infinite) and the mean isotropy and brightness penalties.
+        counted as infinite) and the mean isotropy, brightness and
+        equivariance penalties.
         Resets the accumulators."""
         n = max(float(self._win_steps.numpy()), 1.0)
         window = {
@@ -610,6 +630,7 @@ class Trainer:
             "spike_norm": float(self._win_spike_norm.numpy()),
             "isotropy": float(self._win_isotropy_sum.numpy()) / n,
             "brightness": float(self._win_brightness_sum.numpy()) / n,
+            "equivariance": float(self._win_equivariance_sum.numpy()) / n,
         }
         self._reset_window()
         return window
@@ -843,6 +864,9 @@ class Trainer:
         if self._brightness is not None:
             tqdm.write("  brightness consistency: × stop_gradient(loss), "
                        + self._brightness.describe())
+        if self._equivariance is not None:
+            tqdm.write(f"  real-sky equivariance: λ={self._equivariance_weight:g}, "
+                       + self._equivariance.describe())
 
         self.now = time.perf_counter()
         n_rollbacks = 0   # rollbacks since the last LR halving
@@ -868,8 +892,7 @@ class Trainer:
                     # place otherwise.
                     if self._lr_schedule is not None or self._lr_scale != 1.0:
                         self._apply_lr(step + 1)
-                    lr, hr = next(batches)
-                    self.train_step(lr, hr)
+                    self.train_step(*next(batches))
                 else:
                     # Each step's own LR, set inside the call before its step.
                     self.train_steps(batches, tf.constant(
@@ -1024,6 +1047,8 @@ class Trainer:
                               if isinstance(self._isotropy, MultiScaleIsotropy) else "") + ")")
             if self._brightness is not None:
                 status += f", brightness penalty {window['brightness']:.4g}"
+            if self._equivariance is not None:
+                status += f", equivariance penalty {window['equivariance']:.4g}"
             tqdm.write(status)
 
             # Persist for later plotting. Append-only CSV so each row
@@ -1207,7 +1232,7 @@ class Trainer:
         return path
 
     @tf.function
-    def train_step(self, lr, hr):
+    def train_step(self, lr, hr, real=None):
         """
         Perform one supervised training step (pure-supervised API).
 
@@ -1220,7 +1245,7 @@ class Trainer:
             monitoring; ``GRAD_CLIP_NORM`` is the rescaled magnitude actually
             applied).
         """
-        return self._train_step_impl(lr, hr)
+        return self._train_step_impl(lr, hr, real)
 
     @tf.function(reduce_retracing=True)
     def train_steps(self, batches, learning_rates):
@@ -1230,14 +1255,15 @@ class Trainer:
         for i in tf.range(tf.shape(learning_rates)[0]):
             # One step at a time: a step never starts before the last ends.
             tf.autograph.experimental.set_loop_options(parallel_iterations=1)
-            lr, hr = next(batches)
+            batch = next(batches)
             self.checkpoint.optimizer.learning_rate.assign(learning_rates[i])
-            self._train_step_impl(lr, hr)
+            self._train_step_impl(*batch)
 
-    def _train_step_impl(self, lr, hr):
+    def _train_step_impl(self, lr, hr, real=None):
         """One step's graph: the gradient step, the step counter and the
-        window statistics → ``(loss, pre-clip gradient norm)``."""
-        loss_value, gnorm, isotropy, brightness = self._gradient_step(lr, hr)
+        window statistics → ``(loss, pre-clip gradient norm)``. ``real``: the
+        batch's real LR crops (raw electrons) for the equivariance penalty."""
+        loss_value, gnorm, isotropy, brightness, equivariance = self._gradient_step(lr, hr, real)
 
         # Step counter and window statistics stay on the device; the training
         # loop reads them once per validation window. The counter waits for
@@ -1245,12 +1271,14 @@ class Trainer:
         # inside a multi-step call) never counts.
         with tf.control_dependencies([loss_value, gnorm]):
             step = self.checkpoint.step.assign_add(1)
-        self._update_window(loss_value, gnorm, step, isotropy, brightness)
+        self._update_window(loss_value, gnorm, step, isotropy, brightness, equivariance)
         return loss_value, gnorm
 
-    def _update_window(self, loss_value, gnorm, step, isotropy=0.0, brightness=0.0):
+    def _update_window(self, loss_value, gnorm, step, isotropy=0.0, brightness=0.0,
+                       equivariance=0.0):
         """Fold one step into the window statistics."""
         self._win_loss_sum.assign_add(loss_value)
+        self._win_equivariance_sum.assign_add(equivariance)
         self._win_isotropy_sum.assign_add(isotropy)
         self._win_brightness_sum.assign_add(brightness)
         self._win_gnorm_sum.assign_add(gnorm)
@@ -1262,11 +1290,12 @@ class Trainer:
         watched = tf.where(step > GRAD_SPIKE_SKIP_WARMUP_STEPS, watched, 0.0)
         self._win_spike_norm.assign(tf.maximum(self._win_spike_norm, watched))
 
-    def _gradient_step_impl(self, lr, hr):
+    def _gradient_step_impl(self, lr, hr, real=None):
         """Forward, loss, backward, global-norm clip and the Adam update →
         ``(loss, pre-clip gradient norm, isotropy penalty, brightness
-        penalty)``; the loss excludes both penalties, the gradient includes
-        them."""
+        penalty, equivariance penalty)``; the loss excludes the penalties,
+        the gradient includes them. ``real`` (raw-electron real LR crops)
+        feeds the equivariance penalty; ``None`` skips it."""
         hr_electrons = hr
         if self._batch_stretch is not None:
             lr, hr = self._batch_stretch(lr, hr)
@@ -1283,6 +1312,11 @@ class Trainer:
             if self._brightness is not None:
                 brightness = self._brightness.penalty(sr, hr_electrons)
                 objective = objective + tf.stop_gradient(loss_value) * brightness
+            equivariance = tf.constant(0.0)
+            if self._equivariance is not None and real is not None:
+                equivariance = self._equivariance.penalty(
+                    self.checkpoint.model, real, self.loss, step_code(self.checkpoint.step))
+                objective = objective + self._equivariance_weight * equivariance
 
         gradients = tape.gradient(objective, self.checkpoint.model.trainable_variables)
         gradients, gnorm = tf.clip_by_global_norm(
@@ -1290,7 +1324,7 @@ class Trainer:
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables, strict=False)
         )
-        return loss_value, gnorm, isotropy, brightness
+        return loss_value, gnorm, isotropy, brightness, equivariance
 
     def _add_nonneg_penalty(self, loss_value, sr):
         """Add ``λ · mean(relu(-SR))`` to ``loss_value`` (no-op when λ=0).
