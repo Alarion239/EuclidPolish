@@ -24,10 +24,12 @@ from euclid_polish.config import Config  # noqa: E402
 
 TILE = "102158892"
 W, H = 300, 200                       # non-square, so swapped axes would show
+MULTI, DEEP = "101373263", "101833452"
 MAGZERO = {"VIS": 24.6, "Y_E": 29.8, "J_E": 29.9, "H_E": 30.0}
 
 
-def _fits_bytes(data: np.ndarray, band: str) -> bytes:
+def _fits_bytes(data: np.ndarray, band: str, ppoid: str = "MER_ProcessTile_EUCLID_2.0.23-DATA_RELEASE-x",
+                dataset: str = "Q1_R1") -> bytes:
     hdr = fits.Header()
     hdr["EQUINOX"] = 2000.0
     hdr["RADESYS"] = ("ICRS", "Astrometric system")
@@ -37,6 +39,8 @@ def _fits_bytes(data: np.ndarray, band: str) -> bytes:
     hdr["CD1_1"], hdr["CD1_2"], hdr["CD2_1"], hdr["CD2_2"] = -2.7777777778e-05, 0.0, 0.0, 2.7777777778e-05
     hdr["MAGZERO"] = (MAGZERO[band], "AB zeropoint")
     hdr["FILTER"] = ("it's " + band, "quote escape")
+    hdr["DATASETR"] = dataset
+    hdr["PPOID"] = ppoid
     for i in range(60):               # push the header past one 2880-byte block
         hdr[f"PAD{i:03d}"] = (i, "padding card")
     buf = io.BytesIO()
@@ -54,6 +58,17 @@ def tile_files():
         files[key] = _fits_bytes(arrays[band], band)
         decoy = f"q1/MER/{TILE}/{inst}/EUC_MER_{token}-RMS_TILE{TILE}-DEF456_20241025T000000Z_00.00.fits"
         files[decoy] = b"not this one"
+    # DR1-style tiles with several runs: MULTI has two Wide Survey runs and a newer
+    # deep one (the newest Wide run must win); DEEP has only a deep run.
+    for band, inst, token in cs.BANDS:
+        for tile, runs in ((MULTI, (("20250101T000000.0", "DATA_RELEASE", 1.0),
+                                    ("20250601T000000.0", "DATA_RELEASE", 2.0),
+                                    ("20250901T000000.0", "DATA_RELEASE_DEEP", 3.0))),
+                           (DEEP, (("20250901T000000.0", "DATA_RELEASE_DEEP", 4.0),))):
+            for stamp, plan, value in runs:
+                key = f"dr1/MER/{tile}/{inst}/EUC_MER_{token}_TILE{tile}-{plan[-4:]}_{stamp}Z_00.00.fits"
+                files[key] = _fits_bytes(np.full((H, W), value, np.float32), band,
+                                         ppoid=f"MER_ProcessTile_EUCLID_2.0.32-{plan}-y", dataset="DR1_R2")
     return files, arrays
 
 
@@ -177,7 +192,7 @@ def test_viewer_page_is_served_cross_origin_isolated(tile_files):
         assert page.status == 200 and "POLISH" in await page.text()
         assert page.headers["Cross-Origin-Opener-Policy"] == "same-origin"
         assert page.headers["Cross-Origin-Embedder-Policy"] == "credentialless"
-        for path in ("/static/viewer.js", "/static/tiles.json", "/static/m257.onnx"):
+        for path in ("/static/viewer.js", "/static/m257.onnx", "/v1/tiles?release=q1", "/v1/tiles?release=dr1"):
             resp = await client.get(path)
             assert resp.status == 200, path
             assert resp.headers["Cross-Origin-Embedder-Policy"] == "credentialless"
@@ -185,9 +200,32 @@ def test_viewer_page_is_served_cross_origin_isolated(tile_files):
     _with_client(tile_files, check)
 
 
-def test_viewer_tile_index_matches_the_project_index():
+def test_release_choice_and_mosaic_runs(tile_files):
+    async def check(client, _arrays):
+        bad = await client.get("/v1/cutout", params={"release": "dr9", "tile": TILE, "x0": 0, "y0": 0, "size": 8})
+        assert bad.status == 400
+        missing = await client.get("/v1/cutout", params={"release": "dr1", "tile": TILE, "x0": 0, "y0": 0, "size": 8})
+        assert missing.status == 404                 # the Q1 tile is not in DR1
+        multi = await client.get("/v1/cutout", params={"release": "dr1", "tile": MULTI, "x0": 0, "y0": 0, "size": 8})
+        meta, cube = cs.decode_frame(await multi.read())
+        assert meta["release"] == "dr1" and not meta["deep"]
+        assert (cube == 2.0).all()                   # newest Wide Survey run, not the newer deep one
+        deep = await client.get(f"/v1/tile/{DEEP}", params={"release": "dr1"})
+        assert (await deep.json())["deep"] is True
+
+    _with_client(tile_files, check)
+
+
+def test_tile_indexes_cover_the_releases():
     root = Path(__file__).resolve().parents[1]
     source = json.loads((root / "euclid_polish/sky/observation/q1_mer_tiles.json").read_text())
-    served = json.loads((root / "services/cutout/static/tiles.json").read_text())
-    keys = ("tile", "ra", "dec", "polygon", "field")
-    assert served["tiles"] == [{k: t[k] for k in keys} for t in source["tiles"]]
+    q1 = json.loads((root / "services/cutout/index/q1.json").read_text())
+    col = {c: i for i, c in enumerate(q1["columns"])}
+    centres = {r[col["tile"]]: (r[col["ra"]], r[col["dec"]]) for r in q1["tiles"]}
+    assert set(centres) == {t["tile"] for t in source["tiles"]}
+    for t in source["tiles"]:                       # header CRVAL vs the IRSA footprint centre
+        ra, dec = centres[t["tile"]]
+        assert abs(ra - t["ra"]) * np.cos(np.radians(dec)) < 1e-4 and abs(dec - t["dec"]) < 1e-4
+    dr1 = json.loads((root / "services/cutout/index/dr1.json").read_text())
+    assert dr1["columns"] == q1["columns"] and len(dr1["tiles"]) > 10_000
+    assert len({r[0] for r in dr1["tiles"]}) == len(dr1["tiles"])

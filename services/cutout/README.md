@@ -1,9 +1,19 @@
-# Euclid Q1 cutout server and POLISH viewer
+# Euclid MER cutout server (Q1 + DR1) and POLISH viewer
 
-Returns all four MER bands (VIS, Y_E, J_E, H_E) of a pixel window of a Q1 MER
-tile in one response, for the in-browser super-resolution viewer. It reads the
-public `nasa-irsa-euclid-q1` bucket with HTTP range requests, one per image
-row, so it belongs next to the bucket (us-east-1). API and binary format are
+Returns all four MER bands (VIS, Y_E, J_E, H_E) of a pixel window of a MER
+tile in one response, for the in-browser super-resolution viewer, from Q1
+(`nasa-irsa-euclid-q1`, 352 tiles of 19200²) or DR1 (`nasa-irsa-euclid-dr1`,
+released 2026-11-12, 10,990 tiles: Wide Survey 19200², deep fields 10200²),
+chosen with `?release=q1|dr1`. It reads IRSA's buckets with HTTP range
+requests, one per image row, so it belongs next to them (us-east-1).
+
+Tile indexes (`index/q1.json`, `index/dr1.json`, served at `/v1/tiles`) hold
+every tile's centre, size and CRPIX, read from the VIS headers by
+`scripts/build_mer_tile_index.py <release>` (DR1: ~5 min). Some DR1 tiles have
+several runs of a mosaic: the newest Wide Survey run is served; 1,486 deep-field
+tiles have only deep runs (`DATA_RELEASE_DEEP` plan) and are flagged `deep`,
+since the model was trained on Wide-depth (Q1) noise. DR1 VIS MAGZERO is 24.5
+(Q1: 24.6); each tile's own value is used. API and binary format are
 documented at the top of [cutout_server.py](cutout_server.py).
 
 The same service serves the viewer at `/` ([static/](static/)): the page

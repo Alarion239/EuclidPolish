@@ -1,8 +1,9 @@
-"""Euclid Q1 MER cutout server for the in-browser super-resolution viewer.
+"""Euclid MER cutout server (Q1 and DR1) for the in-browser super-resolution viewer.
 
-A browser page can read the public Q1 bucket (``nasa-irsa-euclid-q1`` on S3
-sends ``Access-Control-Allow-Origin: *`` and honours ``Range``), but a MER
-mosaic is one 19200×19200 float32 image stored row by row, so a small
+A browser page can read IRSA's public Euclid buckets (``nasa-irsa-euclid-q1``,
+``nasa-irsa-euclid-dr1`` on S3 send ``Access-Control-Allow-Origin: *`` and
+honour ``Range``), but a MER mosaic is one large float32 image (19200² in Q1,
+10200² in DR1) stored row by row, so a small
 cutout is hundreds of separate 1–4 KB pieces per band. Over HTTP/1.1 from
 a browser (6 connections per host) that is ~15 s per 4-band cutout. This
 server does those row reads next to the bucket and returns the four bands
@@ -12,6 +13,11 @@ Endpoints
 ---------
 ``GET /health``
     Liveness check.
+Every data endpoint takes ``release=q1|dr1`` (default ``q1``).
+
+``GET /v1/tiles?release=…``
+    The release's MER tile index (``index/<release>.json``, built by
+    ``scripts/build_mer_tile_index.py``): every tile's centre, size and CRPIX.
 ``GET /v1/tile/{tile}``
     The four band files of a MER tile with their image size, ``MAGZERO``,
     ADU/s → electrons factor and WCS.
@@ -39,7 +45,7 @@ pinned to ``euclid_polish.config`` by ``tests/test_cutout_service.py``.
 Configuration (environment)
 ---------------------------
 ``PORT``                port to listen on (Railway sets it; default 8080)
-``EUCLID_BUCKET_URL``   bucket base URL (default: the public Q1 bucket)
+``EUCLID_BUCKET_URL``   one bucket base URL for every release (tests; default: IRSA's)
 ``ALLOWED_ORIGINS``     comma-separated CORS origins (default ``*``)
 ``S3_CONCURRENCY``      simultaneous range requests to the bucket (default 64)
 ``MAX_CUTOUT``          largest allowed window side in pixels (default 1024)
@@ -63,8 +69,16 @@ import aiohttp
 import numpy as np
 from aiohttp import web
 
-DEFAULT_BUCKET_URL = "https://nasa-irsa-euclid-q1.s3.us-east-1.amazonaws.com"
-RELEASE_PREFIX = "q1/MER"
+# Each release: its IRSA bucket and the key prefix of its MER tiles.
+RELEASES: dict[str, dict[str, str]] = {
+    "q1": {"bucket": "https://nasa-irsa-euclid-q1.s3.us-east-1.amazonaws.com", "prefix": "q1/MER"},
+    "dr1": {"bucket": "https://nasa-irsa-euclid-dr1.s3.us-east-1.amazonaws.com", "prefix": "dr1/MER"},
+}
+# Some DR1 tiles carry several runs of a mosaic. Deep-field runs come from a
+# "…-DATA_RELEASE_DEEP-…" processing plan (header PPOID); the model was trained on
+# Wide Survey depth, so a non-deep run is preferred, newest first (``Bucket.choose``).
+DEEP_PLAN = "DATA_RELEASE_DEEP"
+DEFAULT_RELEASE = "q1"
 FITS_BLOCK = 2880
 CARD = 80
 MAGIC = b"EPCT"
@@ -91,6 +105,10 @@ WCS_KEYS = ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2",
             "CD1_1", "CD1_2", "CD2_1", "CD2_2", "RADESYS", "EQUINOX")
 # The viewer (static/): the page, its script, the tile index and the ONNX model.
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+INDEX_DIR = Path(__file__).resolve().parent / "index"
+RETRY_STATUS = (500, 502, 503, 504)
+RETRIES = 3
+RETRY_BASE_S = 0.2
 TILE_RE = re.compile(r"^\d{6,12}$")
 S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 
@@ -112,6 +130,12 @@ class BandImage:
     bzero: float
     magzero: float
     wcs: dict
+    dataset: str = ""
+    plan: str = ""
+
+    @property
+    def deep(self) -> bool:
+        return DEEP_PLAN in self.plan
 
     @property
     def to_electrons(self) -> float:
@@ -119,7 +143,8 @@ class BandImage:
 
     def describe(self) -> dict:
         return {"band": self.band, "key": self.key, "width": self.width, "height": self.height,
-                "magzero": self.magzero, "to_electrons": self.to_electrons, "wcs": self.wcs}
+                "magzero": self.magzero, "to_electrons": self.to_electrons, "wcs": self.wcs,
+                "dataset": self.dataset, "deep": self.deep}
 
 
 def parse_header_cards(raw: bytes) -> dict | None:
@@ -159,20 +184,33 @@ def parse_header_cards(raw: bytes) -> dict | None:
 class Bucket:
     """Range reads, listings and per-file header cache against the bucket."""
 
-    def __init__(self, session: aiohttp.ClientSession, base_url: str, concurrency: int = 64):
+    def __init__(self, session: aiohttp.ClientSession, base_url: str, prefix: str,
+                 concurrency: int = 64, limit: asyncio.Semaphore | None = None):
         self.session = session
         self.base_url = base_url.rstrip("/")
-        self.limit = asyncio.Semaphore(concurrency)
+        self.prefix = prefix.rstrip("/")
+        self.limit = limit or asyncio.Semaphore(concurrency)
         self._tiles: OrderedDict[str, dict[str, BandImage]] = OrderedDict()
         self._tile_locks: dict[str, asyncio.Lock] = {}
 
+    async def _get(self, url: str, what: str, **kwargs) -> tuple[int, bytes]:
+        """GET with retries on S3's transient 500/503 ("SlowDown") answers."""
+        for attempt in range(RETRIES + 1):
+            async with self.limit, self.session.get(url, **kwargs) as resp:
+                if resp.status not in RETRY_STATUS or attempt == RETRIES:
+                    if resp.status >= 400:
+                        raise UpstreamError(f"{what}: HTTP {resp.status}")
+                    return resp.status, await resp.read()
+            await asyncio.sleep(RETRY_BASE_S * 4 ** attempt)
+        raise AssertionError("unreachable")
+
     async def read(self, key: str, start: int, length: int) -> bytes:
         headers = {"Range": f"bytes={start}-{start + length - 1}"}
-        async with self.limit, self.session.get(f"{self.base_url}/{key}", headers=headers) as resp:
-            if resp.status not in (200, 206):
-                raise UpstreamError(f"GET {key} bytes {start}+{length}: HTTP {resp.status}")
-            body = await resp.read()
-        if resp.status == 200:          # server ignored Range: take our slice
+        status, body = await self._get(f"{self.base_url}/{key}", f"GET {key} bytes {start}+{length}",
+                                       headers=headers)
+        if status not in (200, 206):
+            raise UpstreamError(f"GET {key} bytes {start}+{length}: HTTP {status}")
+        if status == 200:               # server ignored Range: take our slice
             body = body[start:start + length]
         if len(body) != length:
             raise UpstreamError(f"GET {key}: wanted {length} bytes, got {len(body)}")
@@ -185,10 +223,8 @@ class Bucket:
             params = {"list-type": "2", "prefix": prefix}
             if token:
                 params["continuation-token"] = token
-            async with self.limit, self.session.get(f"{self.base_url}/", params=params) as resp:
-                if resp.status != 200:
-                    raise UpstreamError(f"list {prefix}: HTTP {resp.status}")
-                root = ElementTree.fromstring(await resp.read())
+            _, body = await self._get(f"{self.base_url}/", f"list {prefix}", params=params)
+            root = ElementTree.fromstring(body)
             keys += [el.text for el in root.iter(f"{S3_NS}Key") if el.text]
             truncated = root.findtext(f"{S3_NS}IsTruncated") == "true"
             token = root.findtext(f"{S3_NS}NextContinuationToken")
@@ -216,10 +252,12 @@ class Bucket:
             data_offset=data_offset, bscale=float(cards.get("BSCALE", 1.0)),
             bzero=float(cards.get("BZERO", 0.0)), magzero=float(magzero),
             wcs={k: cards[k] for k in WCS_KEYS if k in cards},
+            dataset=str(cards.get("DATASETR", "")),
+            plan=str(cards.get("PPOID", "")),
         )
 
     async def tile(self, tile: str) -> dict[str, BandImage]:
-        """The four band images of ``tile`` (cached; 352 tiles fit easily)."""
+        """The four band images of ``tile`` (the most recent 512 tiles are cached)."""
         if tile in self._tiles:
             self._tiles.move_to_end(tile)
             return self._tiles[tile]
@@ -229,16 +267,13 @@ class Bucket:
                 return self._tiles[tile]
             listings = {}
             for inst in sorted({inst for _, inst, _ in BANDS}):
-                listings[inst] = await self.list_keys(f"{RELEASE_PREFIX}/{tile}/{inst}/")
-            keys = {}
+                listings[inst] = await self.list_keys(f"{self.prefix}/{tile}/{inst}/")
+            matches = {}
             for band, inst, token in BANDS:
-                match = [k for k in listings[inst]
-                         if k.rsplit("/", 1)[-1].startswith(f"EUC_MER_{token}_TILE{tile}-")
-                         and k.endswith(".fits")]
-                if len(match) != 1:
-                    raise LookupError(f"tile {tile}: {len(match)} {token} files")
-                keys[band] = match[0]
-            images = await asyncio.gather(*(self.header(b, k) for b, k in keys.items()))
+                matches[band] = mosaic_keys(listings[inst], token, tile)
+                if not matches[band]:
+                    raise LookupError(f"tile {tile}: no {token} file")
+            images = await asyncio.gather(*(self.choose(b, keys) for b, keys in matches.items()))
             shapes = {(im.width, im.height) for im in images}
             if len(shapes) != 1:
                 raise UpstreamError(f"tile {tile}: bands differ in shape {shapes}")
@@ -246,6 +281,16 @@ class Bucket:
             while len(self._tiles) > 512:
                 self._tiles.popitem(last=False)
             return self._tiles[tile]
+
+    async def choose(self, band: str, keys: list[str]) -> BandImage:
+        """The one mosaic of ``band`` to use among ``keys``: the only one, else the
+        most recently processed (timestamp in the file name) Wide Survey run,
+        else the most recent deep run (``BandImage.deep`` tells the client)."""
+        images = await asyncio.gather(*(self.header(band, k) for k in keys))
+        if len(images) == 1:
+            return images[0]
+        preferred = [im for im in images if not im.deep] or images
+        return max(preferred, key=lambda im: processing_time(im.key))
 
     async def window(self, image: BandImage, x0: int, y0: int, w: int, h: int) -> np.ndarray:
         """``image[y0:y0+h, x0:x0+w]`` as float32 with NaN outside the image."""
@@ -267,7 +312,23 @@ class Bucket:
         return out
 
 
-BUCKET = web.AppKey("bucket", Bucket)
+PROCESSED_RE = re.compile(r"_(\d{8}T\d{6}(?:\.\d+)?)Z_")
+
+
+def processing_time(key: str) -> str:
+    """The processing timestamp in a Euclid product file name (sortable text)."""
+    m = PROCESSED_RE.search(key.rsplit("/", 1)[-1])
+    return m.group(1) if m else ""
+
+
+def mosaic_keys(keys: list[str], token: str, tile: str) -> list[str]:
+    """The ``token`` mosaics of ``tile`` among bucket ``keys`` (one, or two in DR1 deep fields)."""
+    return sorted(k for k in keys if k.endswith(".fits")
+                  and k.rsplit("/", 1)[-1].startswith(f"EUC_MER_{token}_TILE{tile}-"))
+
+
+BUCKETS = web.AppKey("buckets", dict)
+INDEXES = web.AppKey("indexes", dict)
 MAX_CUTOUT = web.AppKey("max_cutout", int)
 
 
@@ -300,15 +361,22 @@ def _int_param(request: web.Request, name: str, default: int | None = None) -> i
         raise web.HTTPBadRequest(text=f"{name} must be an integer") from None
 
 
+def _release_param(request: web.Request) -> str:
+    release = request.query.get("release", DEFAULT_RELEASE).lower()
+    if release not in RELEASES:
+        raise web.HTTPBadRequest(text=f"release must be one of {', '.join(RELEASES)}")
+    return release
+
+
 def _tile_param(value: str) -> str:
     if not TILE_RE.match(value or ""):
         raise web.HTTPBadRequest(text="tile must be a MER tile id (digits)")
     return value
 
 
-async def _tile_images(request: web.Request, tile: str) -> dict[str, BandImage]:
+async def _tile_images(request: web.Request, release: str, tile: str) -> dict[str, BandImage]:
     try:
-        return await request.app[BUCKET].tile(tile)
+        return await request.app[BUCKETS][release].tile(tile)
     except LookupError as exc:
         raise web.HTTPNotFound(text=str(exc)) from None
     except (TimeoutError, UpstreamError, aiohttp.ClientError) as exc:
@@ -319,16 +387,31 @@ async def health(_request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def tile_index(request: web.Request) -> web.Response:
+    release = _release_param(request)
+    body = request.app[INDEXES].get(release)
+    if body is None:
+        raise web.HTTPNotFound(text=f"no tile index for {release} (run scripts/build_mer_tile_index.py)")
+    resp = web.Response(body=body, content_type="application/json",
+                        headers={"Cache-Control": "public, max-age=86400"})
+    resp.enable_compression()
+    return resp
+
+
 async def tile_info(request: web.Request) -> web.Response:
+    release = _release_param(request)
     tile = _tile_param(request.match_info["tile"])
-    images = await _tile_images(request, tile)
+    images = await _tile_images(request, release, tile)
     return web.json_response(
-        {"tile": tile, "bands": [images[b].describe() for b, _, _ in BANDS]},
+        {"release": release, "tile": tile, "dataset": images[BANDS[0][0]].dataset,
+         "deep": images[BANDS[0][0]].deep,
+         "bands": [images[b].describe() for b, _, _ in BANDS]},
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
 async def cutout(request: web.Request) -> web.Response:
+    release = _release_param(request)
     tile = _tile_param(request.query.get("tile", ""))
     size = request.query.get("size")
     x0, y0 = _int_param(request, "x0"), _int_param(request, "y0")
@@ -337,19 +420,20 @@ async def cutout(request: web.Request) -> web.Response:
     limit = request.app[MAX_CUTOUT]
     if not (1 <= w <= limit and 1 <= h <= limit):
         raise web.HTTPBadRequest(text=f"w and h must be 1..{limit}")
-    images = await _tile_images(request, tile)
+    images = await _tile_images(request, release, tile)
     first = images[BANDS[0][0]]
     if not (-w < x0 < first.width and -h < y0 < first.height):
         raise web.HTTPBadRequest(text="window does not overlap the tile")
     t0 = time.perf_counter()
     try:
-        planes = await asyncio.gather(*(request.app[BUCKET].window(images[b], x0, y0, w, h)
+        planes = await asyncio.gather(*(request.app[BUCKETS][release].window(images[b], x0, y0, w, h)
                                         for b, _, _ in BANDS))
     except (TimeoutError, UpstreamError, aiohttp.ClientError) as exc:
         raise web.HTTPBadGateway(text=f"bucket error: {exc}") from None
     fetch_ms = round(1000 * (time.perf_counter() - t0), 1)
     meta = {
-        "format": 1, "tile": tile, "x0": x0, "y0": y0, "w": w, "h": h,
+        "format": 1, "release": release, "dataset": first.dataset, "deep": first.deep, "tile": tile,
+        "x0": x0, "y0": y0, "w": w, "h": h,
         "order": "band,row,col", "units": "ADU/s", "fill": "NaN outside the tile",
         "bands": [{"band": images[b].band, "key": images[b].key, "magzero": images[b].magzero,
                    "to_electrons": images[b].to_electrons} for b, _, _ in BANDS],
@@ -394,22 +478,28 @@ def cors_middleware(origins: list[str]):
 
 def create_app(bucket_url: str | None = None, *, origins: list[str] | None = None,
                concurrency: int | None = None, max_cutout: int | None = None) -> web.Application:
-    bucket_url = bucket_url or os.environ.get("EUCLID_BUCKET_URL", DEFAULT_BUCKET_URL)
+    bucket_url = bucket_url or os.environ.get("EUCLID_BUCKET_URL")
     if origins is None:
         origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
     concurrency = concurrency or int(os.environ.get("S3_CONCURRENCY", "64"))
     app = web.Application(middlewares=[isolation_middleware, cors_middleware(origins)])
     app[MAX_CUTOUT] = max_cutout or int(os.environ.get("MAX_CUTOUT", "1024"))
+    # Tile indexes are read once and served as-is (compressed per request).
+    app[INDEXES] = {r: (INDEX_DIR / f"{r}.json").read_bytes()
+                    for r in RELEASES if (INDEX_DIR / f"{r}.json").is_file()}
 
     async def lifecycle(app: web.Application):
         connector = aiohttp.TCPConnector(limit=concurrency, ttl_dns_cache=300)
         timeout = aiohttp.ClientTimeout(total=60, sock_read=20)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            app[BUCKET] = Bucket(session, bucket_url, concurrency)
+            shared = asyncio.Semaphore(concurrency)     # one budget across releases
+            app[BUCKETS] = {r: Bucket(session, bucket_url or conf["bucket"], conf["prefix"], limit=shared)
+                            for r, conf in RELEASES.items()}
             yield
 
     app.cleanup_ctx.append(lifecycle)
     app.router.add_get("/health", health)
+    app.router.add_get("/v1/tiles", tile_index)
     app.router.add_get("/v1/tile/{tile}", tile_info)
     app.router.add_get("/v1/cutout", cutout)
     if STATIC_DIR.is_dir():

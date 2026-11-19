@@ -20,13 +20,25 @@ const BANDS = ["VIS", "Y_E", "J_E", "H_E"];
 // points balanced like the console's "vivid" mode (poster galaxy levels).
 const SIGMA = { VIS: 29.81, Y_E: 9.4, J_E: 9.9, H_E: 9.69 };
 const WHITE_BALANCE = { VIS: 1.0, Y_E: 0.2088, J_E: 0.2929, H_E: 0.3799 };
-// [name, RA, Dec, map field of view in degrees]
+// Releases: IRSA's MER mosaics, served by this server (?release=…). DR1 has no
+// HiPS yet, so its coverage is drawn from its own MOCs.
+const DR1_MOC = "https://nasa-irsa-euclid-dr1.s3.us-east-1.amazonaws.com/dr1/MOC/";
+const RELEASES = {
+  q1: { label: "Q1", mocs: [] },
+  dr1: { label: "DR1", mocs: [`${DR1_MOC}euclid_dr1_wide.moc.moc.fits`, `${DR1_MOC}euclid_dr1_deep.moc.moc.fits`] },
+};
+// Draw every tile outline up to this many tiles; beyond, only the ones near the view.
+const ALL_OUTLINES_MAX = 1000;
+// [name, RA, Dec, map field of view in degrees, release]
 const PRESETS = [
-  ["Poster galaxy (EDF-N)", 273.2308875, 68.3636556, 0.04],
-  ["EDF-N", 270.0791195, 66.0000139, 3],
-  ["EDF-S", 61.2735175, -48.4999861, 5],
-  ["EDF-F", 52.9869358, -27.9999861, 3],
-  ["LDN 1641 (Orion)", 85.8353297, -8.4999861, 1],
+  ["Poster galaxy (EDF-N)", 273.2308875, 68.3636556, 0.04, "q1"],
+  ["EDF-N", 270.0791195, 66.0000139, 3, "q1"],
+  ["EDF-S", 61.2735175, -48.4999861, 5, "q1"],
+  ["EDF-F", 52.9869358, -27.9999861, 3, "q1"],
+  ["LDN 1641 (Orion)", 85.8353297, -8.4999861, 1, "q1"],
+  ["DR1 · Wide Survey", 0, 0, 40, "dr1"],          // centred on the DR1 tiles (main)
+  ["DR1 · poster galaxy", 273.2308875, 68.3636556, 0.04, "dr1"],
+  ["DR1 · EDF-F", 52.9869358, -27.9999861, 3, "dr1"],
 ];
 const ORT_DIST = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/";
 // The map: Aladin Lite showing Euclid's own pre-rendered HiPS (no model, no
@@ -37,6 +49,7 @@ const SURVEYS = [
   { id: "cds-color", label: "Euclid Q1 colour (CDS)", url: "https://alasky.cds.unistra.fr/Euclid/Q1/CDS_P_Euclid_Q1_color" },
   // ESA's PNG tiles are a near-black linear stretch; its FITS tiles (ADU/s, sky σ ≈ 0.003)
   // are stretched here instead.
+  { id: "cds-dss", label: "DSS2 colour (CDS)", url: "https://alasky.cds.unistra.fr/DSS/DSSColor", format: "jpeg" },
   { id: "esa-vis", label: "Euclid VIS (ESA)", url: "https://esdchips.esac.esa.int/Euclid/Q1_MER/VIS/ESAC_P_EUC_VIS",
     format: "fits", color: { colormap: "grayscale", stretch: "asinh", minCut: -0.003, maxCut: 0.3 } },
 ];
@@ -55,7 +68,7 @@ const ctx = canvas.getContext("2d");
 
 const state = {
   view: "map",           // map | detail
-  tiles: [],
+  release: "q1",         // q1 | dr1
   tile: null,            // {id, width, height, wcs, bands}
   cx: 0, cy: 0,          // view centre, tile LR pixel coordinates (0-based, float)
   zoom: 1,               // screen CSS px per SR pixel
@@ -68,7 +81,8 @@ const state = {
   hover: null,
 };
 const blocks = new Map();      // key → block
-const map = { A: null, al: null, survey: null, ready: null };
+const map = { A: null, al: null, survey: null, outlines: null, mocs: [] };
+const indexes = {};            // release → {cd, tiles: [{id, ra, dec, w, h, wcs, deep}]}
 let session = null, providerName = "", modelMs = [], modelPromise = null;
 let fetchQueue = [], fetching = 0, inferChain = Promise.resolve(), pendingInfer = 0;
 let drawScheduled = false;
@@ -105,40 +119,72 @@ function project(ra0, dec0, ra, dec) {
           (Math.cos(d0) * Math.sin(d) - Math.sin(d0) * Math.cos(d) * Math.cos(a - a0)) / cosc / D2R];
 }
 
-// The tile whose footprint contains (ra, dec) deepest (MER tiles overlap).
+// The release's tile index (server: /v1/tiles), with each tile's TAN WCS.
+async function loadIndex(release) {
+  if (!indexes[release]) {
+    indexes[release] = fetch(`v1/tiles?release=${release}`).then(async (resp) => {
+      if (!resp.ok) throw new Error(`tile index ${release}: ${resp.status} ${await resp.text()}`);
+      const raw = await resp.json();
+      const [c11, c12, c21, c22] = raw.cd, col = Object.fromEntries(raw.columns.map((c, i) => [c, i]));
+      const tiles = raw.tiles.map((r) => ({
+        id: r[col.tile], ra: r[col.ra], dec: r[col.dec], w: r[col.naxis1], h: r[col.naxis2], deep: !!r[col.deep],
+        wcs: { CRVAL1: r[col.ra], CRVAL2: r[col.dec], CRPIX1: r[col.crpix1], CRPIX2: r[col.crpix2],
+               CD1_1: c11, CD1_2: c12, CD2_1: c21, CD2_2: c22 },
+      }));
+      return { release, dataset: raw.dataset, tiles };
+    });
+    indexes[release].catch(() => { delete indexes[release]; });
+  }
+  return indexes[release];
+}
+
+let index = null;              // the current release's resolved index
+
+// The tile whose image holds (ra, dec) deepest (MER tile images overlap).
 function locateTile(ra, dec) {
-  let best = null, bestDepth = -Infinity;
-  for (const t of state.tiles) {
-    if (Math.abs(t.dec - dec) > 1.5) continue;
-    const [px, py] = project(t.ra, t.dec, ra, dec);
-    const poly = t.polygon.map(([r, d]) => project(t.ra, t.dec, r, d));
-    let inside = false, depth = Infinity;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const [xi, yi] = poly[i], [xj, yj] = poly[j];
-      if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
-      const ex = xj - xi, ey = yj - yi, len2 = ex * ex + ey * ey;
-      const u = Math.max(0, Math.min(1, ((px - xi) * ex + (py - yi) * ey) / len2));
-      depth = Math.min(depth, Math.hypot(px - xi - u * ex, py - yi - u * ey));
-    }
-    if (inside && depth > bestDepth) { best = t; bestDepth = depth; }
+  if (!index) return null;
+  let best = null, bestDepth = 0;
+  const cosd = Math.max(0.05, Math.cos(dec * D2R));
+  for (const t of index.tiles) {
+    if (Math.abs(t.dec - dec) > 0.6) continue;
+    let dra = Math.abs(t.ra - ra);
+    if (dra > 180) dra = 360 - dra;
+    if (dra * cosd > 0.6) continue;
+    const [x, y] = world2pix(t.wcs, ra, dec);
+    const depth = Math.min(x + 0.5, t.w - 0.5 - x, y + 0.5, t.h - 0.5 - y);
+    if (depth > bestDepth) { best = t; bestDepth = depth; }
   }
   return best;
 }
 
+// A tile's outline on the sky: its image corners.
+function tileOutline(t) {
+  return [[-0.5, -0.5], [t.w - 0.5, -0.5], [t.w - 0.5, t.h - 0.5], [-0.5, t.h - 0.5]]
+    .map(([x, y]) => pix2world(t.wcs, x, y));
+}
+
+const releaseLabel = () => RELEASES[state.release].label;
+
 async function openTile(id) {
-  if (state.tile && state.tile.id === id) return state.tile;
-  const resp = await fetch(`v1/tile/${id}`);
+  const key = `${state.release}:${id}`;
+  if (state.tile && state.tile.key === key) return state.tile;
+  const resp = await fetch(`v1/tile/${id}?release=${state.release}`);
   if (!resp.ok) throw new Error(`tile ${id}: ${resp.status} ${await resp.text()}`);
   const info = await resp.json();
   const vis = info.bands[0];
-  state.tile = { id, width: vis.width, height: vis.height, wcs: vis.wcs, bands: info.bands };
+  state.tile = { id, key, release: state.release, dataset: info.dataset, deep: !!info.deep,
+                 width: vis.width, height: vis.height,
+                 wcs: vis.wcs, bands: info.bands };
   return state.tile;
 }
 
 async function goTo(ra, dec) {
   const t = locateTile(ra, dec);
-  if (!t) { setStatus(`No Q1 tile covers RA ${ra.toFixed(4)}, Dec ${dec.toFixed(4)}`, true); return false; }
-  await openTile(t.tile);
+  if (!t) {
+    setStatus(`No ${releaseLabel()} tile covers RA ${ra.toFixed(4)}, Dec ${dec.toFixed(4)}`, true);
+    return false;
+  }
+  await openTile(t.id);
   [state.cx, state.cy] = world2pix(state.tile.wcs, ra, dec);
   saveHash();
   schedule();
@@ -156,7 +202,7 @@ function setView(view) {
 // Switch to the POLISH view at (ra, dec); stays on the map outside Q1 coverage.
 async function enterDetail(ra, dec, zoom) {
   if (!locateTile(ra, dec)) {
-    $("hint").innerHTML = "<span>No Euclid Q1 data here — zoom in on an <b>outlined</b> tile.</span>";
+    $("hint").innerHTML = `<span>No Euclid ${releaseLabel()} data here — zoom in on an <b>outlined</b> tile.</span>`;
     return false;
   }
   state.zoom = Math.max(ENTER_ZOOM, zoom);
@@ -210,9 +256,7 @@ async function loadMap() {
     backgroundColor: "rgb(11,13,16)",
   });
   map.al.contextMenu = null;
-  const overlay = A.graphicOverlay({ color: "#6cb6ff", lineWidth: 1, opacity: 0.55, name: "Q1 tiles" });
-  map.al.addOverlay(overlay);
-  for (const t of state.tiles) overlay.add(A.polygon(t.polygon.map(([r, d]) => [r, d])));
+  showCoverage();
   for (const s of SURVEYS) $("survey").add(new Option(s.label, s.id));
   $("survey").addEventListener("change", (e) => setSurvey(e.target.value));
   setSurvey(await firstLiveSurvey());
@@ -254,8 +298,68 @@ function setSurvey(id) {
   updateMapStatus();
 }
 
+// Coverage on the map: tile outlines (all of them for Q1; for DR1's ~11,000 only
+// those near the view once zoomed in) and the release's MOCs.
+function showCoverage() {
+  if (!map.al) return;
+  for (const m of map.mocs) { try { map.al.removeOverlay(m); } catch { /* gone */ } }
+  map.mocs = RELEASES[state.release].mocs.map((url) => {
+    const moc = map.A.MOCFromURL(url, { color: "#6cb6ff", opacity: 0.12, lineWidth: 1, name: `${releaseLabel()} coverage` });
+    map.al.addMOC(moc);
+    return moc;
+  });
+  map.outlinesKey = null;
+  refreshOutlines();
+}
+
+function refreshOutlines() {
+  if (!map.al || !index) return;
+  let tiles = index.tiles, key = state.release;
+  if (tiles.length > ALL_OUTLINES_MAX) {
+    const [fov] = map.al.getFov(), [ra, dec] = mapCentre();
+    if (fov > 3) tiles = [];
+    else {
+      const r = fov * 0.75 + 0.4, cosd = Math.max(0.05, Math.cos(dec * D2R));
+      tiles = tiles.filter((t) => {
+        let dra = Math.abs(t.ra - ra);
+        if (dra > 180) dra = 360 - dra;
+        return Math.abs(t.dec - dec) < r && dra * cosd < r;
+      });
+    }
+    key += ":" + tiles.map((t) => t.id).join(",");
+  }
+  if (key === map.outlinesKey) return;
+  map.outlinesKey = key;
+  if (map.outlines) { try { map.al.removeOverlay(map.outlines); } catch { /* gone */ } }
+  map.outlines = map.A.graphicOverlay({ color: "#6cb6ff", lineWidth: 1, opacity: 0.55, name: `${releaseLabel()} tiles` });
+  map.al.addOverlay(map.outlines);
+  for (const t of tiles) map.outlines.add(map.A.polygon(tileOutline(t)));
+}
+
+async function setRelease(release, { keepView = true } = {}) {
+  if (!RELEASES[release]) release = "q1";
+  const changed = release !== state.release;
+  state.release = release;
+  $("release").value = release;
+  index = await loadIndex(release);
+  if (index.release !== state.release) return;     // switched again meanwhile
+  if (changed || !map.outlines) showCoverage();
+  if (keepView && changed && state.view === "detail" && state.tile) {
+    const tileWcs = state.tile.wcs;
+    const [ra, dec] = pix2world(tileWcs, state.cx, state.cy);
+    state.tile = null;
+    if (!(await enterDetail(ra, dec, state.zoom))) {
+      enterMap(ra, dec, 0.3);
+      setStatus(`No Euclid ${releaseLabel()} data here`, true);
+    }
+  }
+  saveHash();
+  updateMapStatus();
+}
+
 function onMapMove() {
   if (state.view !== "map" || !map.al) return;
+  refreshOutlines();
   updateMapStatus();
   saveHash();
   if (mapZoom() >= ENTER_ZOOM) {
@@ -271,10 +375,10 @@ function updateMapStatus() {
   const [ra, dec] = mapCentre();
   const covered = !!locateTile(ra, dec);
   const scale = arcsecPerPx >= 60 ? `${(arcsecPerPx / 60).toFixed(1)}′/px` : `${arcsecPerPx.toFixed(arcsecPerPx < 10 ? 2 : 0)}″/px`;
-  setStatus(`Map · ${map.survey ? map.survey.label : ""} · ${scale}`);
+  setStatus(`${releaseLabel()} · map · ${map.survey ? map.survey.label : ""} · ${scale}`);
   $("hint").innerHTML = covered
     ? `<span>Zoom in to <b>0.1″/px</b> to super-resolve (now ${scale})</span><button id="enter-now">Super-resolve here</button>`
-    : "<span>Euclid Q1 coverage is outlined. <b>Zoom in</b> on it to super-resolve.</span>";
+    : `<span>Euclid ${releaseLabel()} coverage is outlined. <b>Zoom in</b> on it to super-resolve.</span>`;
   const btn = document.getElementById("enter-now");
   if (btn) btn.onclick = () => enterDetail(ra, dec, ENTER_ZOOM);
 }
@@ -293,7 +397,7 @@ async function retileIfNeeded() {
   if (!state.tile) return;
   const [ra, dec] = pix2world(state.tile.wcs, state.cx, state.cy);
   const t = locateTile(ra, dec);
-  if (t && t.tile !== state.tile.id) await goTo(ra, dec);
+  if (t && t.id !== state.tile.id) await goTo(ra, dec);
 }
 
 // ───────────────────────────── fetching and the model ─────────────────────────────
@@ -311,10 +415,11 @@ function decodeFrame(buf) {
 }
 
 function requestBlock(tile, i, j) {
-  const key = blockKey(tile.id, i, j);
+  const key = blockKey(tile.key, i, j);
   let blk = blocks.get(key);
   if (!blk) {
-    blk = { key, tile: tile.id, i, j, state: "queued", lr: null, sr: {}, canvases: {}, used: 0 };
+    blk = { key, tile: tile.key, tileId: tile.id, release: tile.release, i, j,
+            state: "queued", lr: null, sr: {}, canvases: {}, used: 0 };
     blocks.set(key, blk);
     fetchQueue.push(blk);
   }
@@ -337,14 +442,14 @@ function pumpFetches() {
 }
 
 function dist2(blk) {
-  if (!state.tile || blk.tile !== state.tile.id) return 1e18;
+  if (!state.tile || blk.tile !== state.tile.key) return 1e18;
   const dx = (blk.i + 0.5) * B - state.cx, dy = (blk.j + 0.5) * B - state.cy;
   return dx * dx + dy * dy;
 }
 
 async function fetchBlock(blk) {
   const x0 = blk.i * B - M, y0 = blk.j * B - M;
-  const resp = await fetch(`v1/cutout?tile=${blk.tile}&x0=${x0}&y0=${y0}&size=${N}`);
+  const resp = await fetch(`v1/cutout?release=${blk.release}&tile=${blk.tileId}&x0=${x0}&y0=${y0}&size=${N}`);
   if (!resp.ok) throw new Error(`cutout ${blk.key}: ${resp.status} ${await resp.text()}`);
   const { meta, data } = decodeFrame(await resp.arrayBuffer());
   // Electrons, band-major (4, N, N).
@@ -483,7 +588,7 @@ function viewRect() {
 }
 
 function isVisible(blk) {
-  if (!state.tile || blk.tile !== state.tile.id) return false;
+  if (!state.tile || blk.tile !== state.tile.key) return false;
   const v = viewRect();
   return (blk.i + 1) * B > v.x0 && blk.i * B < v.x1 && (blk.j + 1) * B > v.y0 && blk.j * B < v.y1;
 }
@@ -657,7 +762,7 @@ function sexagesimal(deg, hours) {
 }
 
 function sampleAt(x, y) {
-  const i = Math.floor(x / B), j = Math.floor(y / B), blk = blocks.get(blockKey(state.tile.id, i, j));
+  const i = Math.floor(x / B), j = Math.floor(y / B), blk = blocks.get(blockKey(state.tile.key, i, j));
   if (!blk || !blk.lr) return null;
   const c = Math.floor(x - i * B), r = Math.floor(y - j * B);
   const lr = blk.lr[r * B + c];
@@ -671,7 +776,7 @@ function updateHud() {
   const [x, y] = state.hover ? fromScreen(...state.hover) : [state.cx, state.cy];
   const [ra, dec] = pix2world(state.tile.wcs, x, y);
   let text = `RA ${ra.toFixed(5)}  Dec ${dec.toFixed(5)}   ${sexagesimal(ra, true)} ${sexagesimal(dec, false)}\n` +
-    `tile ${state.tile.id}  x ${x.toFixed(1)}  y ${y.toFixed(1)}`;
+    `${releaseLabel()} tile ${state.tile.id}${state.tile.dataset ? ` (${state.tile.dataset})` : ""}  x ${x.toFixed(1)}  y ${y.toFixed(1)}`;
   const s = state.hover && sampleAt(x, y);
   if (s) text += `\nVIS  Euclid ${fmt(s.lr)} e⁻/px   POLISH ${s.sr == null ? "…" : fmt(s.sr * 4)} e⁻/(0.1″)²`;
   $("hud").textContent = text;
@@ -690,7 +795,8 @@ function updateStatus(visible) {
   const waiting = visible.filter((b) => b.state === "queued" || b.state === "fetching").length;
   const srDone = visible.filter((b) => b.sr[state.tta]).length;
   const ms = modelMs.length ? modelMs.reduce((a, b) => a + b, 0) / modelMs.length : null;
-  const model = session ? `${providerName}${ms ? ` · ${Math.round(ms)} ms/block${state.tta ? " ×8" : ""}` : ""}` : "loading model…";
+  const rel = `${releaseLabel()}${state.tile && state.tile.deep ? " deep field (model trained on Wide depth)" : ""}`;
+  const model = session ? `${rel} · ${providerName}${ms ? ` · ${Math.round(ms)} ms/block${state.tta ? " ×8" : ""}` : ""}` : "loading model…";
   const work = visible.length === 0 ? "zoom in to load blocks" : `${srDone}/${visible.length} blocks` +
     (waiting ? ` · fetching ${waiting}` : "") + (pendingInfer ? ` · model queue ${pendingInfer}` : "");
   setStatus(`${model} · ${work}`);
@@ -699,15 +805,16 @@ function updateStatus(visible) {
 // ───────────────────────────────── interaction ─────────────────────────────────
 
 function saveHash() {
+  const rel = `&rel=${state.release}`;
   if (state.view === "map") {
     if (!map.al) return;
     const [ra, dec] = mapCentre();
-    history.replaceState(null, "", `#ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}&fov=${map.al.getFov()[0].toPrecision(4)}`);
+    history.replaceState(null, "", `#ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}&fov=${map.al.getFov()[0].toPrecision(4)}${rel}`);
     return;
   }
   if (!state.tile) return;
   const [ra, dec] = pix2world(state.tile.wcs, state.cx, state.cy);
-  history.replaceState(null, "", `#ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}&z=${+state.zoom.toPrecision(4)}`);
+  history.replaceState(null, "", `#ra=${ra.toFixed(6)}&dec=${dec.toFixed(6)}&z=${+state.zoom.toPrecision(4)}${rel}`);
 }
 
 function parseWhere(text) {
@@ -742,7 +849,7 @@ async function onSearch(ev) {
       await openTile(where.tile); state.cx = where.x; state.cy = where.y; saveHash(); schedule();
     } else if (!(await enterDetail(where.ra, where.dec, Math.max(state.zoom, 1)))) {
       enterMap(where.ra, where.dec, 0.2);
-      setStatus(`No Euclid Q1 data at RA ${where.ra.toFixed(4)}, Dec ${where.dec.toFixed(4)}`, true);
+      setStatus(`No Euclid ${releaseLabel()} data at RA ${where.ra.toFixed(4)}, Dec ${where.dec.toFixed(4)}`, true);
     }
   } catch (e) { setStatus(String(e.message || e), true); }
 }
@@ -761,11 +868,16 @@ function setZoom(z, sx, sy) {
 
 function bindUi() {
   PRESETS.forEach(([name], i) => $("presets").add(new Option(name, String(i))));
-  $("presets").addEventListener("change", (e) => {
+  $("presets").addEventListener("change", async (e) => {
     if (!e.target.value) return;
-    const [, ra, dec, fov] = PRESETS[+e.target.value];
+    let [, ra, dec, fov, release] = PRESETS[+e.target.value];
     e.target.value = "";
+    await setRelease(release, { keepView: false });
+    if (release === "dr1" && ra === 0 && dec === 0) [ra, dec] = medianTile();
     enterMap(ra, dec, fov);
+  });
+  $("release").addEventListener("change", (e) => {
+    setRelease(e.target.value).catch((err) => setStatus(String(err.message || err), true));
   });
   $("tomap").addEventListener("click", detailToMap);
   $("enter").addEventListener("click", () => {
@@ -825,11 +937,20 @@ function setMode(mode) {
   schedule();
 }
 
+// A representative point of the current index: the median tile centre.
+function medianTile() {
+  const ras = index.tiles.map((t) => t.ra).sort((a, b) => a - b);
+  const decs = index.tiles.map((t) => t.dec).sort((a, b) => a - b);
+  return [ras[ras.length >> 1], decs[decs.length >> 1]];
+}
+
 async function main() {
   bindUi();
   setView("map");
-  state.tiles = (await fetch("static/tiles.json").then((r) => r.json())).tiles;
   const hash = new URLSearchParams(location.hash.slice(1));
+  state.release = RELEASES[hash.get("rel")] ? hash.get("rel") : "q1";
+  $("release").value = state.release;
+  index = await loadIndex(state.release);
   const hasPos = hash.has("ra") && Number.isFinite(+hash.get("ra")) && Number.isFinite(+hash.get("dec"));
   const [ra, dec] = hasPos ? [+hash.get("ra"), +hash.get("dec")] : [PRESETS[0][1], PRESETS[0][2]];
   try {
