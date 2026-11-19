@@ -287,6 +287,16 @@ def test_member_psf_sets_fallback_note(tmp_path):
     assert set(sets) == {b.name for b in Config.BANDS}
 
 
+def test_member_psf_sets_refuses_missing_pools(monkeypatch, tmp_path):
+    """Without the switch, a member never trains on the unrotated sets (or
+    on Gaussians) because the scratch purge removed the pools."""
+    from euclid_polish.psf.psf_library import PSF_FALLBACK_ENV
+
+    monkeypatch.delenv(PSF_FALLBACK_ENV, raising=False)
+    with pytest.raises(FileNotFoundError, match="no rotation pool for 4 band"):
+        member_psf_sets(seed=1, psf_dir=str(tmp_path))
+
+
 def test_member_psf_sets_uses_pool_bag(tmp_path):
     from euclid_polish.psf.core import PSF
     from euclid_polish.psf.psf_set import PSFSet

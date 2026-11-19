@@ -30,6 +30,12 @@ if _PROJECT_ROOT not in sys.path:
 # now actually keep that stub in effect.
 os.environ.setdefault("EUCLID_POLISH_DISABLE_AUTO_SSH", "1")
 
+# A clean checkout (and Quality CI) has no data/euclid_psf, so most tests run
+# on the Gaussian PSF fallback. Production code refuses it unless this switch
+# is set (2026-11-19, after the scratch purge deleted the ePSFs); tests that
+# check the refusal delete it with monkeypatch.
+os.environ.setdefault("EUCLID_POLISH_ALLOW_PSF_FALLBACK", "1")
+
 
 # ─── Session-wide harmless SSH stub on ``STATE.ssh``. ──────────────────
 #

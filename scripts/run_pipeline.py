@@ -201,8 +201,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--batch-size",     type=int, default=Config.DEFAULT_BATCH_SIZE)
     ap.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
     ap.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
-    ap.add_argument("--require-empirical-psf", action="store_true",
-                    help="Fail if any band lacks a real ePSF (no Gaussian fallback).")
+    # Strict is the default (None → strict unless EUCLID_POLISH_ALLOW_PSF_FALLBACK=1):
+    # a band without its ePSF file stops the run instead of becoming a Gaussian.
+    ap.add_argument("--require-empirical-psf", dest="require_empirical_psf",
+                    action="store_true", default=None,
+                    help="Fail if any band lacks a real ePSF (the default; kept "
+                         "so older job scripts parse).")
+    ap.add_argument("--allow-gaussian-psf", dest="require_empirical_psf",
+                    action="store_false",
+                    help="Let a band with no ePSF file fall back to a Gaussian "
+                         "at its nominal FWHM (recorded as 'gaussian' in the "
+                         "records' psf_kinds).")
     ap.add_argument("--gen-workers", type=int, default=1,
                     help="Parallelise synthetic generation across this many "
                          "processes. >1 runs a COMBINED generate+forward pass "

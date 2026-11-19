@@ -9,7 +9,11 @@ the appropriate PSF:
 
   1. If an empirical ePSF file exists at the configured per-band path,
      load it and (optionally) resample it onto the HR grid.
-  2. Otherwise return a Gaussian fallback at the band's nominal FWHM.
+  2. Otherwise raise :class:`FileNotFoundError`. The Gaussian at the band's
+     nominal FWHM is only an opt-in fallback: ``require_empirical=False``, or
+     ``EUCLID_POLISH_ALLOW_PSF_FALLBACK=1`` (the test suite sets it). The
+     default used to be the silent Gaussian; on 2026-11-19 the FASRC scratch
+     purge deleted the ePSFs and a queued regeneration would have used it.
 
 Two flows fit the same scheme — the interactive CLI (``python main.py`` →
 Euclid Operations → "Extract PSF (per band)", reading star cutouts from
@@ -29,6 +33,27 @@ import numpy as np
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_set import PSFSet
+
+#: Environment switch that re-allows the PSF fallbacks (a Gaussian for a band
+#: with no ePSF file; unrotated cluster sets for training with no rotation
+#: pool). Production never sets it; ``tests/conftest.py`` does, because a clean
+#: checkout has no ``data/``.
+PSF_FALLBACK_ENV = "EUCLID_POLISH_ALLOW_PSF_FALLBACK"
+
+
+def psf_fallback_allowed() -> bool:
+    """True only when :data:`PSF_FALLBACK_ENV` is ``1``/``true``/``yes``."""
+    return os.environ.get(PSF_FALLBACK_ENV, "").strip().lower() in (
+        "1", "true", "yes")
+
+
+def _strict(require_empirical: bool | None) -> bool:
+    """Resolve a loader's ``require_empirical``: ``None`` means strict
+    unless :func:`psf_fallback_allowed`."""
+    if require_empirical is None:
+        return not psf_fallback_allowed()
+    return bool(require_empirical)
+
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -110,7 +135,7 @@ def load_band_psf(
     *,
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
     psf_dir: str = Config.EUCLID_PSF_DIR,
-    require_empirical: bool = False,
+    require_empirical: bool | None = None,
 ) -> PSF:
     """Return the best available PSF for ``band`` at ``target_pixel_scale``.
 
@@ -118,11 +143,10 @@ def load_band_psf(
 
       1. ``psf_dir / band.psf_fits_filename`` exists → load it, normalise,
          clean background, resample to ``target_pixel_scale`` if needed.
-      2. Otherwise, build a Gaussian PSF at ``band.psf_fwhm_arcsec``.
-
-    With ``require_empirical=True`` the second branch raises instead of
-    falling back — useful for production runs where we don't want the
-    network silently trained on Gaussian NISP PSFs.
+      2. Otherwise raise :class:`FileNotFoundError`, unless the fallback is
+         allowed (``require_empirical=False``, or ``None`` with
+         :func:`psf_fallback_allowed`): then a Gaussian PSF at
+         ``band.psf_fwhm_arcsec``.
     """
     path = psf_path_for_band(band, psf_dir)
     if os.path.isfile(path):
@@ -132,11 +156,12 @@ def load_band_psf(
         psf = psf.background_cleaned()
         return psf.resampled_to(target_pixel_scale)
 
-    if require_empirical:
+    if _strict(require_empirical):
         raise FileNotFoundError(
             f"No empirical PSF for band {band.name} at {path}. "
-            f"Run `python scripts/extract_all_band_psfs.py --bands {band.name}` "
-            "or pass require_empirical=False to allow a Gaussian fallback."
+            f"Run `python scripts/extract_all_band_psfs.py --bands {band.name}`; "
+            f"a Gaussian fallback needs require_empirical=False or "
+            f"{PSF_FALLBACK_ENV}=1."
         )
     # Gaussian fallback: size auto-derived from FWHM (the band's
     # ``psf_fwhm_arcsec`` × ``PSF_HALF_SUPPORT_FWHM_FACTOR``).
@@ -149,7 +174,7 @@ def load_all_band_psfs(
     *,
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
     psf_dir: str = Config.EUCLID_PSF_DIR,
-    require_empirical: bool = False,
+    require_empirical: bool | None = None,
 ) -> dict[str, PSF]:
     """Load PSFs for every band in :attr:`Config.BANDS`.
 
@@ -176,7 +201,7 @@ def load_band_psf_set(
     *,
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
     psf_dir: str = Config.EUCLID_PSF_DIR,
-    require_empirical: bool = False,
+    require_empirical: bool | None = None,
 ) -> PSFSet:
     """Return the position-dependent :class:`PSFSet` for ``band``.
 
@@ -186,7 +211,8 @@ def load_band_psf_set(
          (reads the K cluster PSFs from the multi-extension file; a legacy
          single-PSF FITS loads as a 1-element set), resampled to
          ``target_pixel_scale``.
-      2. Otherwise a Gaussian fallback wrapped as a **1-element** set.
+      2. Otherwise raise, unless the fallback is allowed (as
+         :func:`load_band_psf`): then a Gaussian wrapped as a **1-element** set.
 
     A 1-element set always yields its single PSF (the cluster pick in
     :meth:`PSFSet.draw_sample` is deterministic; only the shared roll / warp
@@ -200,10 +226,11 @@ def load_band_psf_set(
                 .background_cleaned()
                 .resampled_to(target_pixel_scale))
 
-    if require_empirical:
+    if _strict(require_empirical):
         raise FileNotFoundError(
             f"No empirical PSF for band {band.name} at {path}. "
-            "Run the extraction step or pass require_empirical=False."
+            f"Run the extraction step; a Gaussian fallback needs "
+            f"require_empirical=False or {PSF_FALLBACK_ENV}=1."
         )
     target_side = psf_side_pixels_for_band(band, target_pixel_scale)
     gaussian = make_gaussian_psf(band.psf_fwhm_arcsec, target_pixel_scale,
@@ -215,7 +242,7 @@ def load_all_band_psf_sets(
     *,
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
     psf_dir: str = Config.EUCLID_PSF_DIR,
-    require_empirical: bool = False,
+    require_empirical: bool | None = None,
 ) -> dict[str, PSFSet]:
     """Load a :class:`PSFSet` for every band in :attr:`Config.BANDS`.
 
@@ -241,8 +268,9 @@ def load_all_band_psf_sets(
 def psf_inventory(psf_dir: str = Config.EUCLID_PSF_DIR) -> dict[str, str | None]:
     """Report which bands currently have an empirical PSF on disk.
 
-    Returns ``{band_name: path or None}``. ``None`` means a Gaussian
-    fallback would be used. Useful for CLI introspection.
+    Returns ``{band_name: path or None}``. ``None`` means no ePSF: loading
+    that band raises unless the Gaussian fallback is allowed. Useful for CLI
+    introspection.
     """
     out: dict[str, str | None] = {}
     for band in Config.BANDS:

@@ -10,11 +10,13 @@ import pytest
 from euclid_polish.config import Config
 from euclid_polish.psf import PSF, PSFSet
 from euclid_polish.psf.psf_library import (
+    PSF_FALLBACK_ENV,
     load_all_band_psf_sets,
     load_all_band_psfs,
     load_band_psf,
     load_band_psf_set,
     make_gaussian_psf,
+    psf_fallback_allowed,
     psf_inventory,
     psf_path_for_band,
 )
@@ -141,3 +143,49 @@ def test_load_band_psf_set_require_empirical_raises(tmp_path):
         load_band_psf_set(
             Config.BAND_Y_E, psf_dir=str(tmp_path), require_empirical=True,
         )
+
+
+@pytest.mark.parametrize("value, allowed", [
+    ("1", True), ("true", True), (" YES ", True),
+    ("", False), ("0", False), ("no", False), ("false", False),
+])
+def test_psf_fallback_switch_parses_only_explicit_yes(monkeypatch, value, allowed):
+    monkeypatch.setenv(PSF_FALLBACK_ENV, value)
+    assert psf_fallback_allowed() is allowed
+
+
+def test_missing_epsf_is_an_error_by_default(monkeypatch, tmp_path):
+    """2026-11-19: the scratch purge deleted the ePSFs and generation would
+    have convolved every band with a Gaussian. With the switch unset, every
+    loader refuses; an explicit opt-in still falls back."""
+    monkeypatch.delenv(PSF_FALLBACK_ENV, raising=False)
+    with pytest.raises(FileNotFoundError, match=PSF_FALLBACK_ENV):
+        load_band_psf(Config.BAND_Y_E, psf_dir=str(tmp_path))
+    with pytest.raises(FileNotFoundError, match="No empirical PSF for band VIS"):
+        load_all_band_psf_sets(psf_dir=str(tmp_path))
+    with pytest.raises(FileNotFoundError):
+        load_all_band_psfs(psf_dir=str(tmp_path))
+    fallback = load_band_psf_set(Config.BAND_Y_E, psf_dir=str(tmp_path),
+                                 require_empirical=False)
+    assert fallback.n == 1
+
+
+def test_one_missing_band_fails_the_whole_set(monkeypatch, tmp_path):
+    """Three real bands do not excuse the fourth: the set load names it."""
+    monkeypatch.delenv(PSF_FALLBACK_ENV, raising=False)
+    for band in Config.BANDS:
+        if band is not Config.BAND_H_E:
+            make_gaussian_psf(band.psf_fwhm_arcsec, Config.DEFAULT_PIXEL_SCALE,
+                              size=31).save(str(tmp_path),
+                                            filename=band.psf_fits_filename)
+    with pytest.raises(FileNotFoundError, match="H_E"):
+        load_all_band_psf_sets(psf_dir=str(tmp_path))
+
+
+def test_switch_reallows_the_gaussian_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv(PSF_FALLBACK_ENV, "1")
+    psf = load_band_psf(Config.BAND_Y_E, psf_dir=str(tmp_path))
+    assert psf.data.sum() == pytest.approx(1.0, rel=1e-6)
+    with pytest.raises(FileNotFoundError):
+        load_band_psf(Config.BAND_Y_E, psf_dir=str(tmp_path),
+                      require_empirical=True)

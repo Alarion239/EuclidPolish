@@ -319,3 +319,11 @@ def test_parallel_resume_plans_fresh_shards_and_records_the_plan(
             "donor_balance": "per_shard",
         }, sort_keys=True),
     }
+
+
+def test_psf_requirement_flags():
+    """Strict unless asked: no flag → None (strict outside the test switch),
+    the old --require-empirical-psf still parses, --allow-gaussian-psf opts in."""
+    assert rp.parse_args([]).require_empirical_psf is None
+    assert rp.parse_args(["--require-empirical-psf"]).require_empirical_psf is True
+    assert rp.parse_args(["--allow-gaussian-psf"]).require_empirical_psf is False

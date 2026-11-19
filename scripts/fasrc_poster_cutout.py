@@ -410,8 +410,7 @@ def forward_and_reconstruct(
     ``{member_labels, combiner_kind, combiner_fingerprint, run_labels}``.
     """
     psf_sets = load_all_band_psf_sets(
-        psf_dir=psf_dir, require_empirical=False,
-        target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
+        psf_dir=psf_dir, target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
     fwd = ObservationSimulator(
         psf_sets_by_band=psf_sets,
         config=ObservationSimulatorConfig(

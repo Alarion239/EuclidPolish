@@ -1006,9 +1006,9 @@ class InteractiveCLI:
             print(f"  {name}: {status}")
 
         require_emp_raw = input(
-            "Require empirical PSF for every band? (y/n, default n): "
-        ).strip().lower() or "n"
-        require_empirical = require_emp_raw.startswith("y")
+            "Require empirical PSF for every band? (y/n, default y): "
+        ).strip().lower() or "y"
+        require_empirical = not require_emp_raw.startswith("n")
 
         try:
             psf_sets = load_all_band_psf_sets(

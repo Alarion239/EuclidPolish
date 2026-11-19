@@ -33,15 +33,20 @@ are never shared and the heavy work runs lock-free.
 
 from __future__ import annotations
 
+import os
 import threading
 
 import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.image import Image
-from euclid_polish.psf.psf_library import load_all_band_psf_sets
+from euclid_polish.psf.psf_library import (
+    PSF_FALLBACK_ENV,
+    load_all_band_psf_sets,
+    psf_fallback_allowed,
+)
 from euclid_polish.psf.psf_set import PSFSet
-from euclid_polish.psf.rotpool import load_all_band_rotpools
+from euclid_polish.psf.rotpool import load_all_band_rotpools, rotpool_path
 from euclid_polish.sky.generation.sky_simulator import inject_random_stars
 from euclid_polish.sky.generation.stellar_sed import (
     EmpiricalStellarPrior,
@@ -89,9 +94,11 @@ def member_psf_sets(*, seed: int | None, psf_subset: int | None = None,
     Prefers the pre-rotated pools with a seeded cluster-subset bag
     (``psf_subset`` clusters, default :data:`DEFAULT_PSF_SUBSET`; the seed is
     the member's training seed, so the bag is reproducible and differs across
-    members). Falls back to the plain cluster ePSF sets (unrotated — exactly
-    what generation uses) when no pool is on disk. Returns ``(sets, note)``
-    where ``note`` describes the choice for the training log.
+    members). A missing pool raises :class:`FileNotFoundError`: training on
+    the plain unrotated cluster sets changes the recipe, so it is only
+    allowed with ``EUCLID_POLISH_ALLOW_PSF_FALLBACK=1`` (the test suite sets
+    it). Returns ``(sets, note)`` where ``note`` describes the choice for the
+    training log.
     """
     subset = int(psf_subset) if psf_subset else DEFAULT_PSF_SUBSET
     pools = load_all_band_rotpools(psf_dir=psf_dir, subset_clusters=subset,
@@ -100,6 +107,14 @@ def member_psf_sets(*, seed: int | None, psf_subset: int | None = None,
         n = pools[Config.BAND_VIS.name].n
         return pools, (f"pre-rotated pool, bagged to {subset} clusters "
                        f"({n} kernels/band, seed={seed})")
+    if not psf_fallback_allowed():
+        missing = [rotpool_path(band, psf_dir) for band in Config.BANDS
+                   if not os.path.isfile(rotpool_path(band, psf_dir))]
+        raise FileNotFoundError(
+            f"no rotation pool for {len(missing)} band(s): {', '.join(missing)}. "
+            "Build them with scripts/pregenerate_psf_rotations.py (seed 0, "
+            f"12 rolls reproduces the production pools); {PSF_FALLBACK_ENV}=1 "
+            "allows training on the unrotated cluster sets.")
     sets = load_all_band_psf_sets(psf_dir=psf_dir,
                                   target_pixel_scale=Config.DEFAULT_PIXEL_SCALE)
     return sets, ("no rotation pool on disk — full unrotated cluster sets "
