@@ -65,16 +65,17 @@ export type TrainForm = {
 
 export const newRow = (from?: Partial<SpecRow>): SpecRow => ({
   loss: "l2", blocks: "32", kneeMode: "single", knee: "100", knees: DEFAULT_MULTI_KNEES,
-  // ICNR off since 2026-10-25 (user: "if we can live without it we would
-  // prefer to"); the isotropy penalty's 2–3 px band already polices the
-  // pixel-shuffle checkerboard ICNR was for. Tick it per member to bring it back.
-  outputKnee: DEFAULT_LEARNED_KNEE, learnKnee: true, kneeLoss: "balanced", noise: "0", boot: "0.7", icnr: false,
+  // ICNR on again since 2026-11-18 (off 10-25 → 11-18). The isotropy penalty
+  // did not remove the pixel-shuffle checkerboard: at 200k the ICNR-off 255
+  // keeps a 867× VIS corner spike vs 48× for its ICNR twin 249, a 30 % larger
+  // TTA8 gain and a 0.12–0.21 dB lower single-pass ∫PSNR (output/tta_equivariance).
+  outputKnee: DEFAULT_LEARNED_KNEE, learnKnee: true, kneeLoss: "balanced", noise: "0", boot: "0.7", icnr: true,
   ...from,
   seed: "",               // never cloned — two members with one seed are one model
 });
 
 /** The recipe of every batch since 2026-09-20 (memory: L2, bootstrap 0.7,
- *  32 blocks, 70k steps, live forward — ICNR too until 2026-10-25;
+ *  32 blocks, 70k steps, live forward, ICNR (off 2026-10-25 → 11-18);
  *  saturation 0.5 and PSF warp α 5 are System › Config's). */
 export const RECIPE_GEOMETRY: Geometry = {
   batch_size: "4", hr_crop_size: "256", crops_per_field: "8", forward_onthefly: true,
