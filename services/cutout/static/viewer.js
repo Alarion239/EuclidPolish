@@ -98,7 +98,6 @@ const state = {
   divider: 0.5,          // swipe divider, fraction of the canvas width
   colour: "ab",
   white: 3000,           // VIS-equivalent white level, e⁻ per LR pixel
-  saturation: 1,         // AB colour: 0 grey, 1 as stretched, 2 doubled
   tta: false,
   blink: false,
   hover: null,
@@ -655,10 +654,9 @@ function renderBlock(data, n, sb) {
       } else if (state.colour === "ab") {
         const R = hb[p] * sb * TO_VIS_EQ.H_E, G = (y[p] * TO_VIS_EQ.Y_E + j[p] * TO_VIS_EQ.J_E) * 0.5 * sb, Bl = v * sb;
         const f = (c) => (c > BLACK_AB ? Math.min(1, Math.asinh((c - BLACK_AB) / KNEE_AB) / abNorm) : 0);
-        const tr = f(R), tg = f(G), tb = f(Bl), L = (tr + tg + tb) / 3, k = state.saturation;
-        px[o] = Math.max(0, Math.min(255, (L + k * (tr - L)) * 255)) | 0;   // saturation: scale
-        px[o + 1] = Math.max(0, Math.min(255, (L + k * (tg - L)) * 255)) | 0; // the departure
-        px[o + 2] = Math.max(0, Math.min(255, (L + k * (tb - L)) * 255)) | 0; // from grey
+        px[o] = (f(R) * 255) | 0;
+        px[o + 1] = (f(G) * 255) | 0;
+        px[o + 2] = (f(Bl) * 255) | 0;
       } else {
         px[o] = stretch(hb[p] * sb, kR, wR);
         px[o + 1] = stretch((y[p] + j[p]) * 0.5 * sb, kG, wG);
@@ -672,7 +670,7 @@ function renderBlock(data, n, sb) {
 }
 
 function blockCanvas(blk, which) {
-  const key = `${which}:${state.colour}:${state.white}:${state.saturation}:${state.tta}`;
+  const key = `${which}:${state.colour}:${state.white}:${state.tta}`;
   if (blk.canvases[key]) return blk.canvases[key];
   let c = null;
   if (which === "lr" && blk.lr) c = renderBlock(blk.lr, B, 1);
@@ -923,10 +921,6 @@ function bindUi() {
   // need the top decade to keep their cores unclipped.
   const white = () => { state.white = Math.round(300 * Math.pow(10, 3 * (100 - +$("white").value) / 100)); schedule(); };
   $("white").addEventListener("input", white); white();
-  const saturation = () => { state.saturation = +$("saturation").value / 50; schedule(); };
-  $("saturation").addEventListener("input", saturation); saturation();
-  const satLabel = () => { $("saturation").parentElement.hidden = state.colour !== "ab"; };
-  $("colour").addEventListener("change", satLabel); satLabel();
   $("tta").addEventListener("change", (e) => { state.tta = e.target.checked; schedule(); });
   $("info").addEventListener("click", () => $("about").classList.toggle("show"));
 
