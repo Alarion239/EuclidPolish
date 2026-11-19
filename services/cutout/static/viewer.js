@@ -20,6 +20,23 @@ const BANDS = ["VIS", "Y_E", "J_E", "H_E"];
 // points balanced like the console's "vivid" mode (poster galaxy levels).
 const SIGMA = { VIS: 29.81, Y_E: 9.4, J_E: 9.9, H_E: 9.69 };
 const WHITE_BALANCE = { VIS: 1.0, Y_E: 0.2088, J_E: 0.2929, H_E: 0.3799 };
+// AB-balanced colour (default). Electrons → "VIS-equivalent electrons" (same AB
+// flux) with the bands' electron zeropoints (BandConfig.sim_zeropoint_e), so a
+// flat-spectrum source is white. The "vivid" balance above is white only at
+// VIS−H ≈ +1.7 AB, redder than nearly every galaxy (Q1 median VIS−H ≈ +0.4 at
+// VIS 24–27, +1.2 at VIS 18–22), so it shows almost everything blue.
+const ZP_E = { VIS: 34.29662776165843, Y_E: 31.396441190651323, J_E: 31.616441190651326, H_E: 31.566441190651325 };
+const TO_VIS_EQ = Object.fromEntries(Object.entries(ZP_E).map(([b, zp]) => [b, 10 ** (0.4 * (ZP_E.VIS - zp))]));
+// Measured per-pixel MER noise (Q1, 2026-11-18): VIS 21.7, NISP 2.6–2.8 e⁻. The
+// colour mode stretches the mean of R, G, B (Lupton et al. 2004): hue is kept and
+// the asinh knee sits at 5σ of that mean.
+const NOISE_E = { VIS: 21.7, Y_E: 2.6, J_E: 2.8, H_E: 2.7 };
+const SIGMA_AB = Math.hypot(NOISE_E.VIS, Math.hypot(NOISE_E.Y_E * TO_VIS_EQ.Y_E, NOISE_E.J_E * TO_VIS_EQ.J_E) / 2,
+                            NOISE_E.H_E * TO_VIS_EQ.H_E) / 3;
+const KNEE_AB = 5 * SIGMA_AB;
+// Black point at 1.5σ of the mean: NISP is ~1.5× noisier than VIS per pixel in AB
+// terms, so without it the Euclid side's sky is a speckle of coloured noise.
+const BLACK_AB = 1.5 * SIGMA_AB;
 // Releases: IRSA's MER mosaics, served by this server (?release=…). DR1 has no
 // HiPS yet, so its coverage is drawn from its own MOCs.
 const DR1_MOC = "https://nasa-irsa-euclid-dr1.s3.us-east-1.amazonaws.com/dr1/MOC/";
@@ -74,7 +91,7 @@ const state = {
   zoom: 1,               // screen CSS px per SR pixel
   mode: "swipe",         // swipe | lr | sr
   divider: 0.5,          // swipe divider, fraction of the canvas width
-  colour: "colour",
+  colour: "ab",
   white: 3000,           // VIS-equivalent white level, e⁻ per LR pixel
   tta: false,
   blink: false,
@@ -620,6 +637,7 @@ function renderBlock(data, n, sb) {
         j = data.subarray(2 * plane, 3 * plane), hb = data.subarray(3 * plane, 4 * plane);
   const kV = 5 * SIGMA.VIS, kG = 5 * (SIGMA.Y_E + SIGMA.J_E) / 2, kR = 5 * SIGMA.H_E;
   const wG = W * (WHITE_BALANCE.Y_E + WHITE_BALANCE.J_E) / 2, wR = W * WHITE_BALANCE.H_E;
+  const abNorm = Math.asinh((W - BLACK_AB) / KNEE_AB);
   for (let r = 0; r < n; r++) {
     const row = (n - 1 - r) * n;
     for (let col = 0; col < n; col++) {
@@ -628,6 +646,16 @@ function renderBlock(data, n, sb) {
       if (Number.isNaN(v)) { px[o] = px[o + 1] = px[o + 2] = 28; px[o + 3] = 255; continue; }
       if (state.colour === "vis") {
         px[o] = px[o + 1] = px[o + 2] = stretch(v * sb, kV, W);
+      } else if (state.colour === "ab") {
+        const R = hb[p] * sb * TO_VIS_EQ.H_E, G = (y[p] * TO_VIS_EQ.Y_E + j[p] * TO_VIS_EQ.J_E) * 0.5 * sb, Bl = v * sb;
+        const I = (R + G + Bl) / 3;
+        if (!(I > BLACK_AB)) { px[o] = px[o + 1] = px[o + 2] = 0; px[o + 3] = 255; continue; }
+        let k = Math.asinh((I - BLACK_AB) / KNEE_AB) / (abNorm * I);
+        const m = Math.max(R, G, Bl) * k;
+        if (m > 1) k /= m;                                   // saturate without changing hue
+        px[o] = R > 0 ? Math.min(255, R * k * 255) | 0 : 0;
+        px[o + 1] = G > 0 ? Math.min(255, G * k * 255) | 0 : 0;
+        px[o + 2] = Bl > 0 ? Math.min(255, Bl * k * 255) | 0 : 0;
       } else {
         px[o] = stretch(hb[p] * sb, kR, wR);
         px[o + 1] = stretch((y[p] + j[p]) * 0.5 * sb, kG, wG);
