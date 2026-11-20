@@ -25,6 +25,7 @@ from euclid_polish.training.equivariance import (
     real_crop_dataset,
     step_code,
 )
+from euclid_polish.training.losses import channel_balanced_loss, lp_loss
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import Trainer
 from scripts.build_real_equivariance_tiles import (
@@ -339,3 +340,38 @@ def test_a_live_member_trains_with_the_penalty_end_to_end(tmp_path, capsys, fast
     out = capsys.readouterr().out
     assert "real-sky equivariance: λ=1, 2 × 32² LR crops/step from 3 tiles" in out
     assert "equivariance penalty" in out
+
+
+# -- the p-norm root at an exact match -------------------------------------------
+
+@pytest.mark.parametrize("norm", ["l2", "l3"])
+def test_the_lp_root_has_a_finite_gradient_at_an_exact_match(norm):
+    """The penalty compares two outputs of the same network, which can agree
+    exactly (any D4-symmetric crop, e.g. a blank one). ``(mean|d|^p)^(1/p)``
+    then has an infinite slope at 0, and the balanced loss's clamp turned it
+    into 0·inf = NaN (11-20: every window of the λ1/λ10 runs spiked to
+    |g|=inf). An exact match must give a zero gradient instead."""
+    a = tf.Variable(tf.ones((1, 4, 4, 2)))
+    b = tf.ones((1, 4, 4, 2))
+    for loss in (lp_loss(norm), channel_balanced_loss(norm)):
+        with tf.GradientTape() as tape:
+            value = loss(a, b)
+        grad = tape.gradient(value, a).numpy()
+        assert np.all(np.isfinite(grad)), grad
+        assert np.all(grad == 0.0)
+
+
+@pytest.mark.parametrize("norm", ["l2", "l3"])
+def test_the_lp_root_is_unchanged_away_from_zero(norm):
+    p = {"l2": 2, "l3": 3}[norm]
+    rng = np.random.default_rng(4)
+    a = tf.Variable(rng.normal(size=(2, 8, 8, 3)).astype(np.float32))
+    b = tf.constant(rng.normal(size=(2, 8, 8, 3)).astype(np.float32))
+    with tf.GradientTape() as tape:
+        value = lp_loss(norm)(a, b)
+    grad = tape.gradient(value, a)
+    with tf.GradientTape() as tape:
+        reference = tf.reduce_mean(tf.abs(a - b) ** p) ** (1.0 / p)
+    expected = tape.gradient(reference, a)
+    assert float(value) == float(reference)
+    assert np.array_equal(grad.numpy(), expected.numpy())

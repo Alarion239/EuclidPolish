@@ -54,7 +54,15 @@ def lp_loss(norm: str = "l1"):
         return _l1
 
     def _lp(a, b):
-        return tf.reduce_mean(tf.abs(a - b) ** p) ** (1.0 / p)
+        mean = tf.reduce_mean(tf.abs(a - b) ** p)
+        # The root's slope is infinite at 0: an exact match (two outputs of
+        # one network on a D4-symmetric crop, in the equivariance penalty)
+        # made its gradient NaN. The double where keeps the value and the
+        # gradient of every non-zero mean bit-identical and gives an exact
+        # match a zero gradient.
+        positive = mean > 0
+        safe = tf.where(positive, mean, tf.ones_like(mean))
+        return tf.where(positive, safe ** (1.0 / p), tf.zeros_like(mean))
     return _lp
 
 
