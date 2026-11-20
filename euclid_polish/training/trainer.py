@@ -1263,7 +1263,12 @@ class Trainer:
         """One step's graph: the gradient step, the step counter and the
         window statistics → ``(loss, pre-clip gradient norm)``. ``real``: the
         batch's real LR crops (raw electrons) for the equivariance penalty."""
-        loss_value, gnorm, isotropy, brightness, equivariance = self._gradient_step(lr, hr, real)
+        # The D4 element is read here, outside the (possibly XLA-compiled)
+        # gradient step: the int32 step counter lives in host memory, which an
+        # XLA step on a GPU cannot read.
+        code = step_code(self.checkpoint.step)
+        loss_value, gnorm, isotropy, brightness, equivariance = self._gradient_step(
+            lr, hr, real, code)
 
         # Step counter and window statistics stay on the device; the training
         # loop reads them once per validation window. The counter waits for
@@ -1290,12 +1295,13 @@ class Trainer:
         watched = tf.where(step > GRAD_SPIKE_SKIP_WARMUP_STEPS, watched, 0.0)
         self._win_spike_norm.assign(tf.maximum(self._win_spike_norm, watched))
 
-    def _gradient_step_impl(self, lr, hr, real=None):
+    def _gradient_step_impl(self, lr, hr, real=None, code=None):
         """Forward, loss, backward, global-norm clip and the Adam update →
         ``(loss, pre-clip gradient norm, isotropy penalty, brightness
         penalty, equivariance penalty)``; the loss excludes the penalties,
         the gradient includes them. ``real`` (raw-electron real LR crops)
-        feeds the equivariance penalty; ``None`` skips it."""
+        feeds the equivariance penalty with the D4 element ``code``
+        (:func:`step_code`); ``real=None`` skips it."""
         hr_electrons = hr
         if self._batch_stretch is not None:
             lr, hr = self._batch_stretch(lr, hr)
@@ -1314,8 +1320,10 @@ class Trainer:
                 objective = objective + tf.stop_gradient(loss_value) * brightness
             equivariance = tf.constant(0.0)
             if self._equivariance is not None and real is not None:
+                if code is None:
+                    raise ValueError("the equivariance penalty needs the D4 code")
                 equivariance = self._equivariance.penalty(
-                    self.checkpoint.model, real, self.loss, step_code(self.checkpoint.step))
+                    self.checkpoint.model, real, self.loss, code)
                 objective = objective + self._equivariance_weight * equivariance
 
         gradients = tape.gradient(objective, self.checkpoint.model.trainable_variables)

@@ -165,6 +165,25 @@ def test_the_trainer_adds_the_penalty_to_the_gradient_not_to_the_logged_loss(tmp
     assert plain._read_window()["equivariance"] == 0.0
 
 
+def test_the_compiled_step_reads_no_host_memory_variable(tmp_path):
+    """TF keeps int32 variables (the step counter) in host memory; an XLA step
+    on a GPU cannot read them (11-19 crash, jobs 62219486/62233031). The D4
+    code must come in as an argument, so the compiled gradient step captures
+    no int32 variable."""
+    lr, hr, real = _batches(2)
+    eq = RealEquivariance(lambda v: v, lambda v: v)
+    trainer = Trainer(_electron_model(), loss=_mse, checkpoint_dir=str(tmp_path / "x"),
+                      learning_rate=1e-3, output_electrons=True,
+                      batch_stretch=lambda lr, hr: (lr, hr), equivariance=eq,
+                      equivariance_weight=1.0, jit_compile=True)
+    trainer.train_step(lr, hr, real)
+    traced = trainer._gradient_step.get_concrete_function(lr, hr, real, tf.constant(1))
+    captured = [t for t in traced.captured_inputs if t.dtype == tf.resource]
+    int32 = [v.name for v in trainer.checkpoint.model.variables + [trainer.checkpoint.step]
+             if v.dtype == tf.int32 and any(v.handle is t for t in captured)]
+    assert int32 == []
+
+
 def test_multi_step_calls_take_three_element_batches(tmp_path):
     lr, hr, real = _batches(1)
     trainer = _trainer(tmp_path / "m", weight=1.0, steps_per_call=2)
