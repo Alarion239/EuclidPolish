@@ -480,6 +480,7 @@ class Trainer:
         self._win_gnorm_sum = tf.Variable(0.0, trainable=False)
         self._win_gnorm_max = tf.Variable(0.0, trainable=False)
         self._win_spike_norm = tf.Variable(0.0, trainable=False)
+        self._win_warmup_peak = tf.Variable(0.0, trainable=False)
         self._win_isotropy_sum = tf.Variable(0.0, trainable=False)
         self._win_brightness_sum = tf.Variable(0.0, trainable=False)
         self._win_equivariance_sum = tf.Variable(0.0, trainable=False)
@@ -611,7 +612,7 @@ class Trainer:
 
     def _reset_window(self) -> None:
         for var in (self._win_loss_sum, self._win_gnorm_sum, self._win_gnorm_max,
-                    self._win_spike_norm, self._win_isotropy_sum,
+                    self._win_spike_norm, self._win_warmup_peak, self._win_isotropy_sum,
                     self._win_brightness_sum, self._win_equivariance_sum,
                     self._win_steps):
             var.assign(0.0)
@@ -619,7 +620,8 @@ class Trainer:
     def _read_window(self) -> dict:
         """The one host sync per validation window: mean loss, mean / max
         pre-clip |g|, the spike norm (largest post-warmup |g|, non-finite
-        counted as infinite) and the mean isotropy, brightness and
+        counted as infinite), the warmup peak (largest finite |g| of the
+        window's warmup steps) and the mean isotropy, brightness and
         equivariance penalties.
         Resets the accumulators."""
         n = max(float(self._win_steps.numpy()), 1.0)
@@ -628,6 +630,7 @@ class Trainer:
             "gnorm_avg": float(self._win_gnorm_sum.numpy()) / n,
             "gnorm_max": float(self._win_gnorm_max.numpy()),
             "spike_norm": float(self._win_spike_norm.numpy()),
+            "warmup_peak": float(self._win_warmup_peak.numpy()),
             "isotropy": float(self._win_isotropy_sum.numpy()) / n,
             "brightness": float(self._win_brightness_sum.numpy()) / n,
             "equivariance": float(self._win_equivariance_sum.numpy()) / n,
@@ -928,7 +931,17 @@ class Trainer:
             # checkpoint (model + optimiser state) and continue from there.
             # Checking per window instead of per step costs at most one
             # window of re-trained steps on a spike.
-            threshold = spike_threshold(recent_peaks)
+            # Until a window has been accepted there is no baseline. Warmup
+            # (2000) is shorter than a window (5000), so the first window
+            # straddles it: its warmup steps' peak is the member's own early
+            # gradient scale and stands in for the baseline. Against the flat
+            # absolute bar alone, an ICNR member's ordinary early |g| (70-110,
+            # 250-480 with the real-sky equivariance penalty) was a 'spike';
+            # a rolled-back window seeds nothing, so the run went back to
+            # step 0 until its LR was halved away (members 263-267, 11-19).
+            threshold = spike_threshold(
+                recent_peaks if recent_peaks or window["warmup_peak"] <= 0.0
+                else [window["warmup_peak"]])
             if _is_grad_spike(window["spike_norm"], step, threshold):
                 n_rollbacks += 1
                 msg = (f"⚠ gradient spike |g|={window['spike_norm']:.3g} in steps "
@@ -1294,6 +1307,11 @@ class Trainer:
         watched = tf.where(tf.math.is_finite(gnorm), gnorm, float("inf"))
         watched = tf.where(step > GRAD_SPIKE_SKIP_WARMUP_STEPS, watched, 0.0)
         self._win_spike_norm.assign(tf.maximum(self._win_spike_norm, watched))
+        # The member's own early gradient scale: the spike bar of a first
+        # window that straddles the warmup (see the train loop).
+        early = tf.where(tf.math.is_finite(gnorm) & (step <= GRAD_SPIKE_SKIP_WARMUP_STEPS),
+                         gnorm, 0.0)
+        self._win_warmup_peak.assign(tf.maximum(self._win_warmup_peak, early))
 
     def _gradient_step_impl(self, lr, hr, real=None, code=None):
         """Forward, loss, backward, global-norm clip and the Adam update →

@@ -535,6 +535,34 @@ class TestWindowedSpikeGuard:
         assert not [w for w in warnings if "gradient spike" in w]
         assert trainer._lr_scale == 1.0
 
+    def test_a_window_straddling_warmup_is_judged_against_its_warmup_peak(
+            self, tiny_model, tmp_path, monkeypatch):
+        """Warmup (2000) is shorter than a window (5000), so no whole window
+        seeds the baseline and the first one faced the flat absolute bar. An
+        ICNR member's ordinary early |g| (70-110; 250-480 with the real-sky
+        equivariance penalty) is above it, and a rolled-back window never
+        seeds anything, so the run went back to step 0 until the LR was
+        halved away (members 263-267, 11-19). The window's own warmup peak is
+        the baseline until there is one."""
+        monkeypatch.setattr(trainer_module, "GRAD_SPIKE_SKIP_WARMUP_STEPS", 2)
+        monkeypatch.setattr(trainer_module, "GRAD_SPIKE_SKIP_NORM", 1e-12)
+        trainer = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "ckpt"))
+        warnings = []
+        trainer.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                      steps=8, evaluate_every=4, save_best_only=False,
+                      validate_images=2, warn_callback=warnings.append)
+        assert not [w for w in warnings if "gradient spike" in w]
+        assert trainer._lr_scale == 1.0
+
+    def test_the_window_records_its_warmup_peak(self, tiny_model, tmp_path, monkeypatch):
+        monkeypatch.setattr(trainer_module, "GRAD_SPIKE_SKIP_WARMUP_STEPS", 2)
+        trainer = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "ckpt"))
+        lr, hr = _rand_batch()
+        norms = [float(trainer.train_step(lr, hr)[1]) for _ in range(4)]
+        window = trainer._read_window()
+        assert window["warmup_peak"] == pytest.approx(max(norms[:2]), rel=1e-5)
+        assert window["spike_norm"] == pytest.approx(max(norms[2:]), rel=1e-5)
+
     def test_spiked_window_rolls_back_before_validation_and_saving(
             self, tiny_model, tmp_path, monkeypatch):
         """Every post-warmup step 'spikes': each window is caught at its
