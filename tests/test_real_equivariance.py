@@ -7,6 +7,7 @@ import json
 import numpy as np
 import pytest
 import tensorflow as tf
+import tf_keras
 
 from euclid_polish import ensemble as ens_mod
 from euclid_polish.config import Config
@@ -18,14 +19,18 @@ from euclid_polish.sky.observation import q1_mer_tiles
 from euclid_polish.sky.observation.q1_fields import q1_field_for
 from euclid_polish.training.equivariance import (
     D4_ORDER,
+    DEFAULT_RAMP,
     RealEquivariance,
     dihedral,
     dihedral_inverse,
     load_real_tiles,
+    pre_head_view,
+    ramp_weight,
     real_crop_dataset,
     step_code,
 )
 from euclid_polish.training.losses import channel_balanced_loss, lp_loss
+from euclid_polish.training.models.output_knee import LearnedOutputKnee
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import Trainer
 from scripts.build_real_equivariance_tiles import (
@@ -81,9 +86,9 @@ def _mse(a, b):
 def test_penalty_is_zero_for_an_equivariant_upsampler_and_positive_otherwise():
     x = tf.abs(_square(2, side=8, channels=4)) * 100.0
     nearest = tf.keras.Sequential([tf.keras.layers.UpSampling2D(2)])
-    eq = RealEquivariance(lambda v: tf.math.asinh(v), lambda v: v)
+    eq = RealEquivariance(lambda v: tf.math.asinh(v))
     for code in range(1, D4_ORDER):
-        assert float(eq.penalty(nearest, x, _mse, tf.constant(code))) == pytest.approx(0.0, abs=1e-12)
+        assert float(eq.penalty(nearest, x, tf.constant(code))) == pytest.approx(0.0, abs=1e-12)
 
     kernel = np.zeros((3, 3, 4, 4), np.float32)
     for c in range(4):
@@ -92,7 +97,59 @@ def test_penalty_is_zero_for_an_equivariant_upsampler_and_positive_otherwise():
         tf.keras.layers.Conv2D(4, 3, padding="same", use_bias=False,
                                kernel_initializer=tf.constant_initializer(kernel)),
         tf.keras.layers.UpSampling2D(2)])
-    assert float(eq.penalty(lopsided, x, _mse, tf.constant(1))) > 1e-3
+    assert float(eq.penalty(lopsided, x, tf.constant(1))) > 1e-3
+
+
+def _lopsided(head=False, offset=0.0):
+    kernel = np.zeros((3, 3, 4, 4), np.float32)
+    for c in range(4):
+        kernel[0, 2, c, c] = 1.0
+    x_in = tf_keras.Input((None, None, 4))
+    y = tf_keras.layers.Conv2D(4, 3, padding="same",
+                               kernel_initializer=tf.constant_initializer(kernel),
+                               bias_initializer=tf.constant_initializer(offset))(x_in)
+    y = tf_keras.layers.UpSampling2D(2)(y)
+    if head:
+        y = LearnedOutputKnee(init_knee_e=1.0)(y)
+    return tf_keras.Model(x_in, y)
+
+
+def test_the_penalty_is_a_plain_mse_of_the_stretched_output_before_the_knee():
+    """v2 (11-22): the member's balanced loss is a geometric mean over
+    channels, so on the gap between two outputs of one network its gradient
+    stayed O(λ) however small the gap got (|g| 20-130 all run, every step
+    clipped; 266/267 ended 12 dB below the control). A plain MSE of the
+    stretched output gives a small gap a small gradient."""
+    x = tf.abs(_square(5, side=8, channels=4)) * 3.0
+    net = _lopsided(head=True)
+    view = pre_head_view(net)
+    assert view.output.shape[-1] == 4 and view is not net
+    eq = RealEquivariance(lambda v: v)
+    code = tf.constant(5)
+    both = view(tf.concat([x, dihedral(x, code)], 0))
+    expected = tf.reduce_mean(tf.square(both[:2] - dihedral_inverse(both[2:], code)))
+    assert float(eq.penalty(view, x, code)) == pytest.approx(float(expected), rel=1e-6)
+    assert pre_head_view(_lopsided()) is not None      # no head: the output itself
+
+
+def test_the_penalty_sees_past_the_sinh_clip():
+    """Pixels pinned at the head's sinh clip are identical in both branches
+    in electrons, which made saturation a free way to satisfy v1. Before the
+    head they still differ."""
+    x = tf.abs(_square(6, side=8, channels=4))
+    net = _lopsided(head=True, offset=100.0)                # every y far past ±20
+    out = net(tf.concat([x, dihedral(x, tf.constant(1))], 0))
+    assert np.array_equal(out[:2].numpy(), dihedral_inverse(out[2:], tf.constant(1)).numpy())
+    eq = RealEquivariance(lambda v: v)
+    assert float(eq.penalty(pre_head_view(net), x, tf.constant(1))) > 1e-3
+
+
+def test_the_weight_ramps_in_linearly():
+    w = [float(ramp_weight(tf.constant(s), 2.0, 10, 20)) for s in (0, 10, 15, 20, 99)]
+    assert w == [0.0, 0.0, 1.0, 2.0, 2.0]
+    assert [float(ramp_weight(tf.constant(s), 2.0, 10, 10)) for s in (9, 10)] == [0.0, 2.0]
+    assert float(ramp_weight(tf.constant(0), 2.0, 0, 0)) == 2.0
+    assert DEFAULT_RAMP == (0.2, 0.4)
 
 
 def test_crops_are_seeded_even_aligned_and_from_the_tiles(tmp_path):
@@ -141,12 +198,26 @@ def _batches(seed=0):
     return lr, hr, real
 
 
-def _trainer(path, *, weight=None, steps_per_call=1):
-    eq = None if weight is None else RealEquivariance(lambda v: v, lambda v: v)
+def _trainer(path, *, weight=None, steps_per_call=1, ramp=(0, 0)):
+    eq = None if weight is None else RealEquivariance(lambda v: v)
     return Trainer(_electron_model(), loss=_mse, checkpoint_dir=str(path), learning_rate=1e-3,
                    output_electrons=True, batch_stretch=lambda lr, hr: (lr, hr),
                    equivariance=eq, equivariance_weight=weight or 0.0,
-                   steps_per_call=steps_per_call)
+                   equivariance_ramp=ramp, steps_per_call=steps_per_call)
+
+
+def test_before_the_ramp_the_penalty_is_neither_applied_nor_logged(tmp_path):
+    lr, hr, real = _batches()
+    plain, late = _trainer(tmp_path / "p"), _trainer(tmp_path / "l", weight=1.0, ramp=(5, 8))
+    for _ in range(3):
+        plain.train_step(lr, hr)
+        late.train_step(lr, hr, real)
+    for a, b in zip(plain.model.get_weights(), late.model.get_weights(), strict=True):
+        np.testing.assert_array_equal(a, b)
+    assert late._read_window()["equivariance"] == 0.0
+    for _ in range(4):
+        late.train_step(lr, hr, real)
+    assert late._read_window()["equivariance"] > 0.0
 
 
 def test_the_trainer_adds_the_penalty_to_the_gradient_not_to_the_logged_loss(tmp_path):
@@ -172,13 +243,14 @@ def test_the_compiled_step_reads_no_host_memory_variable(tmp_path):
     code must come in as an argument, so the compiled gradient step captures
     no int32 variable."""
     lr, hr, real = _batches(2)
-    eq = RealEquivariance(lambda v: v, lambda v: v)
+    eq = RealEquivariance(lambda v: v)
     trainer = Trainer(_electron_model(), loss=_mse, checkpoint_dir=str(tmp_path / "x"),
                       learning_rate=1e-3, output_electrons=True,
                       batch_stretch=lambda lr, hr: (lr, hr), equivariance=eq,
                       equivariance_weight=1.0, jit_compile=True)
     trainer.train_step(lr, hr, real)
-    traced = trainer._gradient_step.get_concrete_function(lr, hr, real, tf.constant(1))
+    traced = trainer._gradient_step.get_concrete_function(lr, hr, real, tf.constant(1),
+                                                          tf.constant(1.0))
     captured = [t for t in traced.captured_inputs if t.dtype == tf.resource]
     int32 = [v.name for v in trainer.checkpoint.model.variables + [trainer.checkpoint.step]
              if v.dtype == tf.int32 and any(v.handle is t for t in captured)]
@@ -195,7 +267,7 @@ def test_multi_step_calls_take_three_element_batches(tmp_path):
 
 
 def test_the_trainer_validates_the_penalty(tmp_path):
-    eq = RealEquivariance(lambda v: v, lambda v: v)
+    eq = RealEquivariance(lambda v: v)
     with pytest.raises(ValueError, match="electrons"):
         Trainer(_electron_model(), checkpoint_dir=str(tmp_path / "a"), equivariance=eq,
                 equivariance_weight=1.0)
@@ -218,6 +290,10 @@ def test_model_train_validates_the_knob(tmp_path):
                       forward_onthefly=True)
     with pytest.raises(ValueError, match="non-negative"):
         learned.train("missing_lr", "missing_hr", steps=1, real_equivariance=-1.0)
+    with pytest.raises(ValueError, match="ramp"):
+        learned.train("missing_lr", "missing_hr", steps=1, real_equivariance=1.0,
+                      real_equivariance_tiles="t.npy", forward_onthefly=True,
+                      real_equivariance_ramp=(0.6, 0.4))
     fixed = Model(str(tmp_path / "f"), scale=2, num_res_blocks=1, asinh_knees=KNEES, output_knee=10.0)
     with pytest.raises(ValueError, match="learned-output-knee"):
         fixed.train("missing_lr", "missing_hr", steps=1, real_equivariance=1.0,
@@ -246,10 +322,13 @@ def _specs(tmp_path, member, name="b"):
 def test_the_knob_from_member_spec_origin_and_continue(tmp_path, monkeypatch):
     member = {"asinh_knees": list(KNEES), "learn_output_knee": True, "forward_onthefly": True,
               "real_equivariance": 1.0, "real_equivariance_tiles": "real/edf_fs.npy",
-              "real_equivariance_batch": 2}
+              "real_equivariance_batch": 2, "real_equivariance_ramp": [0.8, 0.9]}
     spec = _specs(tmp_path, member)[0]
     assert (spec.real_equivariance, spec.real_equivariance_tiles, spec.real_equivariance_batch) == (
         1.0, "real/edf_fs.npy", 2)
+    assert spec.real_equivariance_ramp == (0.8, 0.9)
+    plain_ramp = {k: v for k, v in member.items() if k != "real_equivariance_ramp"}
+    assert _specs(tmp_path, plain_ramp, "dr")[0].real_equivariance_ramp is None
     off = _specs(tmp_path, {"asinh_knees": list(KNEES), "learn_output_knee": True}, "b0")[0]
     assert (off.real_equivariance, off.real_equivariance_tiles, off.real_equivariance_batch) == (
         0.0, None, None)
@@ -257,6 +336,9 @@ def test_the_knob_from_member_spec_origin_and_continue(tmp_path, monkeypatch):
                 {**member, "real_equivariance": True},
                 {**member, "real_equivariance_tiles": None},
                 {**member, "real_equivariance_batch": 0.5},
+                {**member, "real_equivariance_ramp": [0.9, 0.8]},
+                {**member, "real_equivariance_ramp": [0.5, 1.5]},
+                {**member, "real_equivariance_ramp": [0.5]},
                 {**member, "forward_onthefly": False},
                 {**member, "learn_output_knee": False},
                 {"asinh_knees": list(KNEES), "learn_output_knee": True, "forward_onthefly": True,
@@ -271,19 +353,24 @@ def test_the_knob_from_member_spec_origin_and_continue(tmp_path, monkeypatch):
               "forward_onthefly": True}
     ens.train_members("lr", "hr", [
         MemberTrainSpec(name="member_401", real_equivariance=1.0,
-                        real_equivariance_tiles="real/edf_fs.npy", real_equivariance_batch=2, **common),
+                        real_equivariance_tiles="real/edf_fs.npy", real_equivariance_batch=2,
+                        real_equivariance_ramp=(0.8, 0.9), **common),
         MemberTrainSpec(name="member_402", **common)])
     origin = json.loads((base / "member_401" / "origin.json").read_text())
     assert (origin["real_equivariance"], origin["real_equivariance_tiles"],
             origin["real_equivariance_batch"]) == (1.0, "real/edf_fs.npy", 2)
+    assert origin["real_equivariance_ramp"] == [0.8, 0.9]
+    assert origin["real_equivariance_form"] == "pre_head_mse"
     assert "real_equivariance" not in json.loads((base / "member_402" / "origin.json").read_text())
     assert ens._models[0].trained["real_equivariance"] == 1.0
     assert ens._models[0].trained["real_equivariance_tiles"] == "real/edf_fs.npy"
     assert ens._models[0].trained["real_equivariance_batch"] == 2
+    assert ens._models[0].trained["real_equivariance_ramp"] == (0.8, 0.9)
     assert "real_equivariance" not in ens._models[1].trained
     kept = _continue_identity("member_401", str(base / "member_401"), {}, {})
     assert (kept["real_equivariance"], kept["real_equivariance_tiles"],
             kept["real_equivariance_batch"]) == (1.0, "real/edf_fs.npy", 2)
+    assert kept["real_equivariance_ramp"] == (0.8, 0.9)
     assert "real_equivariance" not in _continue_identity("member_402", str(base / "member_402"), {}, {})
 
 
@@ -339,6 +426,7 @@ def test_a_live_member_trains_with_the_penalty_end_to_end(tmp_path, capsys, fast
             jit_compile=fast, mixed_precision=fast)
     out = capsys.readouterr().out
     assert "real-sky equivariance: λ=1, 2 × 32² LR crops/step from 3 tiles" in out
+    assert "ramped in over 20–40% of the run (steps 1→2)" in out
     assert "equivariance penalty" in out
 
 

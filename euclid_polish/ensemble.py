@@ -45,6 +45,8 @@ from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.model import Model, _checkpoint_exists
 from euclid_polish.provenance.gitinfo import capture_git
+from euclid_polish.training.equivariance import DEFAULT_RAMP as EQUIVARIANCE_DEFAULT_RAMP
+from euclid_polish.training.equivariance import FORM as EQUIVARIANCE_FORM
 from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
@@ -231,11 +233,14 @@ class MemberTrainSpec:
     #: Weight λ of the real-sky dihedral equivariance penalty
     #: (``training.equivariance``) on random crops of the real LR tiles in
     #: ``real_equivariance_tiles`` (a ``.npy``), ``real_equivariance_batch``
-    #: crops per step (``None`` = the training batch). 0 = off. Recorded in
-    #: origin.json; continue keeps all three.
+    #: crops per step (``None`` = the training batch), λ ramped in over the
+    #: ``real_equivariance_ramp`` (start, full) fractions of the run
+    #: (``None`` = ``training.equivariance.DEFAULT_RAMP``). 0 = off. Recorded
+    #: in origin.json with the penalty's form; continue keeps them.
     real_equivariance: float = 0.0
     real_equivariance_tiles: str | None = None
     real_equivariance_batch: int | None = None
+    real_equivariance_ramp: tuple[float, float] | None = None
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
     #: Faster training steps (see ``Model.train``): XLA-compile the gradient
@@ -581,6 +586,9 @@ class EnsembleModel:
                     origin["real_equivariance_tiles"] = str(spec.real_equivariance_tiles)
                     if spec.real_equivariance_batch:
                         origin["real_equivariance_batch"] = int(spec.real_equivariance_batch)
+                    origin["real_equivariance_ramp"] = [float(v) for v in (
+                        spec.real_equivariance_ramp or EQUIVARIANCE_DEFAULT_RAMP)]
+                    origin["real_equivariance_form"] = EQUIVARIANCE_FORM
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval
@@ -619,6 +627,9 @@ class EnsembleModel:
                 member_train_kwargs["real_equivariance_tiles"] = str(spec.real_equivariance_tiles)
                 if spec.real_equivariance_batch:
                     member_train_kwargs["real_equivariance_batch"] = int(spec.real_equivariance_batch)
+                if spec.real_equivariance_ramp:
+                    member_train_kwargs["real_equivariance_ramp"] = tuple(
+                        float(v) for v in spec.real_equivariance_ramp)
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"

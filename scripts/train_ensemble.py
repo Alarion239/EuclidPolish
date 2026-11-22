@@ -321,6 +321,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--real-equivariance-batch", type=int, default=None,
                    help="Real crops per step (default: the training batch). "
                         "Member-spec key: real_equivariance_batch.")
+    p.add_argument("--real-equivariance-ramp", default=None,
+                   help="'start,full': fractions of the run over which the "
+                        "equivariance λ ramps in from 0 (default 0.2,0.4). "
+                        "Member-spec key: real_equivariance_ramp ([start, full]).")
     p.add_argument("--loss-knees", default=None,
                    help="Comma-separated knees (e⁻) a single-image multi-knee "
                         "member is SCORED at — a subset of the knees it reads "
@@ -531,7 +535,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "isotropy_penalty", "isotropy_knee", "isotropy_scales", "isotropy_per_batch",
                "isotropy_tolerance",
                "real_equivariance", "real_equivariance_tiles", "real_equivariance_batch",
-               "output_knee", "learn_output_knee", "xla", "bf16"}
+               "real_equivariance_ramp", "output_knee", "learn_output_knee", "xla", "bf16"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -680,6 +684,24 @@ def _isotropy_tolerance(value, penalty: float) -> float | None:
     return tolerance
 
 
+def _real_equivariance_ramp(value) -> tuple[float, float] | None:
+    """``real_equivariance_ramp`` ([start, full] or 'start,full') → two
+    fractions ``0 <= start <= full <= 1``; ``None`` = the default ramp."""
+    if value in (None, ""):
+        return None
+    parts = value.split(",") if isinstance(value, str) else value
+    try:
+        ramp = tuple(float(v) for v in parts)
+    except (TypeError, ValueError) as exc:
+        print(f"✗ real_equivariance_ramp must be two fractions [start, full], got {value!r}")
+        raise SystemExit(2) from exc
+    if len(ramp) != 2 or not 0.0 <= ramp[0] <= ramp[1] <= 1.0:
+        print(f"✗ real_equivariance_ramp must be two fractions 0 <= start <= full <= 1, "
+              f"got {value!r}")
+        raise SystemExit(2)
+    return ramp
+
+
 def _real_equivariance(weight, tiles, batch, *, learn: bool, onthefly: bool,
                        ) -> tuple[float, str | None, int | None]:
     """``real_equivariance`` / ``_tiles`` / ``_batch`` → a non-negative
@@ -823,6 +845,11 @@ def _diversity_kwargs(args, over: dict) -> dict:
         over.get("real_equivariance_tiles", args.real_equivariance_tiles),
         over.get("real_equivariance_batch", args.real_equivariance_batch),
         learn=bool(learn), onthefly=bool(over.get("forward_onthefly", args.forward_onthefly)))
+    real_equivariance_ramp = _real_equivariance_ramp(
+        over.get("real_equivariance_ramp", args.real_equivariance_ramp))
+    if real_equivariance_ramp and not real_equivariance:
+        print("✗ real_equivariance_ramp needs a real_equivariance")
+        raise SystemExit(2)
     lupton = _flag(over.get("lupton_loss", args.lupton_loss), "lupton_loss")
     brightness = _flag(over.get("brightness_consistency", args.brightness_consistency),
                        "brightness_consistency")
@@ -881,6 +908,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "real_equivariance": real_equivariance,
             "real_equivariance_tiles": real_equivariance_tiles,
             "real_equivariance_batch": real_equivariance_batch,
+            "real_equivariance_ramp": real_equivariance_ramp,
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
             "forward_onthefly": bool(over.get("forward_onthefly",
@@ -985,6 +1013,9 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
                           ("real_equivariance_batch", int)):
             if key not in override and origin.get(key) is not None:
                 identity[key] = cast(origin[key])
+        if "real_equivariance_ramp" not in override and origin.get("real_equivariance_ramp"):
+            identity["real_equivariance_ramp"] = tuple(
+                float(v) for v in origin["real_equivariance_ramp"])
     # A member created with faster steps keeps them (a member-spec xla/bf16
     # false turns one off).
     for key, field in (("xla", "jit_compile"), ("bf16", "mixed_precision")):
@@ -1279,6 +1310,8 @@ def main() -> int:
             knobs += (f" real_equivariance={s.real_equivariance:g}"
                       f"({os.path.basename(str(s.real_equivariance_tiles))}"
                       + (f", {s.real_equivariance_batch}/step" if s.real_equivariance_batch else "")
+                      + (", ramp {:g}→{:g}".format(*s.real_equivariance_ramp)
+                         if s.real_equivariance_ramp else "")
                       + ")")
         if s.bootstrap:
             knobs += f" bootstrap={s.bootstrap:g}"

@@ -10,13 +10,26 @@ orientation spread is 1.05–1.2× the synthetic one (1.3–3× in NISP above
 
 This penalty asks for it during training, on unlabeled real LR crops::
 
-    a = f(x)            b = g⁻¹·f(g·x)
-    penalty = loss(a, stretch(b))
+    a = y(x)            b = g⁻¹·y(g·x)
+    penalty = mean((a − b)²)
 
-with the member's own reconstruction loss, so the weight is in units of the
-supervised loss. Both branches carry gradients (neither is a fixed target),
-and one forward pass evaluates both (``[x, g·x]`` stacked on the batch).
-``g`` cycles through the seven non-identity elements, one per step.
+``y`` is the network's stretched output before the learned-knee head (the
+electrons are ``k·sinh(clip(y, ±20))``). Both branches carry gradients
+(neither is a fixed target), and one forward pass evaluates both
+(``[x, g·x]`` stacked on the batch). ``g`` cycles through the seven
+non-identity elements, one per step. The weight ramps in linearly over a
+stretch of the run (:func:`ramp_weight`), after the member has learned the
+supervised task; before the ramp the extra forward pass is skipped.
+
+Why this form (v2, 11-22). v1 scored ``f(x)`` against ``g⁻¹·f(g·x)`` in
+electrons with the member's own loss, from step 0, and broke both 100k runs
+(266/267: 37 dB against the control's 49.5). The balanced loss is a geometric
+mean over band × knee channels, so on the gap between two outputs of one
+network its gradient stays O(λ) however small the gap gets: |g| sat at
+20–130 all run and every step was clipped, starving the supervised loss.
+And in electrons, pixels pinned at the head's sinh clip are identical in both
+branches, so saturating was a free way to satisfy it. A plain MSE of ``y``
+gives a small gap a small gradient and sees past the clip.
 
 Why it cannot move the optimum: training draws PSF orientations at random
 and applies a uniform dihedral augmentation, so the best estimator for the
@@ -41,6 +54,16 @@ import tensorflow as tf
 
 #: Number of D4 elements; codes 1..7 are the non-identity ones.
 D4_ORDER = 8
+
+#: Default ramp of the penalty's weight, as fractions of the run's steps:
+#: zero until 20%, linear to the full λ at 40%. The member learns the
+#: supervised task first; the penalty then only removes orientation-
+#: dependent error.
+DEFAULT_RAMP = (0.2, 0.4)
+
+#: The penalty's form, recorded in origin.json (v1 had none: the member's
+#: loss on electrons).
+FORM = "pre_head_mse"
 
 
 def _bits(code: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
@@ -75,35 +98,51 @@ def step_code(step: tf.Tensor) -> tf.Tensor:
     return tf.cast(1 + tf.math.floormod(tf.cast(step, tf.int64), D4_ORDER - 1), tf.int32)
 
 
+def ramp_weight(step: tf.Tensor, weight: float, start: int, full: int) -> tf.Tensor:
+    """The penalty's weight at ``step``: 0 until ``start``, linear to
+    ``weight`` at ``full``, then ``weight`` (``full <= start``: a step)."""
+    step = tf.cast(step, tf.float32)
+    if int(full) > int(start):
+        frac = tf.clip_by_value((step - float(start)) / float(int(full) - int(start)), 0.0, 1.0)
+    else:
+        frac = tf.cast(step >= float(start), tf.float32)
+    return tf.constant(float(weight), tf.float32) * frac
+
+
+def pre_head_view(model: tf.keras.Model) -> tf.keras.Model:
+    """``model`` up to its learned-knee head: the stretched output ``y``
+    (shares the variables). A model without a head is its own view."""
+    head = model.layers[-1]
+    if type(head).__name__ != "LearnedOutputKnee":
+        return model
+    return type(model)(model.inputs, head.input, name=f"{model.name}_pre_head")
+
+
 class RealEquivariance:
-    """``loss(f(x), stretch(g⁻¹·f(g·x)))`` on stretched real LR crops.
+    """``mean((y(x) − g⁻¹·y(g·x))²)`` on stretched real LR crops, ``y`` the
+    network's output before its learned-knee head (:func:`pre_head_view`).
 
     ``input_stretch`` turns a raw-electron real batch into the network's input
-    (the member's LR stretch); ``target_stretch`` turns an electron
-    prediction into the loss's target format (the member's HR stretch).
+    (the member's LR stretch).
     """
 
-    def __init__(self, input_stretch: Callable[[tf.Tensor], tf.Tensor],
-                 target_stretch: Callable[[tf.Tensor], tf.Tensor], *,
-                 source: str = ""):
+    def __init__(self, input_stretch: Callable[[tf.Tensor], tf.Tensor], *, source: str = ""):
         self._input_stretch = input_stretch
-        self._target_stretch = target_stretch
         self.source = str(source)
 
-    def penalty(self, model: tf.keras.Model, real_e: tf.Tensor,
-                loss: Callable[[tf.Tensor, tf.Tensor], tf.Tensor],
-                code: tf.Tensor) -> tf.Tensor:
-        """The penalty for one batch of raw-electron real crops ``(N, S, S, C)``."""
+    def penalty(self, net: tf.keras.Model, real_e: tf.Tensor, code: tf.Tensor) -> tf.Tensor:
+        """The penalty for one batch of raw-electron real crops ``(N, S, S, C)``;
+        ``net`` gives the stretched output (a :func:`pre_head_view`)."""
         x = self._input_stretch(real_e)
         n = tf.shape(x)[0]
-        both = model(tf.concat([x, dihedral(x, code)], axis=0), training=True)
-        direct = both[:n]
-        turned_back = dihedral_inverse(both[n:], code)
-        return loss(direct, self._target_stretch(turned_back))
+        both = tf.cast(net(tf.concat([x, dihedral(x, code)], axis=0), training=True), tf.float32)
+        gap = both[:n] - dihedral_inverse(both[n:], code)
+        return tf.reduce_mean(tf.square(gap))
 
     def describe(self) -> str:
-        return ("f(g·x) = g·f(x) on real crops, member loss, g = D4 element "
-                "1..7 by step" + (f", from {self.source}" if self.source else ""))
+        return ("f(g·x) = g·f(x) on real crops: MSE of the stretched output before the "
+                "knee head, g = D4 element 1..7 by step"
+                + (f", from {self.source}" if self.source else ""))
 
 
 # --------------------------------------------------------------------------- #

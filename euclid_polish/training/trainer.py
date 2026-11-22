@@ -27,7 +27,12 @@ from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import ConfigSnapshot, Process, Stamp
 from euclid_polish.training.brightness import BrightnessConsistency
-from euclid_polish.training.equivariance import RealEquivariance, step_code
+from euclid_polish.training.equivariance import (
+    RealEquivariance,
+    pre_head_view,
+    ramp_weight,
+    step_code,
+)
 from euclid_polish.training.inference import infer_checkpoint_asinh_knee
 from euclid_polish.training.isotropy import MultiScaleIsotropy, ResidualIsotropy
 from euclid_polish.training.models.common import evaluate
@@ -256,6 +261,7 @@ class Trainer:
         brightness: BrightnessConsistency | None = None,
         equivariance: RealEquivariance | None = None,
         equivariance_weight: float = 0.0,
+        equivariance_ramp: tuple[int, int] = (0, 0),
     ):
         """
         Initialize the trainer.
@@ -348,7 +354,13 @@ class Trainer:
             LR crops each batch then carries as a third element. Needs a
             model that outputs electrons.
         equivariance_weight : float
-            λ of the equivariance penalty, in units of the supervised loss.
+            Full λ of the equivariance penalty (an MSE of the stretched
+            output, see :class:`RealEquivariance`).
+        equivariance_ramp : (int, int)
+            Steps over which λ ramps in linearly from 0
+            (:func:`~euclid_polish.training.equivariance.ramp_weight`);
+            ``(0, 0)`` = the full λ from the start. Before the ramp the
+            penalty's forward pass is skipped.
         """
         self.now = None
         self._batch_stretch = batch_stretch
@@ -368,6 +380,12 @@ class Trainer:
             raise ValueError(f"equivariance_weight must be non-negative, got {equivariance_weight!r}")
         self._equivariance = equivariance
         self._equivariance_weight = float(equivariance_weight)
+        start, full = (int(v) for v in equivariance_ramp)
+        if not 0 <= start <= full:
+            raise ValueError(f"equivariance_ramp must be 0 <= start <= full, got {equivariance_ramp!r}")
+        self._equivariance_ramp = (start, full)
+        # The penalty scores the stretched output before a learned-knee head.
+        self._equivariance_net = None if equivariance is None else pre_head_view(model)
         if int(steps_per_call) < 1:
             raise ValueError(f"steps_per_call must be at least 1, got {steps_per_call!r}")
         self._steps_per_call = int(steps_per_call)
@@ -868,8 +886,9 @@ class Trainer:
             tqdm.write("  brightness consistency: × stop_gradient(loss), "
                        + self._brightness.describe())
         if self._equivariance is not None:
-            tqdm.write(f"  real-sky equivariance: λ={self._equivariance_weight:g}, "
-                       + self._equivariance.describe())
+            start, full = self._equivariance_ramp
+            tqdm.write(f"  real-sky equivariance: λ={self._equivariance_weight:g} "
+                       f"(ramp steps {start}→{full}), " + self._equivariance.describe())
 
         self.now = time.perf_counter()
         n_rollbacks = 0   # rollbacks since the last LR halving
@@ -1061,7 +1080,8 @@ class Trainer:
             if self._brightness is not None:
                 status += f", brightness penalty {window['brightness']:.4g}"
             if self._equivariance is not None:
-                status += f", equivariance penalty {window['equivariance']:.4g}"
+                lam = float(ramp_weight(step, self._equivariance_weight, *self._equivariance_ramp))
+                status += f", equivariance penalty {window['equivariance']:.4g} (λ {lam:.3g})"
             tqdm.write(status)
 
             # Persist for later plotting. Append-only CSV so each row
@@ -1280,8 +1300,17 @@ class Trainer:
         # gradient step: the int32 step counter lives in host memory, which an
         # XLA step on a GPU cannot read.
         code = step_code(self.checkpoint.step)
-        loss_value, gnorm, isotropy, brightness, equivariance = self._gradient_step(
-            lr, hr, real, code)
+        lam = ramp_weight(self.checkpoint.step, self._equivariance_weight, *self._equivariance_ramp)
+        if self._equivariance is not None and real is not None:
+            # Two compiled steps, chosen here outside XLA (which cannot
+            # compile the model call inside a cond): before the ramp the
+            # penalty's forward pass is skipped.
+            outputs = tf.cond(lam > 0.0,
+                              lambda: self._gradient_step(lr, hr, real, code, lam),
+                              lambda: self._gradient_step(lr, hr, None, code, lam))
+        else:
+            outputs = self._gradient_step(lr, hr, real, code, lam)
+        loss_value, gnorm, isotropy, brightness, equivariance = outputs
 
         # Step counter and window statistics stay on the device; the training
         # loop reads them once per validation window. The counter waits for
@@ -1313,13 +1342,14 @@ class Trainer:
                          gnorm, 0.0)
         self._win_warmup_peak.assign(tf.maximum(self._win_warmup_peak, early))
 
-    def _gradient_step_impl(self, lr, hr, real=None, code=None):
+    def _gradient_step_impl(self, lr, hr, real=None, code=None, lam=None):
         """Forward, loss, backward, global-norm clip and the Adam update →
         ``(loss, pre-clip gradient norm, isotropy penalty, brightness
         penalty, equivariance penalty)``; the loss excludes the penalties,
         the gradient includes them. ``real`` (raw-electron real LR crops)
         feeds the equivariance penalty with the D4 element ``code``
-        (:func:`step_code`); ``real=None`` skips it."""
+        (:func:`step_code`) at weight ``lam`` (:func:`ramp_weight`);
+        ``real=None`` skips it."""
         hr_electrons = hr
         if self._batch_stretch is not None:
             lr, hr = self._batch_stretch(lr, hr)
@@ -1338,11 +1368,10 @@ class Trainer:
                 objective = objective + tf.stop_gradient(loss_value) * brightness
             equivariance = tf.constant(0.0)
             if self._equivariance is not None and real is not None:
-                if code is None:
-                    raise ValueError("the equivariance penalty needs the D4 code")
-                equivariance = self._equivariance.penalty(
-                    self.checkpoint.model, real, self.loss, code)
-                objective = objective + self._equivariance_weight * equivariance
+                if code is None or lam is None:
+                    raise ValueError("the equivariance penalty needs the D4 code and its weight")
+                equivariance = self._equivariance.penalty(self._equivariance_net, real, code)
+                objective = objective + lam * equivariance
 
         gradients = tape.gradient(objective, self.checkpoint.model.trainable_variables)
         gradients, gnorm = tf.clip_by_global_norm(

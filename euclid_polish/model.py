@@ -40,6 +40,12 @@ from euclid_polish.training.brightness import (
     core_kernel,
 )
 from euclid_polish.training.equivariance import (
+    DEFAULT_RAMP as EQUIVARIANCE_DEFAULT_RAMP,
+)
+from euclid_polish.training.equivariance import (
+    FORM as EQUIVARIANCE_FORM,
+)
+from euclid_polish.training.equivariance import (
     RealEquivariance,
     load_real_tiles,
     real_crop_dataset,
@@ -640,6 +646,7 @@ class Model:
         real_equivariance: float = 0.0,
         real_equivariance_tiles: str | None = None,
         real_equivariance_batch: int | None = None,
+        real_equivariance_ramp: tuple[float, float] | None = None,
         jit_compile: bool = False,
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
@@ -716,9 +723,13 @@ class Model:
         on random crops of the real Euclid LR tiles in
         ``real_equivariance_tiles`` (``(N, S, S, 4)`` float32 electrons,
         ``.npy``), the SR of a flipped/rotated crop must be the flipped/rotated
-        SR, scored by this member's own loss. ``real_equivariance_batch`` real
-        crops per step (``None`` → ``batch_size``), each the training crop's
-        LR size. Needs a learned-output-knee member on the live forward.
+        SR, scored as a plain MSE of the stretched output before the knee
+        head. ``real_equivariance_batch`` real crops per step (``None`` →
+        ``batch_size``), each the training crop's LR size.
+        ``real_equivariance_ramp`` (start, full) fractions of ``steps`` over
+        which λ ramps in from 0 (``None`` →
+        ``training.equivariance.DEFAULT_RAMP``, 20%→40%). Needs a
+        learned-output-knee member on the live forward.
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
@@ -743,6 +754,10 @@ class Model:
         if real_equivariance and not real_equivariance_tiles:
             raise ValueError("real_equivariance needs real_equivariance_tiles (a .npy of real "
                              "LR tiles)")
+        ramp = tuple(float(v) for v in (real_equivariance_ramp or EQUIVARIANCE_DEFAULT_RAMP))
+        if len(ramp) != 2 or not 0.0 <= ramp[0] <= ramp[1] <= 1.0:
+            raise ValueError(f"real_equivariance_ramp must be two fractions 0 <= start <= full "
+                             f"<= 1, got {real_equivariance_ramp!r}")
         scales = canonical_scales(isotropy_scales or DEFAULT_ISOTROPY_SCALES)
         if isotropy_penalty and max(scale[0] for scale in scales) > int(hr_crop_size):
             raise ValueError(f"isotropy windows {[int(s[0]) for s in scales]} must fit the "
@@ -812,6 +827,7 @@ class Model:
                 target_fwhm_arcsec=target_fwhm)
 
         equivariance = None
+        equivariance_ramp = (0, 0)
         equivariance_fields: dict[str, object] = {}
         if real_equivariance:
             tiles = load_real_tiles(str(real_equivariance_tiles))
@@ -825,17 +841,20 @@ class Model:
             knee, knees = self._asinh_knee, self._asinh_knees
             equivariance = RealEquivariance(
                 lambda lr: stretch_pair(lr, lr, knee=knee, knees=knees)[0],
-                lambda hr: stretch_pair(hr, hr, knee=knee, knees=knees)[1],
                 source=_os.path.basename(str(real_equivariance_tiles)))
+            equivariance_ramp = (round(ramp[0] * int(steps)), round(ramp[1] * int(steps)))
             equivariance_fields = {
                 "real_equivariance": float(real_equivariance),
                 "real_equivariance_tiles": str(real_equivariance_tiles),
                 "real_equivariance_n_tiles": int(tiles.shape[0]),
                 "real_equivariance_batch": real_batch,
+                "real_equivariance_ramp": list(ramp),
+                "real_equivariance_form": EQUIVARIANCE_FORM,
             }
             print(f"  real-sky equivariance: λ={float(real_equivariance):g}, {real_batch} × "
                   f"{real_crop}² LR crops/step from {int(tiles.shape[0])} tiles "
-                  f"({real_equivariance_tiles})")
+                  f"({real_equivariance_tiles}), ramped in over {ramp[0] * 100:g}–{ramp[1] * 100:g}% "
+                  f"of the run (steps {equivariance_ramp[0]}→{equivariance_ramp[1]})")
 
         valid_ds = self._build_training_pipeline(
             valid_lr_path, valid_hr_path, batch_size, augment=False,
@@ -954,7 +973,8 @@ class Model:
                           isotropy_weight=float(isotropy_penalty),
                           brightness=brightness,
                           equivariance=equivariance,
-                          equivariance_weight=float(real_equivariance))
+                          equivariance_weight=float(real_equivariance),
+                          equivariance_ramp=equivariance_ramp)
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):
