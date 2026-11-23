@@ -159,6 +159,7 @@ WX, WY = off(WIN_RA, WIN_DEC)
 WIN_TL = (WX - WIN_W / 2 + 0.03 * WIN_H, WY + WIN_H / 2 - 0.03 * WIN_H)
 BOX_LABEL = 0.035 * SIDE["dss"]              # one physical size for every box label on the card
 WIN_LABEL = 0.075 * WIN_H
+SPACE_LABEL = 0.95                           # Hubble / JWST box labels, arcsec: readable at the zoom window (two lines)
 INSET = 52.0                                 # inset page side, arcsec: just covers the 50.4" x 28.35" window
 CHROMA = {"ground": 1.0, "euclid": 0.25}     # colour-only smoothing of the insets, arcsec (at or below each PSF)
 OUTLINE = 2.5                                # box outline on the DSS2 page, points; same width on the card for all
@@ -249,8 +250,8 @@ def space(inst):
     planes = [resample(a, w, GRA, GDEC, 0.03, s) for a, w in L.bands(inst)]
     med, white = stretch(planes, inst)
     img = colour(planes, med, white, L.INST[inst][3])
-    pad = 0.035 * s
-    page(inst, s, [(img, GRA, GDEC, s, s)], [(f"{name} · {area} · {psf}", -s / 2 + pad, s / 2 - pad, 0.055 * s)],
+    pad = 0.45                                                # arcsec; both space boxes share one label size
+    page(inst, s, [(img, GRA, GDEC, s, s)], [(f"{name} · {psf}\n{area}", -s / 2 + pad, s / 2 - pad, SPACE_LABEL)],
          outline=0.08 / s * 720)                             # 0.08" wide: visible at the zoom window
 
 
