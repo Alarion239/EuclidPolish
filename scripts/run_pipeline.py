@@ -90,6 +90,7 @@ from euclid_polish.sky.generation.source_catalog import (
     concat_source_csvs,
     read_sources,
 )
+from euclid_polish.sky.observation.blank_pixels import blank_pixel_releases
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -182,10 +183,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "displacement field in HR pixels (default 3).")
     ap.add_argument("--saturation-mask-prob", type=float,
                     default=Config.TRAIN_SATURATION_MASK_PROB,
-                    help="Probability that an above-well source receives a "
-                         "dark rectangular core in generated train, "
-                         "validate, and test data. Default 0.2; capped at "
-                         "0.5 so intact bright cores remain common.")
+                    help="Only with --blank-pixels off: probability that an "
+                         "above-well source receives a dark rectangular core "
+                         "in generated train, validate, and test data. "
+                         "Default 0.2; capped at 0.5 so intact bright cores "
+                         "remain common.")
+    ap.add_argument("--blank-pixels", default=Config.TRAIN_BLANK_PIXELS,
+                    choices=blank_pixel_releases() + ("off",),
+                    help="Blank (zero) the pixels no exposure of the stack "
+                         "measured in generated train, validate, and test "
+                         "data — persistence masks, cosmic rays, bad pixels, "
+                         "bright star cores — at this release's measured "
+                         f"rates (default {Config.TRAIN_BLANK_PIXELS}, as in "
+                         "live training). 'off' keeps the rectangular "
+                         "saturation blackout of the record sets made before "
+                         "2026-11-22.")
     ap.add_argument("--records-dir",    default=Config.RECORDS_DIR_V2)
     ap.add_argument("--checkpoint-dir", default=Config.DEFAULT_CHECKPOINT_DIR)
     ap.add_argument("--ntrain",         type=int, default=6400)
@@ -575,6 +587,12 @@ def _observation_config_from_args(
             "saturation_mask_prob must be in [0, "
             f"{Config.TRAIN_SATURATION_MASK_PROB_MAX:g}] for training data"
         )
+    blank_pixels = getattr(args, "blank_pixels", Config.TRAIN_BLANK_PIXELS) or "off"
+    if blank_pixels not in blank_pixel_releases() + ("off",):
+        raise ValueError(
+            f"blank_pixels must be one of {blank_pixel_releases()} or 'off', "
+            f"got {blank_pixels!r}"
+        )
     return ObservationSimulatorConfig(
         add_noise=True,
         psf_warp_prob=float(getattr(
@@ -584,7 +602,22 @@ def _observation_config_from_args(
         psf_warp_sigma=float(getattr(
             args, "psf_warp_sigma", Config.TRAIN_PSF_WARP_SIGMA)),
         saturation_mask_prob=saturation_mask_prob,
+        blank_pixels=None if blank_pixels == "off" else str(blank_pixels),
     )
+
+
+def _log_blank_pixels(config: ObservationSimulatorConfig) -> None:
+    """Say which step blanks pixels in this run's dirty images."""
+    if config.blank_pixels:
+        _log(
+            f"  blank pixels: {config.blank_pixels.upper()} rates (pixels no "
+            "exposure measured, bright star cores)"
+        )
+    else:
+        _log(
+            "  blank pixels: off; rectangular saturation blackout, "
+            f"probability {config.saturation_mask_prob:g}"
+        )
 
 
 def _stamp_psf_kinds(ctx, psf_dir: str) -> None:
@@ -759,10 +792,7 @@ def step_convolve(args: argparse.Namespace) -> None:
         f"alpha_max={fwd.config.psf_warp_alpha_max:g} HR px, "
         f"sigma={fwd.config.psf_warp_sigma:g} HR px"
     )
-    _log(
-        "  saturation dark-core probability: "
-        f"{fwd.config.saturation_mask_prob:g}"
-    )
+    _log_blank_pixels(fwd.config)
     _log(f"  noise model: {fwd.config.noise_model}")
 
     # One master seed for the forward step, recorded on its run so the noise /
@@ -1372,6 +1402,7 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                      tng_galaxy_dir=Config.TNG_SKIRT_DIR,
                      tng_properties_csv="",
                      tng_radius_manifest_path="",
+                     blank_pixels="off",
                      ) -> None:
     """ProcessPool initializer: build the galaxy prior + simulator + forward
     model once per worker. The prior is the parent's embedded
@@ -1430,13 +1461,13 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
     )
     _W_FWD = ObservationSimulator(
         psf_sets_by_band=psf_sets,
-        config=ObservationSimulatorConfig(
-            add_noise=True,
-            psf_warp_prob=float(psf_warp_prob),
-            psf_warp_alpha_max=float(psf_warp_alpha_max),
-            psf_warp_sigma=float(psf_warp_sigma),
-            saturation_mask_prob=float(saturation_mask_prob),
-        ),
+        config=_observation_config_from_args(argparse.Namespace(
+            psf_warp_prob=psf_warp_prob,
+            psf_warp_alpha_max=psf_warp_alpha_max,
+            psf_warp_sigma=psf_warp_sigma,
+            saturation_mask_prob=saturation_mask_prob,
+            blank_pixels=blank_pixels,
+        )),
     )
     _W_RECORDS_DIR = records_dir
 
@@ -1588,10 +1619,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         f"alpha_max={observation_cfg.psf_warp_alpha_max:g} HR px, "
         f"sigma={observation_cfg.psf_warp_sigma:g} HR px"
     )
-    _log(
-        "  saturation dark-core probability: "
-        f"{observation_cfg.saturation_mask_prob:g}"
-    )
+    _log_blank_pixels(observation_cfg)
     _log(f"  noise model: {observation_cfg.noise_model}")
 
     # The workers' state, built once in the parent where it can be inherited
@@ -1620,6 +1648,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         getattr(args, "tng_dir", Config.TNG_SKIRT_DIR),
         getattr(args, "tng_properties", ""),
         getattr(args, "tng_radius_manifest", ""),
+        observation_cfg.blank_pixels or "off",
     )
     onthefly_train = bool(getattr(args, "onthefly_train", False))
     subsets = (("train", args.ntrain), ("validate", args.nvalid),

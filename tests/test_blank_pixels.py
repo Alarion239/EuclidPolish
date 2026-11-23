@@ -478,3 +478,53 @@ def test_members_trained_before_blank_pixels_continue_without_them(tmp_path):
     d.mkdir()
     (d / "origin.json").write_text(json.dumps({"loss_floor": 0.25}))
     assert _continue_identity("member_257", str(d), {}, {})["blank_pixels"] == "off"
+
+
+# --------------------------------------------------------------------------- #
+# Record generation (train / validate / test sets)
+# --------------------------------------------------------------------------- #
+def test_record_generation_blanks_pixels_like_live_training_by_default():
+    import argparse
+
+    import scripts.run_pipeline as rp
+    assert rp._observation_config_from_args(rp.parse_args([])).blank_pixels == Config.TRAIN_BLANK_PIXELS
+    assert rp._observation_config_from_args(rp.parse_args(["--blank-pixels", "q1"])).blank_pixels == "q1"
+    # "off" keeps the legacy rectangular blackout, as the earlier record sets were made.
+    assert rp._observation_config_from_args(rp.parse_args(["--blank-pixels", "off"])).blank_pixels is None
+    # A minimal programmatic Namespace gets the default, like the PSF warp.
+    assert rp._observation_config_from_args(argparse.Namespace()).blank_pixels == Config.TRAIN_BLANK_PIXELS
+    with pytest.raises(ValueError, match="blank_pixels"):
+        rp._observation_config_from_args(argparse.Namespace(blank_pixels="dr9"))
+    with pytest.raises(SystemExit):
+        rp.parse_args(["--blank-pixels", "dr9"])
+
+
+def test_parallel_generation_hands_the_blank_release_to_its_workers(tmp_path, monkeypatch):
+    import inspect
+
+    import scripts.run_pipeline as rp
+    from tests.test_run_pipeline_parallel import _InlinePool, _sim_fwd
+    real_init = rp._gen_init_worker
+    sim, fwd = _sim_fwd()
+    builds = []
+
+    def build(*initargs):
+        builds.append(initargs)
+        rp._W_SIM, rp._W_FWD, rp._W_RECORDS_DIR = sim, fwd, str(tmp_path)
+
+    _InlinePool.instances = []
+    for name in ("_W_SIM", "_W_FWD", "_W_RECORDS_DIR"):
+        monkeypatch.setattr(rp, name, getattr(rp, name))
+    monkeypatch.setattr(rp, "_gen_init_worker", build)
+    monkeypatch.setattr(rp, "_fork_context", lambda: object())
+    monkeypatch.setattr(rp, "ProcessPoolExecutor", _InlinePool)
+    for flag, expected in (([], Config.TRAIN_BLANK_PIXELS), (["--blank-pixels", "off"], "off")):
+        builds.clear()
+        rp.step_generate_and_convolve_parallel(rp.parse_args([
+            "--records-dir", str(tmp_path / (expected or "x")), "--force", "--seed", "7",
+            "--ntrain", "2", "--nvalid", "2", "--ntest", "2", "--gen-workers", "2",
+            "--image-size", "96", "--galaxy-density-arcmin2", "0",
+            "--lens-density-arcmin2", "0", "--star-density-arcmin2", "0", *flag,
+        ]))
+        bound = inspect.signature(real_init).bind(*builds[0])
+        assert bound.arguments["blank_pixels"] == expected
