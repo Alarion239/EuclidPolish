@@ -156,12 +156,13 @@ class OnTheFlyForward:
         noise_texture_jitter: bool = False,
         galaxy_blur_prob: float = Config.TRAIN_GALAXY_BLUR_PROB,
         galaxy_blur_fwhm_max_arcsec: float = Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
-        blank_pixels: str | None = None,
+        blank_pixels: str | None = Config.TRAIN_BLANK_PIXELS,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
-        # Blank NISP pixels where every exposure of the stack is invalid, at
-        # this release's rates ("dr1" or "q1"); None leaves fields whole.
-        self.blank_pixels = str(blank_pixels) if blank_pixels else None
+        # Blank pixels where every exposure of the stack is invalid, bright
+        # star cores included, at this release's rates ("dr1" or "q1");
+        # None or "off" keeps the legacy rectangular saturation blackout.
+        self.blank_pixels = str(blank_pixels) if blank_pixels and blank_pixels != "off" else None
         # Galaxy pre-blur: smoother galaxies in the truth (stars untouched).
         self.galaxy_blur_prob, self.galaxy_blur_fwhm_max_arcsec = validate_galaxy_blur(
             galaxy_blur_prob, galaxy_blur_fwhm_max_arcsec)

@@ -45,7 +45,8 @@ from euclid_polish.psf.psf_library import (
     psf_side_pixels_for_band,
 )
 from euclid_polish.psf.psf_set import PSFSample, PSFSet
-from euclid_polish.sky.observation.blank_pixels import BLANK_BAND_NAMES, BlankPixelModel
+from euclid_polish.sky.observation.blank_pixels import BAND_NAMES as BLANK_MASK_BAND_NAMES
+from euclid_polish.sky.observation.blank_pixels import BlankPixelModel
 from euclid_polish.sky.observation.field_variations import (
     DistantStarWing,
     add_distant_star_wings,
@@ -125,11 +126,13 @@ class ObservationSimulatorConfig:
     saturation_mask_ramp_well_ratios: tuple[float, float] = (
         Config.SATURATION_MASK_RAMP_WELL_RATIOS
     )
-    # Blank (exactly zero) NISP pixels where every exposure of the stack is
-    # invalid — persistence masks, cosmic rays, bad pixels — at the rates of
-    # this release ("dr1" or "q1", see ``blank_pixels.py``). ``None`` leaves
-    # the field whole. The generic operator defaults OFF; live training turns
-    # it on per member.
+    # Blank (exactly zero) pixels where every exposure of the stack is
+    # invalid — persistence masks, cosmic rays, bad pixels and, with
+    # ``add_saturation``, the cores of bright stars — at the rates of this
+    # release ("dr1" or "q1", see ``blank_pixels.py``). It then replaces the
+    # rectangular saturation blackout. ``None`` keeps that legacy step, as
+    # the generated record sets were made; live training defaults to
+    # ``Config.TRAIN_BLANK_PIXELS``.
     blank_pixels: str | None = None
     # A very bright star thousands of pixels beyond the generated field can
     # cast a nearly straight, field-spanning PSF wing through the LR cutout.
@@ -571,8 +574,14 @@ class ObservationSimulator:
         lr_stack: np.ndarray,
         rng: np.random.Generator,
         sky_levels: dict[str, float] | None = None,
+        trigger_stack: np.ndarray | None = None,
+        star_trigger_stack: np.ndarray | None = None,
     ) -> None:
-        """Zero the NISP pixels of ``lr_stack`` that no exposure measured.
+        """Zero the pixels of ``lr_stack`` that no exposure measured.
+
+        With ``add_saturation`` and the scene's pre-noise ``trigger_stack``
+        (and the stars' share of it) the cores of bright stars are among
+        them, in all four bands; the other blanks fall on NISP only.
 
         Fewer exposures leave more blanks, so the scene's exposure count
         follows its depth: where its H sky noise level (``sky_levels``) sits
@@ -591,8 +600,13 @@ class ObservationSimulator:
             table = load_mer_noise_levels()
             measured = table.levels_e[:, table.bands.index("H_E")]
             depth = float((np.sum(measured > level) + rng.random()) / (len(measured) + 1))
-        blank = self._blank_model.draw(lr_stack.shape[:2], depth, rng)
-        for k, name in enumerate(BLANK_BAND_NAMES):
+        cores = self._sat_model is not None and trigger_stack is not None
+        blank = self._blank_model.draw(
+            lr_stack.shape[:2], depth, rng,
+            trigger=trigger_stack if cores else None,
+            star_trigger=star_trigger_stack if cores else None,
+        )
+        for k, name in enumerate(BLANK_MASK_BAND_NAMES):
             lr_stack[..., Config.LR_INPUT_BAND_NAMES.index(name)][blank[..., k]] = 0.0
 
     # ------------------------------------------------------------------ #
@@ -801,10 +815,15 @@ class ObservationSimulator:
         # clipped to the well. Star cores past the band well are masked to ~0
         # over a blocky rectangular patch; galaxy light only loses its pixels
         # past the extended well. Per band; the clean HR target is untouched.
-        self.apply_saturation(lr_stack, saturation_trigger_stack, rng,
-                              star_trigger_stack)
-        # Pixels every exposure flagged invalid are blank in the mosaic.
-        self.apply_blank_pixels(lr_stack, rng, sky_levels)
+        if self._blank_model is None:
+            self.apply_saturation(lr_stack, saturation_trigger_stack, rng,
+                                  star_trigger_stack)
+        else:
+            # Pixels every exposure flagged invalid are blank in the mosaic:
+            # bright cores as Euclid loses them (round, brightness-dependent)
+            # instead of the rectangular blackout, plus the sky's own blanks.
+            self.apply_blank_pixels(lr_stack, rng, sky_levels,
+                                    saturation_trigger_stack, star_trigger_stack)
 
         # HR target: all four bands (clean, no noise applied), trimmed to the
         # same spatial extent the LR pipeline saw. Band k of the target is

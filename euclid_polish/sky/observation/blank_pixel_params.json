@@ -1,5 +1,5 @@
 {
- "_about": "Per-exposure rates of invalid NISP pixels behind MER blank pixels, fitted 2026-11-22 to single-exposure regions of DR1 (80 windows, footprint polygons) and Q1 (output/holes_model). Densities are per 0.3 arcsec detector pixel; shapes are [core cells, growth (0 none, 1 four neighbours, 2 eight neighbours), weight]; band widths in detector pixels. exposure_count_shares[k] is the share of sky covered by k+1 NISP exposures, from the footprint polygons of 105 DR1 windows. Q1 ships no footprints and uses the same shares: 5.2% of real Q1 fields are more than 1% blank, as single-exposure sky is, against the 1% the Q1 NIR paper quotes for the ideal dither pattern.",
+ "_about": "Per-exposure rates of invalid NISP pixels behind MER blank pixels, fitted 2026-11-22 to single-exposure regions of DR1 (80 windows, footprint polygons) and Q1 (output/holes_model). Densities are per 0.3 arcsec detector pixel; shapes are [core cells, growth (0 none, 1 four neighbours, 2 eight neighbours), weight]; band widths in detector pixels. exposure_count_shares[k] is the share of sky covered by k+1 NISP exposures, from the footprint polygons of 105 DR1 windows. Q1 ships no footprints and uses the same shares: 5.2% of real Q1 fields are more than 1% blank, as single-exposure sky is, against the 1% the Q1 NIR paper quotes for the ideal dither pattern. star_core_level_e is the predicted 0.1 arcsec stack peak (electrons) at which half of the real star cores are blank (1,250 stars per band, 2026-11-22: all-sample fit per band, scaled per release by the mean DR1/Q1 offset; VIS from 55 stars above 0.7 Me-, one value). extended_level_e is the level above which smooth galaxy light is blank (poster nucleus, 2026-09-25: Y and H at 5x the old wells; J scaled to them). core_sigma_* are the log-normal scatters of that brightness between sources and between a source's exposures.",
  "dr1": {
   "persistence_cluster_density": 0.0055,
   "persistence_cluster_shapes": [
@@ -341,7 +341,24 @@
    0.077,
    0.042,
    0.016
-  ]
+  ],
+  "star_core_level_e": {
+   "VIS": 1770000.0,
+   "Y_E": 20500.0,
+   "J_E": 25600.0,
+   "H_E": 22900.0
+  },
+  "extended_level_e": {
+   "VIS": 3550000.0,
+   "Y_E": 39000.0,
+   "J_E": 48600.0,
+   "H_E": 47800.0
+  },
+  "core_sigma_source": 0.2,
+  "core_sigma_exposure": 0.3,
+  "vis_core_growth_px": 3,
+  "nisp_detector_peak_share": 0.73,
+  "core_saturation_factor": 4.0
  },
  "q1": {
   "persistence_cluster_density": 0.002812,
@@ -644,6 +661,23 @@
    0.077,
    0.042,
    0.016
-  ]
+  ],
+  "star_core_level_e": {
+   "VIS": 1770000.0,
+   "Y_E": 13000.0,
+   "J_E": 16200.0,
+   "H_E": 14500.0
+  },
+  "extended_level_e": {
+   "VIS": 3550000.0,
+   "Y_E": 39000.0,
+   "J_E": 48600.0,
+   "H_E": 47800.0
+  },
+  "core_sigma_source": 0.2,
+  "core_sigma_exposure": 0.3,
+  "vis_core_growth_px": 3,
+  "nisp_detector_peak_share": 0.73,
+  "core_saturation_factor": 4.0
  }
 }

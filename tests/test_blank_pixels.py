@@ -6,6 +6,7 @@ import pytest
 
 from euclid_polish.config import Config
 from euclid_polish.sky.observation.blank_pixels import (
+    BAND_NAMES,
     BLANK_BAND_NAMES,
     BlankPixelModel,
     blank_where_all_invalid,
@@ -18,7 +19,7 @@ SHAPE = (384, 384)
 
 def _blank_fraction(release: str, n_exposures: int, *, seeds: int, band: str = "H_E") -> float:
     model = BlankPixelModel(release)
-    k = BLANK_BAND_NAMES.index(band)
+    k = BAND_NAMES.index(band)
     total = 0.0
     for seed in range(seeds):
         coverage = np.full(SHAPE, n_exposures, np.int8)
@@ -26,9 +27,12 @@ def _blank_fraction(release: str, n_exposures: int, *, seeds: int, band: str = "
     return total / seeds
 
 
-def test_blank_bands_are_the_three_nisp_bands():
+def test_random_blanks_fall_on_the_three_nisp_bands_only():
+    assert BAND_NAMES == Config.LR_INPUT_BAND_NAMES
     assert BLANK_BAND_NAMES == ("Y_E", "J_E", "H_E")
-    assert set(BLANK_BAND_NAMES) < set(Config.LR_INPUT_BAND_NAMES)
+    blank = BlankPixelModel("dr1").blank_mask(np.full(SHAPE, 1, np.int8), np.random.default_rng(0))
+    assert not blank[..., BAND_NAMES.index("VIS")].any()
+    assert all(blank[..., BAND_NAMES.index(b)].any() for b in BLANK_BAND_NAMES)
 
 
 def test_one_invalid_detector_pixel_removes_six_by_six_mosaic_pixels():
@@ -72,9 +76,9 @@ def test_uncovered_pixels_are_not_blanked():
     assert not blank_where_all_invalid([a], coverage).any()
 
 
-def test_blank_mask_has_one_plane_per_nisp_band():
+def test_blank_mask_has_one_plane_per_band():
     blank = BlankPixelModel("dr1").blank_mask(np.full(SHAPE, 2, np.int8), np.random.default_rng(0))
-    assert blank.shape == SHAPE + (3,)
+    assert blank.shape == SHAPE + (4,)
     assert blank.dtype == bool
 
 
@@ -110,7 +114,7 @@ def test_bands_share_part_of_their_blanks():
     both = either = 0
     for seed in range(12):
         blank = model.blank_mask(np.full(SHAPE, 1, np.int8), np.random.default_rng(seed))
-        j, h = blank[..., 1], blank[..., 2]
+        j, h = blank[..., BAND_NAMES.index("J_E")], blank[..., BAND_NAMES.index("H_E")]
         both += int((j & h).sum())
         either += int((j | h).sum())
     assert 0.05 < both / either < 0.9
@@ -158,6 +162,105 @@ def test_exposure_count_follows_the_release_shares_from_shallow_to_deep():
     # Q1 has no footprint files; its fields are as often single-exposure as DR1's.
     q1 = BlankPixelModel("q1")
     assert [q1.exposure_count(q) for q in (0.01, 0.5, 0.99)] == [model.exposure_count(q) for q in (0.01, 0.5, 0.99)]
+
+
+# --------------------------------------------------------------------------- #
+# Blank cores of bright stars
+# --------------------------------------------------------------------------- #
+CORE_SHAPE = (96, 96)
+
+
+def _source(peak_e: float, band: str, *, fwhm_px: float = 4.5):
+    """Trigger planes (H, W, 4) of one round source peaking at ``peak_e`` in ``band``."""
+    y, x = np.mgrid[0:CORE_SHAPE[0], 0:CORE_SHAPE[1]]
+    profile = np.exp(-((y - 48) ** 2 + (x - 48) ** 2) / (2 * (fwhm_px / 2.355) ** 2))
+    trigger = np.zeros(CORE_SHAPE + (4,), np.float32)
+    trigger[..., BAND_NAMES.index(band)] = peak_e * profile
+    return trigger
+
+
+def _core_blank(model, trigger, star, n_exposures, seed):
+    """Blank cores alone (no persistence, no cosmic rays)."""
+    rng = np.random.default_rng(seed)
+    exposures = model.core_exposure_bits(trigger, star, n_exposures, rng, theta_deg=float(rng.uniform(0, 360)))
+    bits = blank_where_all_invalid(exposures, np.full(CORE_SHAPE, n_exposures, np.int8))
+    return np.stack([(bits >> k) & 1 > 0 for k in range(4)], axis=-1)
+
+
+def _core_rate(release, band, ratio, n_exposures, seeds=40, *, star=True):
+    model = BlankPixelModel(release)
+    trigger = _source(ratio * model.star_core_level_e(band), band)
+    k = BAND_NAMES.index(band)
+    hits = sum(bool(_core_blank(model, trigger, trigger if star else np.zeros_like(trigger),
+                                n_exposures, seed)[46:51, 46:51, k].any()) for seed in range(seeds))
+    return hits / seeds
+
+
+def test_star_core_levels_follow_the_measured_blanking_brightness():
+    """Half of the real star cores are blank near 15 ke- (Q1) and 23 ke- (DR1)
+    of predicted NISP peak, and near 1.8 Me- in VIS."""
+    q1, dr1 = BlankPixelModel("q1"), BlankPixelModel("dr1")
+    for band in BLANK_BAND_NAMES:
+        assert 11_000 < q1.star_core_level_e(band) < 18_000
+        assert q1.star_core_level_e(band) < dr1.star_core_level_e(band) < 30_000
+    assert 1.2e6 < dr1.star_core_level_e("VIS") < 2.4e6
+
+
+@pytest.mark.parametrize("band", ["VIS", "Y_E", "J_E", "H_E"])
+def test_bright_star_core_is_blank_and_faint_one_is_not(band):
+    assert _core_rate("dr1", band, 4.0, 4) > 0.9
+    assert _core_rate("dr1", band, 0.25, 4) < 0.05
+
+
+def test_star_at_the_blanking_brightness_is_blank_about_half_the_time():
+    for band in ("H_E", "VIS"):
+        assert 0.3 < _core_rate("q1", band, 1.0, 4, seeds=120) < 0.7
+
+
+def test_marginal_star_is_blanked_less_often_under_more_exposures():
+    """Every exposure must lose the core, so more exposures save more cores."""
+    assert _core_rate("q1", "H_E", 1.0, 2, seeds=150) > _core_rate("q1", "H_E", 1.0, 6, seeds=150) + 0.1
+
+
+def test_blank_star_core_is_a_round_patch_about_an_arcsecond_across():
+    """Real NISP cores: 80-110 pixels near the blanking brightness, filling
+    about two thirds of their bounding box (a box would fill it)."""
+    model = BlankPixelModel("q1")
+    k = BAND_NAMES.index("H_E")
+    trigger = _source(3.0 * model.star_core_level_e("H_E"), "H_E")
+    areas, fills = [], []
+    for seed in range(40):
+        blank = _core_blank(model, trigger, trigger, 4, seed)[..., k]
+        if not blank.any():
+            continue
+        ys, xs = np.nonzero(blank)
+        areas.append(blank.sum())
+        fills.append(blank.sum() / ((np.ptp(ys) + 1) * (np.ptp(xs) + 1)))
+        assert abs(ys.mean() - 48) < 3 and abs(xs.mean() - 48) < 3
+    assert 50 < np.median(areas) < 160
+    assert np.median(fills) < 0.9
+
+
+def test_only_the_bright_band_loses_its_core():
+    model = BlankPixelModel("dr1")
+    trigger = _source(5.0 * model.star_core_level_e("J_E"), "J_E")
+    blank = _core_blank(model, trigger, trigger, 3, 1)
+    assert blank[..., BAND_NAMES.index("J_E")].any()
+    assert not blank[..., [0, 1, 3]].any()
+
+
+def test_galaxy_light_survives_where_a_star_core_would_be_blank():
+    """Smooth galaxy light is recorded well above the level that blanks star
+    cores; it only loses pixels above the extended level."""
+    assert _core_rate("dr1", "H_E", 1.6, 3, star=False) == 0.0
+    model = BlankPixelModel("dr1")
+    level = model.extended_level_e("H_E")
+    assert level > 1.5 * model.star_core_level_e("H_E")
+    trigger = _source(2.0 * level, "H_E", fwhm_px=24.0)
+    blank = _core_blank(model, trigger, np.zeros_like(trigger), 3, 0)[..., BAND_NAMES.index("H_E")]
+    assert blank.any()
+    # Only the brightest pixels and the few the bilinear stencil takes with them.
+    assert trigger[..., BAND_NAMES.index("H_E")][blank].min() > 0.4 * level
 
 
 # --------------------------------------------------------------------------- #
@@ -216,11 +319,12 @@ def _live_forward(**kwargs):
         psf_warp_prob=0.0, **kwargs)
 
 
-def test_live_forward_blanks_pixels_only_when_asked():
-    plain = _live_forward()
-    assert plain.blank_pixels is None and plain._sim.config.blank_pixels is None
-    holes = _live_forward(blank_pixels="dr1")
-    assert holes.blank_pixels == "dr1" and holes._sim.config.blank_pixels == "dr1"
+def test_live_forward_takes_a_release_or_off():
+    for off in ("off", None, ""):
+        plain = _live_forward(blank_pixels=off)
+        assert plain.blank_pixels is None and plain._sim.config.blank_pixels is None
+    holes = _live_forward(blank_pixels="q1")
+    assert holes.blank_pixels == "q1" and holes._sim.config.blank_pixels == "q1"
     with pytest.raises(ValueError, match="release"):
         _live_forward(blank_pixels="dr9")
 
@@ -246,7 +350,6 @@ def test_member_spec_cli_and_continue_carry_blank_pixels(tmp_path):
     assert spec.blank_pixels == "dr1"
     cli = build_specs(parse_args(base + ["--blank-pixels", "q1"]), str(tmp_path / "e2"))[0]
     assert cli.blank_pixels == "q1"
-    assert build_specs(parse_args(base), str(tmp_path / "e3"))[0].blank_pixels == ""
     with pytest.raises(SystemExit):
         build_specs(parse_args(base + ["--member-spec", json.dumps([{"blank_pixels": "dr9"}])]),
                     str(tmp_path / "e4"))
@@ -278,15 +381,18 @@ def test_train_members_records_and_passes_blank_pixels(tmp_path, monkeypatch):
     monkeypatch.setattr(ens_mod, "Model", _Recorder)
     base = tmp_path / "ensemble"
     ens = EnsembleModel(str(base), _models=[])
+    live = {"target_steps": 10, "run_steps": 10, "loss_norm": "l2", "forward_onthefly": True}
     ens.train_members("lr", "hr", [
-        MemberTrainSpec(name="member_321", seed=1, target_steps=10, run_steps=10, loss_norm="l2",
-                        blank_pixels="dr1"),
-        MemberTrainSpec(name="member_322", seed=2, target_steps=10, run_steps=10, loss_norm="l2"),
+        MemberTrainSpec(name="member_321", seed=1, blank_pixels="q1", **live),
+        MemberTrainSpec(name="member_322", seed=2, blank_pixels="off", **live),
+        # Records are fixed: a member trained on them has no blank-pixel setting.
+        MemberTrainSpec(name="member_323", seed=3, target_steps=10, run_steps=10, loss_norm="l2"),
     ])
-    assert json.loads((base / "member_321" / "origin.json").read_text())["blank_pixels"] == "dr1"
-    assert ens._models[0].trained["blank_pixels"] == "dr1"
-    assert "blank_pixels" not in json.loads((base / "member_322" / "origin.json").read_text())
-    assert "blank_pixels" not in ens._models[1].trained
+    for k, (name, value) in enumerate((("member_321", "q1"), ("member_322", "off"))):
+        assert json.loads((base / name / "origin.json").read_text())["blank_pixels"] == value
+        assert ens._models[k].trained["blank_pixels"] == value
+    assert "blank_pixels" not in json.loads((base / "member_323" / "origin.json").read_text())
+    assert "blank_pixels" not in ens._models[2].trained
 
 
 def test_simulator_gives_shallow_scenes_fewer_exposures(monkeypatch):
@@ -296,7 +402,7 @@ def test_simulator_gives_shallow_scenes_fewer_exposures(monkeypatch):
     sim = _simulator(blank_pixels="dr1")
     seen = []
     monkeypatch.setattr(sim._blank_model, "draw",
-                        lambda shape, depth, rng: seen.append(depth) or np.zeros(tuple(shape) + (3,), bool))
+                        lambda shape, depth, rng, **kw: seen.append(depth) or np.zeros(tuple(shape) + (4,), bool))
     table = load_mer_noise_levels()
     h = table.levels_e[:, table.bands.index("H_E")]
     lr = np.ones((32, 32, 4), np.float32)
@@ -305,3 +411,70 @@ def test_simulator_gives_shallow_scenes_fewer_exposures(monkeypatch):
     sim.apply_blank_pixels(lr, rng, {"H_E": float(h.min()) * 0.99})
     sim.apply_blank_pixels(lr, rng, None)
     assert seen[0] < 0.01 and seen[1] > 0.99 and 0.0 <= seen[2] < 1.0
+
+
+def test_simulator_blanks_star_cores_with_the_new_model_not_the_box(monkeypatch):
+    """With blank pixels on, saturated cores come from the blank-pixel model
+    and the legacy rectangle step is skipped."""
+    from euclid_polish.image import Image
+    from euclid_polish.sky.observation import observation_simulator as obs_mod
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
+    called = []
+    monkeypatch.setattr(obs_mod, "apply_saturation_masking", lambda *a, **k: called.append(1))
+    data = np.zeros((192, 192, 4), np.float32)
+    stars = np.zeros_like(data)
+    stars[96, 96, :] = 3e7                      # one very bright star in every band
+    hr = Image(data=data, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+               band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True)
+    sim = ObservationSimulator(config=ObservationSimulatorConfig(
+        add_noise=False, add_artifacts=False, add_saturation=True, blank_pixels="q1"))
+    lr, _ = sim.process(hr, np.random.default_rng(0), star_hr_4ch=stars)
+    assert not called
+    assert np.all(lr.data[47:49, 47:49, :] == 0.0)          # the core is blank in all four bands
+    legacy = ObservationSimulator(config=ObservationSimulatorConfig(
+        add_noise=False, add_artifacts=False, add_saturation=True))
+    legacy.process(hr, np.random.default_rng(0), star_hr_4ch=stars)
+    assert called                                            # without blank pixels the legacy step still runs
+
+
+def test_simulator_keeps_star_cores_when_saturation_is_off():
+    from euclid_polish.image import Image
+    data = np.zeros((192, 192, 4), np.float32)
+    stars = np.zeros_like(data)
+    stars[96, 96, :] = 3e7
+    hr = Image(data=data, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+               band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True)
+    lr, _ = _simulator(blank_pixels="q1").process(hr, np.random.default_rng(0), star_hr_4ch=stars)
+    assert lr.data[48, 48, 0] > 0.0             # add_saturation=False: VIS (no random blanks) keeps its core
+
+
+# --------------------------------------------------------------------------- #
+# On by default for new live training
+# --------------------------------------------------------------------------- #
+def test_new_live_training_blanks_pixels_by_default(tmp_path):
+    import json
+
+    from euclid_polish.ensemble import MemberTrainSpec
+    from scripts.train_ensemble import _continue_identity, build_specs, parse_args
+    assert Config.TRAIN_BLANK_PIXELS == "dr1"
+    assert _live_forward().blank_pixels == "dr1"
+    assert MemberTrainSpec(name="m", seed=1, target_steps=1, run_steps=1, loss_norm="l2").blank_pixels == "dr1"
+    base = ["--count", "1", "--steps", "10"]
+    assert build_specs(parse_args(base), str(tmp_path / "e1"))[0].blank_pixels == "dr1"
+    off = build_specs(parse_args(base + ["--member-spec", json.dumps([{"blank_pixels": "off"}])]),
+                      str(tmp_path / "e2"))[0]
+    assert off.blank_pixels == "off"
+    assert build_specs(parse_args(base + ["--blank-pixels", "off"]), str(tmp_path / "e3"))[0].blank_pixels == "off"
+
+
+def test_members_trained_before_blank_pixels_continue_without_them(tmp_path):
+    import json
+
+    from scripts.train_ensemble import _continue_identity
+    d = tmp_path / "member_257"
+    d.mkdir()
+    (d / "origin.json").write_text(json.dumps({"loss_floor": 0.25}))
+    assert _continue_identity("member_257", str(d), {}, {})["blank_pixels"] == "off"

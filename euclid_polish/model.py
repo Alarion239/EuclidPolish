@@ -638,7 +638,7 @@ class Model:
         noise_texture_jitter: bool = False,
         galaxy_blur_prob: float = Config.TRAIN_GALAXY_BLUR_PROB,
         galaxy_blur_fwhm_max: float = Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
-        blank_pixels: str | None = None,
+        blank_pixels: str | None = Config.TRAIN_BLANK_PIXELS,
         isotropy_penalty: float = 0.0,
         isotropy_knee: float | None = None,
         isotropy_scales: Sequence[Sequence[float]] | None = None,
@@ -805,9 +805,9 @@ class Model:
                                   galaxy_blur_prob=float(galaxy_blur_prob),
                                   galaxy_blur_fwhm_max_arcsec=float(galaxy_blur_fwhm_max),
                                   blank_pixels=blank_pixels or None)
-            if fwd.blank_pixels:
-                print(f"  blank pixels: NISP pixels no exposure measured, "
-                      f"{fwd.blank_pixels.upper()} rates")
+            print("  blank pixels: " + (
+                f"pixels no exposure measured and bright star cores, {fwd.blank_pixels.upper()} rates"
+                if fwd.blank_pixels else "off (legacy rectangular saturation blackout)"))
             if fwd.galaxy_blur_prob:
                 print(f"  galaxy pre-blur: p={fwd.galaxy_blur_prob:g}, FWHM ~ U(0, "
                       f"{fwd.galaxy_blur_fwhm_max_arcsec:g})\" (stars stay sharp)")
@@ -898,9 +898,6 @@ class Model:
         if galaxy_blur_prob and not forward_onthefly:
             raise ValueError("galaxy_blur_prob needs the live (on-the-fly) "
                              "forward model; record truths are fixed")
-        if blank_pixels and not forward_onthefly:
-            raise ValueError("blank_pixels needs the live (on-the-fly) "
-                             "forward model; record inputs are fixed")
         if noise_texture_jitter and not forward_onthefly:
             raise ValueError("noise_texture_jitter needs the live (on-the-fly) "
                              "forward model; record noise is fixed")

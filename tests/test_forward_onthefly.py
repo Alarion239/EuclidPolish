@@ -96,9 +96,11 @@ def test_hr_crops_are_subtiles_and_lr_matches_full_forward(gaussian_sets):
                           hr_crop_size=CROP,
                           add_noise=False, add_artifacts=False,
                           add_saturation=False, inject_stars=False,
-                          psf_warp_prob=0.0, target_fwhm_arcsec=0.0)
+                          psf_warp_prob=0.0, target_fwhm_arcsec=0.0,
+                          blank_pixels="off")
     lr_crops, hr_crops = fwd.crops(field)
-    # Reference full-field forward (deterministic: 1-kernel sets, no noise).
+    # Reference full-field forward (deterministic: 1-kernel sets, no noise,
+    # no randomly placed blank pixels).
     img = Image(data=field, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
                 band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True)
     lr_full, hr_full = fwd._sim.process(img, np.random.default_rng(0))

@@ -217,10 +217,12 @@ class MemberTrainSpec:
     #: continue keeps it.
     galaxy_blur_prob: float = 0.0
     galaxy_blur_fwhm_max: float = Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC
-    #: Live training blanks the NISP pixels no exposure measured, at this
-    #: release's rates ("dr1" or "q1", ``sky.observation.blank_pixels``).
-    #: "" = off. Recorded in origin.json; continue keeps it.
-    blank_pixels: str = ""
+    #: Live training blanks the pixels no exposure measured, bright star
+    #: cores included, at this release's rates ("dr1" or "q1",
+    #: ``sky.observation.blank_pixels``); "off" keeps the legacy rectangular
+    #: saturation blackout. Recorded in origin.json; continue keeps it, and
+    #: a member without the entry continues with "off".
+    blank_pixels: str = Config.TRAIN_BLANK_PIXELS
     #: Weight λ of the residual-isotropy penalty (``training.isotropy``): on
     #: average, the error stretched at ``isotropy_knee`` e⁻ (``None`` = the
     #: module default, 0.01) must not prefer a direction, at
@@ -573,8 +575,8 @@ class EnsembleModel:
                 if spec.galaxy_blur_prob:
                     origin["galaxy_blur_prob"] = float(spec.galaxy_blur_prob)
                     origin["galaxy_blur_fwhm_max"] = float(spec.galaxy_blur_fwhm_max)
-                if spec.blank_pixels:
-                    origin["blank_pixels"] = str(spec.blank_pixels)
+                if spec.forward_onthefly:
+                    origin["blank_pixels"] = str(spec.blank_pixels or "off")
                 if spec.brightness_consistency:
                     origin["brightness_consistency"] = True
                 if spec.isotropy_penalty:
@@ -620,8 +622,8 @@ class EnsembleModel:
             if spec.galaxy_blur_prob:
                 member_train_kwargs["galaxy_blur_prob"] = float(spec.galaxy_blur_prob)
                 member_train_kwargs["galaxy_blur_fwhm_max"] = float(spec.galaxy_blur_fwhm_max)
-            if spec.blank_pixels:
-                member_train_kwargs["blank_pixels"] = str(spec.blank_pixels)
+            if spec.forward_onthefly:
+                member_train_kwargs["blank_pixels"] = str(spec.blank_pixels or "off")
             if spec.isotropy_penalty:
                 member_train_kwargs["isotropy_penalty"] = float(spec.isotropy_penalty)
                 member_train_kwargs["isotropy_knee"] = spec.isotropy_knee

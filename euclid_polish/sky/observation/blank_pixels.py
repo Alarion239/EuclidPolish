@@ -19,8 +19,16 @@ NISP pixels, with two about 0.9%, with three about 0.13%.
 Rates were fitted to single-exposure regions of real mosaics (2026-11-22,
 ``output/holes_model``): ``"dr1"`` masks persistence from five hours of
 grism exposures, ``"q1"`` from one exposure, about a quarter as much.
-Saturated cores are a separate mechanism (:mod:`.saturation`), and VIS is
-not blanked here: its blanks are rare (0.1% under two exposures).
+
+**Star cores.** A bright star's core is invalid in an exposure (saturated,
+or taken for a cosmic ray) once its peak passes a level, and the pipeline
+masks the pixel's neighbours with it. Half of the real cores are blank near
+15 ke- (Q1) and 23 ke- (DR1) of predicted peak in the NISP bands and near
+1.8 Me- in VIS, in a round patch about an arcsecond across — not a box.
+Every exposure must lose the core, so marginal stars survive more often
+under more exposures. Smooth galaxy light is recorded well above those
+levels and only loses its brightest pixels. VIS gets star cores only: its
+other blanks are rare (0.1% under two exposures).
 
 Y, J and H of one dither are taken at one pointing: they share the bands
 and the other invalid pixels, part of the persistence clusters, and none of
@@ -35,8 +43,12 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
+from scipy.ndimage import binary_dilation, label, maximum_filter
 
-#: Bands that get blank pixels, in the order of :meth:`BlankPixelModel.blank_mask`.
+#: Bands of a blank mask, in the order of :meth:`BlankPixelModel.blank_mask`
+#: (bit ``k`` of the per-exposure invalid bits is band ``k``).
+BAND_NAMES = ("VIS", "Y_E", "J_E", "H_E")
+#: Bands that get persistence, cosmic-ray and bad-pixel blanks.
 BLANK_BAND_NAMES = ("Y_E", "J_E", "H_E")
 #: Detector pixel over mosaic pixel (0.30" / 0.10").
 DETECTOR_FACTOR = 3
@@ -46,8 +58,13 @@ DETECTOR_FACTOR = 3
 #: and 905 pixels.
 SEAM_RATE_PER_PIXEL = 1.75e-3
 
-_BIT = {name: np.uint8(1 << k) for k, name in enumerate(BLANK_BAND_NAMES)}
-_ALL = np.uint8((1 << len(BLANK_BAND_NAMES)) - 1)
+_BIT = {name: np.uint8(1 << k) for k, name in enumerate(BAND_NAMES)}
+_ALL = np.uint8((1 << len(BAND_NAMES)) - 1)
+_NISP = np.uint8(sum(int(_BIT[name]) for name in BLANK_BAND_NAMES))
+# A core is traced from this share of its blanking level, so a source's
+# scatter can still lift it over the level.
+_CORE_CANDIDATE_SHARE = 0.25
+_PLUS = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
 # Persistence masks resemble each other along J -> H -> Y.
 _CHAIN = ("J_E", "H_E", "Y_E")
 _PARAMS_PATH = Path(__file__).with_name("blank_pixel_params.json")
@@ -148,6 +165,24 @@ def _centred_grid(shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
     return y, x
 
 
+def _detector_coordinates(
+    shape: tuple[int, int], side: int, theta_deg: float, offset: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Detector coordinates ``(u, v)`` of every mosaic pixel centre: the
+    detector is rotated by ``theta_deg`` about the mosaic centre and shifted
+    by ``offset`` detector pixels (the dither's sub-pixel phase). Detector
+    pixel centres sit at integer coordinates."""
+    y, x = _centred_grid((int(shape[0]), int(shape[1])))
+    cos, sin = np.cos(np.radians(theta_deg)), np.sin(np.radians(theta_deg))
+    u = (cos * x + sin * y) / DETECTOR_FACTOR + (side / 2 + float(offset[0]))
+    v = (-sin * x + cos * y) / DETECTOR_FACTOR + (side / 2 + float(offset[1]))
+    return u, v
+
+
+def _detector_side(shape: tuple[int, int]) -> int:
+    return int(np.ceil(np.hypot(*shape) / DETECTOR_FACTOR)) + 6
+
+
 def stencil_to_mosaic(
     det: np.ndarray,
     shape: tuple[int, int],
@@ -158,15 +193,11 @@ def stencil_to_mosaic(
     """A detector mask on the mosaic grid, as bilinear resampling spreads it.
 
     ``det`` holds one bit per band on the 0.30" detector grid. A mosaic pixel
-    takes the OR of the four detector pixels of its interpolation stencil.
-    The detector is rotated by ``theta_deg`` about the mosaic centre and
-    shifted by ``offset`` detector pixels (the dither's sub-pixel phase).
+    takes the OR of the four detector pixels of its interpolation stencil
+    (:func:`_detector_coordinates`).
     """
     side = det.shape[0]
-    y, x = _centred_grid((int(shape[0]), int(shape[1])))
-    cos, sin = np.cos(np.radians(theta_deg)), np.sin(np.radians(theta_deg))
-    u = (cos * x + sin * y) / DETECTOR_FACTOR + (side / 2 + float(offset[0]))
-    v = (-sin * x + cos * y) / DETECTOR_FACTOR + (side / 2 + float(offset[1]))
+    u, v = _detector_coordinates(shape, side, theta_deg, offset)
     iu = np.clip(np.floor(u).astype(np.intp), 0, side - 2)
     iv = np.clip(np.floor(v).astype(np.intp), 0, side - 2)
     return det[iv, iu] | det[iv, iu + 1] | det[iv + 1, iu] | det[iv + 1, iu + 1]
@@ -233,6 +264,17 @@ class BlankPixelModel:
         self._tilts = np.asarray(p["band_tilts_deg"], dtype=np.float64)
         self._tilt_p = np.asarray(p["band_tilt_probabilities"], dtype=np.float64)
         self._count_cdf = np.cumsum(p["exposure_count_shares"]) / np.sum(p["exposure_count_shares"])
+        # Half the cores are blank at the level under four exposures: the
+        # faintest of four exposure draws sits one sigma below the median.
+        # A 0.30" detector pixel averages the star's peak down by
+        # ``nisp_detector_peak_share``.
+        dim = np.exp(-float(p["core_sigma_exposure"]))
+        self._core_threshold = {
+            band: float(p["star_core_level_e"][band]) * dim
+            * (float(p["nisp_detector_peak_share"]) if band in BLANK_BAND_NAMES else 1.0)
+            for band in BAND_NAMES
+        }
+        self._vis_growth = self._disc(int(p["vis_core_growth_px"]))
         sigma, shared = float(p["persistence_activity_sigma"]), float(p["persistence_activity_shared"])
         self._sigma_field = sigma * np.sqrt(shared)
         self._sigma_exposure = sigma * np.sqrt(1.0 - shared)
@@ -244,6 +286,106 @@ class BlankPixelModel:
         shares of each count, read as a quantile function."""
         q = min(max(float(depth_quantile), 0.0), 1.0)
         return int(min(np.searchsorted(self._count_cdf, q, side="right"), len(self._count_cdf) - 1)) + 1
+
+    def star_core_level_e(self, band: str) -> float:
+        """Peak (electrons on the 0.1" stack) at which half the star cores of
+        ``band`` are blank under four exposures."""
+        return float(self.params["star_core_level_e"][band])
+
+    def extended_level_e(self, band: str) -> float:
+        """Level above which smooth galaxy light of ``band`` is blank."""
+        return float(self.params["extended_level_e"][band])
+
+    @staticmethod
+    def _disc(radius: int) -> np.ndarray:
+        y, x = np.mgrid[-radius:radius + 1, -radius:radius + 1]
+        return (y * y + x * x) <= radius * radius
+
+    def core_exposure_bits(
+        self,
+        trigger: np.ndarray,
+        star_trigger: np.ndarray | None,
+        n_exposures: int,
+        rng: np.random.Generator,
+        *,
+        theta_deg: float = 0.0,
+    ) -> list:
+        """Per-exposure invalid bits of the bright cores of a scene.
+
+        ``trigger`` is the noise-free signal ``(H, W, 4)`` on the 0.1" stack
+        (bands as :data:`BAND_NAMES`), ``star_trigger`` the stars' share of
+        it; without it all light counts as stars.
+
+        A NISP exposure sees the scene through its own 0.30" detector grid,
+        rotated by ``theta_deg`` and at its dither's sub-pixel phase: a
+        detector pixel measures the mean of the mosaic pixels it holds. Where
+        stars hold at least half the light, a
+        source's peak detector pixel is invalid once its value, times that
+        source's scatter and that exposure's scatter, passes the star-core
+        level, and its four neighbours go with it; other pixels join only
+        ``core_saturation_factor`` times higher, which is how real cores
+        grow from 80 to 170 mosaic pixels over a factor ten in brightness.
+        A pixel of galaxy light is invalid above the extended level, alone
+        and without scatter. The bilinear
+        stencil spreads each invalid detector pixel over the mosaic. VIS
+        cores, on their own 0.1" pixels, grow by a small disc instead.
+        """
+        trigger = np.asarray(trigger, dtype=np.float32)
+        stars = None if star_trigger is None else np.asarray(star_trigger, dtype=np.float32)
+        shape = trigger.shape[:2]
+        empty = [np.zeros(shape, dtype=np.uint8) for _ in range(int(n_exposures))]
+        bright = []
+        candidate = np.zeros(shape, dtype=bool)
+        for k, band in enumerate(BAND_NAMES):
+            level = min(_CORE_CANDIDATE_SHARE * self._core_threshold[band], self.extended_level_e(band))
+            bright.append(trigger[..., k] >= level)
+            candidate |= bright[-1]
+        if not candidate.any():
+            return empty
+        sources, count = label(candidate)
+        p = self.params
+        side = _detector_side(shape)
+        source_scatter = np.exp(rng.normal(0.0, float(p["core_sigma_source"]), count + 1))
+        out = []
+        for bits in empty:
+            exposure_scatter = np.exp(rng.normal(0.0, float(p["core_sigma_exposure"]), count + 1))
+            scatter = (source_scatter * exposure_scatter)[sources].astype(np.float32)
+            offset = rng.uniform(-1.0, 1.0, 2)
+            u, v = _detector_coordinates(shape, side, theta_deg, offset)
+            # The detector pixel holding each mosaic pixel, and how many it holds.
+            held = (np.clip(np.rint(v).astype(np.intp), 0, side - 1) * side
+                    + np.clip(np.rint(u).astype(np.intp), 0, side - 1)).ravel()
+            holds = np.maximum(np.bincount(held, minlength=side * side), 1)
+
+            def seen_by_detector(plane: np.ndarray, held=held, holds=holds) -> np.ndarray:
+                total = np.bincount(held, weights=plane.ravel(), minlength=side * side)
+                return (total / holds).reshape(side, side)
+
+            for k, band in enumerate(BAND_NAMES):
+                if not bright[k].any():
+                    continue
+                plane = trigger[..., k]
+                if band in BLANK_BAND_NAMES:
+                    seen = seen_by_detector(plane)
+                    dominated = (np.ones(seen.shape, dtype=bool) if stars is None
+                                 else seen_by_detector(stars[..., k]) >= 0.5 * seen)
+                    scaled = np.where(dominated, seen_by_detector(plane * scatter), 0.0)
+                    level = self._core_threshold[band]
+                    # The star's peak pixel goes first; its neighbours join it as
+                    # pixels of their own only once they are truly saturated.
+                    star = ((scaled >= level) & (scaled >= maximum_filter(scaled, size=3))) | (
+                        scaled >= float(p["core_saturation_factor"]) * level)
+                    galaxy = ~dominated & (seen >= self.extended_level_e(band))
+                    det = binary_dilation(star, structure=_PLUS) | galaxy
+                    invalid = stencil_to_mosaic(det, shape, theta_deg=theta_deg, offset=offset)
+                else:
+                    dominated = np.ones(shape, dtype=bool) if stars is None else stars[..., k] >= 0.5 * plane
+                    star = dominated & (plane * scatter >= self._core_threshold[band])
+                    invalid = (binary_dilation(star, structure=self._vis_growth)
+                               | (~dominated & (plane >= self.extended_level_e(band))))
+                bits[invalid] |= _BIT[band]
+            out.append(bits)
+        return out
 
     def _tilt(self, rng: np.random.Generator) -> float:
         return float(rng.choice(self._tilts, p=self._tilt_p)
@@ -269,7 +411,7 @@ class BlankPixelModel:
         for band in BLANK_BAND_NAMES:
             _stamp(det, self._cosmic,
                    _draw_clusters(side, float(p["cosmic_density"][band]), rng), _BIT[band])
-        _stamp(det, self._other, _draw_clusters(side, float(p["other_density"]), rng), _ALL)
+        _stamp(det, self._other, _draw_clusters(side, float(p["other_density"]), rng), _NISP)
         # Persistence bands of sources elsewhere on the detector: random on the sky.
         length = float(p["band_length"])
         rate = float(p["band_rate"]) * (1.0 - float(p["sky_band_share"]))
@@ -283,7 +425,7 @@ class BlankPixelModel:
                 along = du * np.cos(tilt) + dv * np.sin(tilt)
                 across = -du * np.sin(tilt) + dv * np.cos(tilt)
                 width = float(rng.choice(self._band_widths))
-                det[(np.abs(across) <= width / 2) & (np.abs(along) <= length / 2)] |= _ALL
+                det[(np.abs(across) <= width / 2) & (np.abs(along) <= length / 2)] |= _NISP
         return det
 
     def _sky_bands(self, shape: tuple[int, int], theta_deg: float, rng: np.random.Generator) -> list:
@@ -333,12 +475,11 @@ class BlankPixelModel:
         """Invalid bits (one per band of :data:`BLANK_BAND_NAMES`) of one dither
         on the mosaic grid."""
         shape = (int(shape[0]), int(shape[1]))
-        side = int(np.ceil(np.hypot(*shape) / DETECTOR_FACTOR)) + 6
-        det = self._detector_bits(side, activity, rng)
+        det = self._detector_bits(_detector_side(shape), activity, rng)
         bits = stencil_to_mosaic(det, shape, theta_deg=theta_deg, offset=rng.uniform(-1.0, 1.0, 2))
         sky = self._sky_band_mask(shape, theta_deg, anchors or [], rng)
         if sky is not None:
-            bits[sky] |= _ALL
+            bits[sky] |= _NISP
         return bits
 
     def blank_mask(
@@ -347,29 +488,45 @@ class BlankPixelModel:
         rng: np.random.Generator,
         *,
         theta_deg: float | None = None,
+        trigger: np.ndarray | None = None,
+        star_trigger: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Blank pixels ``(H, W, 3)`` (bool, bands as :data:`BLANK_BAND_NAMES`)
-        of a field whose pixels are covered by ``coverage`` exposures."""
+        """Blank pixels ``(H, W, 4)`` (bool, bands as :data:`BAND_NAMES`) of a
+        field whose pixels are covered by ``coverage`` exposures. With the
+        scene's ``trigger`` (and its ``star_trigger`` share, see
+        :meth:`core_exposure_bits`) bright cores are blanked too."""
         coverage = np.asarray(coverage)
         shape = (int(coverage.shape[0]), int(coverage.shape[1]))
+        count = int(coverage.max())
         theta = float(rng.uniform(0.0, 360.0)) if theta_deg is None else float(theta_deg)
         field_activity = float(np.exp(rng.normal(0.0, self._sigma_field)))
         anchors = self._sky_bands(shape, theta, rng)
+        cores = (self.core_exposure_bits(trigger, star_trigger, count, rng, theta_deg=theta)
+                 if trigger is not None else [None] * count)
         exposures = (
             self.exposure_bits(
                 shape, rng, theta_deg=theta, anchors=anchors,
                 activity=field_activity * float(np.exp(rng.normal(0.0, self._sigma_exposure))),
-            )
-            for _ in range(int(coverage.max()))
+            ) | (0 if core is None else core)
+            for core in cores
         )
         bits = blank_where_all_invalid(exposures, coverage)
-        return np.stack([(bits & _BIT[band]) > 0 for band in BLANK_BAND_NAMES], axis=-1)
+        return np.stack([(bits & _BIT[band]) > 0 for band in BAND_NAMES], axis=-1)
 
-    def draw(self, shape: tuple[int, int], depth_quantile: float, rng: np.random.Generator) -> np.ndarray:
-        """Blank pixels ``(H, W, 3)`` of a scene at ``depth_quantile`` of the
+    def draw(
+        self,
+        shape: tuple[int, int],
+        depth_quantile: float,
+        rng: np.random.Generator,
+        *,
+        trigger: np.ndarray | None = None,
+        star_trigger: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Blank pixels ``(H, W, 4)`` of a scene at ``depth_quantile`` of the
         sky (0 shallowest, 1 deepest): its exposure count
         (:meth:`exposure_count`), the detector seams that step the count
-        across the field, and the blanks of that coverage."""
+        across the field, and the blanks of that coverage — with the bright
+        cores of the scene when its ``trigger`` is given."""
         theta = float(rng.uniform(0.0, 360.0))
         coverage = draw_coverage_map(shape, self.exposure_count(depth_quantile), rng, theta_deg=theta)
-        return self.blank_mask(coverage, rng, theta_deg=theta)
+        return self.blank_mask(coverage, rng, theta_deg=theta, trigger=trigger, star_trigger=star_trigger)

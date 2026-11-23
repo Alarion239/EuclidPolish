@@ -236,6 +236,13 @@ class Config:
     # This is the probability for sources just above the well.
     TRAIN_SATURATION_MASK_PROB = 0.2
     TRAIN_SATURATION_MASK_PROB_MAX = 0.5
+    # Blank (exactly zero) pixels of live training fields: the pixels no
+    # exposure of the stack measured — persistence masks, cosmic rays, bad
+    # pixels and the cores of bright stars — at this release's measured rates
+    # (sky/observation/blank_pixels.py). It replaces the rectangular blackout
+    # above for these fields. "off" trains without (members trained before
+    # 2026-11-22 continue that way); "q1" has about a quarter of DR1's blanks.
+    TRAIN_BLANK_PIXELS = "dr1"
     # Galaxy pre-blur (live training only, off by default): with this
     # probability per visit the clean GALAXY field is smoothed by a Gaussian
     # of FWHM ~ Uniform(0, max) arcsec before the stars are added and the
