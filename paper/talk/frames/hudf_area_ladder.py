@@ -9,8 +9,13 @@ Areas: DSS2 the whole sky (41,253 deg²), Pan-STARRS 3π 30,000, Euclid Wide 14,
 Legacy Surveys DR10 DECam images, mostly DES data here), Hubble 1.64 (COSMOS, the largest HST mosaic) and
 JWST 0.54 (COSMOS-Web), the same numbers as the wide-or-sharp chart.
 
-Writes images/AL_<survey>.pdf (one page each), images/AL_hst_over_ls.pdf (Hubble box + DES-label cover, see
-hst_over_ls) and images/AL_geometry.json (sky offsets for the Prezi layout).
+Writes images/AL_<survey>.pdf (one page each), the walk-down layers of the zoom window (see space():
+AL_hst_over_ls.pdf, AL_{hst,jwst}_{area,res}.pdf) and images/AL_geometry.json (sky offsets for the Prezi layout).
+
+Zoom window, clicks 10-16 (each a fade-IN on top, so area labels and resolution labels never mix):
+10 zoom onto the window: Hubble box "Hubble · 1.6 deg²" (AL_hst_over_ls, visible from the start; it also hides
+   the DES inset's label)  11 + "JWST · 0.5 deg²"  12 + "JWST · 0.06″"  13 + "Hubble · 0.09″" (covers the JWST box)
+14 + a copy of the DES inset ("DES · 0.9″")  15 + Pan-STARRS inset  16 + DSS2 inset.
 """
 import glob
 import json
@@ -160,7 +165,7 @@ WX, WY = off(WIN_RA, WIN_DEC)
 WIN_TL = (WX - WIN_W / 2 + 0.03 * WIN_H, WY + WIN_H / 2 - 0.03 * WIN_H)
 BOX_LABEL = 0.035 * SIDE["dss"]              # one physical size for every box label on the card
 WIN_LABEL = 0.075 * WIN_H
-SPACE_LABEL = 0.95                           # Hubble / JWST box labels, arcsec: readable at the zoom window (two lines)
+SPACE_LABEL = 0.95                           # Hubble / JWST box labels, arcsec: readable at the zoom window
 INSET = 52.0                                 # inset page side, arcsec: just covers the 50.4" x 28.35" window
 CHROMA = {"ground": 1.0, "euclid": 0.25}     # colour-only smoothing of the insets, arcsec (at or below each PSF)
 OUTLINE = 2.5                                # box outline on the DSS2 page, points; same width on the card for all
@@ -250,11 +255,11 @@ def euclid():
 COVER = {}                                   # the DES inset image, kept for hst_over_ls()
 
 
-def hst_over_ls(hst_img):
+def hst_over_ls(hst_img, label):
     """The Hubble box drawn on a page with the DES inset's geometry, plus a patch of the DES inset itself
     (same pixels, no text) over the "DES · 0.9″" window label. In Prezi this page sits exactly on the DES inset
-    and replaces the Hubble box for the walk down the ladder: the DES label goes when Hubble fades in and comes
-    back when Hubble fades out, so it only shows while the window shows DES's resolution."""
+    and is visible from the start, so the zoom onto the window lands on the Hubble box (area label) with no DES
+    label; the DES label returns with the DES-inset copy faded in on top at click 14."""
     inset, pw = COVER["ls"]
     s, pad = SIDE["hst"], 0.45
     name, area, psf = NAMES["hst"]
@@ -285,7 +290,7 @@ def hst_over_ls(hst_img):
     ax.add_patch(plt.Rectangle((-s / 2 + d, -s / 2 + d), s - 2 * d, s - 2 * d, fill=False, edgecolor="white",
                                alpha=0.85, linewidth=lw, zorder=2))
     pts = SPACE_LABEL / INSET * 720
-    ax.text(-s / 2 + pad, s / 2 - pad, f"{name} · {psf}\n{area}", color="white", fontsize=pts, family=SANS,
+    ax.text(-s / 2 + pad, s / 2 - pad, label, color="white", fontsize=pts, family=SANS,
             weight="bold", va="top", ha="left", path_effects=[pe.withStroke(linewidth=pts / 6, foreground="black")],
             zorder=3)
     path = os.path.join(OUT, "AL_hst_over_ls.pdf")
@@ -303,8 +308,12 @@ def space(inst):
     pad = 0.45                                                # arcsec; both space boxes share one label size
     page(inst, s, [(img, GRA, GDEC, s, s)], [(f"{name} · {psf}\n{area}", -s / 2 + pad, s / 2 - pad, SPACE_LABEL)],
          outline=0.08 / s * 720)                             # 0.08" wide: visible at the zoom window
+    # the first window visit shows areas first, then resolutions back down: one label each
+    for kind, label in (("area", f"{name} · {area}"), ("res", f"{name} · {psf}")):
+        page(f"{inst}_{kind}", s, [(img, GRA, GDEC, s, s)], [(label, -s / 2 + pad, s / 2 - pad, SPACE_LABEL)],
+             outline=0.08 / s * 720)
     if inst == "hst" and "ls" in COVER:
-        hst_over_ls(img)
+        hst_over_ls(img, f"{name} · {area}")
 
 
 which = sys.argv[1:] or ["dss", "ps1", "ls", "hst", "jwst", "euclid"]

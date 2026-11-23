@@ -24,8 +24,8 @@ Target: 16–18 min of talking + questions. Times are cumulative guides, not rul
 
 **[7] Each box is one survey's share of the sky.** The same patch near the Hubble Ultra Deep Field (the caption on the left says so).
 - "The big box is DSS2, photographic plates of the whole sky." [8] → "Pan-STARRS covers three quarters of it." [9] → "DES covers an eighth."
-- [10] Zoom into a 50″ window. "Here is DES at that scale." [11] → "Hubble's widest survey: this small." [12] → "JWST: smaller still."
-- [13]–[16] Walk back down: "That's JWST's resolution." Then Hubble, DES, Pan-STARRS, and finally DSS2. "Same sky, forty years of telescopes. Area and sharpness never came together."
+- [10] Zoom into a 50″ window; it opens on the Hubble box (labeled with its area). "Hubble's widest survey: this small." [11] → "JWST's widest survey: smaller still."
+- [12] → the JWST label switches to its PSF: "And that is JWST's resolution." [13]–[16] Walk back down, each with its PSF label: Hubble, DES, Pan-STARRS, and finally DSS2. "Same sky, forty years of telescopes. Area and sharpness never came together."
 
 **[17] Radio already inverts a known PSF.**
 - [18] → "From the ground, the atmosphere's blur changes all night and is never known exactly."
