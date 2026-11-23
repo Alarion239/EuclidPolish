@@ -1,7 +1,7 @@
 """Opening / closing hero: the NEXUS f200w-0063 barred spiral as full-bleed 16:9 frames (Euclid, POLISHed, JWST),
 identically framed so they can fade into each other. The galaxy sits in the left third at the same scale as the
 C1_barred squares; the right side (darkened by a gentle gradient) carries the title at the start and the takeaways at the end.
-One stretch for all three (the JWST galaxy square's, as in c1_nexus_tile_colour.py). Small label bottom-left."""
+One stretch for all three (the JWST galaxy square's, as in c1_nexus_tile_colour.py). Small label top-left."""
 import os
 import sys
 
@@ -40,7 +40,7 @@ for k, (cube, name, label) in enumerate(((lr, "euclid", "Euclid"), (sr, "polishe
     arr = (np.clip(im[::-1], 0, 1) * 255).astype(np.uint8)     # rows are y-up
     pil = Image.fromarray(arr).resize((OUTW, OUTH), Image.NEAREST if k == 0 else Image.LANCZOS)
     d = ImageDraw.Draw(pil)
-    d.text((44, OUTH - 44), label, font=FONT, fill="white", anchor="ls", stroke_width=4, stroke_fill="black")
+    d.text((44, 44), label, font=FONT, fill="white", anchor="lt", stroke_width=4, stroke_fill="black")   # top-left: the Prezi logo sits bottom-left
     out = os.path.join(T, "prezi_upload", f"HERO_{k + 1}_{name}.jpg")
     pil.save(out, quality=93)
     print(out, arr.shape)

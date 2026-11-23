@@ -1,6 +1,6 @@
 # EuclidPOLISH — Hernquist group, Fri 4 Dec 2026 — speaker script
 
-Prezi: prezi.com/p/edit/bwmtjxdbnkqw (128 clicks). Backup of the 11-22 version: prezi.com/p/edit/0nzro8jentfl.
+Prezi: prezi.com/p/edit/bwmtjxdbnkqw (121 clicks). Backup of the 11-22 version: prezi.com/p/edit/0nzro8jentfl.
 Target: 16–18 min of talking + questions. Times are cumulative guides, not rules.
 `[n]` is the click that brings that view up. "→" means the click only fades something in.
 
@@ -41,7 +41,7 @@ Target: 16–18 min of talking + questions. Times are cumulative guides, not rul
 
 ## 2 · The method (6:00–10:00)
 
-**[35] The truth: TNG50-SKIRT.** [36] → "1,154 galaxies at z ≈ 0, 100 pc per pixel. Real physics and real morphology, which is your group's work. We take only the morphology; colors come from Q1."
+**[35] The truth: 1,154 TNG50-SKIRT galaxies.** [36] → "z ≈ 0, 100 pc per pixel. Real physics and real morphology, which is your group's work. We take only the morphology; colors come from Q1."
 
 **[37] The simulated truth has its own artifacts.** "Dust-box facets, galaxies cut by the box, slabs of light, particle grain. A network trained on them could learn them as if they were real structure, so we keep the worst cases out and watch for the rest."
 
@@ -55,23 +55,23 @@ Target: 16–18 min of talking + questions. Times are cumulative guides, not rul
 
 **[46] What did it learn? A cat.** [47]–[49] → truth, Euclid, POLISHed. [50]–[52] → face close-up: Euclid, POLISHed, truth. "It restores fur it has never seen; it learned deconvolution, not galaxies."
 
-**[53]–[61] Quiz payoff.** [54]–[61] → the POLISHed version of each field fades in. "Real or simulated, the network treats them the same way."
+**[53]–[54] Quiz payoff.** [54] → all eight fields, POLISHed, in one click. "Real or simulated, the network treats them the same way."
 
-**[62]–[75] Lenses, POLISHed.** For each lens: zoom, then → POLISHed. Pause on the Q1 ring [64] and NGC 6505 [66]; take the four DR1 systems faster.
+**[55]–[68] Lenses, POLISHed.** For each lens: zoom, then → POLISHed. Pause on the Q1 ring [56]–[57] and NGC 6505 [58]–[59]; take the four DR1 systems [60]–[67] faster. [68] back to the card: all six, sharpened.
 
-**[76] Stars become points; the deep field sharpens.** [77]–[78] star: Euclid → POLISHed. [79]–[80] deep field: Euclid → POLISHed.
+**[69] Stars become points; the deep field sharpens.** [70]–[71] star: Euclid → POLISHed. [72]–[73] deep field: Euclid → POLISHed.
 
-**[81]–[111] Checked galaxy by galaxy against JWST.** Each galaxy: zoom (Euclid) → JWST → POLISHed. Use ← to flip back and forth on the first two or three galaxies, then go quickly. If short on time, skip through the last five (three clicks each).
+**[74]–[105] Checked galaxy by galaxy against JWST.** Each galaxy: zoom (Euclid) → JWST → POLISHed. Use ← to flip back and forth on the first two or three galaxies, then go quickly. If short on time, click through the last five (three clicks each).
 
-**[112]–[113] Back to the survey patch:** [113] → "The same 50″ window, POLISHed."
+**[106]–[107] Back to the survey patch:** [107] → "The same 50″ window, POLISHed."
 
-**[114]–[119] Where it fails.** [115] → "Faint galaxies lose 2–8% of their flux." [116]–[118] the bright-nucleus close-up and the holes. [119] → "Very bright cores can come out with holes. Both trace back to gaps in the training set."
+**[108]–[114] Where it fails.** [109] → "Faint galaxies lose 2–8% of their flux." [110] the flux plot. [111]–[112] the bright-nucleus close-up, then the holes outlined. [114] → "Very bright cores can come out with holes. Both trace back to gaps in the training set."
 
 ## Close (16:00–17:30)
 
-**[120] The barred spiral again: Euclid.** "Remember this galaxy?" [121] → POLISHed. [122] → JWST. Let the JWST image sit for a breath.
-[123]–[125] → the three takeaways, one per click; read each once.
-**[126]–[128]** Overview: "That's the whole story on one page." Then take questions.
+**[115] The barred spiral again: Euclid.** "Remember this galaxy?" [116] → POLISHed. [117] → JWST. Let the JWST image sit for a breath.
+[118]–[120] → the three takeaways, one per click; read each once.
+**[121]** Overview: "That's the whole story on one page." Then take questions.
 
 ---
 
