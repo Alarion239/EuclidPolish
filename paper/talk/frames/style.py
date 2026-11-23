@@ -38,6 +38,7 @@ BAND = {"VIS": "#7fb2ff", "Y": "#8fe08f", "J": "#8fe08f", "H": "#ff8a7a"}
 LEGEND_COLORS = ("#7fb2ff", "#8fe08f", "#ff8a7a")
 
 STROKE = [pe.withStroke(linewidth=3.0, foreground="black")]
+SHOW_CALLBACK_MARK = False      # the coral "this comes back later" envelope; off since 11-22 (user)
 
 W_PX, H_PX, DPI = 3840, 2160, 200
 
@@ -104,7 +105,7 @@ def image_panel(ax, img, *, x, y, size, label=None, legend=None, interp="lanczos
                                         shrinkA=0, shrinkB=0))
             ax.text(cx + 1.35 * dx, cy + 1.35 * dy, lab, color="white", fontsize=label_size * 0.5,
                     family=SANS, ha="center", va="center", path_effects=STROKE, zorder=3)
-    if envelope:
+    if envelope and SHOW_CALLBACK_MARK:
         envelope_mark(ax, x + size - pad - size * 0.075, y + size - pad - size * 0.05,
                       w=size * 0.075)
 

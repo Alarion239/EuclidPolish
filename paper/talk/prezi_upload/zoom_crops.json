@@ -1,0 +1,70 @@
+{
+ "barred": {
+  "stems": [
+   "C1_barred_1_euclid",
+   "C1_barred_2_polished",
+   "C1_barred_3_jwst"
+  ],
+  "box": [
+   0.24,
+   0.24,
+   0.5
+  ]
+ },
+ "q1ring": {
+  "stems": [
+   "LENS_ring102042919_1_euclid",
+   "LENS_ring102042919_2_polished"
+  ],
+  "box": [
+   0.27,
+   0.27,
+   0.46
+  ]
+ },
+ "ngc6505": {
+  "stems": [
+   "LENS_NGC6505_1_euclid",
+   "LENS_NGC6505_2_polished"
+  ],
+  "box": [
+   0.2,
+   0.2,
+   0.6
+  ]
+ },
+ "dr1g4": {
+  "stems": [
+   "DR1L_G04_1_euclid",
+   "DR1L_G04_2_polished"
+  ],
+  "box": [
+   0.25,
+   0.25,
+   0.5
+  ]
+ },
+ "dr1g2": {
+  "stems": [
+   "DR1L_G02_1_euclid",
+   "DR1L_G02_2_polished"
+  ],
+  "box": [
+   0.27,
+   0.27,
+   0.46
+  ]
+ },
+ "grand": {
+  "stems": [
+   "JWST03_grand_design_1_euclid",
+   "JWST03_grand_design_2_polished",
+   "JWST03_grand_design_3_jwst"
+  ],
+  "box": [
+   0.22,
+   0.22,
+   0.56
+  ]
+ }
+}
