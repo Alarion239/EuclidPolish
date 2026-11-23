@@ -23,32 +23,45 @@ pts = [  # name, area, fwhm, colour, label offset (points), ha
     ("Pan-STARRS", 30000, 1.11, GREY, (0, 34), "center"),
     ("DES", 5000, 0.88, GREY, (-20, 0), "right"),
     ("HSC", 670, 0.61, GREY, (-20, 0), "right"),
-    ("Hubble", 1.64, 0.09, SPACE, (20, 0), "left"),
+    ("Hubble", 1.64, 0.09, SPACE, (-20, 0), "right"),
     ("JWST", 0.54, 0.061, SPACE, (20, 0), "left"),
 ]
-fig = plt.figure(figsize=(16, 9), dpi=200, facecolor="white")
-ax = fig.add_axes([0.12, 0.16, 0.84, 0.78])
-ax.set_xscale("log"); ax.set_yscale("log")
-ax.set_xlim(0.2, 1.5e5); ax.set_ylim(1.9, 0.045)            # sharper is up
-for name, a, f, c, (dx, dy), ha in pts:
-    ax.scatter(a, f, s=340, color=c, edgecolor="white", linewidth=2, zorder=3)
-    ax.annotate(name, (a, f), xytext=(dx, dy), textcoords="offset points", ha=ha, va="center",
-                fontsize=27, color=c, zorder=4)
-ax.plot([1900, 14000], [0.16, 0.16], color=ACCENT, lw=3, zorder=2, solid_capstyle="butt")
-ax.scatter(1900, 0.16, s=560, color=ACCENT, edgecolor="white", linewidth=2, zorder=3)
-ax.scatter(14000, 0.16, s=560, facecolor="white", edgecolor=ACCENT, linewidth=3.5, zorder=3)
-ax.annotate("Euclid", (5150, 0.16), xytext=(0, 34), textcoords="offset points", ha="center", va="center",
-            fontsize=34, color=ACCENT, fontweight="bold")
-ax.set_xlabel("Area  [deg²]", fontsize=28, color=INK, labelpad=12)
-ax.set_ylabel("PSF FWHM  [arcsec]", fontsize=28, color=INK, labelpad=12)
-ax.set_xticks([1, 100, 1e4]); ax.set_xticklabels(["1", "100", "10 000"])
-ax.set_yticks([1.0, 0.3, 0.1]); ax.set_yticklabels(["1", "0.3", "0.1"])
-ax.minorticks_off()
-ax.tick_params(labelsize=24, colors=INK, pad=8)
-for s in ("top", "right"):
-    ax.spines[s].set_visible(False)
-for s in ("left", "bottom"):
-    ax.spines[s].set_color(INK)
-out = os.path.join(OUT, "F1v4_wide_or_sharp.png")
-fig.savefig(out, dpi=200, facecolor="white")
-print(out)
+
+def chart(with_euclid):
+    """One chart; the talk shows it first without Euclid, then fades in the version with Euclid. The faint dashed
+    line is the Pareto front (no survey both wider and sharper); with Euclid it runs through Euclid."""
+    fig = plt.figure(figsize=(16, 9), dpi=200, facecolor="white")
+    ax = fig.add_axes([0.12, 0.16, 0.84, 0.78])
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.set_xlim(0.2, 1.5e5); ax.set_ylim(1.9, 0.045)            # sharper is up
+    for name, a, f, c, (dx, dy), ha in pts:
+        ax.scatter(a, f, s=340, color=c, edgecolor="white", linewidth=2, zorder=3)
+        ax.annotate(name, (a, f), xytext=(dx, dy), textcoords="offset points", ha=ha, va="center",
+                    fontsize=27, color=c, zorder=4)
+    allp = [(a, f) for _, a, f, *_ in pts] + ([(14000, 0.16)] if with_euclid else [])
+    front = sorted(p for p in allp if not any(q[0] >= p[0] and q[1] <= p[1] and q != p for q in allp))
+    fx, fy = zip(*front)
+    ax.plot(fx, fy, ls=(0, (4, 4)), lw=2, color=ACCENT if with_euclid else GREY, alpha=0.55, zorder=1)
+    if with_euclid:
+        ax.plot([1900, 14000], [0.16, 0.16], color=ACCENT, lw=3, zorder=2, solid_capstyle="butt")
+        ax.scatter(1900, 0.16, s=560, color=ACCENT, edgecolor="white", linewidth=2, zorder=3)
+        ax.scatter(14000, 0.16, s=560, facecolor="white", edgecolor=ACCENT, linewidth=3.5, zorder=3)
+        ax.annotate("Euclid", (5150, 0.16), xytext=(0, 34), textcoords="offset points", ha="center",
+                    va="center", fontsize=34, color=ACCENT, fontweight="bold")
+    ax.set_xlabel("Area  [deg²]", fontsize=28, color=INK, labelpad=12)
+    ax.set_ylabel("PSF FWHM  [arcsec]", fontsize=28, color=INK, labelpad=12)
+    ax.set_xticks([1, 100, 1e4]); ax.set_xticklabels(["1", "100", "10 000"])
+    ax.set_yticks([1.0, 0.3, 0.1]); ax.set_yticklabels(["1", "0.3", "0.1"])
+    ax.minorticks_off()
+    ax.tick_params(labelsize=24, colors=INK, pad=8)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    for sp in ("left", "bottom"):
+        ax.spines[sp].set_color(INK)
+    out = os.path.join(OUT, f"F1v5_wide_or_sharp_{'euclid' if with_euclid else 'base'}.png")
+    fig.savefig(out, dpi=200, facecolor="white")
+    print(out)
+
+
+chart(False)
+chart(True)

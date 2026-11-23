@@ -151,6 +151,7 @@ WX, WY = off(WIN_RA, WIN_DEC)
 WIN_TL = (WX - WIN_W / 2 + 0.03 * WIN_H, WY + WIN_H / 2 - 0.03 * WIN_H)
 BOX_LABEL = 0.035 * SIDE["dss"]              # one physical size for every box label on the card
 WIN_LABEL = 0.075 * WIN_H
+INSET = 52.0                                 # inset page side, arcsec: just covers the 50.4" x 28.35" window
 OUTLINE = 2.5                                # box outline on the DSS2 page, points; same width on the card for all
 
 
@@ -200,7 +201,8 @@ def ground(inst):
     Q = L.INST[inst][3]
     page(inst, s, [(colour(ov, med, white, Q), GRA, GDEC, s, s)], [(f"{name} · {area}", *box_tl(inst), BOX_LABEL)],
          outline=OUTLINE * SIDE["dss"] / s)
-    page(inst + "_inset", pw, [(colour(patch, med, white, Q), WIN_RA, WIN_DEC, pw, pw)],
+    # the inset page only covers the zoom window (a ~10 px square on the card), cropped from the 160" patch
+    page(inst + "_inset", INSET, [(colour(patch, med, white, Q), WIN_RA, WIN_DEC, pw, pw)],
          [(f"{name} · {psf}", *WIN_TL, WIN_LABEL)], centre=(WIN_RA, WIN_DEC))
 
 
