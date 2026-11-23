@@ -87,6 +87,8 @@
   </div>
   <div class="group">
     <span class="group detail-only">
+    <label title="Left of the swipe divider: Euclid, or a model to compare against">Left <select id="left" aria-label="Left side"></select></label>
+    <label title="Which POLISH model super-resolves the right side">Right <select id="model" aria-label="Model"></select></label>
     <select id="colour" aria-label="Colour">
       <option value="ab">Colour, AB-balanced (H · YJ · VIS)</option>
       <option value="colour">Colour, console "vivid" balance</option>
@@ -114,6 +116,10 @@
     <p><b>Caveat:</b> the right side is a model reconstruction trained on simulations, not an observation.
       On real sky it is known to lose some faint flux (~7–10%) and can add faint texture. The model was
       tuned on Q1 noise; DR1 (newer pipeline, and deep fields in particular) is not yet validated.</p>
+    <p><b>Models:</b> 257 is the production model. 271 is a fine-tune of 257 (Nov 2026) trained with blank
+      NISP pixels and real-sky equivariance: it fills DR1's empty NISP pixels with natural colour and has
+      smoother envelopes, but keeps a little more noise grain in bright halos. <b>Right</b> picks the model;
+      in Swipe, <b>Left</b> can be Euclid or the other model, to compare the two.</p>
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/ort.all.min.js" crossorigin="anonymous"></script>

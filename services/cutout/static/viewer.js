@@ -82,6 +82,13 @@ const EXIT_ZOOM = 0.4;
 const SR_ARCSEC = 0.05;
 const FETCH_CONCURRENCY = 4;
 const CACHE_BLOCKS = 48;
+// Models the page can run (scripts/export_onnx.py). Each block keeps one SR per
+// model and TTA setting, so switching back is instant.
+const MODELS = {
+  "257": { file: "static/m257.onnx", label: "257 · production" },
+  "271": { file: "static/m271.onnx", label: "271 · newer" },
+};
+const DEFAULT_MODEL = "257";
 const D2R = Math.PI / 180;
 
 const $ = (id) => document.getElementById(id);
@@ -99,13 +106,16 @@ const state = {
   colour: "ab",
   white: 3000,           // VIS-equivalent white level, e⁻ per LR pixel
   tta: false,
+  model: DEFAULT_MODEL,   // key of MODELS: the POLISH side
+  left: "lr",            // swipe, left of the divider: "lr" (Euclid) or a key of MODELS
   blink: false,
   hover: null,
 };
 const blocks = new Map();      // key → block
 const map = { A: null, al: null, survey: null, outlines: null, mocs: [] };
 const indexes = {};            // release → {cd, tiles: [{id, ra, dec, w, h, wcs, deep}]}
-let session = null, providerName = "", modelMs = [], modelPromise = null;
+const sessions = {}, modelPromises = {};  // model → ONNX session / its loading promise
+let providerName = "", modelMs = [];
 let fetchQueue = [], fetching = 0, inferChain = Promise.resolve(), pendingInfer = 0;
 let drawScheduled = false;
 
@@ -405,14 +415,26 @@ function updateMapStatus() {
   if (btn) btn.onclick = () => enterDetail(ra, dec, ENTER_ZOOM);
 }
 
-function ensureModel() {
-  if (!modelPromise) {
-    modelPromise = loadModel()
-      .then(() => { for (const blk of blocks.values()) if (blk.state === "lr") queueInfer(blk); schedule(); })
-      .catch((e) => { modelPromise = null; setStatus(String(e.message || e), true); });
-  }
-  return modelPromise;
+// The models the view shows: the POLISH side, and in swipe the left side when
+// it is a model too (model-vs-model comparison).
+function shownModels() {
+  return state.mode === "swipe" && state.left !== "lr" && state.left !== state.model
+    ? [state.model, state.left] : [state.model];
 }
+
+function ensureModel() {
+  return Promise.all(shownModels().map((model) => {
+    if (!modelPromises[model]) {
+      modelPromises[model] = loadModel(model)
+        .then(() => { for (const blk of blocks.values()) if (blk.state === "lr") queueInfer(blk, model); schedule(); })
+        .catch((e) => { delete modelPromises[model]; setStatus(String(e.message || e), true); });
+    }
+    return modelPromises[model];
+  }));
+}
+
+// The SR cache key of a block for the current model and TTA setting.
+function srKey(model = state.model, tta = state.tta) { return `${model}:${tta ? 8 : 1}`; }
 
 // After a pan, move to the tile that holds the view centre deepest.
 async function retileIfNeeded() {
@@ -441,12 +463,12 @@ function requestBlock(tile, i, j) {
   let blk = blocks.get(key);
   if (!blk) {
     blk = { key, tile: tile.key, tileId: tile.id, release: tile.release, i, j,
-            state: "queued", lr: null, sr: {}, canvases: {}, used: 0 };
+            state: "queued", lr: null, sr: {}, canvases: {}, queued: new Set(), used: 0 };
     blocks.set(key, blk);
     fetchQueue.push(blk);
   }
   blk.used = performance.now();
-  if (blk.state === "lr" && !blk.sr[state.tta] && !blk.inferQueued) queueInfer(blk);
+  if (blk.state === "lr") for (const model of shownModels()) queueInfer(blk, model);
   return blk;
 }
 
@@ -484,7 +506,7 @@ async function fetchBlock(blk) {
   blk.lr = crop(e, N, 4, M, B);
   blk.state = "lr";
   blk.canvases = {};
-  queueInfer(blk);
+  for (const model of shownModels()) queueInfer(blk, model);
 }
 
 // (C, n, n) band-major → its (C, size, size) window starting at (off, off).
@@ -498,25 +520,24 @@ function crop(src, n, channels, off, size) {
   return out;
 }
 
-function queueInfer(blk) {
-  const tta = state.tta;
-  if (blk.sr[tta] || !blk.input || !session) return;      // ensureModel re-queues once loaded
-  blk.inferQueued = true;
+function queueInfer(blk, model = state.model) {
+  const tta = state.tta, key = srKey(model, tta);
+  if (blk.sr[key] || blk.queued.has(key) || !blk.input || !sessions[model]) return;   // ensureModel re-queues once loaded
+  blk.queued.add(key);
   pendingInfer++;
   inferChain = inferChain.then(async () => {
     try {
-      if (!blocks.has(blk.key) || !session) return;
+      if (!blocks.has(blk.key) || !shownModels().includes(model) || tta !== state.tta) return;   // no longer shown
       if (!isVisible(blk)) return;             // panned away: skip, re-queued if seen again
       const t0 = performance.now();
-      blk.sr[tta] = await superResolve(blk.input, tta);
+      blk.sr[key] = await superResolve(blk.input, tta, model);
       modelMs.push((performance.now() - t0) / (tta ? 8 : 1));
       if (modelMs.length > 20) modelMs.shift();
       blk.canvases = {};
-      if (blk.sr[false] && blk.sr[true]) blk.input = null;   // both done: drop the raw input
     } catch (e) {
       setStatus(`Model error: ${e.message || e}`, true);
     } finally {
-      blk.inferQueued = false;
+      blk.queued.delete(key);
       pendingInfer--;
       schedule();
     }
@@ -524,7 +545,8 @@ function queueInfer(blk) {
 }
 
 // (4, N, N) electrons → (4, 2B, 2B) electrons per SR pixel (NaN where the input is).
-async function superResolve(e, tta) {
+async function superResolve(e, tta, model = state.model) {
+  const session = sessions[model];
   const hw = N * N, C = 32;
   const x = new Float32Array(hw * C);
   for (let p = 0; p < hw; p++) {
@@ -583,13 +605,13 @@ function rot90(src, n, ch) {        // out[r][c] = src[c][n-1-r]
   return out;
 }
 
-async function loadModel() {
+async function loadModel(model) {
   ort.env.wasm.wasmPaths = ORT_DIST;
   ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(navigator.hardwareConcurrency || 4, 8) : 1;
   const tries = navigator.gpu ? ["webgpu", "wasm"] : ["wasm"];
   for (const ep of tries) {
     try {
-      session = await ort.InferenceSession.create("static/m257.onnx", { executionProviders: [ep] });
+      sessions[model] = await ort.InferenceSession.create(MODELS[model].file, { executionProviders: [ep] });
       providerName = ep === "webgpu" ? "WebGPU" : `CPU (${ort.env.wasm.numThreads} thread${ort.env.wasm.numThreads > 1 ? "s" : ""})`;
       return;
     } catch (e) {
@@ -669,13 +691,14 @@ function renderBlock(data, n, sb) {
   return c;
 }
 
+// which: "lr" (Euclid) or a key of MODELS (that model's SR).
 function blockCanvas(blk, which) {
-  const key = `${which}:${state.colour}:${state.white}:${state.tta}`;
+  const key = `${which}:${state.colour}:${state.white}:${state.tta ? 8 : 1}`;
   if (blk.canvases[key]) return blk.canvases[key];
   let c = null;
-  if (which === "lr" && blk.lr) c = renderBlock(blk.lr, B, 1);
-  if (which === "sr" && blk.sr[state.tta]) c = renderBlock(blk.sr[state.tta], 2 * B, SCALE * SCALE);
-  if (c) blk.canvases = { ...Object.fromEntries(Object.entries(blk.canvases).filter(([k]) => !k.startsWith(which))), [key]: c };
+  if (which === "lr") { if (blk.lr) c = renderBlock(blk.lr, B, 1); }
+  else if (blk.sr[srKey(which)]) c = renderBlock(blk.sr[srKey(which)], 2 * B, SCALE * SCALE);
+  if (c) blk.canvases = { ...Object.fromEntries(Object.entries(blk.canvases).filter(([k]) => !k.startsWith(`${which}:`))), [key]: c };
   return c;
 }
 
@@ -704,8 +727,8 @@ function draw() {
   pumpFetches();
   evict();
 
-  // Swipe: Euclid left of the divider, POLISH right. Otherwise one image fills the
-  // view; B (blink) swaps it for the other.
+  // Swipe: Euclid (or another model, state.left) left of the divider, POLISH
+  // right. Otherwise one image fills the view; B (blink) swaps it for the other.
   const swipe = state.mode === "swipe";
   const split = swipe ? state.divider * w : w;
   const fullKind = (state.mode === "lr") !== state.blink ? "lr" : "sr";
@@ -716,8 +739,8 @@ function draw() {
     const [ax, ay] = toScreen(blk.i * B, (blk.j + 1) * B);
     const [bx] = toScreen((blk.i + 1) * B, blk.j * B);
     const sx = snap(ax), sy = snap(ay), size = snap(bx) - sx;
-    const lr = blockCanvas(blk, "lr"), sr = blockCanvas(blk, "sr");
-    const left = swipe || fullKind === "lr" ? lr : sr;
+    const sr = blockCanvas(blk, state.model);
+    const left = swipe ? blockCanvas(blk, state.left) : fullKind === "lr" ? blockCanvas(blk, "lr") : sr;
     drawClipped(left, sx, sy, size, 0, split);
     if (swipe) drawClipped(sr, sx, sy, size, split, w);
     if (!left && sx < split) placeholder(blk, sx, sy, size, 0, split);
@@ -731,8 +754,10 @@ function draw() {
     ctx.fillStyle = "#0b0d10"; ctx.font = "12px system-ui"; ctx.textAlign = "center"; ctx.fillText("⇔", split, h / 2 + 4);
   }
   ctx.font = "600 12px system-ui"; ctx.textAlign = "left";
-  const labels = swipe ? [["EUCLID 0.1″", 12, "#e6e8eb"], ["POLISH 0.05″", split + 12, "#f2c14e"]]
-    : [[fullKind === "lr" ? "EUCLID 0.1″" : "POLISH 0.05″", 12, fullKind === "lr" ? "#e6e8eb" : "#f2c14e"]];
+  const polish = `POLISH ${state.model} 0.05″`;
+  const leftLabel = state.left === "lr" ? ["EUCLID 0.1″", 12, "#e6e8eb"] : [`POLISH ${state.left} 0.05″`, 12, "#7fc8f8"];
+  const labels = swipe ? [leftLabel, [polish, split + 12, "#f2c14e"]]
+    : [[fullKind === "lr" ? "EUCLID 0.1″" : polish, 12, fullKind === "lr" ? "#e6e8eb" : "#f2c14e"]];
   for (const [text, x, colour] of labels) {
     if (x > w - 40) continue;
     ctx.fillStyle = "rgba(11,13,16,.7)"; ctx.fillRect(x - 6, 8, ctx.measureText(text).width + 12, 20);
@@ -775,7 +800,7 @@ function drawScaleBar(w, h) {
 
 function evict() {
   if (blocks.size <= CACHE_BLOCKS) return;
-  const old = [...blocks.values()].filter((b) => !isVisible(b) && b.state !== "fetching" && !b.inferQueued)
+  const old = [...blocks.values()].filter((b) => !isVisible(b) && b.state !== "fetching" && !b.queued.size)
     .sort((a, b) => a.used - b.used);
   for (const b of old.slice(0, blocks.size - CACHE_BLOCKS)) blocks.delete(b.key);
   fetchQueue = fetchQueue.filter((b) => blocks.has(b.key));
@@ -795,7 +820,7 @@ function sampleAt(x, y) {
   if (!blk || !blk.lr) return null;
   const c = Math.floor(x - i * B), r = Math.floor(y - j * B);
   const lr = blk.lr[r * B + c];
-  const sr = blk.sr[state.tta];
+  const sr = blk.sr[srKey()];
   const s = sr ? sr[Math.floor(2 * (y - j * B)) * 2 * B + Math.floor(2 * (x - i * B))] : null;
   return { lr, sr: s };
 }
@@ -822,10 +847,11 @@ function escapeHtml(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<":
 function updateStatus(visible) {
   if (statusError) return;
   const waiting = visible.filter((b) => b.state === "queued" || b.state === "fetching").length;
-  const srDone = visible.filter((b) => b.sr[state.tta]).length;
+  const srDone = visible.filter((b) => shownModels().every((m) => b.sr[srKey(m)])).length;
   const ms = modelMs.length ? modelMs.reduce((a, b) => a + b, 0) / modelMs.length : null;
   const rel = `${releaseLabel()}${state.tile && state.tile.deep ? " deep field (model trained on Wide depth)" : ""}`;
-  const model = session ? `${rel} · ${providerName}${ms ? ` · ${Math.round(ms)} ms/block${state.tta ? " ×8" : ""}` : ""}` : "loading model…";
+  const loaded = shownModels().every((m) => sessions[m]);
+  const model = loaded ? `${rel} · ${shownModels().slice().reverse().join(" ⇔ ")} · ${providerName}${ms ? ` · ${Math.round(ms)} ms/block${state.tta ? " ×8" : ""}` : ""}` : "loading model…";
   const work = visible.length === 0 ? "zoom in to load blocks" : `${srDone}/${visible.length} blocks` +
     (waiting ? ` · fetching ${waiting}` : "") + (pendingInfer ? ` · model queue ${pendingInfer}` : "");
   setStatus(`${model} · ${work}`);
@@ -834,7 +860,8 @@ function updateStatus(visible) {
 // ───────────────────────────────── interaction ─────────────────────────────────
 
 function saveHash() {
-  const rel = `&rel=${state.release}`;
+  const rel = `&rel=${state.release}${state.model !== DEFAULT_MODEL ? `&m=${state.model}` : ""}` +
+    `${state.left !== "lr" ? `&l=${state.left}` : ""}`;
   if (state.view === "map") {
     if (!map.al) return;
     const [ra, dec] = mapCentre();
@@ -922,6 +949,19 @@ function bindUi() {
   const white = () => { state.white = Math.round(300 * Math.pow(10, 3 * (100 - +$("white").value) / 100)); schedule(); };
   $("white").addEventListener("input", white); white();
   $("tta").addEventListener("change", (e) => { state.tta = e.target.checked; schedule(); });
+  $("model").replaceChildren(...Object.entries(MODELS).map(([id, m]) => new Option(m.label, id)));
+  $("left").replaceChildren(new Option("Euclid", "lr"),
+    ...Object.keys(MODELS).map((id) => new Option(id, id)));
+  const onModels = () => { modelMs = []; statusError = ""; saveHash(); if (state.view === "detail") ensureModel(); schedule(); };
+  $("left").addEventListener("change", (e) => { state.left = e.target.value; onModels(); });
+  $("model").addEventListener("change", (e) => {
+    state.model = e.target.value;
+    modelMs = [];
+    statusError = "";
+    saveHash();
+    if (state.view === "detail") ensureModel();
+    schedule();
+  });
   $("info").addEventListener("click", () => $("about").classList.toggle("show"));
 
   let drag = null;
@@ -964,6 +1004,8 @@ function bindUi() {
 
 function setMode(mode) {
   state.mode = mode; state.blink = false;
+  $("left").parentElement.hidden = mode !== "swipe";
+  if (state.view === "detail") ensureModel();
   document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
   schedule();
 }
@@ -980,6 +1022,10 @@ async function main() {
   setView("map");
   const hash = new URLSearchParams(location.hash.slice(1));
   state.release = RELEASES[hash.get("rel")] ? hash.get("rel") : "q1";
+  state.model = MODELS[hash.get("m")] ? hash.get("m") : DEFAULT_MODEL;
+  state.left = MODELS[hash.get("l")] ? hash.get("l") : "lr";
+  $("model").value = state.model;
+  $("left").value = state.left;
   $("release").value = state.release;
   index = await loadIndex(state.release);
   const hasPos = hash.has("ra") && Number.isFinite(+hash.get("ra")) && Number.isFinite(+hash.get("dec"));
