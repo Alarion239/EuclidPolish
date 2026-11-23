@@ -50,6 +50,7 @@ from euclid_polish.image.collection import ImageSet  # noqa: E402
 from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
 from euclid_polish.observability import Reporter, ResourceSampler  # noqa: E402
 from euclid_polish.provenance.defaults import default_store  # noqa: E402
+from euclid_polish.sky.observation.blank_pixels import blank_pixel_releases  # noqa: E402
 from euclid_polish.training.forward_onthefly import (  # noqa: E402
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
@@ -276,6 +277,12 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "--galaxy-blur-fwhm-max) arcsec, all bands) before the "
                         "stars are added and the field is observed; stars stay "
                         "sharp. 0 = off. Member-spec key: galaxy_blur_prob.")
+    p.add_argument("--blank-pixels", default="", choices=("",) + blank_pixel_releases(),
+                   help="Live training: blank (zero) the NISP pixels that no "
+                        "exposure of the stack measured — persistence masks, "
+                        "cosmic rays, bad pixels — at this release's rates "
+                        "(euclid_polish.sky.observation.blank_pixels). Empty = "
+                        "off. Member-spec key: blank_pixels.")
     p.add_argument("--galaxy-blur-fwhm-max", type=float,
                    default=Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
                    help="Largest galaxy pre-blur FWHM in arcsec (default "
@@ -531,7 +538,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
                "loss_knees", "loss_floor", "knee_tilt", "loss_knee_weights", "lupton_loss",
                "brightness_consistency", "noise_texture_jitter",
-               "galaxy_blur_prob", "galaxy_blur_fwhm_max",
+               "galaxy_blur_prob", "galaxy_blur_fwhm_max", "blank_pixels",
                "isotropy_penalty", "isotropy_knee", "isotropy_scales", "isotropy_per_batch",
                "isotropy_tolerance",
                "real_equivariance", "real_equivariance_tiles", "real_equivariance_batch",
@@ -871,6 +878,10 @@ def _diversity_kwargs(args, over: dict) -> dict:
     except (TypeError, ValueError) as exc:
         print(f"✗ {exc}")
         raise SystemExit(2) from exc
+    blank_pixels = over.get("blank_pixels", args.blank_pixels) or ""
+    if blank_pixels not in ("",) + blank_pixel_releases():
+        print(f"✗ blank_pixels must be one of {blank_pixel_releases()} or empty, got {blank_pixels!r}")
+        raise SystemExit(2)
     if galaxy_blur_prob and not bool(over.get("forward_onthefly", args.forward_onthefly)):
         print("✗ galaxy_blur_prob needs the live (on-the-fly) forward model")
         raise SystemExit(2)
@@ -900,6 +911,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
                                           "noise_texture_jitter"),
             "galaxy_blur_prob": galaxy_blur_prob,
             "galaxy_blur_fwhm_max": galaxy_blur_fwhm_max,
+            "blank_pixels": str(blank_pixels),
             "isotropy_penalty": isotropy_penalty,
             "isotropy_knee": isotropy_knee,
             "isotropy_scales": isotropy_scales,
@@ -994,6 +1006,8 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
             identity["galaxy_blur_prob"] = float(origin["galaxy_blur_prob"])
         if "galaxy_blur_fwhm_max" not in override and origin.get("galaxy_blur_fwhm_max"):
             identity["galaxy_blur_fwhm_max"] = float(origin["galaxy_blur_fwhm_max"])
+    if origin.get("blank_pixels") and "blank_pixels" not in override:
+        identity["blank_pixels"] = str(origin["blank_pixels"])
     if origin.get("isotropy_penalty") and "isotropy_penalty" not in override:
         identity["isotropy_penalty"] = float(origin["isotropy_penalty"])
     if origin.get("isotropy_penalty"):
@@ -1299,6 +1313,8 @@ def main() -> int:
             knobs += " noise_texture=jittered"
         if s.galaxy_blur_prob:
             knobs += f" galaxy_blur=p{s.galaxy_blur_prob:g}/fwhm<={s.galaxy_blur_fwhm_max:g}\""
+        if s.blank_pixels:
+            knobs += f" blank_pixels={s.blank_pixels}"
         if s.isotropy_penalty:
             knobs += (f" isotropy={s.isotropy_penalty:g}"
                       f"@{s.isotropy_knee or DEFAULT_ISOTROPY_KNEE_E:g}e"

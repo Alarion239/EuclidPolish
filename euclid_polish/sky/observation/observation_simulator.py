@@ -45,6 +45,7 @@ from euclid_polish.psf.psf_library import (
     psf_side_pixels_for_band,
 )
 from euclid_polish.psf.psf_set import PSFSample, PSFSet
+from euclid_polish.sky.observation.blank_pixels import BLANK_BAND_NAMES, BlankPixelModel
 from euclid_polish.sky.observation.field_variations import (
     DistantStarWing,
     add_distant_star_wings,
@@ -124,6 +125,12 @@ class ObservationSimulatorConfig:
     saturation_mask_ramp_well_ratios: tuple[float, float] = (
         Config.SATURATION_MASK_RAMP_WELL_RATIOS
     )
+    # Blank (exactly zero) NISP pixels where every exposure of the stack is
+    # invalid — persistence masks, cosmic rays, bad pixels — at the rates of
+    # this release ("dr1" or "q1", see ``blank_pixels.py``). ``None`` leaves
+    # the field whole. The generic operator defaults OFF; live training turns
+    # it on per member.
+    blank_pixels: str | None = None
     # A very bright star thousands of pixels beyond the generated field can
     # cast a nearly straight, field-spanning PSF wing through the LR cutout.
     add_distant_star_wings: bool = True
@@ -305,6 +312,9 @@ class ObservationSimulator:
         # Bright-star saturation model (per-band well depths precomputed once).
         self._sat_model = (StarSaturationModel()
                            if self.config.add_saturation else None)
+        # Blank-pixel model (an unknown release is an error here, not mid-run).
+        self._blank_model = (BlankPixelModel(self.config.blank_pixels)
+                             if self.config.blank_pixels else None)
         # Sanity-check PSF pixel scales (every member of every set).
         for band_name, pset in self._psf_sets.items():
             for psf in pset.psfs:
@@ -556,6 +566,35 @@ class ObservationSimulator:
             bright_well_ratios=self.config.saturation_mask_ramp_well_ratios,
         )
 
+    def apply_blank_pixels(
+        self,
+        lr_stack: np.ndarray,
+        rng: np.random.Generator,
+        sky_levels: dict[str, float] | None = None,
+    ) -> None:
+        """Zero the NISP pixels of ``lr_stack`` that no exposure measured.
+
+        Fewer exposures leave more blanks, so the scene's exposure count
+        follows its depth: where its H sky noise level (``sky_levels``) sits
+        among the measured sky positions, from the shallowest (0) to the
+        deepest (1). Without a level the depth is drawn at random. Does
+        nothing unless ``config.blank_pixels`` names a release. The draws
+        come last from ``rng``, so the rest of the field is the same with
+        and without blanks.
+        """
+        if self._blank_model is None:
+            return
+        level = (sky_levels or {}).get("H_E")
+        if level is None:
+            depth = float(rng.random())
+        else:
+            table = load_mer_noise_levels()
+            measured = table.levels_e[:, table.bands.index("H_E")]
+            depth = float((np.sum(measured > level) + rng.random()) / (len(measured) + 1))
+        blank = self._blank_model.draw(lr_stack.shape[:2], depth, rng)
+        for k, name in enumerate(BLANK_BAND_NAMES):
+            lr_stack[..., Config.LR_INPUT_BAND_NAMES.index(name)][blank[..., k]] = 0.0
+
     # ------------------------------------------------------------------ #
     def apply(self, hr: Image, rng=None, *, store=None) -> Image:
         """Forward-model a clean HR :class:`Image` into a dirty LR Image (role ``'lr'``).
@@ -764,6 +803,8 @@ class ObservationSimulator:
         # past the extended well. Per band; the clean HR target is untouched.
         self.apply_saturation(lr_stack, saturation_trigger_stack, rng,
                               star_trigger_stack)
+        # Pixels every exposure flagged invalid are blank in the mosaic.
+        self.apply_blank_pixels(lr_stack, rng, sky_levels)
 
         # HR target: all four bands (clean, no noise applied), trimmed to the
         # same spatial extent the LR pipeline saw. Band k of the target is

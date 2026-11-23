@@ -156,8 +156,12 @@ class OnTheFlyForward:
         noise_texture_jitter: bool = False,
         galaxy_blur_prob: float = Config.TRAIN_GALAXY_BLUR_PROB,
         galaxy_blur_fwhm_max_arcsec: float = Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
+        blank_pixels: str | None = None,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
+        # Blank NISP pixels where every exposure of the stack is invalid, at
+        # this release's rates ("dr1" or "q1"); None leaves fields whole.
+        self.blank_pixels = str(blank_pixels) if blank_pixels else None
         # Galaxy pre-blur: smoother galaxies in the truth (stars untouched).
         self.galaxy_blur_prob, self.galaxy_blur_fwhm_max_arcsec = validate_galaxy_blur(
             galaxy_blur_prob, galaxy_blur_fwhm_max_arcsec)
@@ -230,6 +234,7 @@ class OnTheFlyForward:
                 noise_texture_white_max=(
                     float(Config.NOISE_TEXTURE_JITTER_WHITE_MAX)
                     if self.noise_texture_jitter else 0.0),
+                blank_pixels=self.blank_pixels,
             ))
         # tf.data calls from several threads → per-call child RNGs, spawned
         # under a lock (SeedSequence.spawn is not thread-safe), used lock-free.
