@@ -36,32 +36,32 @@ for a, b in zip(edges[:-1], edges[1:]):
     m = (mag >= a) & (mag < b) & np.isfinite(ratio)
     if m.sum() < 12:
         continue
-    q = np.percentile(ratio[m], [25, 50, 75])
-    mids.append((a + b) / 2); lo.append(q[0]); med.append(q[1]); hi.append(q[2]); ns.append(m.sum())
+    v = ratio[m]
+    boot = np.median(np.random.default_rng(0).choice(v, (2000, v.size)), axis=1)   # 68% CI of the median
+    q = np.percentile(boot, [16, 84])
+    mids.append((a + b) / 2); lo.append(q[0]); med.append(np.median(v)); hi.append(q[1]); ns.append(m.sum())
 print("flux bins", [(round(x, 2), round(y, 3), n) for x, y, n in zip(mids, med, ns)])
 px = 2160
+INK, ACC = "#1b1f24", "#2a7f9e"
+plt.rcParams.update({"axes.linewidth": 2.0, "xtick.major.width": 2.0, "ytick.major.width": 2.0,
+                     "xtick.major.size": 9, "ytick.major.size": 9})
 fig = plt.figure(figsize=(px / 200, px / 200), dpi=200, facecolor="white")
-ax = fig.add_axes([0.17, 0.15, 0.77, 0.66])
-ax.fill_between(mids, lo, hi, color="#0E8C7E", alpha=0.13, lw=0, label="middle 50% of galaxies")
-ax.plot(mids, med, "-o", color="#0E8C7E", lw=3.5, ms=11, mfc="white", mew=3, label="median")
-ax.axhline(1.0, color="#555", lw=1.6, ls=(0, (6, 4)))
-ax.text(20.15, 1.006, "no flux lost", color="#555", fontsize=17, family=SANS, va="bottom")
-ax.set_ylim(0.70, 1.12)
-ax.set_xlim(20.0, 25.3)
-ax.set_xlabel("VIS magnitude  (fainter →)", fontsize=22, family=SANS, color="#222")
-ax.set_ylabel("POLISHed / Euclid flux within 3″", fontsize=22, family=SANS, color="#222")
-ax.tick_params(labelsize=18, colors="#333", length=6)
+ax = fig.add_axes([0.2, 0.17, 0.74, 0.76])
+ax.errorbar(mids, med, yerr=[np.array(med) - np.array(lo), np.array(hi) - np.array(med)], fmt="none",
+            ecolor=ACC, elinewidth=3, capsize=0, alpha=0.6)
+ax.plot(mids, med, "-o", color=ACC, lw=5, ms=15)
+ax.axhline(1.0, color=INK, lw=2, ls=(0, (4, 4)))
+ax.set_ylim(0.85, 1.03); ax.set_xlim(20.3, 25.2)
+ax.set_xticks([21, 23, 25]); ax.set_yticks([0.9, 1.0])
+ax.set_xlabel("VIS magnitude", fontsize=30, family=SANS, color=INK, labelpad=10)
+ax.set_ylabel("Flux kept", fontsize=30, family=SANS, color=INK, labelpad=10)
+ax.tick_params(labelsize=26, colors=INK, pad=8)
+for t in ax.get_xticklabels() + ax.get_yticklabels():
+    t.set_family(SANS)
 for sp in ("top", "right"):
     ax.spines[sp].set_visible(False)
 for sp in ("left", "bottom"):
-    ax.spines[sp].set_color("#555")
-ax.grid(True, color="#dde2e8", lw=1)
-ax.legend(loc="lower left", frameon=False, fontsize=17, prop={"family": SANS, "size": 17})
-fig.text(0.17, 0.925, "Faint galaxies lose flux", fontsize=36, family=SANS, weight="bold", color="#111")
-fig.text(0.17, 0.875, f"{len(mag)} real galaxies (NEXUS field), sky-matched curve of growth", fontsize=18,
-         family=SANS, color="#555")
-fig.text(0.17, 0.035, "Euclid Q1 VIS vs production model 257; 0.5-mag bins with ≥12 galaxies", fontsize=14,
-         family=SANS, color="#777")
+    ax.spines[sp].set_color(INK)
 fig.savefig(os.path.join(OUT, "LIM1_faint_flux.png"), dpi=200, facecolor="white")
 plt.close(fig)
 
