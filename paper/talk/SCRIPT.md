@@ -1,6 +1,6 @@
 # EuclidPOLISH — Hernquist group, Fri 4 Dec 2026 — speaker script
 
-Prezi: prezi.com/p/edit/bwmtjxdbnkqw (121 clicks). Backup of the 11-22 version: prezi.com/p/edit/0nzro8jentfl.
+Prezi: prezi.com/p/edit/bwmtjxdbnkqw (122 clicks). Backup of the 11-22 version: prezi.com/p/edit/0nzro8jentfl.
 Target: 16–18 min of talking + questions. Times are cumulative guides, not rules.
 `[n]` is the click that brings that view up. "→" means the click only fades something in.
 
@@ -63,15 +63,15 @@ Target: 16–18 min of talking + questions. Times are cumulative guides, not rul
 
 **[71] Stars become points; the deep field sharpens.** [72]–[73] saturated star: Euclid → POLISHed. [74]–[75] Ultra Deep Field: Euclid → POLISHed.
 
-**[76]–[107] Checked galaxy by galaxy against JWST.** Each galaxy: zoom (Euclid) → JWST (NEXUS) → POLISHed. Use ← to flip back and forth on the first two or three galaxies, then go quickly. If short on time, click through the last five (three clicks each). [107] back to the card: all ten POLISHed.
+**[76]–[107] Checked galaxy by galaxy against JWST.** Each galaxy: zoom (Euclid) → JWST (NEXUS) → POLISHed. Use ← to flip back and forth on the first two or three galaxies, then go quickly. If short on time, click through the last five (three clicks each). [107] back to the card: all ten POLISHed. [108] → "Measured against JWST in H band, POLISHed resolves detail two to three times finer than Euclid: about 0.2″ instead of 0.7″ on bright structure."
 
-**[108]–[114] Where it fails.** [109] → "Faint galaxies lose 2–8% of their flux." [110] the flux plot. [111]–[112] the bright-nucleus close-up, then the holes outlined. [114] → "Very bright cores can come out with holes. Both trace back to gaps in the training set."
+**[109]–[115] Where it fails.** [110] → "Faint galaxies lose 2–8% of their flux." [111] the flux plot. [112]–[113] the bright-nucleus close-up, then the holes outlined. [115] → "Very bright cores can come out with holes. Both trace back to gaps in the training set."
 
 ## Close (16:00–17:30)
 
-**[115] The barred spiral again: Euclid.** "Remember this galaxy?" [116] → POLISHed. [117] → JWST. Let the JWST image sit for a breath.
-[118]–[120] → the three takeaways, one per click; read each once.
-**[121]** Overview: "That's the whole story on one page." Then take questions.
+**[116] The barred spiral again: Euclid.** "Remember this galaxy?" [117] → POLISHed. [118] → JWST. Let the JWST image sit for a breath.
+[119]–[121] → the three takeaways, one per click; read each once.
+**[122]** Overview: "That's the whole story on one page." Then take questions.
 
 ---
 
