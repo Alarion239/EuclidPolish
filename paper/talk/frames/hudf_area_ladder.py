@@ -93,13 +93,21 @@ def match(ov, ov_scale, patch, p_ra, p_dec, p_scale, p_w, p_h):
     return np.sum(o[ok] - mo) / np.sum(p[ok] - mp)
 
 
-def colour(planes, med, white, Q, own_sky=True):
+def colour(planes, med, white, Q, own_sky=True, chroma_px=0.0):
     """asinh colour; each plane minus its OWN sky (sigma-clipped median) when own_sky, so a wide
-    overview and its native inset agree even if their backgrounds were subtracted differently."""
+    overview and its native inset agree even if their backgrounds were subtracted differently.
+    chroma_px > 0 smooths only the colour (channel ratios) with a Gaussian of that sigma in pixels and
+    keeps the brightness at full resolution, so per-pixel noise shows as grey grain, not coloured
+    speckle; the sharpness of every source is unchanged."""
     if own_sky:
         med = [sigma_clipped_stats(p[np.isfinite(p) & (p != 0)], sigma=3, maxiters=5)[1] for p in planes]
-    out = [np.clip(p - m, 0, None) / w for p, m, w in zip(planes, med, white)]
+    out = [np.clip(np.nan_to_num(p - m), 0, None) / w for p, m, w in zip(planes, med, white)]
     I = (out[0] + out[1] + out[2]) / 3 + 1e-12
+    if chroma_px > 0:
+        sm = [gaussian_filter(o, chroma_px) for o in out]
+        Is = (sm[0] + sm[1] + sm[2]) / 3
+        eps = 3 * max(sigma_clipped_stats(x, sigma=3, maxiters=5)[2] for x in sm)   # sky (noise only) -> grey
+        out = [(s + eps) / (Is + eps) * I for s in sm]
     f = np.arcsinh(Q * I) / np.arcsinh(Q) / I
     return np.clip(np.stack([o * f for o in out], -1), 0, 1)
 
@@ -152,6 +160,7 @@ WIN_TL = (WX - WIN_W / 2 + 0.03 * WIN_H, WY + WIN_H / 2 - 0.03 * WIN_H)
 BOX_LABEL = 0.035 * SIDE["dss"]              # one physical size for every box label on the card
 WIN_LABEL = 0.075 * WIN_H
 INSET = 52.0                                 # inset page side, arcsec: just covers the 50.4" x 28.35" window
+CHROMA = {"ground": 1.0, "euclid": 0.25}     # colour-only smoothing of the insets, arcsec (at or below each PSF)
 OUTLINE = 2.5                                # box outline on the DSS2 page, points; same width on the card for all
 
 
@@ -202,7 +211,8 @@ def ground(inst):
     page(inst, s, [(colour(ov, med, white, Q), GRA, GDEC, s, s)], [(f"{name} · {area}", *box_tl(inst), BOX_LABEL)],
          outline=OUTLINE * SIDE["dss"] / s)
     # the inset page only covers the zoom window (a ~10 px square on the card), cropped from the 160" patch
-    page(inst + "_inset", INSET, [(colour(patch, med, white, Q), WIN_RA, WIN_DEC, pw, pw)],
+    page(inst + "_inset", INSET, [(colour(patch, med, white, Q, chroma_px=CHROMA["ground"] / p_scale if inst != "dss" else 0),
+                                   WIN_RA, WIN_DEC, pw, pw)],
          [(f"{name} · {psf}", *WIN_TL, WIN_LABEL)], centre=(WIN_RA, WIN_DEC))
 
 
@@ -223,7 +233,7 @@ def euclid():
     Q = L.INST["euclid"][3]
     page("euclid", s, [(colour(ov, med, white, Q), GRA, GDEC, s, s)], [(f"{name} · {area}", *box_tl("euclid"), BOX_LABEL)],
          outline=OUTLINE * SIDE["dss"] / s)
-    page("euclid_inset", L.FIELD, [(colour(patch, med, white, Q), L.RA0, L.DEC0, L.FIELD, L.FIELD)],
+    page("euclid_inset", L.FIELD, [(colour(patch, med, white, Q, chroma_px=CHROMA["euclid"] / 0.1), L.RA0, L.DEC0, L.FIELD, L.FIELD)],
          [(f"{name} · {psf}", *WIN_TL, WIN_LABEL)], centre=(L.RA0, L.DEC0))
     # POLISHed: the 102.4" super-resolved field, same colour (white / 4 for the 2x finer pixel)
     sr = [resample(a, w, L.RA0, L.DEC0, 0.05, L.FIELD) for a, w in L.bands("polished")]

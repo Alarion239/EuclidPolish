@@ -1,7 +1,8 @@
 """Opening / closing hero: the NEXUS f200w-0063 barred spiral as full-bleed 16:9 frames (Euclid, POLISHed, JWST),
 identically framed so they can fade into each other. The galaxy sits in the left third at the same scale as the
 C1_barred squares; the right side (darkened by a gentle gradient) carries the title at the start and the takeaways at the end.
-One stretch for all three (the JWST galaxy square's, as in c1_nexus_tile_colour.py). Small label top-left."""
+One stretch for all three (the JWST galaxy square's, as in c1_nexus_tile_colour.py). Small label top-left.
+The JWST frame's colour (not its brightness) is smoothed at the NIRCam PSF scale so its pixel noise is grey."""
 import os
 import sys
 
@@ -11,6 +12,7 @@ import warnings
 
 warnings.filterwarnings("ignore")
 import numpy as np
+from scipy.ndimage import gaussian_filter
 from PIL import Image, ImageDraw, ImageFont
 from render import cubes, lupton, rgb_channels, saturate
 
@@ -35,6 +37,10 @@ for k, (cube, name, label) in enumerate(((lr, "euclid", "Euclid"), (sr, "polishe
     holes = ~(np.isfinite(r) & np.isfinite(g) & np.isfinite(b))
     im = saturate(lupton(np.nan_to_num(r), np.nan_to_num(g), np.nan_to_num(b), soft=soft, Q=1.0, white=white), 1.25)
     im[holes] = 0.0
+    if name == "jwst":      # colour-only smoothing (sigma 1.5 px ~ the NIRCam PSF): pixel noise as grey grain, not speckle
+        L = im.mean(-1, keepdims=True)
+        sm = gaussian_filter(im, (1.5, 1.5, 0))
+        im = (sm + 0.02) / (sm.mean(-1, keepdims=True) + 0.02) * L
     xs = np.linspace(0, 1, im.shape[1])[None, :, None]
     im = im * (1 - 0.68 * np.clip((xs - 0.48) / 0.22, 0, 1))  # darker right side for the text
     arr = (np.clip(im[::-1], 0, 1) * 255).astype(np.uint8)     # rows are y-up

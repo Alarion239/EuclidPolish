@@ -67,7 +67,7 @@ def body(ax, x, y, text, size=17, color=MUTED, **kw):
 
 def image_panel(ax, img, *, x, y, size, label=None, legend=None, interp="lanczos",
                 bar_arcsec=None, pix_arcsec=0.05, compass=False, envelope=False, coords=None,
-                label_size=20):
+                label_size=20, label_stroke=3.0):
     """Draw an RGB image as a square panel of side ``size`` (data units) at lower-left (x, y),
     with the triples' annotations: bold label top-left, band legend bottom-left, bar, compass."""
     ax.imshow(img, origin="lower", extent=(x, x + size, y, y + size), interpolation=interp,
@@ -75,7 +75,8 @@ def image_panel(ax, img, *, x, y, size, label=None, legend=None, interp="lanczos
     pad = size * 0.035
     if label:
         ax.text(x + pad, y + size - pad, label, color="white", fontsize=label_size, family=SANS,
-                weight="bold", va="top", ha="left", path_effects=STROKE, zorder=3)
+                weight="bold", va="top", ha="left", zorder=3,
+                path_effects=[pe.withStroke(linewidth=label_stroke, foreground="black")])
     if legend:
         xx = x + pad
         for name, col in zip(legend, LEGEND_COLORS):
@@ -143,11 +144,12 @@ def save_layer(img, name, px=2160, interp="lanczos"):
 
 
 def save_panel(img, name, *, label=None, legend=None, interp="lanczos", bar_arcsec=None,
-               pix_arcsec=0.05, compass=False, envelope=False, coords=None, px=2160):
+               pix_arcsec=0.05, compass=False, envelope=False, coords=None, px=2160, label_scale=1.0):
     """One square, annotated image (Euclid / POLISHed / JWST ...) as its own file.
 
     All panels of a callback share size and framing, so in Prezi the POLISHed or JWST panel
-    can be dropped exactly on top of the Euclid one and faded in."""
+    can be dropped exactly on top of the Euclid one and faded in. label_scale > 1 for panels shown small
+    (the cat card's 2 x 2 grid), so their labels stay readable."""
     os.makedirs(OUT, exist_ok=True)
     fig = plt.figure(figsize=(px / DPI, px / DPI), dpi=DPI, facecolor="black")
     ax = fig.add_axes([0, 0, 1, 1])
@@ -156,7 +158,8 @@ def save_panel(img, name, *, label=None, legend=None, interp="lanczos", bar_arcs
     ax.axis("off")
     image_panel(ax, img, x=0, y=0, size=1, label=label, legend=legend, interp=interp,
                 bar_arcsec=bar_arcsec, pix_arcsec=pix_arcsec, compass=compass,
-                envelope=envelope, coords=coords, label_size=px / 2160 * 30)
+                envelope=envelope, coords=coords, label_size=px / 2160 * 30 * label_scale,
+                label_stroke=3.0 * label_scale)
     path = os.path.join(OUT, name)
     fig.savefig(path, dpi=DPI, facecolor="black")
     plt.close(fig)

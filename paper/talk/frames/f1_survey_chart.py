@@ -1,5 +1,6 @@
 """F1 (v4, talk style): imaged area vs median delivered PSF FWHM, sharper UP and wider RIGHT, so the
-top-right corner is best and only Euclid is there. Helvetica Neue, direct labels, no title/legend/footnote.
+top-right corner is best and only Euclid is there. Helvetica Neue, direct labels, no title/legend/footnote; Euclid's
+filled dot is DR1 (released), the open one the full Wide survey.
 
 Sources (speaker notes, not on the plot):
   SDSS DR7 imaging 11,663 deg2, r 1.43" (Abazajian+09); Pan-STARRS1 3pi 30,000 deg2, i 1.11" (Chambers+16);
@@ -48,6 +49,9 @@ def chart(with_euclid):
         ax.scatter(14000, 0.16, s=560, facecolor="white", edgecolor=ACCENT, linewidth=3.5, zorder=3)
         ax.annotate("Euclid", (5150, 0.16), xytext=(0, 34), textcoords="offset points", ha="center",
                     va="center", fontsize=34, color=ACCENT, fontweight="bold")
+        for a, txt in ((1900, "DR1 today"), (14000, "full survey")):   # filled = released, open = planned
+            ax.annotate(txt, (a, 0.16), xytext=(0, -32), textcoords="offset points", ha="center", va="center",
+                        fontsize=22, color=ACCENT)
     ax.set_xlabel("Area  [deg²]", fontsize=28, color=INK, labelpad=12)
     ax.set_ylabel("PSF FWHM  [arcsec]", fontsize=28, color=INK, labelpad=12)
     ax.set_xticks([1, 100, 1e4]); ax.set_xticklabels(["1", "100", "10 000"])

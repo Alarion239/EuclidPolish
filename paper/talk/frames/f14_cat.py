@@ -71,8 +71,8 @@ def display(c, white):
 
 cal_t = color.calibrate(cube, band_names=BANDS, reference="solar") / BALANCE
 white = np.percentile(cal_t.max(-1), 99.9)
-save_panel(np.asarray(photo, np.float64)[::-1] / 255.0, "F14_cat_0_photo.png", label="Photo")
-save_panel(display(cube, white), "F14_cat_1_truth.png", label="Truth", bar_arcsec=5.0)
-save_panel(display(up, white), "F14_cat_2_euclid.png", label="Euclid", interp="nearest")
-save_panel(display(sr, white), "F14_cat_3_polished.png", label="POLISHed", bar_arcsec=5.0)
+save_panel(np.asarray(photo, np.float64)[::-1] / 255.0, "F14_cat_0_photo.png", label="Photo", label_scale=2.4)
+save_panel(display(cube, white), "F14_cat_1_truth.png", label="Truth", bar_arcsec=5.0, label_scale=2.4)
+save_panel(display(up, white), "F14_cat_2_euclid.png", label="Euclid", interp="nearest", label_scale=2.4)
+save_panel(display(sr, white), "F14_cat_3_polished.png", label="POLISHed", bar_arcsec=5.0, label_scale=2.4)
 print("ok")
