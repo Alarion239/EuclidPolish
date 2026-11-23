@@ -9,7 +9,8 @@ Areas: DSS2 the whole sky (41,253 deg²), Pan-STARRS 3π 30,000, Euclid Wide 14,
 Legacy Surveys DR10 DECam images, mostly DES data here), Hubble 1.64 (COSMOS, the largest HST mosaic) and
 JWST 0.54 (COSMOS-Web), the same numbers as the wide-or-sharp chart.
 
-Writes images/AL_<survey>.pdf (one page each) and images/AL_geometry.json (sky offsets for the Prezi layout).
+Writes images/AL_<survey>.pdf (one page each), images/AL_hst_over_ls.pdf (Hubble box + DES-label cover, see
+hst_over_ls) and images/AL_geometry.json (sky offsets for the Prezi layout).
 """
 import glob
 import json
@@ -212,9 +213,11 @@ def ground(inst):
     page(inst, s, [(colour(ov, med, white, Q), GRA, GDEC, s, s)], [(f"{name} · {area}", *box_tl(inst), BOX_LABEL)],
          outline=OUTLINE * SIDE["dss"] / s)
     # the inset page only covers the zoom window (a ~10 px square on the card), cropped from the 160" patch
-    page(inst + "_inset", INSET, [(colour(patch, med, white, Q, chroma_px=CHROMA["ground"] / p_scale if inst != "dss" else 0),
-                                   WIN_RA, WIN_DEC, pw, pw)],
+    inset = colour(patch, med, white, Q, chroma_px=CHROMA["ground"] / p_scale if inst != "dss" else 0)
+    page(inst + "_inset", INSET, [(inset, WIN_RA, WIN_DEC, pw, pw)],
          [(f"{name} · {psf}", *WIN_TL, WIN_LABEL)], centre=(WIN_RA, WIN_DEC))
+    if inst == "ls":
+        COVER["ls"] = (inset, pw)
 
 
 def euclid():
@@ -244,6 +247,53 @@ def euclid():
          centre=(L.RA0, L.DEC0))
 
 
+COVER = {}                                   # the DES inset image, kept for hst_over_ls()
+
+
+def hst_over_ls(hst_img):
+    """The Hubble box drawn on a page with the DES inset's geometry, plus a patch of the DES inset itself
+    (same pixels, no text) over the "DES · 0.9″" window label. In Prezi this page sits exactly on the DES inset
+    and replaces the Hubble box for the walk down the ladder: the DES label goes when Hubble fades in and comes
+    back when Hubble fades out, so it only shows while the window shows DES's resolution."""
+    inset, pw = COVER["ls"]
+    s, pad = SIDE["hst"], 0.45
+    name, area, psf = NAMES["hst"]
+    cx, cy = off(WIN_RA, WIN_DEC)
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(cx - INSET / 2, cx + INSET / 2)
+    ax.set_ylim(cy - INSET / 2, cy + INSET / 2)
+    ax.axis("off")
+    fig.patch.set_alpha(0)
+    # the cover: from the page's left/top edges to just past the label, stopping above the Hubble box
+    lab = ax.text(*WIN_TL, f"{NAMES['ls'][0]} · {NAMES['ls'][2]}", fontsize=WIN_LABEL / INSET * 720, family=SANS,
+                  weight="bold", va="top", ha="left")
+    fig.canvas.draw()
+    bb = lab.get_window_extent().transformed(ax.transData.inverted())
+    lab.remove()
+    x1, y0 = bb.x1 + 0.8, max(bb.y0 - 0.5, s / 2 + 0.12)     # never over the Hubble box (centred on the spiral)
+    assert bb.y0 > s / 2, (bb.y0, s / 2)                      # the label's text box (descent included) clears it
+    x, y = off(WIN_RA, WIN_DEC)
+    n = inset.shape[0]
+    px = (np.arange(n) + 0.5) / n * pw - pw / 2              # pixel centres, offset from the window centre
+    alpha = ((x + px)[None, :] <= x1) & ((y + px)[:, None] >= y0)
+    rgba = np.dstack([inset, alpha.astype(float)])
+    ax.imshow(rgba, origin="lower", extent=(x - pw / 2, x + pw / 2, y - pw / 2, y + pw / 2), interpolation="none", zorder=1)
+    ax.imshow(hst_img, origin="lower", extent=(-s / 2, s / 2, -s / 2, s / 2), interpolation="none", zorder=1)
+    lw = 0.08 / INSET * 720                                   # 0.08" wide, as on the Hubble page
+    d = lw / 720 * INSET / 2
+    ax.add_patch(plt.Rectangle((-s / 2 + d, -s / 2 + d), s - 2 * d, s - 2 * d, fill=False, edgecolor="white",
+                               alpha=0.85, linewidth=lw, zorder=2))
+    pts = SPACE_LABEL / INSET * 720
+    ax.text(-s / 2 + pad, s / 2 - pad, f"{name} · {psf}\n{area}", color="white", fontsize=pts, family=SANS,
+            weight="bold", va="top", ha="left", path_effects=[pe.withStroke(linewidth=pts / 6, foreground="black")],
+            zorder=3)
+    path = os.path.join(OUT, "AL_hst_over_ls.pdf")
+    fig.savefig(path, transparent=True)
+    plt.close(fig)
+    print("wrote", path, "cover x <=", round(x1, 2), "y >=", round(y0, 2), flush=True)
+
+
 def space(inst):
     name, area, psf = NAMES[inst]
     s = SIDE[inst]
@@ -253,6 +303,8 @@ def space(inst):
     pad = 0.45                                                # arcsec; both space boxes share one label size
     page(inst, s, [(img, GRA, GDEC, s, s)], [(f"{name} · {psf}\n{area}", -s / 2 + pad, s / 2 - pad, SPACE_LABEL)],
          outline=0.08 / s * 720)                             # 0.08" wide: visible at the zoom window
+    if inst == "hst" and "ls" in COVER:
+        hst_over_ls(img)
 
 
 which = sys.argv[1:] or ["dss", "ps1", "ls", "hst", "jwst", "euclid"]
