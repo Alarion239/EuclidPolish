@@ -1,7 +1,8 @@
 """Lens and showcase frames from fresh Q1 cutouts super-resolved by production model 257 (infer_q1.py):
 the grade-A complete Einstein ring 102042919, NGC 6505's Einstein ring, the Hubble Ultra Deep Field area and
-the Cat's Eye Nebula. Euclid / POLISHed squares in the triples' colour (sky-subtracted, solar-calibrated,
-Euclid white balance, Lupton asinh), one stretch per pair."""
+the Cat's Eye Nebula. Euclid / POLISHed squares, one stretch per pair. Realistic colour since 11-23: the viewer's
+AB balance (ab_colour.py), sky from the cutout border; clean labels (instrument name only). The panels used in the
+talk are also written to prezi_upload/v13/ under their Prezi image keys."""
 import os
 import sys
 
@@ -12,11 +13,11 @@ import warnings
 warnings.filterwarnings("ignore")
 import numpy as np
 from astropy.io import fits
-from build import BALANCE, BANDS, intensity, lupton
+from astropy.stats import sigma_clipped_stats
+from PIL import Image
 
-from euclid_polish.visualization import color
-
-from style import save_panel
+from ab_colour import ab_rgb, auto_levels, noise_sigma
+from style import TALK, save_panel
 
 ROOT = "/Users/alarion239/Desktop/EuclidPolish/data/euclid_inference/talk"
 # name: (folder, crop half-size in LR px or None for the whole cutout, q, white percentile, bar, label)
@@ -30,10 +31,14 @@ TARGETS = {
 }
 
 
-def border_calibrated(cube, ref=None):
+UP = os.path.join(TALK, "prezi_upload", "v13")
+KEYS = {"LENS_ring102042919": ("A11_lens_ring_Euclid", "K01_lens_ring_POLISHed"),
+        "LENS_NGC6505": ("A12_NGC6505_ring_Euclid", "K02_NGC6505_ring_POLISHed_optional")}
+
+
+def border_sky(cube, ref=None):
     """Sky from the cutout border (sigma-clipped), not the whole cutout: a galaxy that fills the cutout
     (NGC 6505) would otherwise be subtracted as sky, worst in NISP, and turn the ring magenta."""
-    from astropy.stats import sigma_clipped_stats
     ref = cube if ref is None else ref
     out = cube.astype(np.float64).copy()
     n = ref.shape[0]
@@ -43,7 +48,7 @@ def border_calibrated(cube, ref=None):
         edge = np.concatenate([plane[:b].ravel(), plane[-b:].ravel(), plane[:, :b].ravel(), plane[:, -b:].ravel()])
         _m, med, _s = sigma_clipped_stats(edge[np.isfinite(edge)], sigma=2.5, maxiters=8)
         out[..., k] -= med * (cube.shape[0] / ref.shape[0]) ** -2
-    return color.calibrate(np.nan_to_num(out), band_names=BANDS, reference="solar") / BALANCE
+    return out
 
 
 def load(folder):
@@ -52,7 +57,7 @@ def load(folder):
     return lr, sr
 
 
-legend = ("VIS", "Y+J", "H")
+os.makedirs(UP, exist_ok=True)
 for name, (folder, half, q, pct, bar, label) in TARGETS.items():
     if not os.path.exists(os.path.join(ROOT, folder, "SR.fits")):
         print(name, "not ready"); continue
@@ -63,16 +68,14 @@ for name, (folder, half, q, pct, bar, label) in TARGETS.items():
     L = lr[c0 - h:c0 + h, c1 - h:c1 + h]
     S = sr[2 * (c0 - h):2 * (c0 + h), 2 * (c1 - h):2 * (c1 + h)]
     up = np.repeat(np.repeat(L, 2, 0), 2, 1) / 4.0
-    cl = border_calibrated(up, ref=np.repeat(np.repeat(lr, 2, 0), 2, 1) / 4.0)
-    cs = border_calibrated(S, ref=sr)
-    leg = legend
+    cl = border_sky(up, ref=np.repeat(np.repeat(lr, 2, 0), 2, 1) / 4.0)
+    cs = border_sky(S, ref=sr)
     core = L[..., 2][L.shape[0] // 4:-L.shape[0] // 4, L.shape[1] // 4:-L.shape[1] // 4]
-    if (core == 0).mean() > 0.01:          # a J-band hole (NGC 6505's J mosaic is blank on the ring): G = Y only
-        cl[..., 2], cs[..., 2] = cl[..., 1], cs[..., 1]
-        leg = ("VIS", "Y", "H")
-    white = np.percentile(intensity(cs), pct)
-    save_panel(lupton(cl, white=white, q=q), f"{name}_1_euclid.png", label=f"Euclid · {label}", legend=leg,
-               interp="nearest", envelope=not name.endswith("_wide"))
-    save_panel(lupton(cs, white=white, q=q), f"{name}_2_polished.png", label="POLISHed", legend=leg,
-               bar_arcsec=bar)
-    print(name, "ok", L.shape)
+    mode = "noJ" if (core == 0).mean() > 0.01 else "full"   # NGC 6505's J mosaic is blank on the ring: G = Y
+    lev = auto_levels(cs, pct=pct, q=max(10.0, q / 2), mode=mode, sigma=noise_sigma(cl, mode))
+    paths = [save_panel(ab_rgb(cl, mode=mode, **lev), f"{name}_1_euclid.png", label="Euclid", interp="nearest"),
+             save_panel(ab_rgb(cs, mode=mode, **lev), f"{name}_2_polished.png", label="POLISHed")]
+    for path, key in zip(paths, KEYS.get(name, ())):
+        Image.open(path).convert("RGB").resize((1600, 1600), Image.LANCZOS).save(os.path.join(UP, key + ".jpg"),
+                                                                                quality=90)
+    print(name, "ok", L.shape, mode)

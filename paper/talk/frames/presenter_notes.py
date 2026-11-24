@@ -3,19 +3,20 @@ NOTES[i] is the note for path action i, i.e. click i + 1 in SCRIPT.md. Writes ..
 pasted into the editor (action.updateNarrative / narrative.updateText) for both the path and the editor path.
 Prezi's notes panel and Presenter view only show notes on zoom steps, so each zoom step's note also carries the
 notes of the fades that follow it, one "→ " line per click (the fades keep their own one-line note too).
-Keep in sync with SCRIPT.md when the path changes (122 actions on 11-23)."""
+Keep in sync with SCRIPT.md when the path changes (99 actions after the 11-23 meeting pass)."""
 import json
 import os
 
 N = [
-    # opening
-    "Euclid is ESA's survey telescope: a third of the sky at nearly Hubble sharpness. Today: teaching a network to make Euclid sharper still, using only TNG50 skies.",
-    "Remember this galaxy. We'll come back to it at the end.",
+    # opening: from this to THIS
+    "Euclid is ESA's survey telescope: a third of the sky at nearly Hubble sharpness. Today: a network that makes Euclid sharper still, trained only on TNG50 skies.",
+    "From this...",
+    "...to THIS. The same Euclid data, POLISHed. Remember this galaxy; we'll come back to it.",
     # 1 · the problem
     "Every survey trades area for sharpness.",
     "From the ground you can image the whole sky, but the atmosphere blurs everything to about an arcsecond.",
     "From space you're sharp, but the fields are tiny.",
-    "Each dot is a survey. Up is sharper, right is wider. The dashed line is the frontier: nobody is both. The top-right corner is empty.",
+    "Each dot is a survey. Up is sharper, right is wider. The dashed line is the frontier. The box top-right, wide AND sharp, is empty.",
     "One patch near the Hubble Ultra Deep Field; each box's area is that survey's share of the sky. The big box: DSS2, photographic plates of the whole sky.",
     "Pan-STARRS covers three quarters of it.",
     "DES covers an eighth.",
@@ -37,10 +38,9 @@ N = [
     "And Euclid's share of the sky...",
     "...14,000 square degrees.",
     "Back to the chart.",
-    "Euclid lands in the empty corner: the filled dot is DR1, public since November; the open one is the full survey. The frontier moves.",
+    "Euclid lands inside the wide-and-sharp box: 0.16 arcsec over 14,000 square degrees. Filled dot: DR1, public since November; open dot: the full survey. The frontier moves.",
     "Lenses: where resolution pays off.",
-    "A ring's size weighs its galaxy, dark matter included.",
-    "Bent arcs reveal dark-matter clumps that emit no light.",
+    "A ring's geometry weighs its galaxy, dark matter included.",
     "Time delays between the images measure the Hubble constant.",
     "Double-source lenses, like these DR1 systems, test cosmology.",
     "Euclid should find ~170,000 lenses, most only a few PSF widths across. Resolution decides which ones we can model.",
@@ -57,7 +57,7 @@ N = [
     # 3 · the network and the results
     "A residual CNN: VIS, Y, J, H in; the same four bands out on a 0.05-arcsecond grid. Arcsinh inputs at eight knees let one network see faint outskirts and bright cores alike.",
     "15 million steps, about 70 A100-hours.",
-    "What did it learn? Put a cat through the same forward model.",
+    "What did it learn? Priors on a cat: put a cat through the same forward model.",
     "The truth.",
     "What Euclid would see.",
     "POLISHed.",
@@ -71,7 +71,7 @@ N = [
     "...POLISHed: the ring and its knots separate.",
     "NGC 6505, Euclid's Einstein ring...",
     "...POLISHed.",
-    "A DR1 lens: Euclid...",
+    "A DR1 double-source lens: Euclid...",
     "...POLISHed.",
     "Next DR1 lens: Euclid...",
     "...POLISHed.",
@@ -82,19 +82,20 @@ N = [
     "All six, sharpened.",
     "Back to the survey window from the start.",
     "The same 50-arcsecond window, POLISHed. Compare it with the Hubble box (left arrow flips back).",
-    "Stars become points; the deep field sharpens.",
-    "A saturated star in Euclid...",
-    "...POLISHed: a point.",
-    "The Ultra Deep Field in Euclid...",
-    "...POLISHed.",
-    "Checked galaxy by galaxy against JWST (NEXUS field). Each galaxy: Euclid, then JWST, then POLISHed.",
-]
-for k in range(1, 11):
-    N += [f"Galaxy {k} of 10: Euclid." + (" Flip back and forth on the first two or three." if k == 1 else ""),
-          "JWST.", "POLISHed."]
-N += [
-    "All ten, POLISHed.",
-    "Measured against JWST in H band, POLISHed resolves detail two to three times finer than Euclid: about 0.2 arcsec instead of 0.7 on bright structure.",
+    "Checked galaxy by galaxy against JWST (NEXUS field). Each galaxy: Euclid, then JWST, then POLISHed; flip back and forth with the arrows.",
+    "A tidally disturbed galaxy: Euclid.",
+    "JWST.",
+    "POLISHed: the tail and the dust lane come back.",
+    "A barred spiral: Euclid.",
+    "JWST.",
+    "POLISHed: the bar and the arms.",
+    "An interacting pair: Euclid.",
+    "JWST.",
+    "POLISHed.",
+    "A spiral with an inner ring: Euclid.",
+    "JWST.",
+    "POLISHed: the ring.",
+    "All four, POLISHed. Against JWST in H band, POLISHed resolves detail two to three times finer than Euclid: about 0.2 arcsec instead of 0.7 on bright structure.",
     "Where it fails.",
     "Faint galaxies lose 2-8% of their flux.",
     "Flux kept vs VIS magnitude: the loss grows toward the faint end.",
@@ -103,15 +104,29 @@ N += [
     "Two failure modes.",
     "Very bright cores can come out with holes. Both trace back to gaps in the training set.",
     # close
-    "Remember this galaxy? Euclid.",
-    "POLISHed.",
-    "JWST. Let it sit for a breath.",
-    "One: Euclid is the first wide survey with a sharp, stable PSF.",
-    "Two: a network trained only on simulated TNG50 skies.",
-    "Three: POLISHed images show what Euclid blurs, checked against JWST.",
-    "The whole story on one page. Questions.",
+    "Remember this galaxy? From this... to THIS.",
+    "And this is JWST. Let it sit for a breath.",
+    "To summarize.",
+    "One: Euclid is the first optical wide survey with a sharp, stable PSF.",
+    "Two: a network trained only on simulated TNG50 images.",
+    "Three: POLISHed images reveal what Euclid blurs, checked against JWST.",
+    "Next: POLISH all of Euclid DR1, then the full 14,000 square degrees. The QR code opens the all-sky viewer.",
+    "The whole talk on one page. In my last minute: the all-sky viewer, Euclid DR1 POLISHed live in the browser (switch to the browser tab). Then questions.",
 ]
-assert len(N) == 122, len(N)
+ZOOM = {0, 3, 6, 7, 10, 17, 20, 21, 25, 27, 29, 34, 36, 37, 41, 43, 45, 52, 54, 55, 57, 59, 61, 63, 65, 67, 68, 70, 71, 74, 77,
+        80, 83, 84, 86, 87, 89, 91, 93, 98}
+assert len(N) == 99, len(N)
+# a zoom step's note also lists the fades that follow it ("→" lines): Prezi shows notes only on zoom steps
+NOTES = []
+for i, n in enumerate(N):
+    if i in ZOOM:
+        j, extra = i + 1, []
+        while j < len(N) and j not in ZOOM:
+            extra.append("→ " + N[j])
+            j += 1
+        NOTES.append("\n".join([n] + extra))
+    else:
+        NOTES.append(n)
 out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "presenter_notes.json")
-json.dump(N, open(out, "w"), indent=0, ensure_ascii=False)
-print(out, len(N))
+json.dump(NOTES, open(out, "w"), indent=0, ensure_ascii=False)
+print(out, len(NOTES))
