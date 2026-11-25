@@ -131,6 +131,15 @@ N[3] = "First point (top row): Euclid is the first optical wide survey with a sh
 N[29] = "Second point (middle row): a network trained only on simulated TNG50 images. " + N[29]
 N[41] = "Third point (bottom row): POLISHed images reveal what Euclid blurs. " + N[41]
 assert len(N) == 93, len(N)
+# 11-25 (user): a card's first sentence is visible on arrival, not one more click: these fades were removed from the
+# path; their sentence joins the zoom step's note (87 actions).
+DROP = [4, 18, 30, 37, 51, 83]          # Ground..., Optical..., z ~ 0..., 15M steps..., first lens bullet, Faint galaxies...
+for d in sorted(DROP, reverse=True):
+    assert d - 1 in ZOOM and d not in ZOOM
+    N[d - 1] += " " + N[d]
+    del N[d]
+    ZOOM = {z - 1 if z > d else z for z in ZOOM}
+assert len(N) == 87, len(N)
 # a zoom step's note also lists the fades that follow it ("→" lines): Prezi shows notes only on zoom steps
 NOTES = []
 for i, n in enumerate(N):
