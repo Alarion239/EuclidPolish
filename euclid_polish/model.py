@@ -40,6 +40,9 @@ from euclid_polish.training.brightness import (
     core_kernel,
 )
 from euclid_polish.training.equivariance import (
+    DEFAULT_MASK as EQUIVARIANCE_DEFAULT_MASK,
+)
+from euclid_polish.training.equivariance import (
     DEFAULT_RAMP as EQUIVARIANCE_DEFAULT_RAMP,
 )
 from euclid_polish.training.equivariance import (
@@ -648,6 +651,7 @@ class Model:
         real_equivariance_tiles: str | None = None,
         real_equivariance_batch: int | None = None,
         real_equivariance_ramp: tuple[float, float] | None = None,
+        real_equivariance_mask: tuple[int, int] | None = None,
         jit_compile: bool = False,
         mixed_precision: bool = False,
         steps_per_call: int = Config.TRAIN_STEPS_PER_CALL,
@@ -729,8 +733,12 @@ class Model:
         ``batch_size``), each the training crop's LR size.
         ``real_equivariance_ramp`` (start, full) fractions of ``steps`` over
         which λ ramps in from 0 (``None`` →
-        ``training.equivariance.DEFAULT_RAMP``, 20%→40%). Needs a
-        learned-output-knee member on the live forward.
+        ``training.equivariance.DEFAULT_RAMP``, 20%→40%).
+        ``real_equivariance_mask`` (border, blank margin) in LR px: the crop
+        edge and the neighbourhood of exactly-zero input pixels are not
+        charged (``None`` → ``training.equivariance.DEFAULT_MASK``; (0, 0) =
+        unmasked, the members before 11-25). Needs a learned-output-knee
+        member on the live forward.
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
@@ -759,6 +767,13 @@ class Model:
         if len(ramp) != 2 or not 0.0 <= ramp[0] <= ramp[1] <= 1.0:
             raise ValueError(f"real_equivariance_ramp must be two fractions 0 <= start <= full "
                              f"<= 1, got {real_equivariance_ramp!r}")
+        mask = tuple(int(v) for v in (EQUIVARIANCE_DEFAULT_MASK if real_equivariance_mask is None
+                                      else real_equivariance_mask))
+        if real_equivariance and (len(mask) != 2 or min(mask) < 0
+                                  or 2 * mask[0] >= int(hr_crop_size) // self._scale):
+            raise ValueError(f"real_equivariance_mask must be (border, blank margin) LR px, both "
+                             f">= 0, the border leaving part of the {int(hr_crop_size) // self._scale}"
+                             f"-px real crop, got {real_equivariance_mask!r}")
         scales = canonical_scales(isotropy_scales or DEFAULT_ISOTROPY_SCALES)
         if isotropy_penalty and max(scale[0] for scale in scales) > int(hr_crop_size):
             raise ValueError(f"isotropy windows {[int(s[0]) for s in scales]} must fit the "
@@ -846,7 +861,8 @@ class Model:
             knee, knees = self._asinh_knee, self._asinh_knees
             equivariance = RealEquivariance(
                 lambda lr: stretch_pair(lr, lr, knee=knee, knees=knees)[0],
-                source=_os.path.basename(str(real_equivariance_tiles)))
+                source=_os.path.basename(str(real_equivariance_tiles)),
+                border=mask[0], blank_margin=mask[1])
             equivariance_ramp = (round(ramp[0] * int(steps)), round(ramp[1] * int(steps)))
             equivariance_fields = {
                 "real_equivariance": float(real_equivariance),
@@ -855,11 +871,14 @@ class Model:
                 "real_equivariance_batch": real_batch,
                 "real_equivariance_ramp": list(ramp),
                 "real_equivariance_form": EQUIVARIANCE_FORM,
+                "real_equivariance_mask": list(mask),
             }
             print(f"  real-sky equivariance: λ={float(real_equivariance):g}, {real_batch} × "
                   f"{real_crop}² LR crops/step from {int(tiles.shape[0])} tiles "
                   f"({real_equivariance_tiles}), ramped in over {ramp[0] * 100:g}–{ramp[1] * 100:g}% "
-                  f"of the run (steps {equivariance_ramp[0]}→{equivariance_ramp[1]})")
+                  f"of the run (steps {equivariance_ramp[0]}→{equivariance_ramp[1]})"
+                  + (f", masked: {mask[0]} LR px border, {mask[1]} LR px around blank input pixels"
+                     if any(mask) else ", unmasked"))
 
         valid_ds = self._build_training_pipeline(
             valid_lr_path, valid_hr_path, batch_size, augment=False,

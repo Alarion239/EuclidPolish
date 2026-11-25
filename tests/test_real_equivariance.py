@@ -19,11 +19,13 @@ from euclid_polish.sky.observation import q1_mer_tiles
 from euclid_polish.sky.observation.q1_fields import q1_field_for
 from euclid_polish.training.equivariance import (
     D4_ORDER,
+    DEFAULT_MASK,
     DEFAULT_RAMP,
     RealEquivariance,
     dihedral,
     dihedral_inverse,
     load_real_tiles,
+    penalty_mask,
     pre_head_view,
     ramp_weight,
     real_crop_dataset,
@@ -183,6 +185,100 @@ def test_bad_tile_sets_are_refused(tmp_path):
         load_real_tiles(str(tmp_path / "rect.npy"))
 
 
+# -- the penalty's mask: crop borders and blank input pixels (11-25) -------------
+
+def test_the_mask_drops_the_border_and_pixels_near_blank_input():
+    x = np.full((1, 16, 16, 4), 5.0, np.float32)
+    x[0, 8, 9, 2] = 0.0                                   # one blank pixel in one band
+    m = penalty_mask(tf.constant(x), border=2, blank_margin=1).numpy()
+    assert m.shape == (1, 16, 16, 1) and m.dtype == np.float32
+    expected = np.zeros((16, 16), np.float32)
+    expected[2:14, 2:14] = 1.0
+    expected[7:10, 8:11] = 0.0
+    np.testing.assert_array_equal(m[0, ..., 0], expected)
+    assert penalty_mask(tf.constant(x), border=0, blank_margin=0).numpy().min() == 1.0
+
+
+def test_the_mask_is_the_same_in_every_orientation():
+    """Both branches are compared in the original frame, so the mask must be
+    D4-invariant: mask(g·x) = g·mask(x)."""
+    x = np.abs(np.random.default_rng(3).normal(5, 1, (2, 12, 12, 4))).astype(np.float32)
+    x[0, 2, 7, 1] = x[1, 9, 3, 3] = x[1, 5, 5, 0] = 0.0
+    x = tf.constant(x)
+    for code in range(D4_ORDER):
+        np.testing.assert_array_equal(
+            penalty_mask(dihedral(x, code), border=3, blank_margin=2).numpy(),
+            dihedral(penalty_mask(x, border=3, blank_margin=2), code).numpy())
+
+
+def _zero_indicator_shift():
+    """Non-equivariant only around blank input pixels: a one-sided shift of
+    the zero indicator, upsampled (the poster-blob mechanism)."""
+    kernel = np.zeros((3, 3, 1, 4), np.float32)
+    kernel[0, 2, 0, :] = 1.0
+    return tf.keras.Sequential([
+        tf.keras.layers.Lambda(lambda v: tf.cast(tf.reduce_any(tf.equal(v, 0.0), -1, keepdims=True),
+                                                 tf.float32)),
+        tf.keras.layers.Conv2D(4, 3, padding="same", use_bias=False,
+                               kernel_initializer=tf.constant_initializer(kernel)),
+        tf.keras.layers.UpSampling2D(2)])
+
+
+def test_a_gap_next_to_blank_input_is_not_charged_when_masked():
+    x = np.full((2, 16, 16, 4), 5.0, np.float32)
+    x[:, 7:9, 6:9, 3] = 0.0
+    x = tf.constant(x)
+    net = _zero_indicator_shift()
+    assert float(RealEquivariance(lambda v: v).penalty(net, x, tf.constant(1))) > 1e-3
+    masked = RealEquivariance(lambda v: v, blank_margin=1)
+    for code in range(1, D4_ORDER):
+        assert float(masked.penalty(net, x, tf.constant(code))) == 0.0
+
+
+def test_a_gap_at_the_crop_border_is_not_charged_when_masked():
+    x = tf.fill((2, 16, 16, 4), 5.0)                     # constant: the shift only breaks at the edge
+    net = _lopsided()
+    assert float(RealEquivariance(lambda v: v).penalty(net, x, tf.constant(1))) > 1e-3
+    assert float(RealEquivariance(lambda v: v, border=1).penalty(net, x, tf.constant(1))) == 0.0
+
+
+def test_the_masked_penalty_is_the_mean_square_over_the_kept_pixels():
+    x = np.abs(np.random.default_rng(4).normal(3, 1, (2, 12, 12, 4))).astype(np.float32)
+    x[0, 5, 6, 1] = 0.0
+    x = tf.constant(x)
+    net, code = _lopsided(), tf.constant(6)
+    both = net(tf.concat([x, dihedral(x, code)], 0))
+    gap = (both[:2] - dihedral_inverse(both[2:], code)).numpy()
+    keep = np.repeat(np.repeat(penalty_mask(x, border=2, blank_margin=1).numpy(), 2, 1), 2, 2)
+    expected = (keep * gap ** 2).sum() / (keep.sum() * gap.shape[-1])
+    eq = RealEquivariance(lambda v: v, border=2, blank_margin=1)
+    assert float(eq.penalty(net, x, code)) == pytest.approx(float(expected), rel=1e-5)
+    unmasked = RealEquivariance(lambda v: v)                 # 0, 0: exactly the v2 penalty
+    assert float(unmasked.penalty(net, x, code)) == pytest.approx(float(np.mean(gap ** 2)), rel=1e-6)
+
+
+def test_a_fully_masked_batch_gives_zero_and_a_finite_gradient():
+    x = tf.zeros((2, 8, 8, 4))
+    net = _lopsided()
+    eq = RealEquivariance(lambda v: v, border=1, blank_margin=1)
+    with tf.GradientTape() as tape:
+        value = eq.penalty(net, x, tf.constant(3))
+    grads = tape.gradient(value, net.trainable_variables)
+    assert float(value) == 0.0
+    assert all(np.isfinite(g.numpy()).all() for g in grads if g is not None)
+
+
+def test_the_mask_settings_are_validated_and_described():
+    with pytest.raises(ValueError, match="non-negative"):
+        RealEquivariance(lambda v: v, border=-1)
+    with pytest.raises(ValueError, match="non-negative"):
+        RealEquivariance(lambda v: v, blank_margin=-2)
+    text = RealEquivariance(lambda v: v, border=4, blank_margin=3).describe()
+    assert "4 LR px border" in text and "3 LR px around blank input pixels" in text
+    assert "masked" not in RealEquivariance(lambda v: v).describe()
+    assert DEFAULT_MASK == (4, 4)
+
+
 # -- the trainer ---------------------------------------------------------------
 
 def _electron_model(seed=7):
@@ -294,6 +390,14 @@ def test_model_train_validates_the_knob(tmp_path):
         learned.train("missing_lr", "missing_hr", steps=1, real_equivariance=1.0,
                       real_equivariance_tiles="t.npy", forward_onthefly=True,
                       real_equivariance_ramp=(0.6, 0.4))
+    with pytest.raises(ValueError, match="mask"):
+        learned.train("missing_lr", "missing_hr", steps=1, real_equivariance=1.0,
+                      real_equivariance_tiles="t.npy", forward_onthefly=True,
+                      real_equivariance_mask=(-1, 4))
+    with pytest.raises(ValueError, match="mask"):                # leaves nothing of a 32-px LR crop
+        learned.train("missing_lr", "missing_hr", steps=1, real_equivariance=1.0,
+                      real_equivariance_tiles="t.npy", forward_onthefly=True, hr_crop_size=64,
+                      real_equivariance_mask=(16, 0))
     fixed = Model(str(tmp_path / "f"), scale=2, num_res_blocks=1, asinh_knees=KNEES, output_knee=10.0)
     with pytest.raises(ValueError, match="learned-output-knee"):
         fixed.train("missing_lr", "missing_hr", steps=1, real_equivariance=1.0,
@@ -322,8 +426,13 @@ def _specs(tmp_path, member, name="b"):
 def test_the_knob_from_member_spec_origin_and_continue(tmp_path, monkeypatch):
     member = {"asinh_knees": list(KNEES), "learn_output_knee": True, "forward_onthefly": True,
               "real_equivariance": 1.0, "real_equivariance_tiles": "real/edf_fs.npy",
-              "real_equivariance_batch": 2, "real_equivariance_ramp": [0.8, 0.9]}
+              "real_equivariance_batch": 2, "real_equivariance_ramp": [0.8, 0.9],
+              "real_equivariance_mask": [3, 2]}
     spec = _specs(tmp_path, member)[0]
+    assert spec.real_equivariance_mask == (3, 2)
+    no_mask = {k: v for k, v in member.items() if k != "real_equivariance_mask"}
+    assert _specs(tmp_path, no_mask, "dm")[0].real_equivariance_mask is None
+    assert _specs(tmp_path, {**member, "real_equivariance_mask": [0, 0]}, "d0")[0].real_equivariance_mask == (0, 0)
     assert (spec.real_equivariance, spec.real_equivariance_tiles, spec.real_equivariance_batch) == (
         1.0, "real/edf_fs.npy", 2)
     assert spec.real_equivariance_ramp == (0.8, 0.9)
@@ -339,6 +448,12 @@ def test_the_knob_from_member_spec_origin_and_continue(tmp_path, monkeypatch):
                 {**member, "real_equivariance_ramp": [0.9, 0.8]},
                 {**member, "real_equivariance_ramp": [0.5, 1.5]},
                 {**member, "real_equivariance_ramp": [0.5]},
+                {**member, "real_equivariance_mask": [-1, 2]},
+                {**member, "real_equivariance_mask": [1.5, 2]},
+                {**member, "real_equivariance_mask": [4]},
+                {**member, "real_equivariance_mask": True},
+                {"asinh_knees": list(KNEES), "learn_output_knee": True, "forward_onthefly": True,
+                 "real_equivariance_mask": [4, 4]},
                 {**member, "forward_onthefly": False},
                 {**member, "learn_output_knee": False},
                 {"asinh_knees": list(KNEES), "learn_output_knee": True, "forward_onthefly": True,
@@ -354,23 +469,35 @@ def test_the_knob_from_member_spec_origin_and_continue(tmp_path, monkeypatch):
     ens.train_members("lr", "hr", [
         MemberTrainSpec(name="member_401", real_equivariance=1.0,
                         real_equivariance_tiles="real/edf_fs.npy", real_equivariance_batch=2,
-                        real_equivariance_ramp=(0.8, 0.9), **common),
-        MemberTrainSpec(name="member_402", **common)])
+                        real_equivariance_ramp=(0.8, 0.9), real_equivariance_mask=(3, 2), **common),
+        MemberTrainSpec(name="member_402", **common),
+        MemberTrainSpec(name="member_403", real_equivariance=1.0,
+                        real_equivariance_tiles="real/edf_fs.npy", **common)])
     origin = json.loads((base / "member_401" / "origin.json").read_text())
     assert (origin["real_equivariance"], origin["real_equivariance_tiles"],
             origin["real_equivariance_batch"]) == (1.0, "real/edf_fs.npy", 2)
     assert origin["real_equivariance_ramp"] == [0.8, 0.9]
     assert origin["real_equivariance_form"] == "pre_head_mse"
+    assert origin["real_equivariance_mask"] == [3, 2]
+    assert json.loads((base / "member_403" / "origin.json").read_text())["real_equivariance_mask"] == [4, 4]
     assert "real_equivariance" not in json.loads((base / "member_402" / "origin.json").read_text())
     assert ens._models[0].trained["real_equivariance"] == 1.0
     assert ens._models[0].trained["real_equivariance_tiles"] == "real/edf_fs.npy"
     assert ens._models[0].trained["real_equivariance_batch"] == 2
     assert ens._models[0].trained["real_equivariance_ramp"] == (0.8, 0.9)
+    assert ens._models[0].trained["real_equivariance_mask"] == (3, 2)
+    assert ens._models[2].trained["real_equivariance_mask"] == (4, 4)
     assert "real_equivariance" not in ens._models[1].trained
     kept = _continue_identity("member_401", str(base / "member_401"), {}, {})
     assert (kept["real_equivariance"], kept["real_equivariance_tiles"],
             kept["real_equivariance_batch"]) == (1.0, "real/edf_fs.npy", 2)
     assert kept["real_equivariance_ramp"] == (0.8, 0.9)
+    assert kept["real_equivariance_mask"] == (3, 2)
+    # A member trained before the mask existed (11-25) continues unmasked.
+    old = json.loads((base / "member_401" / "origin.json").read_text())
+    del old["real_equivariance_mask"]
+    (base / "member_401" / "origin.json").write_text(json.dumps(old))
+    assert _continue_identity("member_401", str(base / "member_401"), {}, {})["real_equivariance_mask"] == (0, 0)
     assert "real_equivariance" not in _continue_identity("member_402", str(base / "member_402"), {}, {})
 
 
@@ -427,6 +554,7 @@ def test_a_live_member_trains_with_the_penalty_end_to_end(tmp_path, capsys, fast
     out = capsys.readouterr().out
     assert "real-sky equivariance: λ=1, 2 × 32² LR crops/step from 3 tiles" in out
     assert "ramped in over 20–40% of the run (steps 1→2)" in out
+    assert "masked: 4 LR px border, 4 LR px around blank input pixels" in out
     assert "equivariance penalty" in out
 
 

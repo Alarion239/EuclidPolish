@@ -42,6 +42,27 @@ optional flips of the height and width axes. The three bits of
 come out once. Each part is its own inverse, so ``g⁻¹ = T^a ∘ F_H^b ∘ F_W^c``.
 Square, even-sided crops keep every element exact on both the 0.10" input and
 the 0.05" output grid (a 2× block maps onto a 2× block).
+
+The mask (11-25). Two places where the penalty did harm, measured on the
+λ 1 / 0.3 fine-tunes (271 / 278) against their no-penalty control (277):
+
+* **Blank input pixels.** Under a large blank (exactly zero) NISP patch on a
+  very bright core the penalty members leave the patch empty in every band
+  (poster nucleus B; a synthetic core with a 7.5-px blank disc keeps 0.83 →
+  0.00 of its light from 36k to 720k e⁻ peak, while 277 keeps 1.00–1.07).
+  An empty patch is trivially equivariant, and at that brightness the
+  supervised scenes give no counter-signal. Pixels within ``blank_margin``
+  LR px of an input pixel that is exactly zero in any band are not charged.
+* **The crop border.** Without the penalty the orientation spread at a crop
+  edge is ~8× the interior (a ``same``-padded conv treats the four edges
+  differently), so the penalty's pull concentrates there and leaves a
+  frame-locked rim (+0.03 e⁻ on the outer 3 SR px of every side). The outer
+  ``border`` LR px of the crop are not charged.
+
+The mask is computed on the input grid from the raw crop, is D4-invariant
+(both branches are compared in the original frame) and is repeated onto the
+output grid. The penalty is the mean square over the kept output pixels;
+``border = blank_margin = 0`` is exactly the unmasked v2 penalty.
 """
 
 from __future__ import annotations
@@ -64,6 +85,10 @@ DEFAULT_RAMP = (0.2, 0.4)
 #: The penalty's form, recorded in origin.json (v1 had none: the member's
 #: loss on electrons).
 FORM = "pre_head_mse"
+
+#: Default mask of new runs, (crop border, margin around blank input pixels)
+#: in LR px. A member recorded without one (before 11-25) ran unmasked.
+DEFAULT_MASK = (4, 4)
 
 
 def _bits(code: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
@@ -118,17 +143,47 @@ def pre_head_view(model: tf.keras.Model) -> tf.keras.Model:
     return type(model)(model.inputs, head.input, name=f"{model.name}_pre_head")
 
 
+def penalty_mask(real_e: tf.Tensor, *, border: int, blank_margin: int) -> tf.Tensor:
+    """``(N, S, S, 1)`` float32 on the input grid: 1 where the penalty is
+    charged, 0 within ``border`` px of the crop edge or within
+    ``blank_margin`` px (a square neighbourhood) of an input pixel that is
+    exactly zero in any band."""
+    x = tf.convert_to_tensor(real_e)
+    keep = tf.ones_like(x[..., :1], tf.float32)
+    if blank_margin > 0:
+        blank = tf.cast(tf.reduce_any(tf.equal(x, 0.0), axis=-1, keepdims=True), tf.float32)
+        size = 2 * int(blank_margin) + 1
+        near = tf.nn.max_pool2d(blank, ksize=size, strides=1, padding="SAME")
+        keep = keep * (1.0 - near)
+    if border > 0:
+        side_h, side_w = tf.shape(x)[1], tf.shape(x)[2]
+        rows = tf.range(side_h)
+        cols = tf.range(side_w)
+        inner_r = tf.cast((rows >= border) & (rows < side_h - border), tf.float32)
+        inner_c = tf.cast((cols >= border) & (cols < side_w - border), tf.float32)
+        keep = keep * (inner_r[None, :, None, None] * inner_c[None, None, :, None])
+    return keep
+
+
 class RealEquivariance:
     """``mean((y(x) − g⁻¹·y(g·x))²)`` on stretched real LR crops, ``y`` the
     network's output before its learned-knee head (:func:`pre_head_view`).
 
     ``input_stretch`` turns a raw-electron real batch into the network's input
-    (the member's LR stretch).
+    (the member's LR stretch). ``border`` / ``blank_margin`` (LR px) mask the
+    crop edge and the neighbourhood of blank input pixels
+    (:func:`penalty_mask`); 0 / 0 is the unmasked penalty.
     """
 
-    def __init__(self, input_stretch: Callable[[tf.Tensor], tf.Tensor], *, source: str = ""):
+    def __init__(self, input_stretch: Callable[[tf.Tensor], tf.Tensor], *, source: str = "",
+                 border: int = 0, blank_margin: int = 0):
+        if int(border) < 0 or int(blank_margin) < 0:
+            raise ValueError(f"the mask's border and blank margin must be non-negative, got "
+                             f"{border!r}, {blank_margin!r}")
         self._input_stretch = input_stretch
         self.source = str(source)
+        self.border = int(border)
+        self.blank_margin = int(blank_margin)
 
     def penalty(self, net: tf.keras.Model, real_e: tf.Tensor, code: tf.Tensor) -> tf.Tensor:
         """The penalty for one batch of raw-electron real crops ``(N, S, S, C)``;
@@ -137,11 +192,20 @@ class RealEquivariance:
         n = tf.shape(x)[0]
         both = tf.cast(net(tf.concat([x, dihedral(x, code)], axis=0), training=True), tf.float32)
         gap = both[:n] - dihedral_inverse(both[n:], code)
-        return tf.reduce_mean(tf.square(gap))
+        if not (self.border or self.blank_margin):
+            return tf.reduce_mean(tf.square(gap))
+        keep = penalty_mask(real_e, border=self.border, blank_margin=self.blank_margin)
+        factor = tf.shape(gap)[1] // tf.shape(keep)[1]
+        keep = tf.repeat(tf.repeat(keep, factor, axis=1), factor, axis=2)
+        total = tf.reduce_sum(keep * tf.square(gap))
+        count = tf.reduce_sum(keep) * tf.cast(tf.shape(gap)[-1], tf.float32)
+        return tf.math.divide_no_nan(total, count)
 
     def describe(self) -> str:
+        mask = (f", masked: {self.border} LR px border, {self.blank_margin} LR px around blank "
+                f"input pixels" if self.border or self.blank_margin else "")
         return ("f(g·x) = g·f(x) on real crops: MSE of the stretched output before the "
-                "knee head, g = D4 element 1..7 by step"
+                "knee head, g = D4 element 1..7 by step" + mask
                 + (f", from {self.source}" if self.source else ""))
 
 
