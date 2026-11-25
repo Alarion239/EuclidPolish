@@ -32,6 +32,8 @@ for n, ((cid, name, over), m) in enumerate(zip(pick, meta), 1):
                                              (jw, "3_jwst", "JWST"))):
         path = save_panel(ab_rgb(cube[sl], mode=mode, **lev), f"{stem}_{part}.png", label=label,
                           interp="nearest" if k == 0 else "lanczos")
+        save_panel(ab_rgb(cube[sl], mode=mode, **lev), f"{stem}_{part}_nolabel.png", label=None,   # summary grid
+                   interp="nearest" if k == 0 else "lanczos", px=1080)
         Image.open(path).convert("RGB").resize((1600, 1600), Image.LANCZOS).save(
             os.path.join(UP, f"L{n:02d}{k + 1}_{name}_{label}.jpg"), quality=90)
     print(stem, mode, {k: round(float(v), 2) for k, v in lev.items()}, m["what"])

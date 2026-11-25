@@ -7,12 +7,14 @@ it, the old frontier stays as a grey dashed line, the new one is drawn in the ac
 reads Euclid's 0.16" off the axis.
 v7 (user 11-25): dots with names only — no box, no frontier lines, no guides. The second version adds Euclid
 (one dot, the 14,000 deg2 Wide survey, in the accent colour).
+v8 (11-25 review): DSS2 added (the survey ladder opens on it; whole sky, ~2" plates), and the font is the deck's
+label font, Space Grotesk, like every other picture label.
 
 Sources (speaker notes, not on the plot):
   SDSS DR7 imaging 11,663 deg2, r 1.43" (Abazajian+09); Pan-STARRS1 3pi 30,000 deg2, i 1.11" (Chambers+16);
   DES DR2 5,000 deg2, i 0.88" (Abbott+21); HSC-SSP PDR3 Wide 670 deg2 full depth, i 0.61" (Aihara+22);
   Euclid DR1 1,900 deg2 / Wide 14,000 deg2, VIS 0.16" (Euclid Q1 VIS paper); HST COSMOS ACS 1.64 deg2,
-  ~0.09" (Scoville+07); JWST COSMOS-Web 0.54 deg2, F150W 0.061" (Casey+23; Zhuang+24).
+  ~0.09" (Scoville+07); DSS2 whole sky 41,253 deg2, ~2" (McLean+00); JWST COSMOS-Web 0.54 deg2, F150W 0.061" (Casey+23; Zhuang+24).
 """
 import os
 
@@ -22,13 +24,14 @@ from PIL import Image
 
 from style import OUT, TALK
 
-FONT = "Helvetica Neue"
+from style import SANS as FONT  # noqa: E402  (registers the Space Grotesk files)
 INK, GREY, SPACE, ACCENT = "#1d2127", "#8a94a3", "#3d7ea6", "#e0553b"
-XL, YL = (0.2, 1.5e5), (1.9, 0.045)
+XL, YL = (0.2, 1.5e5), (2.9, 0.045)
 plt.rcParams.update({"font.family": FONT, "axes.linewidth": 1.6, "xtick.major.width": 1.6,
                      "ytick.major.width": 1.6, "xtick.major.size": 8, "ytick.major.size": 8,
                      "xtick.direction": "out", "ytick.direction": "out"})
 pts = [  # name, area, fwhm, colour, label offset (points), ha
+    ("DSS2", 41253, 2.0, GREY, (-22, 0), "right"),
     ("SDSS", 11663, 1.43, GREY, (-22, 0), "right"),
     ("Pan-STARRS", 30000, 1.11, GREY, (0, 34), "center"),
     ("DES", 5000, 0.88, GREY, (-20, 0), "right"),
@@ -53,14 +56,14 @@ def chart(with_euclid):
     ax.set_xlabel("Area  [deg²]", fontsize=28, color=INK, labelpad=12)
     ax.set_ylabel("PSF FWHM  [arcsec]", fontsize=28, color=INK, labelpad=12)
     ax.set_xticks([1, 100, 1e4]); ax.set_xticklabels(["1", "100", "10 000"])
-    ax.set_yticks([1.0, 0.3, 0.1]); ax.set_yticklabels(["1", "0.3", "0.1"])
+    ax.set_yticks([2.0, 1.0, 0.3, 0.1]); ax.set_yticklabels(["2", "1", "0.3", "0.1"])
     ax.minorticks_off()
     ax.tick_params(labelsize=24, colors=INK, pad=8)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     for sp in ("left", "bottom"):
         ax.spines[sp].set_color(INK)
-    name = f"F1v7_wide_or_sharp_{'euclid' if with_euclid else 'base'}"
+    name = f"F1v8_wide_or_sharp_{'euclid' if with_euclid else 'base'}"
     out = os.path.join(OUT, name + ".png")
     fig.savefig(out, dpi=200, facecolor="white")
     Image.open(out).convert("RGB").resize((2400, 1350), Image.LANCZOS).save(

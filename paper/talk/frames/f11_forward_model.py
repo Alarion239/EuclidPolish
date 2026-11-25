@@ -68,8 +68,9 @@ def out(path, key):
                                                                                 quality=90)
 
 
-out(save_panel(ab_rgb(t_crop, **lev), "F11_0_truth.png", label="TNG truth"), "truth")
+# 11-25: no in-picture labels; each panel has its own caption under it in Prezi
+out(save_panel(ab_rgb(t_crop, **lev), "F11_0_truth.png", label=None), "truth")
 names = {"psf": "+ PSF + pixels", "noise": "+ noise", "full": "+ artifacts"}
 for k, (key, lab) in enumerate(names.items(), 1):
-    out(save_panel(ab_rgb(crops[key], **lev), f"F11_{k}_{key}.png", label=lab, interp="nearest"), key)
+    out(save_panel(ab_rgb(crops[key], **lev), f"F11_{k}_{key}.png", label=None, interp="nearest"), key)
 print("ok")

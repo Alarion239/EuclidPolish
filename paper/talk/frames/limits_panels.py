@@ -72,7 +72,7 @@ k = 0.2 * 0.895
 crop = sr[GRID_Y:GRID_Y + 96, GRID_X:GRID_X + 96]
 x = np.arcsinh((crop - sky) / k)
 img = np.clip((x + 1) / (np.arcsinh(GRID_WHITE * 0.895 / k) + 1), 0, 1)
-save_panel(np.stack([img] * 3, -1), "LIM2_faint_grid.png", label="POLISHed · faint outskirts", interp="nearest",
+save_panel(np.stack([img] * 3, -1), "LIM2_faint_grid.png", label="POLISHed", interp="nearest",
            bar_arcsec=1.0)
 
 # 3 · bright core: poster nucleus B in VIS, Euclid vs POLISHed, one asinh stretch (NISP saturates here)
@@ -92,8 +92,8 @@ edge = hole & ~ndimage.binary_erosion(hole, iterations=1)
 edge = ndimage.binary_dilation(edge, iterations=1)
 print("hole px", int(hole.sum()), "of bright", int(bright.sum()))
 coral = np.array([0xF0, 0x8A, 0x6C]) / 255.0
-for nm, c, lab, mark in (("LIM3_core_1_euclid.png", up, "Euclid · bright nucleus (VIS)", False),
-                         ("LIM3_core_2_polished.png", S, "POLISHed · holes outlined", True)):
+for nm, c, lab, mark in (("LIM3_core_1_euclid.png", up, "Euclid", False),
+                         ("LIM3_core_2_polished.png", S, "POLISHed", True)):
     v = np.clip(np.arcsinh((c - sk) / kk) / top, 0, 1)
     rgb = np.stack([v] * 3, -1)
     if mark:

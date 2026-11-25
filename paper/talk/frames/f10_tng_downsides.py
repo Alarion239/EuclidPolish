@@ -19,9 +19,9 @@ def load(name, crop=None):
     return np.repeat(im[..., None], 3, -1)
 
 
-save_panel(load("117266_O1.png"), "F10_a_dust_box_117266.png", label="Dust-box facets")
-save_panel(load("229934_O1.png"), "F10_b_box_cut_229934.png", label="Cut by the periodic box")
-save_panel(load("580250_O1.png"), "F10_c_slabs_580250.png", label="Slabs of scattered light")
+save_panel(load("117266_O1.png"), "F10_a_dust_box_117266.png", label=None)  # 11-25: captions under the panels in Prezi say it
+save_panel(load("229934_O1.png"), "F10_b_box_cut_229934.png", label=None)
+save_panel(load("580250_O1.png"), "F10_c_slabs_580250.png", label=None)
 save_panel(load("229934_O1.png", crop=(40, 40, 260)), "F10_d_particle_grain_229934.png",
-           label="Star-particle grain", interp="nearest")
+           label=None, interp="nearest")
 print("ok")

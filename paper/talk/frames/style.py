@@ -41,6 +41,7 @@ STROKE = [pe.withStroke(linewidth=3.0, foreground="black")]
 SHOW_CALLBACK_MARK = False      # the coral "this comes back later" envelope; off since 11-22 (user)
 
 W_PX, H_PX, DPI = 3840, 2160, 200
+LABEL_SCALE = 2.4               # panel label size (x 30 pt per 2160 px); 11-25 review: one large label style
 
 
 def frame():
@@ -144,12 +145,14 @@ def save_layer(img, name, px=2160, interp="lanczos"):
 
 
 def save_panel(img, name, *, label=None, legend=None, interp="lanczos", bar_arcsec=None,
-               pix_arcsec=0.05, compass=False, envelope=False, coords=None, px=2160, label_scale=1.0):
+               pix_arcsec=0.05, compass=False, envelope=False, coords=None, px=2160, label_scale=None):
     """One square, annotated image (Euclid / POLISHed / JWST ...) as its own file.
 
     All panels of a callback share size and framing, so in Prezi the POLISHed or JWST panel
     can be dropped exactly on top of the Euclid one and faded in. label_scale > 1 for panels shown small
-    (the cat card's 2 x 2 grid), so their labels stay readable."""
+    (the cat card's 2 x 2 grid), so their labels stay readable. Since 11-25 every panel uses that size by default
+    (LABEL_SCALE): one label style across the deck, readable from the back of a seminar room."""
+    label_scale = LABEL_SCALE if label_scale is None else label_scale
     os.makedirs(OUT, exist_ok=True)
     fig = plt.figure(figsize=(px / DPI, px / DPI), dpi=DPI, facecolor="black")
     ax = fig.add_axes([0, 0, 1, 1])
@@ -159,7 +162,7 @@ def save_panel(img, name, *, label=None, legend=None, interp="lanczos", bar_arcs
     image_panel(ax, img, x=0, y=0, size=1, label=label, legend=legend, interp=interp,
                 bar_arcsec=bar_arcsec, pix_arcsec=pix_arcsec, compass=compass,
                 envelope=envelope, coords=coords, label_size=px / 2160 * 30 * label_scale,
-                label_stroke=3.0 * label_scale)
+                label_stroke=1.6 * label_scale)
     path = os.path.join(OUT, name)
     fig.savefig(path, dpi=DPI, facecolor="black")
     plt.close(fig)

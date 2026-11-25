@@ -14,6 +14,9 @@ import os
 # 11-25 review pass: Lenses card moved to the end of row 1 (narration unchanged); walk-back is JWST, DES, DSS2; two lenses
 # zoomed, the four DR1 ones flip on the slide; survey-window callback after the JWST check, with the Hubble box back on
 # top; limits card has no zooms (75 actions).
+# 11-25 picture pass: two-line survey labels from the start, so the JWST resolution click is gone (merged into the JWST
+# box); the JWST card ends on a Euclid / JWST / POLISHed grid faded in after the zoom back (still 75 actions); the fourth
+# JWST galaxy is the edge-on disk with two companions (was the inner-ring spiral); the PSF card compares DES with VIS.
 N = [
     "Euclid is ESA's survey telescope: a third of the sky at nearly Hubble sharpness. Today: a network that makes Euclid sharper still, trained only on TNG50 skies.",
     'From this...',
@@ -24,12 +27,11 @@ N = [
     'Pan-STARRS covers three quarters of it.',
     'DES covers an eighth.',
     "Zoom into a 50-arcsecond window. The box is Hubble's widest survey: this small.",
-    "JWST's widest survey: smaller still.",
-    "JWST's resolution: 0.06 arcsec. Now walk back down: what the ground sees in the same window.",
+    "JWST's widest survey: smaller still, at 0.06 arcsec. Now walk back down: what the ground sees in the same window.",
     'DES, the best wide survey from the ground: 0.9 arcsec.',
     'DSS2. Same sky, forty years of telescopes: area and sharpness never came together.',
     "Radio already inverts a known PSF. From the ground, the atmosphere's blur changes all night and is never known exactly. In radio the PSF is set by the antenna layout and known exactly; every source carries the same starburst. That is why POLISH, from Liam's group, learns on simulations and works on real data.",
-    "Euclid flies above the atmosphere. Its VIS PSF is 0.16 arcsec, five times sharper than DES's 0.9, and nearly the same across the sky: a radio-like, known PSF over 14,000 square degrees.",
+    "Euclid flies above the atmosphere. Same scale, same stretch: on the left the ground (DES, 0.9 arcsec seeing), then Euclid's VIS PSF, 0.16 arcsec, five times sharper, and NISP H. Below: VIS in three sky regions, nearly identical: a radio-like, known PSF over 14,000 square degrees.",
     'Back to the window.',
     'Here is Euclid in the same window.',
     "Hubble's box...",
@@ -76,22 +78,23 @@ N = [
     'An interacting pair: Euclid.',
     'JWST.',
     'POLISHed.',
-    'A spiral with an inner ring: Euclid.',
+    'An edge-on disk with two companions: Euclid.',
     'JWST.',
-    'POLISHed: the ring.',
+    'POLISHed: the disk and both companions, spiral arms included.',
     'All four, POLISHed: two to three times finer than Euclid, the line at the top.',
+    'All three side by side: Euclid, JWST and POLISHed for each galaxy.',
     'And a whole field: back to the 50-arcsecond window from the start.',
     'The same window, POLISHed.',
     'And Hubble in its box, over the POLISHed field: the same structure where Hubble can check it (left arrow flips back).',
     "Point 4: what remains, and what's next. Where it fails: two gaps in the training set. Faint galaxies lose up to about 9% of their flux, because our training noise was more correlated than Euclid's. Very bright cores can come out with holes, because training had no bright, extended cores. (If asked: retraining with the corrected noise model is under way.)",
     'The holes, outlined.',
     'Remember this galaxy? From this... to THIS.',
-    'And JWST, for comparison: the structure is real.',
+    'And JWST, for comparison: all three side by side, one color stretch. The structure is real.',
     'Next: POLISH all of Euclid DR1, then the full 14,000 square degrees, with the same network.',
     'The viewer already runs on DR1: scan the code to try it. In my last minute, let me show it (switch to the browser tab).',
     'The four points: one, Euclid is the first wide survey with a sharp, known PSF. Two, simulated TNG50 skies pass for real Euclid data. Three, trained only on them, POLISH resolves two to three times finer detail, confirmed by JWST. Four, faint flux and bright cores remain; next, all of Euclid DR1. Questions.',
 ]
-ZOOM = set([0, 3, 4, 5, 8, 13, 14, 15, 19, 21, 23, 24, 25, 26, 29, 31, 32, 39, 41, 42, 44, 46, 51, 52, 55, 58, 61, 64, 65, 68, 70, 72, 73, 74])
+ZOOM = set([0, 3, 4, 5, 8, 12, 13, 14, 18, 20, 22, 23, 24, 25, 28, 30, 31, 38, 40, 41, 43, 45, 50, 51, 54, 57, 60, 63, 65, 68, 70, 72, 73, 74])
 assert len(N) == 75, len(N)
 # a zoom step's note also lists the fades that follow it ("→" lines): Prezi shows notes only on zoom steps
 NOTES = []

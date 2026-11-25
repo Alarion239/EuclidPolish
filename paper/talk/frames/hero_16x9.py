@@ -74,3 +74,32 @@ d = ImageDraw.Draw(js)
 d.text((TX, TY), "JWST,", font=BIG, fill="white", anchor="ls")
 d.text((TX, TY + 40), "for comparison.", font=ImageFont.truetype(BOLD, 84), fill=(200, 205, 212), anchor="lt")
 save(js, "HERO_3_jwst")
+
+# 11-25 review: the finale's final state is a triptych of the title galaxy (Euclid | POLISHed | JWST, one stretch),
+# so the closing zoom-out shows the comparison instead of "JWST, for comparison." on its own. Replaces HERO_3.
+def square(cube, name):
+    im = ab_rgb(cube[sq], **lev)
+    im[~np.isfinite(cube[sq]).all(-1)] = 0.0
+    if name == "jwst":
+        L = im.mean(-1, keepdims=True)
+        sm = gaussian_filter(im, (1.5, 1.5, 0))
+        im = (sm + 0.02) / (sm.mean(-1, keepdims=True) + 0.02) * L
+    arr = (np.clip(im[::-1], 0, 1) * 255).astype(np.uint8)
+    return Image.fromarray(arr)
+
+
+SIDE, GAP3 = 720, 40
+x0 = (OUTW - 3 * SIDE - 2 * GAP3) // 2
+y0 = 300
+tri = Image.new("RGB", (OUTW, OUTH), (0, 0, 0))
+d = ImageDraw.Draw(tri)
+LAB = ImageFont.truetype(BOLD, 96)
+for k, (cube, name, label) in enumerate(((lr, "euclid", "Euclid"), (sr, "polished", "POLISHed"),
+                                         (jw, "jwst", "JWST"))):
+    x = x0 + k * (SIDE + GAP3)
+    tri.paste(square(cube, name).resize((SIDE, SIDE), Image.NEAREST if name == "euclid" else Image.LANCZOS),
+              (x, y0))
+    d.text((x + SIDE // 2, y0 - 40), label, font=LAB, fill=TEAL if name == "polished" else "white", anchor="ms")
+d.text((OUTW // 2, y0 + SIDE + 115), "The same galaxy, one color stretch.", font=ImageFont.truetype(BOLD, 64),
+       fill=(200, 205, 212), anchor="ms")
+save(tri, "HERO_3_triptych")

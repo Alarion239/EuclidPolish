@@ -16,7 +16,10 @@ W, H = round((4 * S + 3 * GAP) * PX), round((2 * S + GAP) * PX)
 im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 d = ImageDraw.Draw(im)
 font = ImageFont.truetype(os.path.join(TALK, "fonts", "SpaceGrotesk-Bold.ttf"), 69)
-GREEN, RED = (52, 199, 89, 255), (255, 69, 58, 255)
+# 11-25 review: the deck teal for REAL and orange for SIMULATED (red/green read as "simulated = wrong" and fail
+# for colour-blind viewers); dark text on both badges
+GREEN, RED = (47, 212, 191, 255), (255, 159, 64, 255)
+INK = (15, 18, 24, 255)
 for i, letter in enumerate("ABCDEFGH"):
     x0, y0 = round((i % 4) * (S + GAP) * PX), round((i // 4) * (S + GAP) * PX)
     side = round(S * PX)
@@ -29,7 +32,7 @@ for i, letter in enumerate("ABCDEFGH"):
     tw = d.textlength(label, font=font)
     bx0, by1 = (x0 + x1) / 2 - tw / 2 - 27, y1 - 39
     d.rounded_rectangle([bx0, by1 - 96, bx0 + tw + 54, by1], radius=18, fill=col)
-    d.text((bx0 + 27, by1 - 90), label, font=font, fill=(255, 255, 255, 255))
+    d.text((bx0 + 27, by1 - 90), label, font=font, fill=INK)
 out = os.path.join(TALK, "prezi_upload", "QUIZ_polished_composite.png")
 im.save(out, optimize=True)
 print(out, im.size, sorted(real))
