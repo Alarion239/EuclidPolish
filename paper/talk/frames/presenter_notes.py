@@ -7,10 +7,11 @@ Keep in sync with SCRIPT.md when the path changes (87 actions, 11-25 storyboard 
 import json
 import os
 
-# 11-25 storyboard: the path follows the paper introduction, sections 1-10, then the whole-talk view (11).
+# 11-25: the path follows the paper introduction; the canvas groups it under four summary points (rows), and each
+# row opens by stating its point. The closing view reads the four points.
 N = [
     "Euclid is ESA's survey telescope: a third of the sky at nearly Hubble sharpness. Today: a network that makes Euclid sharper still, trained only on TNG50 skies.",
-    "1 · History of surveys. Every survey trades area for sharpness. From the ground you can image the whole sky, but the atmosphere blurs everything to about an arcsecond.",
+    "Point 1: Euclid is the first wide survey with a sharp, known PSF. Every survey trades area for sharpness. From the ground you can image the whole sky, but the atmosphere blurs everything to about an arcsecond.",
     "From space you're sharp, but the fields are tiny.",
     "Each dot is a survey. Up is sharper, right is wider. Nobody is in the top-right corner: wide AND sharp.",
     "One patch near the Hubble Ultra Deep Field; each box's area is that survey's share of the sky. The big box: DSS2, photographic plates of the whole sky.",
@@ -23,13 +24,13 @@ N = [
     "DES.",
     "Pan-STARRS.",
     "DSS2. Same sky, forty years of telescopes: area and sharpness never came together.",
-    "2 · Our goal: lens finding. Lenses: where resolution pays off. A ring's geometry weighs its galaxy, dark matter included.",
+    "Lenses: where resolution pays off. A ring's geometry weighs its galaxy, dark matter included.",
     "Time delays between the images measure the Hubble constant.",
     "Double-source lenses, like these DR1 systems, test cosmology.",
     "Euclid should find ~170,000 lenses, most only a few PSF widths across. Resolution decides which ones we can model.",
-    "3 · Super-resolution. Radio already inverts a known PSF. From the ground, the atmosphere's blur changes all night and is never known exactly.",
+    "Radio already inverts a known PSF. From the ground, the atmosphere's blur changes all night and is never known exactly.",
     "In radio the PSF is set by the antenna layout and known exactly; every source carries the same starburst. That is why POLISH, from Liam's group, learns on simulations and works on real data.",
-    "4 · Euclid arrives. Euclid flies above the atmosphere. Its PSF is five times sharper than DES's and nearly the same across the sky: a radio-like, known PSF over 14,000 square degrees.",
+    "Euclid flies above the atmosphere. Its PSF is five times sharper than DES's and nearly the same across the sky: a radio-like, known PSF over 14,000 square degrees.",
     "Back to the window.",
     "Here is Euclid in the same window.",
     "Hubble's box...",
@@ -38,19 +39,19 @@ N = [
     "...14,000 square degrees.",
     "Back to the chart.",
     "Euclid lands in the empty corner: 0.16 arcsec over 14,000 square degrees. DR1, public since November, already covers 1,900.",
-    "5 · Our mission: extend POLISH to Euclid. Remember the galaxy from the start?",
+    "Point 2: simulated TNG50 skies pass for real Euclid data. Our mission: extend POLISH to Euclid. Remember the galaxy from the start?",
     "From this...",
     "...to THIS: the same Euclid data, POLISHed.",
     "And JWST, for comparison: the structure is real.",
-    "6 · The truth: TNG50 galaxies. The truth: 1,154 TNG50-SKIRT galaxies. Real physics and real morphology: your group's work. z ~ 0, 100 pc per pixel. We take only the morphology; colors come from Q1.",
+    "The truth: 1,154 TNG50-SKIRT galaxies. Real physics and real morphology: your group's work. z ~ 0, 100 pc per pixel. We take only the morphology; colors come from Q1.",
     "The simulated truth has its own artifacts: dust-box facets, box cuts, slabs of light, particle grain. A network could learn them as real structure, so dust-box and box-cut galaxies are left out of training; slabs and grain we check for.",
-    "7 · Fake skies. Each truth becomes a realistic Euclid image.",
+    "Each truth becomes a realistic Euclid image.",
     "Measured Euclid PSFs and 0.1-arcsecond pixels.",
     "Real Q1 noise, artifacts and NISP holes.",
     "The recipe in one line.",
     "Which four are real? Give the room about five seconds.",
     "Half are simulated. If you can't tell them apart, neither can the network. That's the test.",
-    "8 · Our network. A residual CNN: VIS, Y, J, H in; the same four bands out on a 0.05-arcsecond grid. Arcsinh inputs at eight knees let one network see faint outskirts and bright cores alike. 15 million steps, about 70 A100-hours.",
+    "Point 3: trained only on them, POLISH resolves two to three times finer detail, confirmed by JWST. A residual CNN: VIS, Y, J, H in; the same four bands out on a 0.05-arcsecond grid. Arcsinh inputs at eight knees let one network see faint outskirts and bright cores alike. 15 million steps, about 70 A100-hours.",
     "Now run the network on all eight fields.",
     "All eight, POLISHed. Real or simulated, the network treats them the same way.",
     "What did it learn? Priors on a cat: put a cat through the same forward model.",
@@ -60,7 +61,7 @@ N = [
     "Close-up: Euclid.",
     "POLISHed.",
     "The truth. It restores fur it has never seen: it learned deconvolution, not galaxies.",
-    "9 · Results. Lenses, POLISHed: the six lenses from section 2, sharpened.",
+    "Lenses, POLISHed: the six lenses from the first row, sharpened.",
     "The Q1 grade-A ring, as Euclid sees it...",
     "...POLISHed: the ring and its knots separate.",
     "NGC 6505, Euclid's Einstein ring...",
@@ -88,14 +89,14 @@ N = [
     "JWST.",
     "POLISHed: the ring.",
     "All four, POLISHed. Against JWST in H band, POLISHed resolves detail two to three times finer than Euclid: about 0.2 arcsec instead of 0.7 on bright structure.",
-    "10 · Limitations. Where it fails. Faint galaxies lose 2-8% of their flux.",
+    "Point 4: what remains, and what's next. Where it fails. Faint galaxies lose 2-8% of their flux.",
     "Flux kept vs VIS magnitude: the loss grows toward the faint end.",
     "A very bright nucleus, as Euclid sees it (VIS)...",
     "...POLISHed, with the holes outlined.",
     "Two failure modes.",
     "Very bright cores can come out with holes. Both trace back to gaps in the training set.",
-    "10 · Future work: POLISH all of Euclid DR1, then the full 14,000 square degrees. The viewer already runs on DR1; in my last minute, let me show it (switch to the browser tab).",
-    "11 · The whole talk on one page, in the order of the paper: history of surveys, lens finding, super-resolution, Euclid, our mission, TNG50, fake skies, the network, results, limits and next steps. Questions."
+    "Next: POLISH all of Euclid DR1, then the full 14,000 square degrees. The viewer already runs on DR1; in my last minute, let me show it (switch to the browser tab).",
+    "The four points: one, Euclid is the first wide survey with a sharp, known PSF. Two, simulated TNG50 skies pass for real Euclid data. Three, trained only on them, POLISH resolves two to three times finer detail, confirmed by JWST. Four, faint flux and bright cores remain; next, all of Euclid DR1. Questions."
 ]
 ZOOM = set([0, 1, 3, 4, 7, 14, 18, 20, 21, 25, 27, 29, 33, 34, 35, 39, 41, 42, 44, 51, 52, 54, 56, 58, 60, 62, 64, 65, 66, 69, 72, 75, 78, 79, 80, 81, 83, 85, 86])
 assert len(N) == 87, len(N)
