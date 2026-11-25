@@ -3,7 +3,7 @@ NOTES[i] is the note for path action i, i.e. click i + 1 in SCRIPT.md. Writes ..
 pasted into the editor (action.updateNarrative / narrative.updateText) for both the path and the editor path.
 Prezi's notes panel and Presenter view only show notes on zoom steps, so each zoom step's note also carries the
 notes of the fades that follow it, one "→ " line per click (the fades keep their own one-line note too).
-Keep in sync with SCRIPT.md when the path changes (99 actions after the 11-23 meeting pass)."""
+Keep in sync with SCRIPT.md when the path changes (93 actions since the 11-25 reorder)."""
 import json
 import os
 
@@ -113,9 +113,24 @@ N = [
     "Next: POLISH all of Euclid DR1, then the full 14,000 square degrees. The QR code opens the all-sky viewer.",
     "The whole talk on one page. In my last minute: the all-sky viewer, Euclid DR1 POLISHed live in the browser (switch to the browser tab). Then questions.",
 ]
-ZOOM = {0, 3, 6, 7, 10, 17, 20, 21, 25, 27, 29, 34, 36, 37, 41, 43, 45, 52, 54, 55, 57, 59, 61, 63, 65, 67, 68, 70, 71, 74, 77,
-        80, 83, 84, 86, 87, 89, 91, 93, 98}
-assert len(N) == 99, len(N)
+# 11-25: conclusions are the canvas's row headers and the talk is ordered by them (93 actions): the quiz payoff
+# follows the quiz, the cat / lenses / JWST / limits cards form row 3, the Summary card became the Next + QR card.
+N[93] = "Next: POLISH all of Euclid DR1, then the full 14,000 square degrees. The viewer already runs on DR1; in my last minute, let me show it (switch to the browser tab)."
+N[98] = ("Back on the whole talk: the three conclusions are the three rows. One: Euclid is the first optical wide survey "
+         "with a sharp, stable PSF. Two: a network trained only on simulated TNG50 images. Three: POLISHed images reveal "
+         "what Euclid blurs. Questions.")
+rng = lambda a, b: list(range(a, b + 1))  # noqa: E731
+ORDER = (rng(1, 29) + [35, 36, 37, 38, 39, 40, 41, 44, 45, 42, 43, 54] + [69, 70] + rng(46, 52) + rng(30, 34)
+         + rng(56, 67) + [68] + rng(71, 84) + rng(85, 91) + [92, 93, 94, 99])     # 1-based steps of the 99-step path
+N = [N[k - 1] for k in ORDER]
+ZSTEP = {1, 4, 7, 8, 11, 18, 21, 22, 26, 28, 30, 35, 37, 38, 42, 44, 46, 53, 55, 56, 58, 60, 62, 64, 66, 68, 69, 71, 72,
+         75, 78, 81, 84, 85, 87, 88, 90, 92, 94, 99}                               # zoom steps of the 99-step path
+ZOOM = {i for i, k in enumerate(ORDER) if k in ZSTEP}
+# each row opens by naming its conclusion (the row header on the canvas)
+N[3] = "First point (top row): Euclid is the first optical wide survey with a sharp, stable PSF. " + N[3]
+N[29] = "Second point (middle row): a network trained only on simulated TNG50 images. " + N[29]
+N[41] = "Third point (bottom row): POLISHed images reveal what Euclid blurs. " + N[41]
+assert len(N) == 93, len(N)
 # a zoom step's note also lists the fades that follow it ("→" lines): Prezi shows notes only on zoom steps
 NOTES = []
 for i, n in enumerate(N):
