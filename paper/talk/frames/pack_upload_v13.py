@@ -50,6 +50,7 @@ def pdf(items, out):
     return len(body)
 
 
-out = os.path.join(T, "prezi_pdf", "v13_meeting.pdf")
-print(out, len(pages), "pages", round(pdf(pages, out) / 1e6, 2), "MB")
-json.dump([k for k, _ in pages], open(os.path.join(U, "v13_manifest.json"), "w"), indent=0)
+if __name__ == "__main__":
+    out = os.path.join(T, "prezi_pdf", "v13_meeting.pdf")
+    print(out, len(pages), "pages", round(pdf(pages, out) / 1e6, 2), "MB")
+    json.dump([k for k, _ in pages], open(os.path.join(U, "v13_manifest.json"), "w"), indent=0)

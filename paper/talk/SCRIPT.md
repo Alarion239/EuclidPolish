@@ -5,7 +5,7 @@ prezi.com/p/edit/0nzro8jentfl. The same lines are in Prezi's Presenter view (fra
 Target: ~16 min of talking, the last minute a live demo of the all-sky viewer, then questions.
 `[n]` is the click that brings that view up. "→" means the click only fades something in.
 
-**The canvas is the outline.** The zoom-out shows the title and the Next card on top and three rows below; each row's
+**The canvas is the outline.** The zoom-out shows the opening galaxy and the Next card (big QR code to the viewer) on top and three rows below; each row's
 header is one conclusion, and its cards are the evidence for it. The talk walks the rows in order, top to bottom, left
 to right, and ends on the zoom-out, where the three headers are the summary.
 
@@ -28,8 +28,8 @@ sharpness. Today: a network that makes Euclid sharper still, trained only on TNG
 **[4] Every survey trades area for sharpness.** Name the row's point first.
 - [5] → "From the ground you can image the whole sky, but the atmosphere blurs everything to about an arcsecond."
 - [6] → "From space you're sharp, but the fields are tiny."
-- [7] Zoom on the chart. "Up is sharper, right is wider. The dashed line is the frontier. The box top-right, wide AND
-  sharp, is empty."
+- [7] Zoom on the chart. "Each dot is a survey. Up is sharper, right is wider. Nobody is in the top-right corner:
+  wide AND sharp."
 
 **[8] Each box is one survey's share of the sky.** "The big box is DSS2, photographic plates of the whole sky."
 [9] → "Pan-STARRS covers three quarters of it." [10] → "DES covers an eighth."
@@ -46,8 +46,8 @@ DES's and nearly the same across the sky: a radio-like, known PSF over 14,000 sq
 
 **[22]–[25] Back to the window:** [23] → Euclid in the same window. [24] → Hubble's box. [25] → JWST's box.
 "Euclid is nearly Hubble-sharp, everywhere." **[26]–[27]** Euclid's box: "over 14,000 square degrees."
-**[28]–[29] The chart again:** [29] → "Euclid lands inside the wide-and-sharp box: 0.16″ over 14,000 deg². Filled dot:
-DR1, public since November; open dot: the full survey. The frontier moves."
+**[28]–[29] The chart again:** [29] → "Euclid lands in the empty corner: 0.16″ over 14,000 deg². DR1, public since
+November, already covers 1,900."
 
 ## Row 2 · A network trained only on simulated TNG50 images (5:30–9:30)
 
