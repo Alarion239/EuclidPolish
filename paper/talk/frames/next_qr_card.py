@@ -15,7 +15,8 @@ import segno  # noqa: E402
 
 T = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 URL = "https://cutout-production-538f5738.up.railway.app/#ra=228.827579&dec=45.009343&z=5.016&rel=dr1&m=271"
-CARD_W, CARD_H = 50000, 16000                    # canvas units (printed for the Prezi placement)
+TILE = "--tile" in sys.argv                     # 16:9 storyboard tile (11-25 grid) instead of the wide top-band card
+CARD_W, CARD_H = (20000, 11250) if TILE else (50000, 16000)   # canvas units (printed for the Prezi placement)
 H = 1200
 W = round(H * CARD_W / CARD_H)
 M, R = round(60 * H / 1125), round(22 * H / 1125)  # shadow margin and corner radius, as card_tile.py
@@ -29,22 +30,30 @@ sh = np.asarray(sh.filter(ImageFilter.GaussianBlur(18)), np.float64) / 255 * 0.1
 full = Image.fromarray((np.asarray(full, np.float64) * (1 - sh[..., None])).astype(np.uint8))
 d = ImageDraw.Draw(full)
 d.rounded_rectangle([M, M, M + W, M + H], R, fill=BG)
-x0, y0 = M + 110, M
-d.text((x0, y0 + 120), "Next", font=F("SpaceGrotesk-Bold.ttf", 84), fill=TEAL, anchor="lt")
-for k, line in enumerate(("POLISH all of Euclid DR1,", "then the full 14,000 deg² survey.")):
-    d.text((x0, y0 + 300 + k * 150), line, font=F("SpaceGrotesk-Bold.ttf", 120), fill=TXT, anchor="lt")
-d.text((x0, y0 + 760), "Try it now: the all-sky viewer,", font=F("SpaceGrotesk-Medium.ttf", 76), fill=MUTED, anchor="lt")
-d.text((x0, y0 + 860), "Euclid DR1 POLISHed live in your browser  →", font=F("SpaceGrotesk-Medium.ttf", 76),
-       fill=MUTED, anchor="lt")
+x0, y0 = M + (90 if TILE else 110), M
+if TILE:
+    d.text((x0, y0 + 90), "Next", font=F("SpaceGrotesk-Bold.ttf", 72), fill=TEAL, anchor="lt")
+    for k, line in enumerate(("POLISH all", "of DR1, then", "the full survey.")):
+        d.text((x0, y0 + 230 + k * 108), line, font=F("SpaceGrotesk-Bold.ttf", 92), fill=TXT, anchor="lt")
+    for k, line in enumerate(("Try it now:", "the all-sky viewer,", "DR1 POLISHed live", "in your browser  →")):
+        d.text((x0, y0 + 650 + k * 82), line, font=F("SpaceGrotesk-Medium.ttf", 64), fill=MUTED, anchor="lt")
+else:
+    d.text((x0, y0 + 120), "Next", font=F("SpaceGrotesk-Bold.ttf", 84), fill=TEAL, anchor="lt")
+    for k, line in enumerate(("POLISH all of Euclid DR1,", "then the full 14,000 deg² survey.")):
+        d.text((x0, y0 + 300 + k * 150), line, font=F("SpaceGrotesk-Bold.ttf", 120), fill=TXT, anchor="lt")
+    d.text((x0, y0 + 760), "Try it now: the all-sky viewer,", font=F("SpaceGrotesk-Medium.ttf", 76), fill=MUTED,
+           anchor="lt")
+    d.text((x0, y0 + 860), "Euclid DR1 POLISHed live in your browser  →", font=F("SpaceGrotesk-Medium.ttf", 76),
+           fill=MUTED, anchor="lt")
 qr = segno.make(URL, error="m")
 mods = np.array([[1 if v else 0 for v in row] for row in qr.matrix], np.uint8)
 n, pad = mods.shape[0], 50
-side = H - 2 * 90
+side = H - 2 * (70 if TILE else 90)
 cell = (side - 2 * pad) // n
 side = n * cell + 2 * pad
-qx, qy = M + W - 90 - side, M + (H - side) // 2
+qx, qy = M + W - (70 if TILE else 90) - side, M + (H - side) // 2
 d.rounded_rectangle([qx, qy, qx + side, qy + side], 30, fill="white")
 full.paste(Image.fromarray((1 - mods) * 255).resize((n * cell, n * cell), Image.NEAREST), (qx + pad, qy + pad))
-out = os.path.join(T, "prezi_upload", "NEXT_qr_wide.jpg")
+out = os.path.join(T, "prezi_upload", "NEXT_qr_tile.jpg" if TILE else "NEXT_qr_wide.jpg")
 full.save(out, quality=94)
 print(out, full.size, "card px", W, H, "margin px", M, "-> image width in canvas units", round((W + 2 * M) * CARD_W / W))
