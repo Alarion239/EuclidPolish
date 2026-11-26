@@ -104,3 +104,32 @@ for k, (cube, name, label) in enumerate(((lr, "euclid", "Euclid"), (sr, "polishe
 d.text((OUTW // 2, y0 + SIDE + 115), "The same galaxy, one color stretch.", font=ImageFont.truetype(BOLD, 64),
        fill=(200, 205, 212), anchor="ms")
 save(tri, "HERO_3_triptych")
+
+# 11-25 (user): "From this… …to THIS." side by side on one slide, before the title (the title and names, Prezi
+# text over HERO_2_plain, come up when the pair fades out). OPEN_pair_from = Euclid + "From this…" with the right
+# half empty; OPEN_pair_full = the same plus POLISHed + "…to THIS." on the right. In Prezi the "from" layer sits on
+# top of the "full" one and fades out at click 2 (the right half appears), the full pair fades out at click 3.
+PSIDE = 800
+px0 = (OUTW - 2 * PSIDE - 220) // 2
+px1 = px0 + PSIDE + 220
+py0 = 150
+CAP = py0 + PSIDE + 200                          # caption baseline
+
+
+def pair(with_polished):
+    im = Image.new("RGB", (OUTW, OUTH), (0, 0, 0))
+    d = ImageDraw.Draw(im)
+    im.paste(square(lr, "euclid").resize((PSIDE, PSIDE), Image.NEAREST), (px0, py0))
+    d.text((px0 + PSIDE // 2, CAP), "From this…", font=BIG, fill="white", anchor="ms")
+    if with_polished:
+        im.paste(square(sr, "polished").resize((PSIDE, PSIDE), Image.LANCZOS), (px1, py0))
+        w1 = d.textlength("…to ", font=BIG)
+        w2 = d.textlength("THIS.", font=HUGE)
+        x = px1 + PSIDE // 2 - (w1 + w2) / 2
+        d.text((x, CAP), "…to ", font=BIG, fill="white", anchor="ls")
+        d.text((x + w1, CAP), "THIS.", font=HUGE, fill=TEAL, anchor="ls")
+    return im
+
+
+save(pair(False), "OPEN_pair_from")
+save(pair(True), "OPEN_pair_full")

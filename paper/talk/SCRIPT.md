@@ -20,7 +20,7 @@ to the viewer sit on the right. The start view and the zoom-out at the end are t
 ## Opening: from this to THIS (0:00–1:00)
 
 **[0] The canvas.** "Four points; we'll come back to them at the end."
-**[1] From this…** The Euclid image. [2] → "…to THIS." Pause. "The same Euclid data, POLISHed. Remember this galaxy;
+**[1] From this…** The Euclid image, on the left. [2] → the POLISHed one beside it: "…to THIS." Pause. "The same Euclid data, POLISHed. Remember this galaxy;
 we'll check it against JWST at the end." [3] → the title and names over the POLISHed galaxy: "Euclid is ESA's survey
 telescope: a third of the sky at nearly Hubble sharpness. Today: a network that makes Euclid sharper still, trained only
 on TNG50 skies."

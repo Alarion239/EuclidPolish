@@ -20,7 +20,7 @@ import os
 # 11-25 (user): opening = From this... -> ...to THIS. -> title and names on the POLISHed frame (both fade OUT); JWST card
 # = four images only (no result line, no grid; 74 actions); galaxy 4 = the clumpy irregular; the paper network figure is back.
 N = [
-    "From this... (Euclid, as it is.)",
+    "From this... (Euclid, as it is; the POLISHed one appears beside it next.)",
     "...to THIS: the same Euclid data, POLISHed. Remember this galaxy; we'll check it against JWST at the end.",
     "EuclidPOLISH. Euclid is ESA's survey telescope: a third of the sky at nearly Hubble sharpness. Today: a network that makes Euclid sharper still, trained only on TNG50 skies.",
     "Point 1: Euclid is the first wide survey with a sharp, known PSF. Every survey trades area for sharpness. From the ground you can image the whole sky, but the atmosphere blurs everything to about an arcsecond. From space you're sharp, but the fields are tiny.",
