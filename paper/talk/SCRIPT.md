@@ -55,8 +55,9 @@ a few PSF widths across. Resolution decides which ones we can model."
 **[24] The truth: 1,154 TNG50-SKIRT galaxies.** Say the point first. "Real physics and real morphology, which is your
 group's work. z ≈ 0, 100 pc per pixel. We take only the morphology; colors come from Q1." The 18 on the slide: spirals, bars, rings, edge-ons,
 tidal tails, ellipticals.
-**[25] The simulated truth has its own artifacts.** "Dust-box and box-cut galaxies are left out of training; slabs and
-grain we check for in the outputs."
+**[25] The simulated truth has its own artifacts.** Pictures only. Top: dust-box facets (up to 70% of a galaxy's light);
+bottom: box cuts, slabs, grain. "Dust-box and box-cut galaxies are left out of training; slabs and grain we check for in
+the outputs."
 **[26] Each truth becomes a realistic Euclid image.** Captions under each panel; [27] → measured PSF and 0.1″ pixels.
 [28] → real Q1 noise, artifacts and NISP holes.
 **[29] Which four are real?** Give the room ~5 s. [30] → "Half are simulated. If you can't tell them apart, neither
@@ -72,7 +73,7 @@ seen."
 **[39]–[40] Back to the quiz:** [40] → all eight POLISHed: "Real or simulated, the network treats them the same way."
 **[41] Lenses, POLISHed.** [42] → zoom the Q1 ring, [43] → POLISHed; [44] → NGC 6505, [45] → POLISHed. [46] back to the
 slide, then the four DR1 systems flip in place: [47]–[50]. "All six, sharpened."
-**[51] JWST confirms 2–3× finer detail.** Just the four galaxies on screen; say it: "In H band, POLISHed resolves
+**[51] JWST confirms 2–3× finer detail.** Just the four galaxies on screen, 2×2; say it: "In H band, POLISHed resolves
 detail down to ≈0.2″; Euclid, ≈0.7″" (the 0.16″ from before is the sharper VIS PSF). Each galaxy: zoom (Euclid) →
 JWST → POLISHed: [52]–[54], [55]–[57], [58]–[60], [61]–[63] (the last: a clumpy irregular beside a red spiral). Flip
 with ← → on the first one or two. [64] back to the slide.
