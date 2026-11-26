@@ -1,6 +1,6 @@
 # EuclidPOLISH — Hernquist group, Fri 4 Dec 2026 — speaker script
 
-Prezi: prezi.com/p/edit/bwmtjxdbnkqw (75 clicks). Backups: prezi.com/p/edit/tde1zyrwwauy (before the 11-25 picture
+Prezi: prezi.com/p/edit/bwmtjxdbnkqw (74 clicks). Backups: prezi.com/p/edit/tde1zyrwwauy (before the 11-25 picture
 pass), prezi.com/p/edit/tubunespdpok (before the 11-25 review pass), prezi.com/p/edit/0nzro8jentfl (pre-polish).
 The same lines are in Prezi's Presenter view (frames/presenter_notes.py).
 Target: ~16 min of talking, the last minute a live demo of the all-sky viewer, then questions.
@@ -20,9 +20,10 @@ to the viewer sit on the right. The start view and the zoom-out at the end are t
 ## Opening: from this to THIS (0:00–1:00)
 
 **[0] The canvas.** "Four points; we'll come back to them at the end."
-**[1] Title.** "Euclid is ESA's survey telescope: a third of the sky at nearly Hubble sharpness. Today: a network that
-makes Euclid sharper still, trained only on TNG50 skies." [2] → "From this…" [3] → "…to THIS." Pause. "The same Euclid
-data, POLISHed. Remember this galaxy; we'll check it against JWST at the end."
+**[1] From this…** The Euclid image. [2] → "…to THIS." Pause. "The same Euclid data, POLISHed. Remember this galaxy;
+we'll check it against JWST at the end." [3] → the title and names over the POLISHed galaxy: "Euclid is ESA's survey
+telescope: a third of the sky at nearly Hubble sharpness. Today: a network that makes Euclid sharper still, trained only
+on TNG50 skies."
 
 ## Point 1 · Euclid is the first wide survey with a sharp, known PSF (1:00–6:00)
 
@@ -71,28 +72,28 @@ seen."
 **[39]–[40] Back to the quiz:** [40] → all eight POLISHed: "Real or simulated, the network treats them the same way."
 **[41] Lenses, POLISHed.** [42] → zoom the Q1 ring, [43] → POLISHed; [44] → NGC 6505, [45] → POLISHed. [46] back to the
 slide, then the four DR1 systems flip in place: [47]–[50]. "All six, sharpened."
-**[51] JWST confirms 2–3× finer detail.** The line on screen: "In H band, POLISHed resolves detail down to ≈0.2″;
-Euclid, ≈0.7″" (the 0.16″ from before is the sharper VIS PSF). Four galaxies; each: zoom (Euclid) → JWST → POLISHed:
-[52]–[54], [55]–[57], [58]–[60], [61]–[63]. Flip with ← → on the first one or two. [64] back to the slide,
-[65] → the grid: Euclid, JWST and POLISHed for all four, side by side.
-**[66]–[68] And a whole field:** back to the 50″ window, [67] → POLISHed, [68] → Hubble's box on top: "the same
+**[51] JWST confirms 2–3× finer detail.** Just the four galaxies on screen; say it: "In H band, POLISHed resolves
+detail down to ≈0.2″; Euclid, ≈0.7″" (the 0.16″ from before is the sharper VIS PSF). Each galaxy: zoom (Euclid) →
+JWST → POLISHed: [52]–[54], [55]–[57], [58]–[60], [61]–[63] (the last: a clumpy irregular beside a red spiral). Flip
+with ← → on the first one or two. [64] back to the slide.
+**[65]–[67] And a whole field:** back to the 50″ window, [66] → POLISHed, [67] → Hubble's box on top: "the same
 structure, where Hubble can check it." (← flips back.)
 
 ## Point 4 · Faint flux and bright cores remain; next: all of Euclid DR1 (14:30–16:30)
 
-**[69] Where it fails: two gaps in the training set.** Say the point first. Left: "Faint galaxies lose up to ~9% of their
+**[68] Where it fails: two gaps in the training set.** Say the point first. Left: "Faint galaxies lose up to ~9% of their
 flux: our training noise was more correlated than Euclid's." Right: "Very bright cores can come out with holes:
-training had no bright, extended cores." [70] → the holes outlined.
-**[71] The title galaxy again.** "Remember: from this… to THIS." [72] → "And JWST, for comparison": Euclid, POLISHed and JWST side by side, one color stretch. Let it sit.
-**[73] Next.** "POLISH all of Euclid DR1, then the full survey, with the same network."
-**[74] The QR code.** "The viewer already runs on DR1: scan it. In my last minute, let me show it." Switch to the browser
+training had no bright, extended cores." [69] → the holes outlined.
+**[70] The title galaxy again.** "Remember this galaxy: the POLISHed one from the start." [71] → "And JWST, for comparison": Euclid, POLISHed and JWST side by side, one color stretch. Let it sit.
+**[72] Next.** "POLISH all of Euclid DR1, then the full survey, with the same network."
+**[73] The QR code.** "The viewer already runs on DR1: scan it. In my last minute, let me show it." Switch to the browser
 tab with the viewer open (Euclid DR1, model 271):
 https://cutout-production-538f5738.up.railway.app/#ra=228.827579&dec=45.009343&z=5.016&rel=dr1&m=271
 Swipe Euclid ↔ POLISHed once, zoom into one galaxy, then come back.
 
 ## Close: the four points
 
-**[75] The whole canvas.** Read the four points, one sentence each, then take questions. The QR code stays on screen.
+**[74] The whole canvas.** Read the four points, one sentence each, then take questions. The QR code stays on screen.
 
 ---
 

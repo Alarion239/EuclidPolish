@@ -17,10 +17,12 @@ import os
 # 11-25 picture pass: two-line survey labels from the start, so the JWST resolution click is gone (merged into the JWST
 # box); the JWST card ends on a Euclid / JWST / POLISHed grid faded in after the zoom back (still 75 actions); the fourth
 # JWST galaxy is the edge-on disk with two companions (was the inner-ring spiral); the PSF card compares DES with VIS.
+# 11-25 (user): opening = From this... -> ...to THIS. -> title and names on the POLISHed frame (both fade OUT); JWST card
+# = four images only (no result line, no grid; 74 actions); galaxy 4 = the clumpy irregular; the paper network figure is back.
 N = [
-    "Euclid is ESA's survey telescope: a third of the sky at nearly Hubble sharpness. Today: a network that makes Euclid sharper still, trained only on TNG50 skies.",
-    'From this...',
+    "From this... (Euclid, as it is.)",
     "...to THIS: the same Euclid data, POLISHed. Remember this galaxy; we'll check it against JWST at the end.",
+    "EuclidPOLISH. Euclid is ESA's survey telescope: a third of the sky at nearly Hubble sharpness. Today: a network that makes Euclid sharper still, trained only on TNG50 skies.",
     "Point 1: Euclid is the first wide survey with a sharp, known PSF. Every survey trades area for sharpness. From the ground you can image the whole sky, but the atmosphere blurs everything to about an arcsecond. From space you're sharp, but the fields are tiny.",
     'Each dot is a survey. Up is sharper, right is wider. Nobody is in the top-right corner: wide AND sharp.',
     "One patch near the Hubble Ultra Deep Field; each box's area is that survey's share of the sky. The big box: DSS2, photographic plates of the whole sky.",
@@ -78,24 +80,23 @@ N = [
     'An interacting pair: Euclid.',
     'JWST.',
     'POLISHed.',
-    'An edge-on disk with two companions: Euclid.',
+    'A clumpy irregular next to a red spiral: Euclid.',
     'JWST.',
-    'POLISHed: the disk and both companions, spiral arms included.',
-    'All four, POLISHed: two to three times finer than Euclid, the line at the top.',
-    'All three side by side: Euclid, JWST and POLISHed for each galaxy.',
+    "POLISHed: the clumps, and the neighbor's spiral arms.",
+    'All four, POLISHed: two to three times finer than Euclid (say the numbers: about 0.2 vs 0.7 arcsec in H).',
     'And a whole field: back to the 50-arcsecond window from the start.',
     'The same window, POLISHed.',
     'And Hubble in its box, over the POLISHed field: the same structure where Hubble can check it (left arrow flips back).',
     "Point 4: what remains, and what's next. Where it fails: two gaps in the training set. Faint galaxies lose up to about 9% of their flux, because our training noise was more correlated than Euclid's. Very bright cores can come out with holes, because training had no bright, extended cores. (If asked: retraining with the corrected noise model is under way.)",
     'The holes, outlined.',
-    'Remember this galaxy? From this... to THIS.',
+    'Remember this galaxy? The POLISHed one from the start.',
     'And JWST, for comparison: all three side by side, one color stretch. The structure is real.',
     'Next: POLISH all of Euclid DR1, then the full 14,000 square degrees, with the same network.',
     'The viewer already runs on DR1: scan the code to try it. In my last minute, let me show it (switch to the browser tab).',
     'The four points: one, Euclid is the first wide survey with a sharp, known PSF. Two, simulated TNG50 skies pass for real Euclid data. Three, trained only on them, POLISH resolves two to three times finer detail, confirmed by JWST. Four, faint flux and bright cores remain; next, all of Euclid DR1. Questions.',
 ]
-ZOOM = set([0, 3, 4, 5, 8, 12, 13, 14, 18, 20, 22, 23, 24, 25, 28, 30, 31, 38, 40, 41, 43, 45, 50, 51, 54, 57, 60, 63, 65, 68, 70, 72, 73, 74])
-assert len(N) == 75, len(N)
+ZOOM = set([0, 3, 4, 5, 8, 12, 13, 14, 18, 20, 22, 23, 24, 25, 28, 30, 31, 38, 40, 41, 43, 45, 50, 51, 54, 57, 60, 63, 64, 67, 69, 71, 72, 73])
+assert len(N) == 74, len(N)
 # a zoom step's note also lists the fades that follow it ("→" lines): Prezi shows notes only on zoom steps
 NOTES = []
 for i, n in enumerate(N):

@@ -64,6 +64,7 @@ d = ImageDraw.Draw(eu)
 d.text((TX, TY), "From this…", font=BIG, fill="white", anchor="lm")
 save(eu, "HERO_1b_euclid_from")
 po = frame(sr, "polished", "POLISHed")
+save(po, "HERO_2_plain")      # 11-25 (user): the title and names replace "...to THIS." on this frame, as Prezi text
 d = ImageDraw.Draw(po)
 d.text((TX, TY), "…to", font=BIG, fill="white", anchor="ls")
 x = TX + d.textlength("…to ", font=BIG)
