@@ -33,7 +33,7 @@ N = [
     'DES, the best wide survey from the ground: 0.9 arcsec.',
     'DSS2. Same sky, forty years of telescopes: area and sharpness never came together.',
     "Radio already inverts a known PSF. From the ground, the atmosphere's blur changes all night and is never known exactly. In radio the PSF is set by the antenna layout and known exactly; every source carries the same starburst. That is why POLISH, from Liam's group, learns on simulations and works on real data.",
-    "Euclid flies above the atmosphere. Same scale, same stretch: on the left the ground (DES, 0.9 arcsec seeing), then Euclid's VIS PSF, 0.16 arcsec, five times sharper, and NISP H. Below: VIS in three sky regions, nearly identical: a radio-like, known PSF over 14,000 square degrees.",
+    "Euclid flies above the atmosphere. Same scale, same stretch: on the left the ground (DES, 0.9 arcsec seeing), then Euclid's VIS PSF, 0.16 arcsec, five times sharper, and the three NISP bands. Below: VIS in five sky regions, nearly identical: a radio-like, known PSF over 14,000 square degrees.",
     'Back to the window.',
     'Here is Euclid in the same window.',
     "Hubble's box...",

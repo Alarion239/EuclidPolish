@@ -1,6 +1,6 @@
 """F6 v2 (11-25 review): "sharp" shown, not asserted. Same 10" field and the same stretch for a ground-based
 PSF (DES, typical 0.9" seeing; Moffat beta = 3 model) and Euclid's measured VIS and NISP H ePSFs (mean of 17,905
-Q1 stars, data/euclid_psf/psf_fig_full_mean.npz, 0.05"/px), plus the VIS ePSF in three sky regions for stability.
+Q1 stars, data/euclid_psf/psf_fig_full_mean.npz, 0.05"/px), plus the VIS ePSF in five sky regions for stability (11-25: a 5 x 2 grid, no caption on the card).
 Colour map: black -> deck teal -> white (the old magma matched nothing else in the deck). Log stretch over four
 decades, so the core width is what you see; FWHMs in the labels are measured (half-maximum area) on these maps."""
 import numpy as np
@@ -33,11 +33,12 @@ def moffat(fw, beta=3.0, n=1023):
 
 des = moffat(0.9)
 # labels carry the numbers the talk quotes (measured here: DES model 0.89", VIS 0.169", H 0.465")
-panels = [("DES", des, "Ground (DES) · 0.9″"), ("VIS", d["VIS"], "Euclid VIS · 0.16″"), ("H", d["H"], "Euclid NISP H")]
+panels = [("DES", des, "Ground (DES) · 0.9″"), ("VIS", d["VIS"], "Euclid VIS · 0.16″"), ("Y", d["Y"], "Euclid NISP Y"),
+          ("J", d["J"], "Euclid NISP J"), ("H", d["H"], "Euclid NISP H")]      # 11-25 (user): all four bands, 5 x 2 card
 for key, p, lab in panels:
     save_panel(logimg(p), f"PSF2_{key}.png", label=lab, bar_arcsec=1.0, pix_arcsec=PIX)
     print(key, round(fwhm(p), 3))
-idx = np.argsort(-st["VIS_nstars"])[:3]
+idx = np.argsort(-st["VIS_nstars"])[:5]
 for k, i in enumerate(idx):
     save_panel(logimg(st["VIS"][i]), f"PSF2_VIS_region{k + 1}.png", label=f"VIS · sky region {k + 1}",
                bar_arcsec=1.0, pix_arcsec=PIX)

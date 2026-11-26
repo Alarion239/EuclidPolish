@@ -39,7 +39,7 @@ telescopes. Area and sharpness never came together."
 **[13] Radio already inverts a known PSF.** On screen: "From the ground, the atmosphere's blur changes all night." "In radio the PSF is set by the antenna layout and known exactly. That is why POLISH, from Liam's group, can
 learn on simulations and work on real data."
 
-**[14] Euclid's PSF: sharp, stable and measured.** Same scale and stretch, top left the ground (DES). "Above the
+**[14] Euclid's PSF: sharp, stable and measured.** No text on the slide: top row the ground (DES), VIS, NISP Y, J, H at one scale and stretch; bottom row VIS in five sky regions. "Above the
 atmosphere: VIS 0.16″, five times sharper than DES's 0.9″, nearly the same across the sky: a radio-like, known PSF over 14,000 square degrees."
 **[15]–[18] Back to the window:** [16] → Euclid in the same window. [17] → Hubble's box. [18] → JWST's box. "Nearly
 Hubble-sharp, everywhere." **[19]–[20]** Euclid's box: "over 14,000 square degrees."
