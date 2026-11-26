@@ -85,10 +85,11 @@ const CACHE_BLOCKS = 48;
 // Models the page can run (scripts/export_onnx.py). Each block keeps one SR per
 // model and TTA setting, so switching back is instant.
 const MODELS = {
-  "257": { file: "static/m257.onnx", label: "257 · production" },
-  "271": { file: "static/m271.onnx", label: "271 · newer" },
+  "279": { file: "static/m279.onnx", label: "279 · production" },
+  "257": { file: "static/m257.onnx", label: "257 · previous" },
+  "271": { file: "static/m271.onnx", label: "271 · older fine-tune" },
 };
-const DEFAULT_MODEL = "257";
+const DEFAULT_MODEL = "279";
 const D2R = Math.PI / 180;
 
 const $ = (id) => document.getElementById(id);

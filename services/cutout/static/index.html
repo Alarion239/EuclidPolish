@@ -114,12 +114,13 @@
       is a Euclid pixel (0.1″) and the page switches to live data: drag the divider to compare, keys 1/2/3
       switch views, B blinks. Zoom out to go back to the map.</p>
     <p><b>Caveat:</b> the right side is a model reconstruction trained on simulations, not an observation.
-      On real sky it is known to lose some faint flux (~7–10%) and can add faint texture. The model was
+      On real sky it can add faint texture and a little noise grain in bright halos. The model was
       tuned on Q1 noise; DR1 (newer pipeline, and deep fields in particular) is not yet validated.</p>
-    <p><b>Models:</b> 257 is the production model. 271 is a fine-tune of 257 (Nov 2026) trained with blank
-      NISP pixels and real-sky equivariance: it fills DR1's empty NISP pixels with natural colour and has
-      smoother envelopes, but keeps a little more noise grain in bright halos. <b>Right</b> picks the model;
-      in Swipe, <b>Left</b> can be Euclid or the other model, to compare the two.</p>
+    <p><b>Models:</b> 279 is the production model (Nov 2026): a fine-tune of 257 trained with blank NISP
+      pixels and real-sky equivariance, which fills DR1's empty NISP pixels with natural colour, keeps faint
+      flux better and has smoother envelopes. 257 is the previous production model; 271 is an older
+      fine-tune. <b>Right</b> picks the model; in Swipe, <b>Left</b> can be Euclid or another model, to
+      compare them.</p>
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/ort.all.min.js" crossorigin="anonymous"></script>
