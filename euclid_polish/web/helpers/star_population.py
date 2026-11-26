@@ -25,6 +25,7 @@ from euclid_polish.sky.generation.stellar_sed import (
     deconvolved_draw,
     magnitude_errors,
 )
+from euclid_polish.sky.observation.calibration_release import population_dir
 from euclid_polish.web.helpers.population_calibration import (
     star_candidate_path,
     write_star_candidate,
@@ -39,10 +40,10 @@ from euclid_polish.web.helpers.q1_star_counts import (
 )
 from euclid_polish.web.helpers.q1_stellar_colors import (
     Q1_STELLAR_COLOR_FIELD_RADIUS_DEG,
-    Q1_STELLAR_COLOR_FIELDS,
     Q1_STELLAR_COLOR_SAMPLE_VERSION,
     q1_gaia_color_catalog_path,
     q1_gaia_color_meta_path,
+    stellar_color_fields,
 )
 from euclid_polish.web.helpers.q1_stellar_colors import (
     q1_stellar_color_catalog_path as euclid_catalog_path,
@@ -72,7 +73,7 @@ def gaia_catalog_meta_path() -> Path:
 
 def star_distribution_path(*, include_training: bool = False) -> Path:
     return (
-        Path(Config.DATA_DIR) / "population_comparison"
+        population_dir()
         / (
             "star_distribution_with_training.json"
             if include_training else "star_distribution.json"
@@ -99,7 +100,7 @@ def _require_current_gaia_field_sampling(
         meta.get("sampling_kind")
         != "fixed_q1_magnitude_stratified_color_fields"
         or int(meta.get("version") or 0) != Q1_STELLAR_COLOR_SAMPLE_VERSION
-        or int(meta.get("field_count") or 0) != len(Q1_STELLAR_COLOR_FIELDS)
+        or int(meta.get("field_count") or 0) != len(stellar_color_fields())
         or meta.get("tap_provider") != _GAIA_TAP_PROVIDER
         or meta.get("query_mode") != "sync"
         or meta.get("random_centres") is not False
@@ -114,7 +115,7 @@ def _require_current_gaia_field_sampling(
             "Stellar colour cache is stale; press Query MER + PHZ to refresh "
             "the fixed Q1 magnitude-stratified sample"
         )
-    expected = Q1_STELLAR_COLOR_FIELDS
+    expected = stellar_color_fields()
     cached = meta.get("fields") or []
     if len(cached) != len(expected):
         raise ValueError("Fixed Q1 stellar-colour field provenance is incomplete")

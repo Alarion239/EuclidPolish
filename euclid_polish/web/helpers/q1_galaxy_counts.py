@@ -14,16 +14,14 @@ from typing import Any
 import numpy as np
 from astroquery.esa.euclid import Euclid
 
-from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_uJy
 from euclid_polish.population.magnitude_law import (
     StraightMagnitudeLaw,
     fit_straight_region,
 )
-from euclid_polish.sky.observation.q1_fields import Q1_FIELD_CONES
-from euclid_polish.web.helpers.q1_star_counts import (
-    Q1_DEEP_FIELD_AREA_ARCMIN2,
-    Q1_DEEP_FIELD_AREA_DEG2,
+from euclid_polish.sky.observation.calibration_release import (
+    active_release,
+    population_dir,
 )
 
 Q1_GALAXY_COUNT_VERSION = 3
@@ -37,8 +35,6 @@ Q1_GALAXY_PROGRESSIVE_STRIDE = 0.5
 
 _QUERY_LOCK = threading.Lock()
 
-_Q1_DEEP_FIELD_REGIONS = Q1_FIELD_CONES  # EDF-N, EDF-S, EDF-F
-
 Q1_VIS_APERTURES = {
     "f1": ("flux_vis_1fwhm_aper", "VIS · 1 FWHM", "1-FWHM diameter aperture"),
     "f2": ("flux_vis_2fwhm_aper", "VIS · 2 FWHM", "2-FWHM diameter aperture"),
@@ -48,19 +44,11 @@ Q1_VIS_APERTURES = {
 
 
 def q1_galaxy_counts_path() -> Path:
-    return (
-        Path(Config.DATA_DIR)
-        / "population_comparison"
-        / "q1_galaxy_aperture_counts.json"
-    )
+    return population_dir() / "q1_galaxy_aperture_counts.json"
 
 
 def q1_galaxy_fit_path() -> Path:
-    return (
-        Path(Config.DATA_DIR)
-        / "population_comparison"
-        / "q1_galaxy_aperture_fit.json"
-    )
+    return population_dir() / "q1_galaxy_aperture_fit.json"
 
 
 def _finite(value: Any) -> float | None:
@@ -83,14 +71,7 @@ def _result_value(row: Any, name: str) -> float | None:
 
 
 def _deep_field_predicate() -> str:
-    clauses = [
-        (
-            "CONTAINS(POINT('ICRS', mer.right_ascension, mer.declination), "
-            f"CIRCLE('ICRS', {ra}, {dec}, {radius})) = 1"
-        )
-        for ra, dec, radius in _Q1_DEEP_FIELD_REGIONS
-    ]
-    return "(\n        " + "\n        OR ".join(clauses) + "\n      )"
+    return active_release().footprint_predicate("mer")
 
 
 def _aperture_bin_query(column: str, lower: float, upper: float) -> str:
@@ -102,8 +83,8 @@ def _aperture_bin_query(column: str, lower: float, upper: float) -> str:
         SUM(cls.phz_gal_prob) AS expected_galaxies,
         SUM(cls.phz_gal_prob * (1.0 - cls.phz_gal_prob))
             AS classification_variance
-    FROM catalogue.mer_catalogue AS mer
-    JOIN catalogue.phz_classification AS cls
+    FROM {active_release().table('mer')} AS mer
+    JOIN {active_release().table('phz_class')} AS cls
       ON mer.object_id = cls.object_id
     WHERE {_deep_field_predicate()}
       AND mer.{column} > {faint_flux:.16g}
@@ -175,6 +156,8 @@ def query_q1_galaxy_aperture_counts(
 
     edges = [lower + index * width for index in range(bin_count + 1)]
     total_queries = bin_count * len(Q1_VIS_APERTURES)
+    release = active_release()
+    area_arcmin2 = release.area_arcmin2
     output = q1_galaxy_counts_path()
 
     def compatible_cache() -> dict[tuple[str, int], dict[str, Any]]:
@@ -244,10 +227,11 @@ def query_q1_galaxy_aperture_counts(
         return {
             "version": Q1_GALAXY_COUNT_VERSION,
             "selection_version": Q1_GALAXY_SELECTION_VERSION,
-            "survey": "Euclid Q1 deep fields",
-            "fields": ["EDF-N", "EDF-S", "EDF-F"],
-            "footprint_area_deg2": Q1_DEEP_FIELD_AREA_DEG2,
-            "footprint_area_arcmin2": Q1_DEEP_FIELD_AREA_ARCMIN2,
+            "release": release.name,
+            "survey": release.survey,
+            "fields": list(release.fields),
+            "footprint_area_deg2": release.area_deg2,
+            "footprint_area_arcmin2": area_arcmin2,
             "magnitude_system": "AB",
             "bright": lower,
             "faint": upper,
@@ -258,7 +242,7 @@ def query_q1_galaxy_aperture_counts(
             "phases_completed": sum(phase_complete),
             "edges": edges,
             "selection": (
-                "three Q1 deep-field regions; POINT_LIKE_FLAG IS NULL; "
+                f"{release.footprint_text()}; POINT_LIKE_FLAG IS NULL; "
                 "PHZ_GAL_PROB >= 0.5; positive flux in the aperture being "
                 "binned; no additional MER quality cut"
             ),
@@ -328,15 +312,15 @@ def query_q1_galaxy_aperture_counts(
                         "expected_galaxies": expected,
                         "classification_variance": variance,
                         "density_arcmin2_mag": (
-                            expected / Q1_DEEP_FIELD_AREA_ARCMIN2 / width
+                            expected / area_arcmin2 / width
                         ),
                         "classification_sigma_arcmin2_mag": (
                             math.sqrt(variance)
-                            / Q1_DEEP_FIELD_AREA_ARCMIN2 / width
+                            / area_arcmin2 / width
                         ),
                         "poisson_sigma_arcmin2_mag": (
                             math.sqrt(count)
-                            / Q1_DEEP_FIELD_AREA_ARCMIN2 / width
+                            / area_arcmin2 / width
                         ),
                     }
                     payload = make_payload(cached)
@@ -437,7 +421,10 @@ def fit_q1_galaxy_aperture_counts() -> dict[str, Any]:
         ),
         r_squared=region.r_squared,
         rms_log10_density=region.rms,
-        source="Euclid Q1 MER FLUX_VIS_2FWHM_APER + PHZ_GAL_PROB",
+        source=(
+            f"Euclid {active_release().name.upper()} "
+            "MER FLUX_VIS_2FWHM_APER + PHZ_GAL_PROB"
+        ),
     )
     grid = np.linspace(Q1_GALAXY_MAG_BRIGHT, Q1_GALAXY_LAW_FAINT, 301)
     curves = {

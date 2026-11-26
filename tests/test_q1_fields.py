@@ -67,5 +67,7 @@ def test_download_script_uses_the_correct_centres():
 ])
 def test_population_modules_use_the_shared_table(module):
     source = (REPO / "euclid_polish" / "web" / "helpers" / module).read_text()
-    assert "q1_fields" in source
+    # The field centres come from q1_fields, directly or through the
+    # release switch (calibration_release builds its Q1 cones from it).
+    assert "q1_fields" in source or "calibration_release" in source
     assert "61.241" not in source and "52.932" not in source

@@ -19,16 +19,15 @@ from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_uJy
-from euclid_polish.sky.observation.q1_fields import Q1_FIELD_CONES
+from euclid_polish.sky.observation.calibration_release import (
+    active_release,
+    population_dir,
+)
 from euclid_polish.web.helpers.q1_galaxy_counts import (
     Q1_GALAXY_MAG_BIN_WIDTH,
     Q1_GALAXY_MAG_BRIGHT,
     Q1_GALAXY_MAG_FAINT,
     Q1_GALAXY_PROGRESSIVE_STRIDE,
-)
-from euclid_polish.web.helpers.q1_star_counts import (
-    Q1_DEEP_FIELD_AREA_ARCMIN2,
-    Q1_DEEP_FIELD_AREA_DEG2,
 )
 
 Q1_GALAXY_RADIUS_VERSION = 4
@@ -61,15 +60,10 @@ Q1_GALAXY_RADIUS_TOTAL_QUERIES = (
 )
 
 _QUERY_LOCK = threading.Lock()
-_Q1_DEEP_FIELD_REGIONS = Q1_FIELD_CONES  # EDF-N, EDF-S, EDF-F
 
 
 def q1_galaxy_radius_statistics_path() -> Path:
-    return (
-        Path(Config.DATA_DIR)
-        / "population_comparison"
-        / "q1_galaxy_sersic_radius_statistics.json"
-    )
+    return population_dir() / "q1_galaxy_sersic_radius_statistics.json"
 
 
 def _finite(value: Any) -> float | None:
@@ -92,14 +86,7 @@ def _result_value(row: Any, name: str) -> float | None:
 
 
 def _deep_field_predicate() -> str:
-    clauses = [
-        (
-            "CONTAINS(POINT('ICRS', mer.right_ascension, mer.declination), "
-            f"CIRCLE('ICRS', {ra}, {dec}, {radius})) = 1"
-        )
-        for ra, dec, radius in _Q1_DEEP_FIELD_REGIONS
-    ]
-    return "(\n        " + "\n        OR ".join(clauses) + "\n      )"
+    return active_release().footprint_predicate("mer")
 
 
 def _circularized_radius_expression() -> str:
@@ -166,10 +153,10 @@ def _joint_histogram_query(
         {radius_bin} AS radius_bin,
         COUNT(*) AS selected_radii,
         SUM(cls.phz_gal_prob) AS expected_radii
-    FROM catalogue.mer_catalogue AS mer
-    JOIN catalogue.phz_classification AS cls
+    FROM {active_release().table('mer')} AS mer
+    JOIN {active_release().table('phz_class')} AS cls
       ON mer.object_id = cls.object_id
-    JOIN catalogue.mer_morphology AS morph
+    JOIN {active_release().table('morph')} AS morph
       ON mer.object_id = morph.object_id
     WHERE {_deep_field_predicate()}
       AND mer.flux_vis_2fwhm_aper > {faint_flux:.16g}
@@ -207,10 +194,10 @@ def _fwhm_histogram_query(
         {fwhm_bin} AS fwhm_bin,
         COUNT(*) AS selected_fwhm,
         SUM(cls.phz_gal_prob) AS expected_fwhm
-    FROM catalogue.mer_catalogue AS mer
-    JOIN catalogue.phz_classification AS cls
+    FROM {active_release().table('mer')} AS mer
+    JOIN {active_release().table('phz_class')} AS cls
       ON mer.object_id = cls.object_id
-    JOIN catalogue.mer_morphology AS morph
+    JOIN {active_release().table('morph')} AS morph
       ON mer.object_id = morph.object_id
     WHERE {_deep_field_predicate()}
       AND mer.flux_vis_2fwhm_aper > {faint_flux:.16g}
@@ -353,7 +340,7 @@ def _build_radius_statistics_payload(
             "expected_radii": float(radius_expected[index]),
             "density_arcmin2_dex": float(
                 radius_expected[index]
-                / Q1_DEEP_FIELD_AREA_ARCMIN2
+                / active_release().area_arcmin2
                 / dex_width
             ),
         })
@@ -406,10 +393,11 @@ def _build_radius_statistics_payload(
         "kind": (
             "q1_mer_phz_vis2fwhm_sersic_re_aperture_fwhm_aggregate"
         ),
-        "survey": "Euclid Q1 deep fields",
-        "fields": ["EDF-N", "EDF-S", "EDF-F"],
-        "footprint_area_deg2": Q1_DEEP_FIELD_AREA_DEG2,
-        "footprint_area_arcmin2": Q1_DEEP_FIELD_AREA_ARCMIN2,
+        "release": active_release().name,
+        "survey": active_release().survey,
+        "fields": list(active_release().fields),
+        "footprint_area_deg2": active_release().area_deg2,
+        "footprint_area_arcmin2": active_release().area_arcmin2,
         "bright": float(mag_edges[0]),
         "faint": float(mag_edges[-1]),
         "bin_width": width,
@@ -436,7 +424,8 @@ def _build_radius_statistics_payload(
             and completed_fwhm == total_fwhm
         ),
         "selection": (
-            "Q1 deep fields; VIS 2FWHM magnitude; VIS_DET = 1; positive "
+            f"{active_release().footprint_text()}; VIS 2FWHM magnitude; "
+            "VIS_DET = 1; positive "
             "VIS Sersic flux; POINT_LIKE_FLAG IS NULL; SPURIOUS_FLAG = "
             "0; DET_QUALITY_FLAG < 4; PHZ_GAL_PROB >= 0.5; "
             "SERSIC_VISNIR_FLAGS = 0; 0.05 < VIS Sersic q < 1; "
@@ -468,9 +457,8 @@ def _build_radius_statistics_payload(
             "euclid.html"
         ),
         "catalogue_tables": [
-            "catalogue.mer_catalogue",
-            "catalogue.mer_morphology",
-            "catalogue.phz_classification",
+            active_release().table(kind)
+            for kind in ("mer", "morph", "phz_class")
         ],
         "selection_references": [
             (

@@ -22,6 +22,7 @@ from typing import Any
 
 import numpy as np
 import tensorflow as tf
+from astropy import table as astropy_table
 from astroquery.esa.euclid import Euclid
 from scipy.special import ndtr
 
@@ -35,6 +36,10 @@ from euclid_polish.population.joint_galaxy import LF_Z_EDGES
 from euclid_polish.sky.generation.source_catalog import (
     read_sources,
     source_is_off_field,
+)
+from euclid_polish.sky.observation.calibration_release import (
+    active_release,
+    population_dir,
 )
 from euclid_polish.web.helpers import archive_fields, fs_stamp
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
@@ -273,7 +278,8 @@ _SHARED_PARAMETERS = {
 
 
 def cache_dir() -> Path:
-    return Path(Config.DATA_DIR) / "population_comparison"
+    """Q1: ``population_comparison``; DR1 calibration runs: its ``dr1`` folder."""
+    return population_dir()
 
 
 def comparison_path() -> Path:
@@ -2166,6 +2172,7 @@ def query_euclid_population(
     hard flags remain available for provenance and single-cone summaries.
     """
     radius_deg = radius_arcmin / 60.0
+    release = active_release()
     aperture_columns = ",\n        ".join(
         f"mer.flux_{band}_{multiple}fwhm_aper, "
         f"mer.fluxerr_{band}_{multiple}fwhm_aper"
@@ -2180,8 +2187,7 @@ def query_euclid_population(
         f"morph.{archive_name} AS {cache_name}"
         for cache_name, archive_name in EUCLID_MORPHOLOGY_STUDY_COLUMNS.items()
     )
-    query = f"""
-    SELECT TOP {int(limit)}
+    select_sql = f"""
         mer.object_id, mer.right_ascension, mer.declination,
         mer.point_like_prob, mer.extended_prob,
         mer.spurious_prob, mer.blended_prob,
@@ -2216,17 +2222,8 @@ def query_euclid_population(
         phys.phz_pp_median_mj,
         phys.phz_pp_68_mj,
         phys.phz_pp_median_mvis,
-        phys.phz_pp_68_mvis
-    FROM catalogue.mer_catalogue AS mer
-    LEFT OUTER JOIN catalogue.mer_morphology AS morph
-      ON mer.object_id = morph.object_id
-    LEFT OUTER JOIN catalogue.phz_classification AS cls
-      ON mer.object_id = cls.object_id
-    LEFT OUTER JOIN catalogue.phz_photo_z AS pz
-      ON mer.object_id = pz.object_id
-    LEFT OUTER JOIN catalogue.phz_physical_parameters AS phys
-      ON mer.object_id = phys.object_id
-    WHERE CONTAINS(
+        phys.phz_pp_68_mvis"""
+    where_sql = f"""CONTAINS(
         POINT('ICRS', mer.right_ascension, mer.declination),
         CIRCLE('ICRS', {float(ra)}, {float(dec)}, {radius_deg})
     ) = 1
@@ -2236,25 +2233,25 @@ def query_euclid_population(
       AND mer.flux_vis_psf IS NOT NULL
       AND mer.flux_vis_psf > 0
     """
-    job = Euclid.launch_job_async(query)
-    if job is None and relogin is not None:
-        try:
-            session_refreshed = relogin()
-        except Exception:  # noqa: BLE001 - the archive error is surfaced below
-            session_refreshed = False
-        if session_refreshed:
-            job = Euclid.launch_job_async(query)
-    if job is None:
-        raise RuntimeError(
-            "The Euclid archive query failed before returning a job. "
-            "The previous population cache was preserved."
+    query = f"""
+    SELECT TOP {int(limit)}
+        {select_sql}
+    FROM {release.table('mer')} AS mer
+    LEFT OUTER JOIN {release.table('morph')} AS morph
+      ON mer.object_id = morph.object_id
+    LEFT OUTER JOIN {release.table('phz_class')} AS cls
+      ON mer.object_id = cls.object_id
+    LEFT OUTER JOIN {release.table('photo_z')} AS pz
+      ON mer.object_id = pz.object_id
+    LEFT OUTER JOIN {release.table('phys')} AS phys
+      ON mer.object_id = phys.object_id
+    WHERE {where_sql}"""
+    if release.split_outer_joins:
+        results = _outer_join_in_parts(
+            release, select_sql, where_sql, int(limit), relogin,
         )
-    results = job.get_results()
-    if results is None:
-        raise RuntimeError(
-            "The Euclid archive query returned no result table. "
-            "The previous population cache was preserved."
-        )
+    else:
+        results = _launch_population_query(query, relogin)
     rows: list[dict[str, Any]] = []
     pdf_object_ids: list[str] = []
     pdf_probability: list[np.ndarray] = []
@@ -2525,8 +2522,9 @@ def query_euclid_population(
         ),
         "photometry": _PHOTOMETRY_NOTE,
         "study_schema": {
-            "mer_table": "catalogue.mer_catalogue",
-            "morphology_table": "catalogue.mer_morphology",
+            "release": release.name,
+            "mer_table": release.table("mer"),
+            "morphology_table": release.table("morph"),
             "mer_columns": dict(EUCLID_MER_STUDY_COLUMNS),
             "morphology_columns": dict(EUCLID_MORPHOLOGY_STUDY_COLUMNS),
             "missing_values": "retained as empty CSV cells",
@@ -2556,6 +2554,80 @@ def query_euclid_population(
     }
     _write_json(_meta_path or euclid_catalog_meta_path(), meta)
     return meta
+
+
+def _launch_population_query(
+    query: str, relogin: Callable[[], bool] | None,
+) -> Any:
+    """Run one population query; its result table (raises, never ``None``)."""
+    job = Euclid.launch_job_async(query)
+    if job is None and relogin is not None:
+        try:
+            session_refreshed = relogin()
+        except Exception:  # noqa: BLE001 - the archive error is surfaced below
+            session_refreshed = False
+        if session_refreshed:
+            job = Euclid.launch_job_async(query)
+    if job is None:
+        raise RuntimeError(
+            "The Euclid archive query failed before returning a job. "
+            "The previous population cache was preserved."
+        )
+    results = job.get_results()
+    if results is None:
+        raise RuntimeError(
+            "The Euclid archive query returned no result table. "
+            "The previous population cache was preserved."
+        )
+    return results
+
+
+#: ESA table kind behind each joined alias of the population query.
+_JOINED_ALIAS_KINDS = {
+    "morph": "morph", "cls": "phz_class", "pz": "photo_z", "phys": "phys",
+}
+
+
+def _outer_join_in_parts(
+    release: Any,
+    select_sql: str,
+    where_sql: str,
+    limit: int,
+    relogin: Callable[[], bool] | None,
+) -> Any:
+    """The four-way LEFT OUTER JOIN, done client-side.
+
+    ESA's DR1 tables time out (HTTP 500 after ~60 s) on any cone query with a
+    LEFT OUTER JOIN, while INNER joins answer in seconds. So: one MER-only
+    query, then one INNER join per joined table on the same cone and cuts,
+    left-joined here on ``object_id``. Every query takes the same ``TOP``
+    rows ordered by ``object_id``, so each inner part covers every matched id
+    of the MER rows; MER rows with no partner keep masked values, exactly as
+    the server-side outer join would give them.
+    """
+    by_alias: dict[str, list[str]] = {}
+    for item in (part.strip() for part in select_sql.split(",")):
+        if item:
+            by_alias.setdefault(item.split(".", 1)[0], []).append(item)
+    mer = release.table("mer")
+    combined = _launch_population_query(
+        f"SELECT TOP {limit} {', '.join(by_alias.pop('mer'))} "
+        f"FROM {mer} AS mer WHERE {where_sql} ORDER BY mer.object_id",
+        relogin,
+    )
+    for alias, columns in by_alias.items():
+        part = _launch_population_query(
+            f"SELECT TOP {limit} mer.object_id, {', '.join(columns)} "
+            f"FROM {mer} AS mer JOIN "
+            f"{release.table(_JOINED_ALIAS_KINDS[alias])} AS {alias} "
+            f"ON mer.object_id = {alias}.object_id "
+            f"WHERE {where_sql} ORDER BY mer.object_id",
+            relogin,
+        )
+        combined = astropy_table.join(
+            combined, part, keys="object_id", join_type="left",
+        )
+    return combined
 
 
 def select_star_cone_centers(

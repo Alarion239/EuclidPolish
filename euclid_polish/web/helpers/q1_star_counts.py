@@ -14,24 +14,25 @@ from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_uJy
-from euclid_polish.sky.observation.q1_fields import Q1_FIELD_CONES
+from euclid_polish.sky.observation.calibration_release import (
+    Q1_AREA_DEG2,
+    active_release,
+    population_dir,
+)
 
-Q1_DEEP_FIELD_AREA_DEG2 = 63.1
+#: The Q1 footprint; the active release (Q1 or DR1 Wide) supplies the area a
+#: count is normalised by, see ``calibration_release``.
+Q1_DEEP_FIELD_AREA_DEG2 = Q1_AREA_DEG2
 Q1_DEEP_FIELD_AREA_ARCMIN2 = Q1_DEEP_FIELD_AREA_DEG2 * 3600.0
 Q1_STAR_COUNT_VERSION = 3
 
-# These broad regions select the three released deep fields while excluding
-# the separate LDN 1641 commissioning field. The normalization is the released
-# Q1 deep-field footprint area, not the area of these selection circles.
-_Q1_DEEP_FIELD_REGIONS = Q1_FIELD_CONES  # EDF-N, EDF-S, EDF-F
+# Q1: three broad cones select the released deep fields (excluding the LDN
+# 1641 commissioning field) and the normalisation is the released Q1 footprint
+# area, not the area of the circles. DR1: the frozen interior Wide tile sample.
 
 
 def q1_star_counts_path() -> Path:
-    return (
-        Path(Config.DATA_DIR)
-        / "population_comparison"
-        / "q1_phz_star_counts.json"
-    )
+    return population_dir() / "q1_phz_star_counts.json"
 
 
 def _finite(value: Any) -> float | None:
@@ -59,14 +60,7 @@ def _ab_flux_ujy(magnitude: float) -> float:
 
 
 def _deep_field_predicate() -> str:
-    clauses = [
-        (
-            "CONTAINS(POINT('ICRS', mer.right_ascension, mer.declination), "
-            f"CIRCLE('ICRS', {ra}, {dec}, {radius})) = 1"
-        )
-        for ra, dec, radius in _Q1_DEEP_FIELD_REGIONS
-    ]
-    return "(\n        " + "\n        OR ".join(clauses) + "\n      )"
+    return active_release().footprint_predicate("mer")
 
 
 def _magnitude_predicate(lower: float, upper: float) -> str:
@@ -88,7 +82,7 @@ def _point_source_bin_query(lower: float, upper: float) -> str:
         SUM(mer.point_like_prob) AS expected_point_sources,
         SUM(mer.point_like_prob * (1.0 - mer.point_like_prob))
             AS point_source_variance
-    FROM catalogue.mer_catalogue AS mer
+    FROM {active_release().table('mer')} AS mer
     WHERE {_magnitude_predicate(lower, upper)}
     """
 
@@ -100,8 +94,8 @@ def _phz_bin_query(lower: float, upper: float) -> str:
         SUM(cls.phz_star_prob) AS expected_stars,
         SUM(cls.phz_star_prob * (1.0 - cls.phz_star_prob))
             AS classification_variance
-    FROM catalogue.mer_catalogue AS mer
-    JOIN catalogue.phz_classification AS cls
+    FROM {active_release().table('mer')} AS mer
+    JOIN {active_release().table('phz_class')} AS cls
       ON mer.object_id = cls.object_id
     WHERE {_magnitude_predicate(lower, upper)}
       AND cls.phz_star_prob IS NOT NULL
@@ -157,6 +151,8 @@ def query_q1_phz_star_counts(
     ):
         raise ValueError("Q1 stellar magnitude range must be divisible by bin width")
 
+    release = active_release()
+    area_arcmin2 = release.area_arcmin2
     edges = [lower + index * width for index in range(bin_count + 1)]
     bins: list[dict[str, Any]] = []
     for index, (mag_lo, mag_hi) in enumerate(
@@ -219,30 +215,31 @@ def query_q1_phz_star_counts(
             "expected_point_sources": expected_point_sources,
             "point_source_variance": point_source_variance,
             "point_source_density_arcmin2_mag": (
-                expected_point_sources / Q1_DEEP_FIELD_AREA_ARCMIN2 / width
+                expected_point_sources / area_arcmin2 / width
             ),
             "classified_rows": int(classified_rows),
             "expected_stars": expected_stars,
             "classification_variance": variance,
             "density_arcmin2_mag": (
-                expected_stars / Q1_DEEP_FIELD_AREA_ARCMIN2 / width
+                expected_stars / area_arcmin2 / width
             ),
             "classification_sigma_arcmin2_mag": (
-                math.sqrt(variance) / Q1_DEEP_FIELD_AREA_ARCMIN2 / width
+                math.sqrt(variance) / area_arcmin2 / width
             ),
         })
 
     payload = {
         "version": Q1_STAR_COUNT_VERSION,
-        "survey": "Euclid Q1 deep fields",
-        "fields": ["EDF-N", "EDF-S", "EDF-F"],
-        "footprint_area_deg2": Q1_DEEP_FIELD_AREA_DEG2,
-        "footprint_area_arcmin2": Q1_DEEP_FIELD_AREA_ARCMIN2,
+        "release": release.name,
+        "survey": release.survey,
+        "fields": list(release.fields),
+        "footprint_area_deg2": release.area_deg2,
+        "footprint_area_arcmin2": area_arcmin2,
         "magnitude_system": "AB",
         "magnitude_field": "MER FLUX_VIS_PSF",
         "classification_field": "PHZ_STAR_PROB",
         "selection": (
-            "three Q1 deep-field regions; positive VIS PSF flux; "
+            f"{release.footprint_text()}; positive VIS PSF flux; "
             "finite POINT_LIKE_PROB >= 0.9 and <= 1; PHZ quantities use only "
             "finite 0 <= PHZ_STAR_PROB <= 1; no additional MER quality cut"
         ),
@@ -316,7 +313,7 @@ def read_q1_phz_star_counts(
         or not np.all(np.isfinite(selected_point_sources))
         or np.any(selected_point_sources < 0.0)
         or not np.all(np.isfinite(variances)) or np.any(variances < 0.0)
-        or not math.isclose(area, Q1_DEEP_FIELD_AREA_ARCMIN2, abs_tol=1e-6)
+        or not math.isclose(area, active_release().area_arcmin2, abs_tol=1e-6)
     ):
         raise ValueError("Q1 PHZ stellar count cache is incompatible with this fit")
     return payload

@@ -253,6 +253,16 @@ def level_from_cutout(content: bytes, band_name: str, url: str) -> dict:
             raise ValueError(f"unexpected release {hdu.header.get('DATASETR')!r}")
         data = np.asarray(hdu.data, dtype=np.float64)
         magzero = header_magzero(hdu.header, source=f"{band_name} noise map {url}")
+    return level_from_noise_map(data, band_name, magzero)
+
+
+def level_from_noise_map(data: np.ndarray, band_name: str, magzero: float) -> dict:
+    """Sky level of one scene-sized noise-map window (archive ADU/s units).
+
+    Shared with the DR1 reader (``download_mer_noise_levels_dr1.py``), which
+    reads the same window straight from the cloud-hosted mosaic.
+    """
+    data = np.asarray(data, dtype=np.float64)
     observed = np.isfinite(data) & (data > 0.0) & (data < NO_COVERAGE_NATIVE)
     if observed.mean() < 0.5:
         raise ValueError(f"no coverage: only {observed.mean():.0%} of the cutout is observed")

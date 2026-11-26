@@ -26,12 +26,17 @@ from pyvo import dal as pyvo_dal
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_uJy, uJy_to_ab_mag
+from euclid_polish.sky.observation.calibration_release import (
+    COLOR_FIELD_RADIUS_DEG,
+    active_release,
+    population_dir,
+)
 from euclid_polish.sky.observation.q1_fields import Q1_FIELDS
 
 Q1_STELLAR_COLOR_SAMPLE_VERSION = 2
 Q1_STELLAR_COLOR_MAG_BIN_WIDTH = 0.5
 Q1_STELLAR_COLOR_ROWS_PER_BIN = 500
-Q1_STELLAR_COLOR_FIELD_RADIUS_DEG = 0.35
+Q1_STELLAR_COLOR_FIELD_RADIUS_DEG = COLOR_FIELD_RADIUS_DEG
 Q1_STELLAR_COLOR_FIELDS = tuple((f.ra, f.dec, f.name) for f in Q1_FIELDS)
 GAIA_TAP_PROVIDER = "ARI Gaia TAP"
 GAIA_TAP_URL = "https://gaia.ari.uni-heidelberg.de/tap"
@@ -50,12 +55,16 @@ _COLOR_COLUMNS = """mer.object_id, mer.point_like_prob,
         cls.phz_star_prob"""
 
 
+def stellar_color_fields() -> tuple[tuple[float, float, str], ...]:
+    """``(ra, dec, name)`` colour fields of the active release.
+
+    Q1: the three deep-field centres. DR1: cones on the first sample tiles.
+    """
+    return active_release().color_fields
+
+
 def q1_stellar_color_catalog_path() -> Path:
-    return (
-        Path(Config.DATA_DIR)
-        / "population_comparison"
-        / "q1_stellar_color_sample.csv"
-    )
+    return population_dir() / "q1_stellar_color_sample.csv"
 
 
 def q1_stellar_color_meta_path() -> Path:
@@ -63,11 +72,7 @@ def q1_stellar_color_meta_path() -> Path:
 
 
 def q1_gaia_color_catalog_path() -> Path:
-    return (
-        Path(Config.DATA_DIR)
-        / "population_comparison"
-        / "gaia_population.csv"
-    )
+    return population_dir() / "gaia_population.csv"
 
 
 def q1_gaia_color_meta_path() -> Path:
@@ -108,7 +113,7 @@ def _fixed_q1_predicate() -> str:
             f"CIRCLE('ICRS', {ra}, {dec}, "
             f"{Q1_STELLAR_COLOR_FIELD_RADIUS_DEG})) = 1"
         )
-        for ra, dec, _name in Q1_STELLAR_COLOR_FIELDS
+        for ra, dec, _name in stellar_color_fields()
     ]
     return "(\n        " + "\n        OR ".join(clauses) + "\n      )"
 
@@ -119,8 +124,8 @@ def _euclid_color_query(lower: float, upper: float) -> str:
     return f"""
     SELECT TOP {Q1_STELLAR_COLOR_ROWS_PER_BIN}
         {_COLOR_COLUMNS}
-    FROM catalogue.mer_catalogue AS mer
-    LEFT OUTER JOIN catalogue.phz_classification AS cls
+    FROM {active_release().table('mer')} AS mer
+    LEFT OUTER JOIN {active_release().table('phz_class')} AS cls
       ON mer.object_id = cls.object_id
     WHERE {_fixed_q1_predicate()}
       AND mer.flux_vis_psf > {faint_flux:.16g}
@@ -145,8 +150,8 @@ def _irsa_color_query(lower: float, upper: float, ra: float, dec: float) -> str:
     return f"""
     SELECT TOP {Q1_STELLAR_COLOR_ROWS_PER_BIN}
         {_COLOR_COLUMNS}
-    FROM euclid_q1_mer_catalogue AS mer
-    LEFT OUTER JOIN euclid_q1_phz_classification AS cls
+    FROM {active_release().irsa_tables['mer']} AS mer
+    LEFT OUTER JOIN {active_release().irsa_tables['phz_class']} AS cls
       ON mer.object_id = cls.object_id
     WHERE CONTAINS(POINT('ICRS', mer.ra, mer.dec),
                    CIRCLE('ICRS', {ra}, {dec}, {radius})) = 1
@@ -173,7 +178,7 @@ def _launch_irsa(query: str) -> list[dict[str, str]]:
 
 def _irsa_bracket_rows(lower: float, upper: float) -> list[dict[str, str]]:
     merged: dict[str, dict[str, str]] = {}
-    for ra, dec, _name in Q1_STELLAR_COLOR_FIELDS:
+    for ra, dec, _name in stellar_color_fields():
         for row in _launch_irsa(_irsa_color_query(lower, upper, ra, dec)):
             merged[_identifier(row.get("object_id"))] = row
     ordered = sorted((key for key in merged if key), key=int)
@@ -290,7 +295,8 @@ def query_q1_stellar_color_sample(
     bin_count = int(round((faint - bright) / width))
     if not math.isclose(bright + bin_count * width, faint, abs_tol=1e-9):
         raise ValueError("Stellar colour range must divide into 0.5-mag brackets")
-    total = bin_count + len(Q1_STELLAR_COLOR_FIELDS)
+    fields = stellar_color_fields()
+    total = bin_count + len(fields)
     euclid_rows: dict[str, dict[str, Any]] = {}
     archives: set[str] = set()
     for index in range(bin_count):
@@ -307,7 +313,7 @@ def query_q1_stellar_color_sample(
     service = pyvo_dal.TAPService(GAIA_TAP_URL)
     gaia_rows: dict[str, dict[str, Any]] = {}
     field_metadata = []
-    for field_index, (ra, dec, name) in enumerate(Q1_STELLAR_COLOR_FIELDS):
+    for field_index, (ra, dec, name) in enumerate(fields):
         if progress:
             progress(
                 bin_count + field_index, total,
@@ -350,8 +356,9 @@ def query_q1_stellar_color_sample(
         })
 
     radius = Q1_STELLAR_COLOR_FIELD_RADIUS_DEG
-    area_deg2 = len(Q1_STELLAR_COLOR_FIELDS) * math.pi * radius**2
+    area_deg2 = len(fields) * math.pi * radius**2
     common = {
+        "release": active_release().name,
         "version": Q1_STELLAR_COLOR_SAMPLE_VERSION,
         "sampling_kind": "fixed_q1_magnitude_stratified_color_fields",
         "fields": field_metadata,
@@ -371,7 +378,8 @@ def query_q1_stellar_color_sample(
         "magnitude_bracket_width": width,
         "rows_per_bracket_limit": Q1_STELLAR_COLOR_ROWS_PER_BIN,
         "selection": (
-            "fixed Q1 calibration fields; POINT_LIKE_PROB >= 0.9; "
+            f"fixed {active_release().name.upper()} calibration fields; "
+            "POINT_LIKE_PROB >= 0.9; "
             "stratified by VIS PSF magnitude; no Gaia match required"
         ),
     }
@@ -428,7 +436,7 @@ def q1_stellar_color_query_count() -> int:
     brackets = int(round(
         (faint - bright) / Q1_STELLAR_COLOR_MAG_BIN_WIDTH,
     ))
-    return brackets + len(Q1_STELLAR_COLOR_FIELDS)
+    return brackets + len(stellar_color_fields())
 
 
 def q1_stellar_color_sample_state() -> dict[str, Any]:
@@ -449,9 +457,9 @@ def q1_stellar_color_sample_state() -> dict[str, Any]:
         valid
         and all(
             int(payload.get("field_count") or 0)
-            == len(Q1_STELLAR_COLOR_FIELDS)
+            == len(stellar_color_fields())
             and len(payload.get("fields") or [])
-            == len(Q1_STELLAR_COLOR_FIELDS)
+            == len(stellar_color_fields())
             for payload in (euclid, gaia)
         )
     )

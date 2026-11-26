@@ -10,7 +10,6 @@ from typing import Any
 
 import numpy as np
 
-from euclid_polish.config import Config
 from euclid_polish.population.conditional_color_sfr import (
     COLOR_SFR_SUPPORTED_VERSIONS,
     ConditionalColorSFRSampler,
@@ -35,6 +34,7 @@ from euclid_polish.population.magnitude_law import (
     ContinuousBrightBridgeFaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
 )
+from euclid_polish.sky.observation.calibration_release import population_dir
 from euclid_polish.web import job_config
 from euclid_polish.web.helpers import (
     population_comparison,
@@ -44,7 +44,8 @@ from euclid_polish.web.helpers import (
 
 
 def calibration_dir() -> Path:
-    return Path(Config.DATA_DIR) / "population_comparison" / "calibrations"
+    """Q1 calibrations, or the DR1 run's own folder (never the active Q1 one)."""
+    return population_dir() / "calibrations"
 
 
 def star_candidate_path() -> Path:

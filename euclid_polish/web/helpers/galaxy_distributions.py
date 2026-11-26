@@ -36,6 +36,7 @@ from euclid_polish.population.magnitude_law import (
     ContinuousBrightBridgeFaintCappedMagnitudeLaw,
 )
 from euclid_polish.sky.generation.source_catalog import source_is_off_field
+from euclid_polish.sky.observation.calibration_release import population_dir
 from euclid_polish.web.helpers.galaxy_corner import (
     build_galaxy_corner,
     mass_fraction_contours,
@@ -132,7 +133,7 @@ COSMOS_APERTURE_DIAMETERS_ARCSEC = {
 
 
 def artifact_path() -> Path:
-    return Path(Config.DATA_DIR) / "population_comparison" / "galaxy_distributions.json"
+    return population_dir() / "galaxy_distributions.json"
 
 
 def joint_pairs_path() -> Path:
