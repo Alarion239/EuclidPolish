@@ -318,6 +318,12 @@ class PSFSet(StampCarrier):
         member via :meth:`PSF.background_cleaned`."""
         return self._with_psfs([p.background_cleaned() for p in self.psfs])
 
+    def radially_tapered(self, r_in_arcsec: float, r_out_arcsec: float, *,
+                         crop: bool = True) -> PSFSet:
+        """:meth:`PSF.radially_tapered` on every member (weights kept)."""
+        return self._with_psfs([p.radially_tapered(r_in_arcsec, r_out_arcsec, crop=crop)
+                                for p in self.psfs])
+
     def centre_cropped_to(self, side: int, *, renormalise: bool = True) -> PSFSet:
         out = [p.centre_cropped_to(side, renormalise=renormalise)
                for p in self.psfs]

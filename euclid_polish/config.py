@@ -243,6 +243,13 @@ class Config:
     # above for these fields. "off" trains without (members trained before
     # 2026-11-22 continue that way); "q1" has about a quarter of DR1's blanks.
     TRAIN_BLANK_PIXELS = "dr1"
+    # Bright-star far field in live training (sky/observation/bright_stars.py):
+    # the measured DR1 halo + spike ridges beyond the ePSF stamp. Off by
+    # default until an arm shows it helps.
+    TRAIN_BRIGHT_STAR_FAR_FIELD = False
+    # Taper the NISP ePSFs at the far-field join (removes their 7-9% outer
+    # pedestal; moves that light into every NISP source's core). Off by default.
+    TRAIN_NISP_PSF_TAPER = False
     # Galaxy pre-blur (live training only, off by default): with this
     # probability per visit the clean GALAXY field is smoothed by a Gaussian
     # of FWHM ~ Uniform(0, max) arcsec before the stars are added and the

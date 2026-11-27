@@ -47,6 +47,15 @@ from euclid_polish.psf.psf_library import (
 from euclid_polish.psf.psf_set import PSFSample, PSFSet
 from euclid_polish.sky.observation.blank_pixels import BAND_NAMES as BLANK_MASK_BAND_NAMES
 from euclid_polish.sky.observation.blank_pixels import BlankPixelModel
+from euclid_polish.sky.observation.bright_stars import (
+    FarFieldParams,
+    draw_jitter,
+    far_field_flux,
+    join_radii,
+    load_far_field_params,
+    render_far_field,
+    spike_ridges,
+)
 from euclid_polish.sky.observation.field_variations import (
     DistantStarWing,
     add_distant_star_wings,
@@ -144,6 +153,26 @@ class ObservationSimulatorConfig:
     distant_star_wing_width_max_lr_pix: float = 2.0
     distant_star_wing_fade_length_min_lr_pix: float = 60.0
     distant_star_wing_fade_length_max_lr_pix: float = 220.0
+    # Far-field light of stars beyond the ePSF stamp (``bright_stars.py``):
+    # the measured DR1 halo and six spike ridges, at the scene kernel's own
+    # spike angles, joined to the kernel in the ``bright_star_join_arcsec``
+    # annulus (moved inside a stamp's own edge taper when the stamp is
+    # smaller). Star kernels are scaled so kernel + far field keep the
+    # star's flux; galaxy light is scaled by the same 1 - f_far (its far
+    # field lies far below the noise and is not drawn). Off reproduces the
+    # stamp-only scene bit for bit.
+    bright_star_far_field: bool = False
+    # Taper the NISP (Y/J/H) ePSFs at the join annulus instead of at their
+    # 21-25″ stamp edge. Removes their flat outer pedestal (7-9% of the flux
+    # at 10-26″ against ~0.9% in real H stars) and puts that light back into
+    # the core, so NISP photometry of every source changes. Off by default.
+    nisp_psf_taper: bool = False
+    # The ePSFs run too bright beyond ~7″ (VIS halo 3.5× the real one at 9″,
+    # NISP 2× at 9″ and 5× at 14″); real and kernel agree at 3-6″.
+    bright_star_join_arcsec: tuple[float, float] = (4.5, 6.5)
+    # Stars whose far field never reaches this many electrons per pixel are
+    # not rendered (cost only; far below any noise level).
+    bright_star_min_peak_e: float = 0.05
     # A tiny per-scene depth jitter plus an occasional per-band pointing
     # seam. Both scale distributions are centred on one.
     # The jitter stays small on purpose: the drawn Q1 level already carries
@@ -228,6 +257,14 @@ class ObservationSimulatorConfig:
             raise ValueError(
                 "distant-star wing fade lengths must satisfy 0 < min <= max"
             )
+        join = tuple(float(value) for value in self.bright_star_join_arcsec)
+        if len(join) != 2 or not 0.0 < join[0] < join[1]:
+            raise ValueError(
+                "bright_star_join_arcsec must be (r_in, r_out) with 0 < r_in < r_out"
+            )
+        self.bright_star_join_arcsec = (join[0], join[1])
+        if float(self.bright_star_min_peak_e) < 0.0:
+            raise ValueError("bright_star_min_peak_e must be >= 0")
         if not (
             0.0 < float(self.noise_global_scale_min)
             <= float(self.noise_global_scale_max)
@@ -312,6 +349,14 @@ class ObservationSimulator:
                 sets[band.name] = PSFSet.from_psfs(
                     [default_psf_for_band(band, self.config.hr_pixel_scale)])
         self._psf_sets = sets
+        # Bright-star far field: per band the join annulus, the kernels
+        # tapered there, and the far field's expected flux share.
+        self._far_params: FarFieldParams | None = None
+        self._far_join: dict[str, tuple[float, float]] = {}
+        self._far_flux: dict[str, float] = {}
+        self._far_ridges: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
+        if self.config.bright_star_far_field or self.config.nisp_psf_taper:
+            self._setup_far_field()
         # Bright-star saturation model (per-band well depths precomputed once).
         self._sat_model = (StarSaturationModel()
                            if self.config.add_saturation else None)
@@ -326,6 +371,77 @@ class ObservationSimulator:
                         f"PSF for band {band_name} has pixel_scale={psf.pixel_scale}; "
                         f"forward model expects HR pixel scale {self.config.hr_pixel_scale}"
                     )
+
+    def _setup_far_field(self) -> None:
+        """Taper the kernels at their join annulus and price the far field.
+
+        VIS (and NISP with ``nisp_psf_taper``) join at
+        ``bright_star_join_arcsec``; NISP without it keeps its stamp and joins
+        just inside the stamp's own edge taper. A band only changes when the
+        far field is on, or when it is NISP and ``nisp_psf_taper`` is on.
+        """
+        cfg = self.config
+        if cfg.bright_star_far_field:
+            self._far_params = load_far_field_params()
+        for band in Config.BANDS:
+            nisp = band.name != Config.BAND_VIS.name
+            taper_nisp = nisp and cfg.nisp_psf_taper
+            if not (cfg.bright_star_far_field or taper_nisp):
+                continue
+            pset = self._psf_sets[band.name]
+            half = 0.5 * min(pset.shape) * pset.pixel_scale
+            requested = cfg.bright_star_join_arcsec
+            if nisp and not taper_nisp:
+                # Far field only: join where the stamp's own taper begins.
+                edge = Config.PSF_TAPER_INNER_FRAC * half
+                requested = (edge - (requested[1] - requested[0]), edge)
+            r_in, r_out = join_radii(half, requested, Config.PSF_TAPER_INNER_FRAC)
+            self._psf_sets[band.name] = pset.radially_tapered(r_in, r_out)
+            self._far_join[band.name] = (r_in, r_out)
+            if self._far_params is not None:
+                self._far_flux[band.name] = far_field_flux(
+                    self._far_params.bands[band.name], self._far_params, r_in, r_out)
+
+    def _ridges_for(self, band: BandConfig, psf: PSF,
+                    psf_spec: PSFSample | None) -> tuple[np.ndarray, np.ndarray]:
+        """Spike ridge angles + heights of a scene kernel, cached per
+        (band, cluster, roll); the elastic warp barely moves them."""
+        key = (band.name,
+               None if psf_spec is None else int(psf_spec.index),
+               None if psf_spec is None else psf_spec.angle)
+        hit = self._far_ridges.get(key)
+        if hit is None:
+            assert self._far_params is not None
+            hit = spike_ridges(psf.data, psf.pixel_scale, self._far_params.n_spikes)
+            self._far_ridges[key] = hit
+        return hit
+
+    def _far_field_lr(
+        self,
+        band: BandConfig,
+        star_hr_channel: np.ndarray,
+        stars: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+        psf: PSF,
+        psf_spec: PSFSample | None,
+        lr_shape: tuple[int, int],
+        rebin_factor: int,
+    ) -> np.ndarray:
+        """Far-field light of the scene's stars on this band's LR grid."""
+        assert self._far_params is not None
+        ys, xs, halo_jitter, spike_jitter = stars
+        angles, rel = self._ridges_for(band, psf, psf_spec)
+        r_in, r_out = self._far_join[band.name]
+        f = float(rebin_factor)
+        return render_far_field(
+            lr_shape,
+            (ys + 0.5) / f - 0.5, (xs + 0.5) / f - 0.5,
+            np.asarray(star_hr_channel[ys, xs], np.float64),
+            self._far_params.bands[band.name], self._far_params,
+            pixel_scale_arcsec=self.config.hr_pixel_scale * f,
+            angles=angles, rel=rel, r_in=r_in, r_out=r_out,
+            halo_jitter=halo_jitter, spike_jitter=spike_jitter,
+            min_peak_e=self.config.bright_star_min_peak_e,
+        )
 
     def warm_up(self) -> None:
         """Compile the elastic warp's numba kernel for these PSFs' dtype.
@@ -453,6 +569,9 @@ class ObservationSimulator:
         warp_displacements: dict[
             tuple[int, int], tuple[np.ndarray, np.ndarray]
         ] | None = None,
+        far_field_stars: tuple[
+            np.ndarray, np.ndarray, np.ndarray, np.ndarray
+        ] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         """Return final dirty LR, its pre-noise optical trigger plane, and the
         star plane's share of that trigger (``None`` without stars)."""
@@ -467,14 +586,24 @@ class ObservationSimulator:
         # 1. PSF convolution on HR plane via PSF.convolved_with (sum=1-normalises
         #    the kernel and runs fftconvolve mode="same" + float32 cast).
         hr_e = psf.convolved_with(hr_channel)
+        far_share = self._far_flux.get(band.name, 0.0)
+        if far_share > 0.0:
+            # The share of every source's light that lands in its far field.
+            hr_e *= np.float32(1.0 - far_share)
         star_e = None
+        star_psf = psf
         if star_hr_channel is not None and np.any(star_hr_channel):
             # process() gives the star plane the scene's own sample: reuse
             # its realised (warped) kernel rather than warping it again.
             star_psf = (psf if star_psf_spec is psf_spec else self._psf_for_sample(
                 band, star_psf_spec, warp_displacements,
             ))
-            star_e = self._convolve_sparse_deltas(star_hr_channel, star_psf)
+            if far_share > 0.0:
+                # Kernel + far field together carry the star's flux.
+                star_e = self._convolve_sparse_deltas(
+                    star_hr_channel * np.float32(1.0 - far_share), star_psf)
+            else:
+                star_e = self._convolve_sparse_deltas(star_hr_channel, star_psf)
             hr_e += star_e
 
         # 2. Sum-rebin to the band's LR scale (preserves photon shot noise
@@ -483,6 +612,17 @@ class ObservationSimulator:
         lr_signal_e = self.sum_rebin(hr_e, rebin_factor)
         star_signal_e = (self.sum_rebin(star_e, rebin_factor)
                          if star_e is not None else None)
+        if (far_field_stars is not None and star_signal_e is not None
+                and star_hr_channel is not None
+                and band.name in self._far_flux):
+            # Far-field halo + spike ridges, before noise: photon noise and
+            # the saturation trigger see them like any starlight.
+            far_e = self._far_field_lr(
+                band, star_hr_channel, far_field_stars, star_psf, star_psf_spec,
+                lr_signal_e.shape, rebin_factor,
+            )
+            lr_signal_e = lr_signal_e + far_e
+            star_signal_e = star_signal_e + far_e
 
         # 3. Apply delivered-MER noise: Euclid's noise level with the pixel
         #    correlation of a dithered, bilinearly resampled, median-combined
@@ -764,6 +904,15 @@ class ObservationSimulator:
         # The star plane is separate for target semantics, not a second
         # optical exposure: every source shares the same deformed PSF.
         star_psf_spec = psf_spec
+        # Far field: every star's position (one HR delta in all bands) and
+        # its halo/spike amplitude factors, shared by the four bands.
+        far_field_stars = None
+        if self._far_params is not None and star_data_trim is not None:
+            ys, xs = np.nonzero(np.any(star_data_trim != 0.0, axis=-1))
+            if ys.size:
+                halo_jitter, spike_jitter = draw_jitter(
+                    int(ys.size), self._far_params, rng)
+                far_field_stars = (ys, xs, halo_jitter, spike_jitter)
 
         # Process each channel; the four LR channels are stacked at the end.
         lr_channels = []
@@ -787,6 +936,7 @@ class ObservationSimulator:
                 noise_scale_map=noise_scale_maps.get(band_name),
                 sky_rms_e=sky_levels.get(band.name),
                 warp_displacements=warp_displacements,
+                far_field_stars=far_field_stars,
             )
             lr_channels.append(lr_channel)
             saturation_trigger_channels.append(trigger_channel)

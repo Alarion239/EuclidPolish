@@ -256,6 +256,35 @@ class PSF(StampCarrier):
             pixel_scale=target,
         )
 
+    def radially_tapered(self, r_in_arcsec: float, r_out_arcsec: float, *,
+                         crop: bool = True) -> PSF:
+        """Cosine taper from ``r_in_arcsec`` (weight 1) to ``r_out_arcsec``
+        (weight 0) about the stamp centre, renormalised to sum 1.
+
+        With ``crop`` the stamp is cut to the smallest odd side that holds the
+        taper's support (never enlarged). Used to hand a kernel's outer light
+        to an analytic far field (``sky/observation/bright_stars.py``) and to
+        remove the flat outer pedestal of the NISP ePSFs.
+        """
+        if not 0.0 < r_in_arcsec < r_out_arcsec:
+            raise ValueError("taper radii must satisfy 0 < r_in < r_out, got "
+                             f"({r_in_arcsec!r}, {r_out_arcsec!r})")
+        data = np.asarray(self.data, dtype=np.float64)
+        H, W = data.shape
+        yy, xx = np.indices(data.shape, dtype=np.float64)
+        rr = np.hypot(yy - (H - 1) / 2.0, xx - (W - 1) / 2.0) * self.pixel_scale
+        t = np.clip((rr - r_in_arcsec) / (r_out_arcsec - r_in_arcsec), 0.0, 1.0)
+        data = data * (0.5 * (1.0 + np.cos(np.pi * t)))
+        if crop and H % 2 == 1 and W % 2 == 1:
+            side = 2 * int(np.ceil(r_out_arcsec / self.pixel_scale)) + 3
+            if side < min(H, W):
+                i0, j0 = (H - side) // 2, (W - side) // 2
+                data = data[i0:i0 + side, j0:j0 + side]
+        s = data.sum()
+        if s > 0:
+            data = data / s
+        return replace(self, data=data.astype(self.data.dtype, copy=False))
+
     def centre_cropped_to(self, side: int, *, renormalise: bool = True) -> PSF:
         """Return a ``(side, side)`` PSF centred on the geometric
         centre, padding with zeros if the input is smaller.

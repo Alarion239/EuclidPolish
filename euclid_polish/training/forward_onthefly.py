@@ -157,6 +157,8 @@ class OnTheFlyForward:
         galaxy_blur_prob: float = Config.TRAIN_GALAXY_BLUR_PROB,
         galaxy_blur_fwhm_max_arcsec: float = Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
         blank_pixels: str | None = Config.TRAIN_BLANK_PIXELS,
+        bright_star_far_field: bool = Config.TRAIN_BRIGHT_STAR_FAR_FIELD,
+        nisp_psf_taper: bool = Config.TRAIN_NISP_PSF_TAPER,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
         # Blank pixels where every exposure of the stack is invalid, bright
@@ -236,6 +238,10 @@ class OnTheFlyForward:
                     float(Config.NOISE_TEXTURE_JITTER_WHITE_MAX)
                     if self.noise_texture_jitter else 0.0),
                 blank_pixels=self.blank_pixels,
+                # Bright-star far field beyond the ePSF stamp, and the NISP
+                # pedestal cut (both off by default).
+                bright_star_far_field=bool(bright_star_far_field),
+                nisp_psf_taper=bool(nisp_psf_taper),
             ))
         # tf.data calls from several threads → per-call child RNGs, spawned
         # under a lock (SeedSequence.spawn is not thread-safe), used lock-free.
