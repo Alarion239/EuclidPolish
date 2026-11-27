@@ -159,6 +159,7 @@ class OnTheFlyForward:
         blank_pixels: str | None = Config.TRAIN_BLANK_PIXELS,
         bright_star_far_field: bool = Config.TRAIN_BRIGHT_STAR_FAR_FIELD,
         nisp_psf_taper: bool = Config.TRAIN_NISP_PSF_TAPER,
+        off_field_stars: bool = Config.TRAIN_OFF_FIELD_STARS,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
         # Blank pixels where every exposure of the stack is invalid, bright
@@ -242,6 +243,7 @@ class OnTheFlyForward:
                 # pedestal cut (both off by default).
                 bright_star_far_field=bool(bright_star_far_field),
                 nisp_psf_taper=bool(nisp_psf_taper),
+                off_field_stars=bool(off_field_stars),
             ))
         # tf.data calls from several threads → per-call child RNGs, spawned
         # under a lock (SeedSequence.spawn is not thread-safe), used lock-free.

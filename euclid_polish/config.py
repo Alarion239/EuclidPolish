@@ -250,6 +250,9 @@ class Config:
     # Taper the NISP ePSFs at the far-field join (removes their 7-9% outer
     # pedestal; moves that light into every NISP source's core). Off by default.
     TRAIN_NISP_PSF_TAPER = False
+    # Bright stars outside the field casting their kernel spill and far field
+    # into it (needs the far field); replaces the distant-star wings.
+    TRAIN_OFF_FIELD_STARS = False
     # Galaxy pre-blur (live training only, off by default): with this
     # probability per visit the clean GALAXY field is smoothed by a Gaussian
     # of FWHM ~ Uniform(0, max) arcsec before the stars are added and the

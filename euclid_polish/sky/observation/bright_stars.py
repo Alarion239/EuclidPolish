@@ -244,6 +244,23 @@ def draw_jitter(n: int, params: FarFieldParams, rng: np.random.Generator,
     return halo, spike
 
 
+def _ray_entry(y0: float, x0: float, dy: float, dx: float, h_max: float,
+               w_max: float, pad: float) -> float | None:
+    """Distance along the ray ``(y0, x0) + t (dy, dx)``, t >= 0, at which it
+    enters the box ``[-pad, h_max + pad] x [-pad, w_max + pad]``; ``None``
+    when it misses (slab method)."""
+    t_lo, t_hi = 0.0, np.inf
+    for p0, d, hi in ((y0, dy, h_max), (x0, dx, w_max)):
+        lo_b, hi_b = -pad, hi + pad
+        if abs(d) < 1e-12:
+            if not lo_b <= p0 <= hi_b:
+                return None
+            continue
+        t1, t2 = (lo_b - p0) / d, (hi_b - p0) / d
+        t_lo, t_hi = max(t_lo, min(t1, t2)), min(t_hi, max(t1, t2))
+    return t_lo if t_lo <= t_hi else None
+
+
 def render_far_field(
     shape: tuple[int, int],
     ys: np.ndarray,
@@ -259,14 +276,14 @@ def render_far_field(
     r_out: float,
     halo_jitter: np.ndarray | None = None,
     spike_jitter: np.ndarray | None = None,
-    min_peak_e: float = 0.0,
+    min_peak_e: float | np.ndarray = 0.0,
 ) -> np.ndarray:
     """Far-field light (electrons per pixel) of stars on a ``shape`` grid.
 
     ``ys, xs`` are star centres in pixel coordinates of this grid (pixel
     centres at integers), ``fluxes`` their total electrons in this band.
-    Stars whose brightest far-field pixel (at ``r_in``) stays below
-    ``min_peak_e`` are skipped.
+    Stars whose brightest far-field pixel stays below ``min_peak_e`` (one
+    value, or one per star) are skipped.
     """
     out = np.zeros(shape, np.float64)
     n = len(fluxes)
@@ -282,10 +299,25 @@ def render_far_field(
     rel = np.asarray(rel, np.float64)
     gy = (np.arange(shape[0], dtype=np.float64) * pixel_scale_arcsec)[:, None]
     gx = (np.arange(shape[1], dtype=np.float64) * pixel_scale_arcsec)[None, :]
-    for y, x, f, h, s in zip(ys, xs, fluxes, hj, sj, strict=True):
+    h_max, w_max = (shape[0] - 1) * pixel_scale_arcsec, (shape[1] - 1) * pixel_scale_arcsec
+    floor = np.broadcast_to(np.asarray(min_peak_e, np.float64), (n,))
+    for y, x, f, h, s, lo in zip(ys, xs, fluxes, hj, sj, floor, strict=True):
         scale = float(f) * area
-        peak = scale * max(halo_in * h, ridge_in * s * rel.max())
-        if not peak > min_peak_e:
+        # Brightest far-field pixel: at r_in, or at the nearest grid pixel of
+        # a star off the grid.
+        yo, xo = float(y) * pixel_scale_arcsec, float(x) * pixel_scale_arcsec
+        near = np.hypot(max(0.0, -yo, yo - h_max), max(0.0, -xo, xo - w_max))
+        if near > r_in:
+            # Off the grid: the halo at the nearest pixel, and each ridge
+            # where it enters the grid (widened by 3σ), if it does.
+            peak = scale * float(band.halo_at(np.array([near]))[0]) * h
+            for c, sn, rk in zip(cos_a, sin_a, rel, strict=True):
+                t = _ray_entry(yo, xo, sn, c, h_max, w_max, 3.0 * sig)
+                if t is not None:
+                    peak = max(peak, scale * float(band.ridge_at(np.array([max(t, r_in)]))[0]) * s * rk)
+        else:
+            peak = scale * max(halo_in * h, ridge_in * s * rel.max())
+        if not peak > lo or near > params.r_max_arcsec:
             continue
         dy = gy - float(y) * pixel_scale_arcsec
         dx = gx - float(x) * pixel_scale_arcsec
@@ -302,3 +334,88 @@ def render_far_field(
             prof += np.where(along > 0.0, ridge, 0.0)
         out += scale * np.where(live, (1.0 - join_weight(r, r_in, r_out)) * prof, 0.0)
     return out.astype(np.float32)
+
+
+# --------------------------------------------------------------------------- #
+# Off-field stars
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class OffFieldPrior:
+    """Bright stars around the field: DR1 Wide counts per magnitude bin and
+    measured NISP/VIS electron ratios (``bright_star_params.json``)."""
+
+    mag_lo: np.ndarray          # bin edges (VIS)
+    mag_hi: np.ndarray
+    density_deg2: np.ndarray    # stars per deg² in each bin
+    colour_bands: tuple[str, ...]
+    colour_ratios: np.ndarray   # (n_stars, len(colour_bands)) electrons / VIS electrons
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> OffFieldPrior:
+        off, counts = payload["off_field"], payload["star_counts"]
+        edges = np.asarray(counts["mag_edges"], np.float64)
+        dens = np.asarray(counts["density_deg2_mag"], np.float64) * np.diff(edges)
+        use = (edges[:-1] >= float(off["mag_min"]) - 1e-9) & (edges[1:] <= float(off["mag_max"]) + 1e-9)
+        return cls(mag_lo=edges[:-1][use], mag_hi=edges[1:][use], density_deg2=dens[use],
+                   colour_bands=tuple(off["colour_ratio_bands"]),
+                   colour_ratios=np.asarray(off["colour_ratios"], np.float64))
+
+
+@lru_cache(maxsize=4)
+def load_off_field_prior(path: str = PARAMS_PATH) -> OffFieldPrior:
+    with open(path, encoding="utf-8") as fh:
+        return OffFieldPrior.from_payload(json.load(fh))
+
+
+def ridge_reach_arcsec(band: FarFieldBand, params: FarFieldParams, flux_e: float,
+                       threshold_e: float) -> float:
+    """Largest radius at which the brightest possible ridge of a ``flux_e``
+    star (relative height 2, a +2σ amplitude draw) still reaches
+    ``threshold_e`` per pixel; at most ``params.r_max_arcsec``."""
+    r = np.geomspace(0.5, params.r_max_arcsec, 2000)
+    boost = 2.0 * np.exp(2.0 * params.spike_jitter_ln)
+    above = flux_e * boost * band.ridge_at(r) >= threshold_e
+    return float(r[above].max()) if above.any() else 0.0
+
+
+def draw_off_field_stars(
+    rng: np.random.Generator,
+    prior: OffFieldPrior,
+    reach_arcsec: np.ndarray,
+    field_shape: tuple[int, int],
+    pixel_scale_arcsec: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Stars outside a ``field_shape`` grid that can reach into it.
+
+    Per magnitude bin, stars are Poisson-drawn at the DR1 density over the
+    square ring between the field and ``reach_arcsec[bin]`` beyond its edges,
+    uniform in position and magnitude. Returns grid coordinates ``ys, xs``
+    (pixel centres at integers, outside the grid), VIS magnitudes and one
+    row index into ``prior.colour_ratios`` per star.
+    """
+    H, W = field_shape
+    hh, hw = 0.5 * H * pixel_scale_arcsec, 0.5 * W * pixel_scale_arcsec
+    cy, cx = (H - 1) / 2.0, (W - 1) / 2.0
+    ys, xs, mags = [], [], []
+    for lo, hi, dens, reach in zip(prior.mag_lo, prior.mag_hi, prior.density_deg2,
+                                   reach_arcsec, strict=True):
+        if reach <= 0.0 or dens <= 0.0:
+            continue
+        oy, ox = hh + reach, hw + reach
+        ring_deg2 = (4.0 * oy * ox - 4.0 * hh * hw) / 3600.0 ** 2
+        n = int(rng.poisson(dens * ring_deg2))
+        got = 0
+        while got < n:
+            py = rng.uniform(-oy, oy, size=2 * (n - got) + 8)
+            px = rng.uniform(-ox, ox, size=py.size)
+            ok = (np.abs(py) >= hh) | (np.abs(px) >= hw)
+            take = np.flatnonzero(ok)[: n - got]
+            ys.extend(cy + py[take] / pixel_scale_arcsec)
+            xs.extend(cx + px[take] / pixel_scale_arcsec)
+            got += take.size
+        mags.extend(rng.uniform(lo, hi, size=n))
+    k = len(mags)
+    colours = rng.integers(0, len(prior.colour_ratios), size=k)
+    return (np.asarray(ys, np.float64), np.asarray(xs, np.float64),
+            np.asarray(mags, np.float64), colours)

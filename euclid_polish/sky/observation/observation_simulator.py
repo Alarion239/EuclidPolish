@@ -37,6 +37,7 @@ import numpy as np
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.image import Image, Role
+from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.psf import PSF
@@ -49,11 +50,15 @@ from euclid_polish.sky.observation.blank_pixels import BAND_NAMES as BLANK_MASK_
 from euclid_polish.sky.observation.blank_pixels import BlankPixelModel
 from euclid_polish.sky.observation.bright_stars import (
     FarFieldParams,
+    OffFieldPrior,
     draw_jitter,
+    draw_off_field_stars,
     far_field_flux,
     join_radii,
     load_far_field_params,
+    load_off_field_prior,
     render_far_field,
+    ridge_reach_arcsec,
     spike_ridges,
 )
 from euclid_polish.sky.observation.field_variations import (
@@ -173,6 +178,14 @@ class ObservationSimulatorConfig:
     # Stars whose far field never reaches this many electrons per pixel are
     # not rendered (cost only; far below any noise level).
     bright_star_min_peak_e: float = 0.05
+    # Bright stars OUTSIDE the field (needs ``bright_star_far_field``): drawn
+    # at the DR1 Wide counts (VIS 6.5-16) around the field out to where their
+    # brightest ridge falls below ``off_field_min_peak_sigma`` of the median
+    # sky noise; their kernel spill and far field (halo + spikes at the
+    # scene's spike angles) reach into the field, while the target stays
+    # without them. Replaces ``distant_star_wings``. Off by default.
+    off_field_stars: bool = False
+    off_field_min_peak_sigma: float = 0.05
     # A tiny per-scene depth jitter plus an occasional per-band pointing
     # seam. Both scale distributions are centred on one.
     # The jitter stays small on purpose: the drawn Q1 level already carries
@@ -265,6 +278,10 @@ class ObservationSimulatorConfig:
         self.bright_star_join_arcsec = (join[0], join[1])
         if float(self.bright_star_min_peak_e) < 0.0:
             raise ValueError("bright_star_min_peak_e must be >= 0")
+        if self.off_field_stars and not self.bright_star_far_field:
+            raise ValueError("off_field_stars needs bright_star_far_field")
+        if not float(self.off_field_min_peak_sigma) > 0.0:
+            raise ValueError("off_field_min_peak_sigma must be > 0")
         if not (
             0.0 < float(self.noise_global_scale_min)
             <= float(self.noise_global_scale_max)
@@ -355,8 +372,13 @@ class ObservationSimulator:
         self._far_join: dict[str, tuple[float, float]] = {}
         self._far_flux: dict[str, float] = {}
         self._far_ridges: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
+        self._off_prior: OffFieldPrior | None = None
+        self._off_reach = np.zeros(0)
+        self._off_floor_e: dict[str, float] = {}
         if self.config.bright_star_far_field or self.config.nisp_psf_taper:
             self._setup_far_field()
+        if self.config.off_field_stars:
+            self._setup_off_field()
         # Bright-star saturation model (per-band well depths precomputed once).
         self._sat_model = (StarSaturationModel()
                            if self.config.add_saturation else None)
@@ -416,31 +438,94 @@ class ObservationSimulator:
             self._far_ridges[key] = hit
         return hit
 
+    def _setup_off_field(self) -> None:
+        """Load the off-field prior and, per magnitude bin, how far beyond
+        the field a star of the bin's bright edge can still reach in."""
+        assert self._far_params is not None
+        prior = load_off_field_prior()
+        table = load_mer_noise_levels()
+        sigma = {b: float(np.median(table.levels_e[:, i])) for i, b in enumerate(table.bands)}
+        ratio = {b: float(np.percentile(prior.colour_ratios[:, j], 95))
+                 for j, b in enumerate(prior.colour_bands)}
+        ratio[Config.BAND_VIS.name] = 1.0
+        frac = float(self.config.off_field_min_peak_sigma)
+        reach = []
+        for mag in prior.mag_lo:
+            vis_e = float(ab_mag_to_electrons(float(mag), Config.BAND_VIS))
+            reach.append(max(
+                ridge_reach_arcsec(self._far_params.bands[b], self._far_params,
+                                   vis_e * ratio[b], frac * sigma[b])
+                for b in Config.LR_INPUT_BAND_NAMES))
+        self._off_prior = prior
+        self._off_reach = np.asarray(reach)
+        # Off-field stars render only where they beat this (per band).
+        self._off_floor_e = {b: frac * sigma[b] for b in Config.LR_INPUT_BAND_NAMES}
+
+    def _draw_off_field(
+        self, field_shape: tuple[int, int], rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+        """One scene's off-field stars: integer HR positions (outside the
+        field), four-band electrons ``(n, 4)`` and amplitude factors."""
+        assert self._off_prior is not None and self._far_params is not None
+        prior = self._off_prior
+        ys, xs, mags, colour = draw_off_field_stars(
+            rng, prior, self._off_reach, field_shape, self.config.hr_pixel_scale)
+        if ys.size == 0:
+            return None
+        flux = np.empty((ys.size, len(Config.LR_INPUT_BAND_NAMES)))
+        vis_e = np.asarray(ab_mag_to_electrons(mags, Config.BAND_VIS), np.float64)
+        flux[:, Config.LR_INPUT_BAND_NAMES.index(Config.BAND_VIS.name)] = vis_e
+        for j, name in enumerate(prior.colour_bands):
+            flux[:, Config.LR_INPUT_BAND_NAMES.index(name)] = vis_e * prior.colour_ratios[colour, j]
+        halo_jitter, spike_jitter = draw_jitter(int(ys.size), self._far_params, rng)
+        return (np.round(ys).astype(np.int64), np.round(xs).astype(np.int64), flux,
+                halo_jitter, spike_jitter)
+
+    @staticmethod
+    def _stamp_kernel_at(shape: tuple[int, int], ys: np.ndarray, xs: np.ndarray,
+                         values: np.ndarray, psf: PSF) -> np.ndarray:
+        """Stamp ``values * psf`` at integer HR positions that may lie
+        outside ``shape``; only the overlapping part lands."""
+        out = np.zeros(shape, np.float32)
+        kernel = np.asarray(psf.data, np.float32)
+        kh, kw = kernel.shape
+        cy, cx = (kh - 1) // 2, (kw - 1) // 2
+        height, width = shape
+        for y, x, v in zip(ys, xs, values, strict=True):
+            oy0, ox0 = max(0, y - cy), max(0, x - cx)
+            oy1, ox1 = min(height, y - cy + kh), min(width, x - cx + kw)
+            if oy1 <= oy0 or ox1 <= ox0:
+                continue
+            ky0, kx0 = oy0 - (y - cy), ox0 - (x - cx)
+            out[oy0:oy1, ox0:ox1] += np.float32(v) * kernel[
+                ky0:ky0 + (oy1 - oy0), kx0:kx0 + (ox1 - ox0)]
+        return out
+
     def _far_field_lr(
         self,
         band: BandConfig,
-        star_hr_channel: np.ndarray,
-        stars: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+        stars: tuple[np.ndarray, ...],
         psf: PSF,
         psf_spec: PSFSample | None,
         lr_shape: tuple[int, int],
         rebin_factor: int,
     ) -> np.ndarray:
-        """Far-field light of the scene's stars on this band's LR grid."""
+        """Far-field light on this band's LR grid of stars at HR positions
+        ``ys, xs`` with this band's electrons and amplitude factors."""
         assert self._far_params is not None
-        ys, xs, halo_jitter, spike_jitter = stars
+        ys, xs, fluxes, halo_jitter, spike_jitter, floor_e = stars
         angles, rel = self._ridges_for(band, psf, psf_spec)
         r_in, r_out = self._far_join[band.name]
         f = float(rebin_factor)
         return render_far_field(
             lr_shape,
             (ys + 0.5) / f - 0.5, (xs + 0.5) / f - 0.5,
-            np.asarray(star_hr_channel[ys, xs], np.float64),
+            np.asarray(fluxes, np.float64),
             self._far_params.bands[band.name], self._far_params,
             pixel_scale_arcsec=self.config.hr_pixel_scale * f,
             angles=angles, rel=rel, r_in=r_in, r_out=r_out,
             halo_jitter=halo_jitter, spike_jitter=spike_jitter,
-            min_peak_e=self.config.bright_star_min_peak_e,
+            min_peak_e=floor_e,
         )
 
     def warm_up(self) -> None:
@@ -572,6 +657,9 @@ class ObservationSimulator:
         far_field_stars: tuple[
             np.ndarray, np.ndarray, np.ndarray, np.ndarray
         ] | None = None,
+        off_field_stars: tuple[
+            np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+        ] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         """Return final dirty LR, its pre-noise optical trigger plane, and the
         star plane's share of that trigger (``None`` without stars)."""
@@ -605,6 +693,15 @@ class ObservationSimulator:
             else:
                 star_e = self._convolve_sparse_deltas(star_hr_channel, star_psf)
             hr_e += star_e
+        band_k = Config.LR_INPUT_BAND_NAMES.index(band.name)
+        if off_field_stars is not None:
+            # Off-field stars: only the part of their kernel that overlaps
+            # the field lands (their far field follows on the LR grid).
+            oys, oxs, oflux = off_field_stars[:3]
+            spill = self._stamp_kernel_at(
+                hr_e.shape, oys, oxs, oflux[:, band_k] * (1.0 - far_share), star_psf)
+            hr_e += spill
+            star_e = spill if star_e is None else star_e + spill
 
         # 2. Sum-rebin to the band's LR scale (preserves photon shot noise
         #    statistics at the right pixel size for the per-band noise step).
@@ -612,14 +709,22 @@ class ObservationSimulator:
         lr_signal_e = self.sum_rebin(hr_e, rebin_factor)
         star_signal_e = (self.sum_rebin(star_e, rebin_factor)
                          if star_e is not None else None)
-        if (far_field_stars is not None and star_signal_e is not None
-                and star_hr_channel is not None
-                and band.name in self._far_flux):
+        far_sets = []
+        if (far_field_stars is not None and star_hr_channel is not None
+                and np.any(star_hr_channel)):
+            ys, xs, hj, sj = far_field_stars
+            far_sets.append((ys, xs, star_hr_channel[ys, xs], hj, sj,
+                             np.full(ys.size, self.config.bright_star_min_peak_e)))
+        if off_field_stars is not None:
+            oys, oxs, oflux, ohj, osj = off_field_stars
+            far_sets.append((oys, oxs, oflux[:, band_k], ohj, osj,
+                             np.full(oys.size, self._off_floor_e[band.name])))
+        if far_sets and star_signal_e is not None and band.name in self._far_flux:
             # Far-field halo + spike ridges, before noise: photon noise and
             # the saturation trigger see them like any starlight.
+            stars = tuple(np.concatenate([fs[i] for fs in far_sets]) for i in range(6))
             far_e = self._far_field_lr(
-                band, star_hr_channel, far_field_stars, star_psf, star_psf_spec,
-                lr_signal_e.shape, rebin_factor,
+                band, stars, star_psf, star_psf_spec, lr_signal_e.shape, rebin_factor,
             )
             lr_signal_e = lr_signal_e + far_e
             star_signal_e = star_signal_e + far_e
@@ -842,6 +947,7 @@ class ObservationSimulator:
             self.config.add_noise
             and self.config.add_artifacts
             and self.config.add_distant_star_wings
+            and not self.config.off_field_stars
         ):
             distant_star_wings = draw_distant_star_wings(
                 target_lr_shape,
@@ -913,6 +1019,8 @@ class ObservationSimulator:
                 halo_jitter, spike_jitter = draw_jitter(
                     int(ys.size), self._far_params, rng)
                 far_field_stars = (ys, xs, halo_jitter, spike_jitter)
+        off_field_stars = (self._draw_off_field((H_trim, W_trim), rng)
+                           if self._off_prior is not None else None)
 
         # Process each channel; the four LR channels are stacked at the end.
         lr_channels = []
@@ -937,6 +1045,7 @@ class ObservationSimulator:
                 sky_rms_e=sky_levels.get(band.name),
                 warp_displacements=warp_displacements,
                 far_field_stars=far_field_stars,
+                off_field_stars=off_field_stars,
             )
             lr_channels.append(lr_channel)
             saturation_trigger_channels.append(trigger_channel)
@@ -958,7 +1067,7 @@ class ObservationSimulator:
         # With a star plane the masking can tell star cores from galaxy light.
         star_trigger_stack = (
             np.stack(star_trigger_channels, axis=-1)
-            if star_data_trim is not None else None
+            if star_data_trim is not None or off_field_stars is not None else None
         )
 
         # Detector saturation masking, mirroring the MER pipeline — NOT

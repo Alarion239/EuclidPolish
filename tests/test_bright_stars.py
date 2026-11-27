@@ -13,11 +13,14 @@ from euclid_polish.psf.psf_set import PSFSet
 from euclid_polish.sky.generation.sky_simulator import _deposit_star
 from euclid_polish.sky.observation.bright_stars import (
     FarFieldBand,
+    _ray_entry,
     draw_jitter,
+    draw_off_field_stars,
     far_field_flux,
     join_radii,
     join_weight,
     load_far_field_params,
+    load_off_field_prior,
     render_far_field,
     spike_ridges,
 )
@@ -278,3 +281,90 @@ def test_config_rejects_bad_join():
         ObservationSimulatorConfig(bright_star_join_arcsec=(6.5, 4.5))
     with pytest.raises(ValueError):
         ObservationSimulatorConfig(bright_star_min_peak_e=-1.0)
+
+
+# --------------------------------------------------------------------------- #
+# Off-field stars
+# --------------------------------------------------------------------------- #
+
+def test_off_field_draw_matches_counts_and_stays_outside():
+    prior = load_off_field_prior()
+    assert prior.mag_lo.min() == pytest.approx(6.5) and prior.mag_hi.max() == pytest.approx(16.0)
+    assert np.all(prior.density_deg2 >= 0) and prior.colour_ratios.shape[1] == 3
+    reach = np.full(prior.mag_lo.size, 60.0)
+    shape, ps = (510, 510), HR
+    hh = 0.5 * 510 * ps
+    ring = (4 * (hh + 60.0) ** 2 - 4 * hh * hh) / 3600.0 ** 2
+    expect = float(np.sum(prior.density_deg2) * ring)
+    counts, rng = [], np.random.default_rng(0)
+    for _ in range(400):
+        ys, xs, mags, colour = draw_off_field_stars(rng, prior, reach, shape, ps)
+        counts.append(ys.size)
+        dy, dx = (ys - 254.5) * ps, (xs - 254.5) * ps
+        assert np.all((np.abs(dy) >= hh) | (np.abs(dx) >= hh))
+        assert np.all((np.abs(dy) <= hh + 60.0) & (np.abs(dx) <= hh + 60.0))
+        assert np.all((mags >= 6.5) & (mags <= 16.0))
+        assert np.all((colour >= 0) & (colour < len(prior.colour_ratios)))
+    assert np.mean(counts) == pytest.approx(expect, abs=4 * np.sqrt(expect / 400))
+    a = draw_off_field_stars(np.random.default_rng(9), prior, reach, shape, ps)
+    b = draw_off_field_stars(np.random.default_rng(9), prior, reach, shape, ps)
+    for x, y in zip(a, b, strict=True):
+        np.testing.assert_array_equal(x, y)
+
+
+def test_ray_entry():
+    assert _ray_entry(-5.0, 2.0, 1.0, 0.0, 10.0, 10.0, 0.0) == pytest.approx(5.0)
+    assert _ray_entry(-5.0, 2.0, -1.0, 0.0, 10.0, 10.0, 0.0) is None
+    assert _ray_entry(-5.0, 12.0, 1.0, 0.0, 10.0, 10.0, 0.0) is None
+    assert _ray_entry(-5.0, 12.0, 1.0, 0.0, 10.0, 10.0, 2.5) == pytest.approx(2.5)
+    assert _ray_entry(5.0, 5.0, 0.6, 0.8, 10.0, 10.0, 0.0) == 0.0
+
+
+def test_off_field_crossing_rate_is_dr1_like():
+    """Fraction of 25.5″ fields crossed by off-field light ≥ 1σ in VIS. The
+    DR1 counts and profiles give 12.4% (2000 simulated fields, 2026-11-27);
+    the first report's spike-only estimate was 9%."""
+    sim = ObservationSimulator(psf_sets_by_band=_sets(), config=_quiet(
+        bright_star_far_field=True, nisp_psf_taper=True, off_field_stars=True))
+    p, k = sim._far_params, Config.LR_INPUT_BAND_NAMES.index("VIS")
+    angles, rel = spike_ridges(sim._psf_sets["VIS"].psfs[0].data, HR, 6)
+    rng, hit = np.random.default_rng(1), []
+    for _ in range(800):
+        d = sim._draw_off_field((510, 510), rng)
+        if d is None:
+            hit.append(False)
+            continue
+        ys, xs, flux, hj, sj = d
+        img = render_far_field((255, 255), (ys + 0.5) / 2 - 0.5, (xs + 0.5) / 2 - 0.5, flux[:, k],
+                               p.bands["VIS"], p, pixel_scale_arcsec=0.1, angles=angles, rel=rel,
+                               r_in=4.5, r_out=6.5, halo_jitter=hj, spike_jitter=sj,
+                               min_peak_e=sim._off_floor_e["VIS"])
+        hit.append(img.max() >= 21.0)
+    assert 0.085 < np.mean(hit) < 0.17
+
+
+def test_off_field_stars_light_the_field_but_not_the_target():
+    n = 510
+    img, stars = _scene(n, [])
+    sim = ObservationSimulator(psf_sets_by_band=_sets(), config=_quiet(
+        bright_star_far_field=True, nisp_psf_taper=True, off_field_stars=True))
+    lit = 0
+    for seed in range(40):
+        lr, hr = sim.process(img, np.random.default_rng(seed), star_hr_4ch=stars)
+        assert not hr.data.any()
+        assert np.all(lr.data >= 0.0)
+        lit += bool((lr.data[..., 0] > 21.0).any())
+    assert 1 <= lit <= 20
+    with pytest.raises(ValueError):
+        ObservationSimulatorConfig(off_field_stars=True)
+
+
+def test_off_field_kernel_spill_lands_at_the_edge():
+    """A bright star just outside the edge spills its kernel core into the
+    field (its own pixel stays outside)."""
+    sim = ObservationSimulator(psf_sets_by_band=_sets(), config=_quiet(bright_star_far_field=True))
+    psf = sim._psf_sets["VIS"].psfs[0]
+    out = sim._stamp_kernel_at((100, 100), np.array([50]), np.array([-20]), np.array([1e6]), psf)
+    assert out[50, 0] > 0 and out.sum() < 1e6 * 0.1
+    far = sim._stamp_kernel_at((100, 100), np.array([50]), np.array([-2000]), np.array([1e6]), psf)
+    assert not far.any()
