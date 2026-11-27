@@ -36,7 +36,10 @@ from euclid_polish.population.magnitude_law import (
     ContinuousBrightBridgeFaintCappedMagnitudeLaw,
 )
 from euclid_polish.sky.generation.source_catalog import source_is_off_field
-from euclid_polish.sky.observation.calibration_release import population_dir
+from euclid_polish.sky.observation.calibration_release import (
+    active_release,
+    population_dir,
+)
 from euclid_polish.web.helpers.galaxy_corner import (
     build_galaxy_corner,
     mass_fraction_contours,
@@ -1486,7 +1489,7 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
             except ValueError:
                 sersic_re_arcsec = sersic_flags = np.nan
             if (
-                sersic_flags == 0.0
+                active_release().sersic_flags_ok(sersic_flags)
                 and np.isfinite(sersic_re_arcsec)
                 and sersic_re_arcsec > 0.0
                 and np.isfinite(gal_weight)
@@ -1695,7 +1698,7 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
                 radius_type="half_light",
                 definition=(
                     "MER morphology VIS Sérsic effective radius in arcsec; "
-                    "SERSIC_VISNIR_FLAGS = 0; weighted by PHZ_GAL_PROB"
+                    f"{active_release().sersic_flags_text()}; weighted by PHZ_GAL_PROB"
                 ),
                 weights=np.asarray(radius_weights["euclid_sersic_re"]),
                 default_on=True,

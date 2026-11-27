@@ -43,6 +43,21 @@ DR1_COLOR_FIELD_COUNT = 8
 #: DR1 colour+SFR catalogue: 5' cones on this many sample tiles (Q1 used 24
 #: cones on saved star positions).
 DR1_POPULATION_CONE_COUNT = 24
+#: SERSIC_VISNIR_FLAGS bits that only record why a successful Levmar fit
+#: stopped (DR1 MER Morphology Cookbook, "Parametric morphology"): small
+#: gradient (64), small step (128), no further error reduction (1024), small
+#: residual (2048). DR1 sets them on ~99.8% of galaxies (128 almost always);
+#: Q1 never does, so Q1 keeps its exact ``= 0`` cut. Size correction (2),
+#: downsampled fit (32), maximum iterations (256) and every error/no-fit bit
+#: stay rejected, as ``= 0`` rejects them on Q1.
+SERSIC_CONVERGED_STOP_BITS = (64, 128, 1024, 2048)
+
+
+def _bit_combinations(bits: tuple[int, ...]) -> tuple[int, ...]:
+    values = {0}
+    for bit in bits:
+        values |= {value | bit for value in values}
+    return tuple(sorted(values))
 
 
 @dataclass(frozen=True)
@@ -62,6 +77,8 @@ class CalibrationRelease:
     #: ESA's DR1 tables time out on cone + LEFT OUTER JOIN; the colour+SFR
     #: catalogue query then runs as INNER parts joined client-side.
     split_outer_joins: bool = False
+    #: SERSIC_VISNIR_FLAGS values that mark a usable VIS Sersic fit.
+    sersic_ok_flags: tuple[int, ...] = (0,)
 
     @property
     def area_arcmin2(self) -> float:
@@ -84,6 +101,26 @@ class CalibrationRelease:
             for ra, dec, radius in self.cones
         ]
         return "(\n        " + "\n        OR ".join(clauses) + "\n      )"
+
+    def sersic_flags_predicate(self, column: str) -> str:
+        """ADQL clause keeping rows whose Sersic fit flags mark a usable fit."""
+        if self.sersic_ok_flags == (0,):
+            return f"{column} = 0"
+        listed = ", ".join(str(value) for value in self.sersic_ok_flags)
+        return f"{column} IN ({listed})"
+
+    def sersic_flags_ok(self, flags: float | None) -> bool:
+        """Python twin of :meth:`sersic_flags_predicate` for catalogue rows."""
+        if flags is None or not math.isfinite(float(flags)):
+            return False
+        value = float(flags)
+        return value == int(value) and int(value) in self.sersic_ok_flags
+
+    def sersic_flags_text(self) -> str:
+        if self.sersic_ok_flags == (0,):
+            return "SERSIC_VISNIR_FLAGS = 0"
+        return ("SERSIC_VISNIR_FLAGS only converged-stop bits "
+                "(small gradient/step, no further reduction, small residual)")
 
     def footprint_text(self) -> str:
         if self.tiles:
@@ -157,6 +194,7 @@ def _dr1() -> CalibrationRelease:
             "phz_class": "euclid_dr1_phz_classification_wide",
         },
         split_outer_joins=True,
+        sersic_ok_flags=_bit_combinations(SERSIC_CONVERGED_STOP_BITS),
     )
 
 

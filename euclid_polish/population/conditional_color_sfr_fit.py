@@ -52,6 +52,7 @@ from euclid_polish.population.conditional_color_sfr import (
     weighted_quantile,
 )
 from euclid_polish.population.euclid_galaxy_prior import ConditionalRadiusLaw
+from euclid_polish.sky.observation.calibration_release import active_release
 
 _RATIO_COLUMNS = ("y", "j", "h")
 _SELECTION = (
@@ -198,7 +199,7 @@ def read_color_sfr_rows(
                 and morph_radius > 0.0
                 and np.isfinite(morph_axis_ratio)
                 and 0.0 < morph_axis_ratio <= 1.0
-                and (morph_flags is None or morph_flags == 0.0)
+                and (morph_flags is None or active_release().sersic_flags_ok(morph_flags))
             )
             if row_resolved:
                 circularized = morph_radius * math.sqrt(morph_axis_ratio)

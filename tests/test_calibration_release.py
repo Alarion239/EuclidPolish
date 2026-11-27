@@ -151,3 +151,26 @@ def test_outer_join_in_parts_matches_a_left_outer_join(dr1, monkeypatch):
     assert gal[0] == pytest.approx(0.9)
     flags = result["phz_phys_flags"]
     assert list(flags.mask) == [True, False, True] and flags[1] == 7
+
+
+def test_sersic_flag_cut_keeps_q1_exact_and_accepts_dr1_converged_stops(monkeypatch):
+    from euclid_polish.web.helpers import q1_galaxy_radius_statistics as radius_stats
+
+    monkeypatch.delenv(RELEASE_ENV, raising=False)
+    q1 = active_release()
+    assert q1.sersic_flags_predicate("morph.f") == "morph.f = 0"
+    assert [q1.sersic_flags_ok(v) for v in (0, 128)] == [True, False]
+    assert "morph.sersic_visnir_flags = 0" in radius_stats._base_selection()
+
+    monkeypatch.setenv(RELEASE_ENV, "dr1")
+    dr1 = active_release()
+    # DR1 records the Levmar stop reason: small step (128) on ~all galaxies.
+    for ok in (0, 64, 128, 192, 1024 | 128, 2048 | 64):
+        assert dr1.sersic_flags_ok(ok), ok
+    # Size correction, downsampled, max iterations, errors and no-fit stay out.
+    for bad in (1, 2, 4, 8, 16, 32, 256, 512, 4096, 128 | 256, 128 | 2, None,
+                float("nan"), 128.5):
+        assert not dr1.sersic_flags_ok(bad), bad
+    selection = radius_stats._base_selection()
+    assert "morph.sersic_visnir_flags IN (0, 64, 128, 192," in selection
+    assert "= 0\n" not in selection.split("sersic_visnir_flags")[1][:6]

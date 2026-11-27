@@ -111,7 +111,7 @@ def _base_selection() -> str:
       AND cls.phz_gal_prob IS NOT NULL
       AND cls.phz_gal_prob >= 0.5
       AND cls.phz_gal_prob <= 1.0
-      AND morph.sersic_visnir_flags = 0
+      AND {active_release().sersic_flags_predicate('morph.sersic_visnir_flags')}
       AND morph.sersic_sersic_vis_axis_ratio > 0.05
       AND morph.sersic_sersic_vis_axis_ratio < 1.0
       AND morph.sersic_sersic_vis_index > 0.302
@@ -428,7 +428,7 @@ def _build_radius_statistics_payload(
             "VIS_DET = 1; positive "
             "VIS Sersic flux; POINT_LIKE_FLAG IS NULL; SPURIOUS_FLAG = "
             "0; DET_QUALITY_FLAG < 4; PHZ_GAL_PROB >= 0.5; "
-            "SERSIC_VISNIR_FLAGS = 0; 0.05 < VIS Sersic q < 1; "
+            f"{active_release().sersic_flags_text()}; 0.05 < VIS Sersic q < 1; "
             "0.302 < VIS Sersic n < 5.45; VIS Sersic R_e,major < "
             "2 detection semimajor axes; 0.03 <= circularized VIS "
             "Sersic R_e < 10 arcsec"
