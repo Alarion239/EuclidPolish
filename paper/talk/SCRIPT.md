@@ -7,6 +7,13 @@ Target: ~16 min of talking, the last minute a live demo of the all-sky viewer, t
 `[n]` is the click that brings that view up. "→" means the click only fades in an image. All of a slide's text is
 on screen when you arrive.
 
+**Slide numbers.** Every zoom stop has a number badge in its top-right corner (the 34 stops, numbered as in Prezi's
+sidebar; frames/slide_badges.py). On a return the badge lists every visit, earlier ones grey, the current one bold:
+title 1→31, chart 3→10, survey card 4→9, survey window 5→8→29 (bottom-right corner there), quiz 15→18,
+lenses 19→22, JWST 23→28. The grey-out rides on an existing click (Prezi's multi-object fade), so it is still 74
+clicks. It happens while you are elsewhere, except the window's 8: that one updates with the first click there
+(Euclid appears).
+
 **The canvas.** Four left-aligned rows, each on a light panel under one summary point; the title slide and a big QR code
 to the viewer sit on the right. The start view and the zoom-out at the end are the same frame: the summary.
 
