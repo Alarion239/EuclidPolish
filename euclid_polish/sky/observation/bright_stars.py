@@ -283,7 +283,9 @@ def render_far_field(
     ``ys, xs`` are star centres in pixel coordinates of this grid (pixel
     centres at integers), ``fluxes`` their total electrons in this band.
     Stars whose brightest far-field pixel stays below ``min_peak_e`` (one
-    value, or one per star) are skipped.
+    value, or one per star) are skipped, and each star is drawn only where
+    it reaches that level: its halo inside the radius where the halo falls
+    below it, each ridge along a strip (±4σ) out to where that ridge does.
     """
     out = np.zeros(shape, np.float64)
     n = len(fluxes)
@@ -291,48 +293,80 @@ def render_far_field(
         return out.astype(np.float32)
     hj = np.ones(n) if halo_jitter is None else np.asarray(halo_jitter, np.float64)
     sj = np.ones(n) if spike_jitter is None else np.asarray(spike_jitter, np.float64)
-    area = (pixel_scale_arcsec / params.pixel_scale_arcsec) ** 2
+    ps = float(pixel_scale_arcsec)
+    area = (ps / params.pixel_scale_arcsec) ** 2
     sig = band.spike_sigma_arcsec
-    halo_in = float(band.halo_at(np.array([r_in]))[0])
-    ridge_in = float(band.ridge_at(np.array([r_in]))[0])
+    r_max = params.r_max_arcsec
+    rg = np.geomspace(r_in, r_max, 256)
+    halo_g, ridge_g = band.halo_at(rg), band.ridge_at(rg)
     cos_a, sin_a = np.cos(angles), np.sin(angles)
     rel = np.asarray(rel, np.float64)
-    gy = (np.arange(shape[0], dtype=np.float64) * pixel_scale_arcsec)[:, None]
-    gx = (np.arange(shape[1], dtype=np.float64) * pixel_scale_arcsec)[None, :]
-    h_max, w_max = (shape[0] - 1) * pixel_scale_arcsec, (shape[1] - 1) * pixel_scale_arcsec
+    h_max, w_max = (shape[0] - 1) * ps, (shape[1] - 1) * ps
     floor = np.broadcast_to(np.asarray(min_peak_e, np.float64), (n,))
+
+    def reach(curve: np.ndarray, amp: float, lo: float) -> float:
+        above = amp * curve >= lo
+        return float(rg[above].max()) if above.any() else 0.0
+
+    def box(y0: float, y1: float, x0: float, x1: float):
+        i0, i1 = max(0, int(np.floor(y0 / ps))), min(shape[0], int(np.ceil(y1 / ps)) + 1)
+        j0, j1 = max(0, int(np.floor(x0 / ps))), min(shape[1], int(np.ceil(x1 / ps)) + 1)
+        if i1 <= i0 or j1 <= j0:
+            return None
+        return (slice(i0, i1), slice(j0, j1),
+                (np.arange(i0, i1, dtype=np.float64) * ps)[:, None],
+                (np.arange(j0, j1, dtype=np.float64) * ps)[None, :])
+
     for y, x, f, h, s, lo in zip(ys, xs, fluxes, hj, sj, floor, strict=True):
         scale = float(f) * area
+        yo, xo = float(y) * ps, float(x) * ps
         # Brightest far-field pixel: at r_in, or at the nearest grid pixel of
-        # a star off the grid.
-        yo, xo = float(y) * pixel_scale_arcsec, float(x) * pixel_scale_arcsec
+        # a star off the grid (its halo there, or a ridge where its ray
+        # enters the grid, widened by 3σ).
         near = np.hypot(max(0.0, -yo, yo - h_max), max(0.0, -xo, xo - w_max))
+        if near > r_max:
+            continue
         if near > r_in:
-            # Off the grid: the halo at the nearest pixel, and each ridge
-            # where it enters the grid (widened by 3σ), if it does.
             peak = scale * float(band.halo_at(np.array([near]))[0]) * h
             for c, sn, rk in zip(cos_a, sin_a, rel, strict=True):
                 t = _ray_entry(yo, xo, sn, c, h_max, w_max, 3.0 * sig)
                 if t is not None:
                     peak = max(peak, scale * float(band.ridge_at(np.array([max(t, r_in)]))[0]) * s * rk)
         else:
-            peak = scale * max(halo_in * h, ridge_in * s * rel.max())
-        if not peak > lo or near > params.r_max_arcsec:
+            peak = scale * max(halo_g[0] * h, ridge_g[0] * s * rel.max())
+        if not peak > lo:
             continue
-        dy = gy - float(y) * pixel_scale_arcsec
-        dx = gx - float(x) * pixel_scale_arcsec
-        r = np.hypot(dy, dx)
-        live = (r >= r_in) & (r <= params.r_max_arcsec)
-        if not live.any():
-            continue
-        prof = h * band.halo_at(np.maximum(r, r_in))
+        # Halo, inside the radius where it still reaches ``lo``.
+        rh = reach(halo_g, scale * h, lo)
+        b = box(yo - rh, yo + rh, xo - rh, xo + rh) if rh > 0.0 else None
+        if b is not None:
+            sy_, sx_, gy, gx = b
+            r = np.hypot(gy - yo, gx - xo)
+            m = (r >= r_in) & (r <= rh)
+            if m.any():
+                halo = scale * h * band.halo_at(np.maximum(r, r_in))
+                out[sy_, sx_] += np.where(m, halo * (1.0 - join_weight(r, r_in, r_out)), 0.0)
+        # Ridges, each along its own strip.
         for c, sn, rk in zip(cos_a, sin_a, rel, strict=True):
+            rr = reach(ridge_g, scale * s * rk, lo)
+            if rr <= 0.0:
+                continue
+            pad = 4.0 * sig
+            ya, yb = yo + r_in * sn, yo + rr * sn
+            xa, xb = xo + r_in * c, xo + rr * c
+            b = box(min(ya, yb) - pad, max(ya, yb) + pad, min(xa, xb) - pad, max(xa, xb) + pad)
+            if b is None:
+                continue
+            sy_, sx_, gy, gx = b
+            dy, dx = gy - yo, gx - xo
             along = dx * c + dy * sn
             perp = dy * c - dx * sn
-            ridge = (s * rk * band.ridge_at(np.maximum(along, r_in))
-                     * np.exp(-0.5 * (perp / sig) ** 2))
-            prof += np.where(along > 0.0, ridge, 0.0)
-        out += scale * np.where(live, (1.0 - join_weight(r, r_in, r_out)) * prof, 0.0)
+            r = np.hypot(dy, dx)
+            m = (along > 0.0) & (along <= rr) & (np.abs(perp) <= pad) & (r >= r_in) & (r <= r_max)
+            if m.any():
+                out[sy_, sx_] += np.where(
+                    m, scale * s * rk * band.ridge_at(np.maximum(along, r_in))
+                    * np.exp(-0.5 * (perp / sig) ** 2) * (1.0 - join_weight(r, r_in, r_out)), 0.0)
     return out.astype(np.float32)
 
 

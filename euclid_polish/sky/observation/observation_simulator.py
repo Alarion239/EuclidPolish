@@ -179,9 +179,9 @@ class ObservationSimulatorConfig:
     # The ePSFs run too bright beyond ~7″ (VIS halo 3.5× the real one at 9″,
     # NISP 2× at 9″ and 5× at 14″); real and kernel agree at 3-6″.
     bright_star_join_arcsec: tuple[float, float] = (4.5, 6.5)
-    # Stars whose far field never reaches this many electrons per pixel are
-    # not rendered (cost only; far below any noise level).
-    bright_star_min_peak_e: float = 0.05
+    # Each star's far field is drawn only where it reaches this fraction of
+    # the band's median sky noise per pixel (cost; far below any noise).
+    bright_star_min_peak_sigma: float = 0.02
     # Bright stars OUTSIDE the field (needs ``bright_star_far_field``): drawn
     # at the DR1 Wide counts (VIS 6.5-16) around the field out to where their
     # brightest ridge falls below ``off_field_min_peak_sigma`` of the median
@@ -286,8 +286,8 @@ class ObservationSimulatorConfig:
                 "bright_star_join_arcsec must be (r_in, r_out) with 0 < r_in < r_out"
             )
         self.bright_star_join_arcsec = (join[0], join[1])
-        if float(self.bright_star_min_peak_e) < 0.0:
-            raise ValueError("bright_star_min_peak_e must be >= 0")
+        if float(self.bright_star_min_peak_sigma) < 0.0:
+            raise ValueError("bright_star_min_peak_sigma must be >= 0")
         if self.off_field_stars and not self.bright_star_far_field:
             raise ValueError("off_field_stars needs bright_star_far_field")
         if not float(self.off_field_min_peak_sigma) > 0.0:
@@ -383,6 +383,7 @@ class ObservationSimulator:
         self._far_params: FarFieldParams | None = None
         self._far_join: dict[str, tuple[float, float]] = {}
         self._far_flux: dict[str, float] = {}
+        self._far_floor_e: dict[str, float] = {}
         self._far_ridges: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
         self._off_prior: OffFieldPrior | None = None
         self._off_reach = np.zeros(0)
@@ -419,6 +420,10 @@ class ObservationSimulator:
         cfg = self.config
         if cfg.bright_star_far_field:
             self._far_params = load_far_field_params()
+            table = load_mer_noise_levels()
+            self._far_floor_e = {
+                b: float(cfg.bright_star_min_peak_sigma) * float(np.median(table.levels_e[:, i]))
+                for i, b in enumerate(table.bands)}
         for band in Config.BANDS:
             nisp = band.name != Config.BAND_VIS.name
             taper_nisp = nisp and cfg.nisp_psf_taper
@@ -786,7 +791,7 @@ class ObservationSimulator:
                 and np.any(star_hr_channel)):
             ys, xs, hj, sj = far_field_stars
             far_sets.append((ys, xs, star_hr_channel[ys, xs], hj, sj,
-                             np.full(ys.size, self.config.bright_star_min_peak_e)))
+                             np.full(ys.size, self._far_floor_e[band.name])))
         if off_field_stars is not None:
             oys, oxs, oflux, ohj, osj = off_field_stars
             far_sets.append((oys, oxs, oflux[:, band_k], ohj, osj,

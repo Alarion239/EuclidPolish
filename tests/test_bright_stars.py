@@ -287,7 +287,7 @@ def test_config_rejects_bad_join():
     with pytest.raises(ValueError):
         ObservationSimulatorConfig(bright_star_join_arcsec=(6.5, 4.5))
     with pytest.raises(ValueError):
-        ObservationSimulatorConfig(bright_star_min_peak_e=-1.0)
+        ObservationSimulatorConfig(bright_star_min_peak_sigma=-1.0)
 
 
 # --------------------------------------------------------------------------- #
