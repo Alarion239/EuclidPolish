@@ -91,6 +91,7 @@ from euclid_polish.sky.generation.source_catalog import (
     read_sources,
 )
 from euclid_polish.sky.observation.blank_pixels import blank_pixel_releases
+from euclid_polish.sky.observation.bright_stars import parse_bright_star_recipe
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -198,6 +199,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "live training). 'off' keeps the rectangular "
                          "saturation blackout of the record sets made before "
                          "2026-11-22.")
+    ap.add_argument("--bright-stars", default="off",
+                    help="Bright-star recipe for generated train, validate "
+                         "and test data (euclid_polish.sky.observation."
+                         "bright_stars): 'off' (default, the record sets so "
+                         "far) or a comma list of far, nisp_taper, off_field "
+                         "(needs far), trails (needs --blank-pixels), infield "
+                         "or infield=<VIS cap>.")
     ap.add_argument("--records-dir",    default=Config.RECORDS_DIR_V2)
     ap.add_argument("--checkpoint-dir", default=Config.DEFAULT_CHECKPOINT_DIR)
     ap.add_argument("--ntrain",         type=int, default=6400)
@@ -420,7 +428,24 @@ def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
         lens_density_arcmin2=args.lens_density_arcmin2,
         lens_sigma_v_min_kms=args.lens_sigma_v_min_kms,
         lens_sigma_v_max_kms=args.lens_sigma_v_max_kms,
+        **_infield_kwargs(getattr(args, "bright_stars", "off")),
     )
+
+
+def _bright_star_switches(recipe: str | None) -> dict:
+    """Forward/generator switches of a bright-star recipe, the in-field cap
+    defaulting to ``Config.TRAIN_INFIELD_BRIGHT_MAG_MIN``."""
+    kw = parse_bright_star_recipe(recipe)
+    if kw["infield_bright_mag_min"] is None:
+        kw["infield_bright_mag_min"] = Config.TRAIN_INFIELD_BRIGHT_MAG_MIN
+    return kw
+
+
+def _infield_kwargs(recipe: str | None) -> dict:
+    """SkySimulatorConfig switches of a bright-star recipe (in-field stars)."""
+    kw = _bright_star_switches(recipe)
+    return {"infield_bright_stars": kw["infield_bright_stars"],
+            "infield_bright_mag_min": kw["infield_bright_mag_min"]}
 
 
 def _photometric_transfer_from_args(
@@ -593,6 +618,9 @@ def _observation_config_from_args(
             f"blank_pixels must be one of {blank_pixel_releases()} or 'off', "
             f"got {blank_pixels!r}"
         )
+    stars = _bright_star_switches(getattr(args, "bright_stars", "off"))
+    if stars["bright_star_trails"] and blank_pixels == "off":
+        raise ValueError("bright_stars trails need --blank-pixels (a release)")
     return ObservationSimulatorConfig(
         add_noise=True,
         psf_warp_prob=float(getattr(
@@ -603,11 +631,21 @@ def _observation_config_from_args(
             args, "psf_warp_sigma", Config.TRAIN_PSF_WARP_SIGMA)),
         saturation_mask_prob=saturation_mask_prob,
         blank_pixels=None if blank_pixels == "off" else str(blank_pixels),
+        bright_star_far_field=stars["bright_star_far_field"],
+        nisp_psf_taper=stars["nisp_psf_taper"],
+        off_field_stars=stars["off_field_stars"],
+        bright_star_trails=stars["bright_star_trails"],
     )
 
 
 def _log_blank_pixels(config: ObservationSimulatorConfig) -> None:
-    """Say which step blanks pixels in this run's dirty images."""
+    """Say which step blanks pixels in this run's dirty images (and which
+    bright-star pieces are on)."""
+    pieces = [name for name, on in (
+        ("far field", config.bright_star_far_field), ("NISP taper", config.nisp_psf_taper),
+        ("off-field stars", config.off_field_stars), ("trails", config.bright_star_trails)) if on]
+    if pieces:
+        _log("  bright stars: " + ", ".join(pieces))
     if config.blank_pixels:
         _log(
             f"  blank pixels: {config.blank_pixels.upper()} rates (pixels no "
@@ -1403,6 +1441,7 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                      tng_properties_csv="",
                      tng_radius_manifest_path="",
                      blank_pixels="off",
+                     bright_stars="off",
                      ) -> None:
     """ProcessPool initializer: build the galaxy prior + simulator + forward
     model once per worker. The prior is the parent's embedded
@@ -1456,7 +1495,8 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                                       ),
                                       lens_density_arcmin2=lens_density_arcmin2,
                                       lens_sigma_v_min_kms=lens_sigma_v_min_kms,
-                                      lens_sigma_v_max_kms=lens_sigma_v_max_kms),
+                                      lens_sigma_v_max_kms=lens_sigma_v_max_kms,
+                                      **_infield_kwargs(bright_stars)),
         vis_psf_set=psf_sets["VIS"],
     )
     _W_FWD = ObservationSimulator(
@@ -1467,6 +1507,7 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
             psf_warp_sigma=psf_warp_sigma,
             saturation_mask_prob=saturation_mask_prob,
             blank_pixels=blank_pixels,
+            bright_stars=bright_stars,
         )),
     )
     _W_RECORDS_DIR = records_dir
@@ -1649,6 +1690,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         getattr(args, "tng_properties", ""),
         getattr(args, "tng_radius_manifest", ""),
         observation_cfg.blank_pixels or "off",
+        getattr(args, "bright_stars", "off"),
     )
     onthefly_train = bool(getattr(args, "onthefly_train", False))
     subsets = (("train", args.ntrain), ("validate", args.nvalid),

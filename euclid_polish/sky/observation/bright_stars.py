@@ -591,3 +591,71 @@ def draw_trail_masks(
                     out[..., k] |= strip_mask(shape, y, x, ax, f * length, (1.0 - f) * length, w,
                                               bow_at_50=bow, pixel_scale_arcsec=ps)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Recipe string (training / generation switches)
+# --------------------------------------------------------------------------- #
+
+#: Pieces of a ``bright_stars`` recipe, in canonical order.
+RECIPE_PIECES = ("far", "nisp_taper", "off_field", "trails", "infield")
+
+
+def parse_bright_star_recipe(recipe: str | None) -> dict:
+    """Forward-model switches of a ``bright_stars`` recipe.
+
+    ``"off"`` (or empty) is today's forward model. Otherwise a comma list of
+    ``far`` (far field), ``nisp_taper``, ``off_field`` (needs ``far``),
+    ``trails`` (needs blank pixels; the caller checks) and ``infield`` or
+    ``infield=<VIS cap>``. Returns the keyword arguments of
+    :class:`~euclid_polish.training.forward_onthefly.OnTheFlyForward`:
+    ``bright_star_far_field``, ``nisp_psf_taper``, ``off_field_stars``,
+    ``bright_star_trails``, ``infield_bright_stars``, ``infield_bright_mag_min``.
+    """
+    out = {"bright_star_far_field": False, "nisp_psf_taper": False, "off_field_stars": False,
+           "bright_star_trails": False, "infield_bright_stars": False,
+           "infield_bright_mag_min": None}
+    text = (recipe or "off").strip().lower()
+    if text in ("", "off", "none"):
+        return out
+    for raw in text.split(","):
+        item = raw.strip()
+        name, _, value = item.partition("=")
+        if name not in RECIPE_PIECES or (value and name != "infield"):
+            raise ValueError(f"bright_stars: unknown piece {item!r} (pieces: "
+                             f"{', '.join(RECIPE_PIECES)}, infield=<VIS cap>, or 'off')")
+        if name == "far":
+            out["bright_star_far_field"] = True
+        elif name == "nisp_taper":
+            out["nisp_psf_taper"] = True
+        elif name == "off_field":
+            out["off_field_stars"] = True
+        elif name == "trails":
+            out["bright_star_trails"] = True
+        else:
+            out["infield_bright_stars"] = True
+            if value:
+                try:
+                    cap = float(value)
+                except ValueError as exc:
+                    raise ValueError("bright_stars: infield cap must be a VIS magnitude, "
+                                     f"got {value!r}") from exc
+                if not 5.0 <= cap < 12.0:
+                    raise ValueError(f"bright_stars: infield cap must be in [5, 12), got {cap:g}")
+                out["infield_bright_mag_min"] = cap
+    if out["off_field_stars"] and not out["bright_star_far_field"]:
+        raise ValueError("bright_stars: off_field needs far")
+    return out
+
+
+def canonical_bright_star_recipe(recipe: str | None, *, default_cap: float) -> str:
+    """The recipe in canonical form (``"off"`` or pieces in fixed order, the
+    infield cap written out), for origin.json and identity checks."""
+    kw = parse_bright_star_recipe(recipe)
+    names = [("far", "bright_star_far_field"), ("nisp_taper", "nisp_psf_taper"),
+             ("off_field", "off_field_stars"), ("trails", "bright_star_trails")]
+    parts = [p for p, k in names if kw[k]]
+    if kw["infield_bright_stars"]:
+        cap = kw["infield_bright_mag_min"]
+        parts.append(f"infield={default_cap if cap is None else cap:g}")
+    return ",".join(parts) if parts else "off"

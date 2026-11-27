@@ -57,6 +57,7 @@ from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
     OnTheFlyForward,
+    bright_star_kwargs,
     member_psf_sets,
 )
 from euclid_polish.training.inference import (
@@ -642,6 +643,7 @@ class Model:
         galaxy_blur_prob: float = Config.TRAIN_GALAXY_BLUR_PROB,
         galaxy_blur_fwhm_max: float = Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
         blank_pixels: str | None = Config.TRAIN_BLANK_PIXELS,
+        bright_stars: str = "off",
         isotropy_penalty: float = 0.0,
         isotropy_knee: float | None = None,
         isotropy_scales: Sequence[Sequence[float]] | None = None,
@@ -819,7 +821,10 @@ class Model:
                                   noise_texture_jitter=bool(noise_texture_jitter),
                                   galaxy_blur_prob=float(galaxy_blur_prob),
                                   galaxy_blur_fwhm_max_arcsec=float(galaxy_blur_fwhm_max),
-                                  blank_pixels=blank_pixels or None)
+                                  blank_pixels=blank_pixels or None,
+                                  **bright_star_kwargs(bright_stars))
+            if (bright_stars or "off") != "off":
+                print(f"  bright stars: {bright_stars} (sky/observation/bright_stars.py)")
             print("  blank pixels: " + (
                 f"pixels no exposure measured and bright star cores, {fwd.blank_pixels.upper()} rates"
                 if fwd.blank_pixels else "off (legacy rectangular saturation blackout)"))

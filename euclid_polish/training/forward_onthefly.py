@@ -52,7 +52,10 @@ from euclid_polish.sky.generation.stellar_sed import (
     EmpiricalStellarPrior,
     stellar_prior_density_arcmin2,
 )
-from euclid_polish.sky.observation.bright_stars import load_off_field_prior
+from euclid_polish.sky.observation.bright_stars import (
+    load_off_field_prior,
+    parse_bright_star_recipe,
+)
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -85,6 +88,16 @@ def validate_galaxy_blur(prob: float, fwhm_max_arcsec: float) -> tuple[float, fl
         raise ValueError("galaxy_blur_fwhm_max must be in (0, "
                          f"{Config.TARGET_PSF_FWHM_MAX_ARCSEC:g}] arcsec, got {fwhm_max_arcsec!r}")
     return p, fwhm
+
+
+def bright_star_kwargs(recipe: str | None) -> dict:
+    """:class:`OnTheFlyForward` keyword arguments of a ``bright_stars``
+    recipe (``sky.observation.bright_stars.parse_bright_star_recipe``), the
+    in-field cap defaulting to ``Config.TRAIN_INFIELD_BRIGHT_MAG_MIN``."""
+    kw = parse_bright_star_recipe(recipe)
+    if kw["infield_bright_mag_min"] is None:
+        kw["infield_bright_mag_min"] = Config.TRAIN_INFIELD_BRIGHT_MAG_MIN
+    return kw
 
 
 def member_psf_sets(*, seed: int | None, psf_subset: int | None = None,

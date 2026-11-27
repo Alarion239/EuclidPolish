@@ -224,6 +224,11 @@ class MemberTrainSpec:
     #: saturation blackout. Recorded in origin.json; continue keeps it, and
     #: a member without the entry continues with "off".
     blank_pixels: str = Config.TRAIN_BLANK_PIXELS
+    #: Live training's bright-star recipe (``sky.observation.bright_stars``):
+    #: "off" or a comma list of far, nisp_taper, off_field, trails,
+    #: infield=<VIS cap>. Recorded in origin.json; continue keeps it, and a
+    #: member without the entry continues with "off".
+    bright_stars: str = "off"
     #: Weight λ of the residual-isotropy penalty (``training.isotropy``): on
     #: average, the error stretched at ``isotropy_knee`` e⁻ (``None`` = the
     #: module default, 0.01) must not prefer a direction, at
@@ -582,6 +587,7 @@ class EnsembleModel:
                     origin["galaxy_blur_fwhm_max"] = float(spec.galaxy_blur_fwhm_max)
                 if spec.forward_onthefly:
                     origin["blank_pixels"] = str(spec.blank_pixels or "off")
+                    origin["bright_stars"] = str(spec.bright_stars or "off")
                 if spec.brightness_consistency:
                     origin["brightness_consistency"] = True
                 if spec.isotropy_penalty:
@@ -632,6 +638,7 @@ class EnsembleModel:
                 member_train_kwargs["galaxy_blur_fwhm_max"] = float(spec.galaxy_blur_fwhm_max)
             if spec.forward_onthefly:
                 member_train_kwargs["blank_pixels"] = str(spec.blank_pixels or "off")
+                member_train_kwargs["bright_stars"] = str(spec.bright_stars or "off")
             if spec.isotropy_penalty:
                 member_train_kwargs["isotropy_penalty"] = float(spec.isotropy_penalty)
                 member_train_kwargs["isotropy_knee"] = spec.isotropy_knee

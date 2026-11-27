@@ -51,6 +51,7 @@ from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
 from euclid_polish.observability import Reporter, ResourceSampler  # noqa: E402
 from euclid_polish.provenance.defaults import default_store  # noqa: E402
 from euclid_polish.sky.observation.blank_pixels import blank_pixel_releases  # noqa: E402
+from euclid_polish.sky.observation.bright_stars import canonical_bright_star_recipe  # noqa: E402
 from euclid_polish.training.forward_onthefly import (  # noqa: E402
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
@@ -286,6 +287,16 @@ def parse_args(argv=None) -> argparse.Namespace:
                         f"blank_pixels; default {Config.TRAIN_BLANK_PIXELS}). "
                         "'off' keeps the legacy rectangular saturation "
                         "blackout. Member-spec key: blank_pixels.")
+    p.add_argument("--bright-stars", default="off",
+                   help="Live training: bright-star recipe "
+                        "(euclid_polish.sky.observation.bright_stars): 'off' "
+                        "(default) or a comma list of far (halo + spikes beyond "
+                        "the ePSF stamp), nisp_taper (cut the NISP pedestal), "
+                        "off_field (stars outside the field; needs far), trails "
+                        "(VIS bleed + NISP persistence; needs --blank-pixels), "
+                        "infield or infield=<VIS cap> (stars brighter than VIS "
+                        f"12, cap default {Config.TRAIN_INFIELD_BRIGHT_MAG_MIN:g}). "
+                        "Member-spec key: bright_stars.")
     p.add_argument("--galaxy-blur-fwhm-max", type=float,
                    default=Config.TRAIN_GALAXY_BLUR_FWHM_MAX_ARCSEC,
                    help="Largest galaxy pre-blur FWHM in arcsec (default "
@@ -546,7 +557,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "starless", "asinh_knee", "asinh_knees", "knee_loss",
                "loss_knees", "loss_floor", "knee_tilt", "loss_knee_weights", "lupton_loss",
                "brightness_consistency", "noise_texture_jitter",
-               "galaxy_blur_prob", "galaxy_blur_fwhm_max", "blank_pixels",
+               "galaxy_blur_prob", "galaxy_blur_fwhm_max", "blank_pixels", "bright_stars",
                "isotropy_penalty", "isotropy_knee", "isotropy_scales", "isotropy_per_batch",
                "isotropy_tolerance",
                "real_equivariance", "real_equivariance_tiles", "real_equivariance_batch",
@@ -918,6 +929,19 @@ def _diversity_kwargs(args, over: dict) -> dict:
     if galaxy_blur_prob and not bool(over.get("forward_onthefly", args.forward_onthefly)):
         print("✗ galaxy_blur_prob needs the live (on-the-fly) forward model")
         raise SystemExit(2)
+    try:
+        bright_stars = canonical_bright_star_recipe(
+            over.get("bright_stars", args.bright_stars),
+            default_cap=Config.TRAIN_INFIELD_BRIGHT_MAG_MIN)
+    except ValueError as exc:
+        print(f"✗ {exc}")
+        raise SystemExit(2) from exc
+    if bright_stars != "off" and not bool(over.get("forward_onthefly", args.forward_onthefly)):
+        print("✗ bright_stars needs the live (on-the-fly) forward model")
+        raise SystemExit(2)
+    if "trails" in bright_stars.split(",") and blank_pixels == "off":
+        print("✗ bright_stars trails need --blank-pixels (a release)")
+        raise SystemExit(2)
     if brightness and not bool(over.get("forward_onthefly", args.forward_onthefly)):
         print("✗ brightness_consistency needs the live (on-the-fly) forward model")
         raise SystemExit(2)
@@ -945,6 +969,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "galaxy_blur_prob": galaxy_blur_prob,
             "galaxy_blur_fwhm_max": galaxy_blur_fwhm_max,
             "blank_pixels": str(blank_pixels),
+            "bright_stars": bright_stars,
             "isotropy_penalty": isotropy_penalty,
             "isotropy_knee": isotropy_knee,
             "isotropy_scales": isotropy_scales,
@@ -1044,6 +1069,9 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
         # A member trained before blank pixels existed has no entry: it
         # continues without them, whatever today's default.
         identity["blank_pixels"] = str(origin.get("blank_pixels") or "off")
+    if "bright_stars" not in override:
+        # Members from before the bright-star recipe continue without it.
+        identity["bright_stars"] = str(origin.get("bright_stars") or "off")
     if origin.get("isotropy_penalty") and "isotropy_penalty" not in override:
         identity["isotropy_penalty"] = float(origin["isotropy_penalty"])
     if origin.get("isotropy_penalty"):
@@ -1355,6 +1383,8 @@ def main() -> int:
             knobs += f" galaxy_blur=p{s.galaxy_blur_prob:g}/fwhm<={s.galaxy_blur_fwhm_max:g}\""
         if s.forward_onthefly:
             knobs += f" blank_pixels={s.blank_pixels}"
+            if s.bright_stars != "off":
+                knobs += f" bright_stars={s.bright_stars}"
         if s.isotropy_penalty:
             knobs += (f" isotropy={s.isotropy_penalty:g}"
                       f"@{s.isotropy_knee or DEFAULT_ISOTROPY_KNEE_E:g}e"
