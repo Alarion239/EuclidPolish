@@ -165,6 +165,8 @@ def page(name, side, layers, labels, centre=(GRA, GDEC), outline=None):
                                    edgecolor="white", alpha=0.85, linewidth=outline, zorder=2))
     path = os.path.join(OUT, f"AL_{name}.pdf")
     fig.savefig(path, facecolor="black")
+    np.savez_compressed(os.path.join(CACHE_DIR, f"AL_cache_{name}.npz"), img=layers[0][0], ra=layers[0][1],
+                        dec=layers[0][2], w=layers[0][3], h=layers[0][4], centre=np.array(centre), side=side)
     plt.close(fig)
     print("wrote", path, flush=True)
 
@@ -228,12 +230,12 @@ def ground(inst):
         pw = 160.0
     med, white = stretch(patch, inst)
     Q = L.INST[inst][3]
-    page(inst, s, [(colour(ov, med, white, Q), GRA, GDEC, s, s)], [(f"{name} · {area}", *box_tl(inst), BOX_LABEL)],
+    page(inst, s, [(colour(ov, med, white, Q), GRA, GDEC, s, s)], [(f"{name}, {area}", *box_tl(inst), BOX_LABEL)],
          outline=OUTLINE * SIDE["dss"] / s)
     # the inset page only covers the zoom window (a ~10 px square on the card), cropped from the 160" patch
     inset = colour(patch, med, white, Q, chroma_px=CHROMA["ground"] / p_scale if inst != "dss" else 0)
     page(inst + "_inset", INSET, [(inset, WIN_RA, WIN_DEC, pw, pw)],
-         [(f"{name} · {psf}", *WIN_TL, WIN_LABEL)], centre=(WIN_RA, WIN_DEC))
+         [(f"{name}, {psf}", *WIN_TL, WIN_LABEL)], centre=(WIN_RA, WIN_DEC))
     if inst == "ls":
         COVER["ls"] = (inset, pw)
 
@@ -253,10 +255,10 @@ def euclid():
     print("euclid overview/patch check (should be ~1)", np.round(ks, 3), flush=True)
     med, white = stretch(patch, "euclid")
     Q = L.INST["euclid"][3]
-    page("euclid", s, [(colour(ov, med, white, Q, cap=True), GRA, GDEC, s, s)], [(f"{name} · {area}", *box_tl("euclid"), BOX_LABEL)],
+    page("euclid", s, [(colour(ov, med, white, Q, cap=True), GRA, GDEC, s, s)], [(f"{name}, {area}", *box_tl("euclid"), BOX_LABEL)],
          outline=OUTLINE * SIDE["dss"] / s)
     page("euclid_inset", L.FIELD, [(colour(patch, med, white, Q, chroma_px=CHROMA["euclid"] / 0.1, cap=True), L.RA0, L.DEC0, L.FIELD, L.FIELD)],
-         [(f"{name} · {psf}", *WIN_TR, WIN_LABEL, "right")], centre=(L.RA0, L.DEC0))
+         [(f"{name}, {psf}", *WIN_TR, WIN_LABEL, "right")], centre=(L.RA0, L.DEC0))
     # POLISHed: the 102.4" super-resolved field, same colour (white / 4 for the 2x finer pixel)
     sr = [resample(a, w, L.RA0, L.DEC0, 0.05, L.FIELD) for a, w in L.bands("polished")]
     pol = colour(sr, [m / 4 for m in med], [v / 4 for v in white], Q, cap=True)
@@ -284,7 +286,7 @@ def hst_over_ls(hst_img, label):
     ax.axis("off")
     fig.patch.set_alpha(0)
     # the cover: from the page's left/top edges to just past the label, stopping above the Hubble box
-    lab = ax.text(*WIN_TL, f"{NAMES['ls'][0]} · {NAMES['ls'][2]}", fontsize=WIN_LABEL / INSET * 720, family=SANS,
+    lab = ax.text(*WIN_TL, f"{NAMES['ls'][0]}, {NAMES['ls'][2]}", fontsize=WIN_LABEL / INSET * 720, family=SANS,
                   weight="bold", va="top", ha="left")
     fig.canvas.draw()
     bb = lab.get_window_extent().transformed(ax.transData.inverted())
@@ -319,21 +321,27 @@ def space(inst):
     med, white = stretch(planes, inst)
     img = colour(planes, med, white, L.INST[inst][3])
     pad = 0.45                                                # arcsec; both space boxes share one label size
-    page(inst, s, [(img, GRA, GDEC, s, s)], [(f"{name} · {psf}\n{area}", -s / 2 + pad, s / 2 - pad, SPACE_LABEL)],
+    page(inst, s, [(img, GRA, GDEC, s, s)], [(f"{name}, {psf}\n{area}", -s / 2 + pad, s / 2 - pad, SPACE_LABEL)],
          outline=0.08 / s * 720)                             # 0.08" wide: visible at the zoom window
     # 11-25 review: two-line labels from the start (sharpness and area together), so the JWST box no longer
     # switches meaning from area to resolution; the "res" pages are kept identical for the old layout
-    for kind, label in (("area", f"{name} · {psf}\n{area}"), ("res", f"{name} · {psf}\n{area}")):
+    for kind, label in (("area", f"{name}, {psf}\n{area}"), ("res", f"{name}, {psf}\n{area}")):
         page(f"{inst}_{kind}", s, [(img, GRA, GDEC, s, s)], [(label, -s / 2 + pad, s / 2 - pad, SPACE_LABEL)],
              outline=0.08 / s * 720)
     if inst == "hst" and "ls" in COVER:
-        hst_over_ls(img, f"{name} · {psf}\n{area}")
+        hst_over_ls(img, f"{name}, {psf}\n{area}")
 
 
-which = sys.argv[1:] or ["dss", "ps1", "ls", "hst", "jwst", "euclid"]
+CACHE_DIR = os.path.join(os.path.dirname(OUT), "data", "al_cache")   # wide-box images for survey_split.py
+os.makedirs(CACHE_DIR, exist_ok=True)
+if __name__ != "__main__":
+    which = []
+else:
+    which = sys.argv[1:] or ["dss", "ps1", "ls", "hst", "jwst", "euclid"]
 for inst in which:
     {"dss": ground, "ps1": ground, "ls": ground, "hst": space, "jwst": space}.get(inst, lambda _i: euclid())(inst)
-geo = {"side": SIDE, "win": {"ra": WIN_RA, "dec": WIN_DEC, "w": WIN_W, "h": WIN_H},
+if __name__ == "__main__":
+  geo = {"side": SIDE, "win": {"ra": WIN_RA, "dec": WIN_DEC, "w": WIN_W, "h": WIN_H},
        "spiral": [GRA, GDEC], "polished": {"ra": L.RA0, "dec": L.DEC0, "side": L.FIELD},
        "win_off": off(WIN_RA, WIN_DEC), "pol_off": off(L.RA0, L.DEC0)}
-json.dump(geo, open(os.path.join(OUT, "AL_geometry.json"), "w"), indent=1)
+  json.dump(geo, open(os.path.join(OUT, "AL_geometry.json"), "w"), indent=1)

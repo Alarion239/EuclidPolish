@@ -12,6 +12,6 @@ crop = im.crop((0, 1360, 1314, 2674))   # lower-left square of the left panel: b
 crop = crop.resize((1600, 1600), Image.LANCZOS)
 FONT = ImageFont.truetype(os.path.join(T, "fonts", "SpaceGrotesk-Bold.ttf"), 64)
 d = ImageDraw.Draw(crop)
-d.text((44, 36), "Radio · simulated DSA-2000", font=FONT, fill="white", stroke_width=5, stroke_fill="black")
+d.text((44, 36), "Radio, simulated DSA-2000", font=FONT, fill="white", stroke_width=5, stroke_fill="black")
 crop.save(os.path.join(T, "prezi_upload", "RADIO_dsa2000_dirty.jpg"), quality=92)
 print("ok")

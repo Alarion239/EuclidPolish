@@ -19,12 +19,12 @@ import os
 # JWST galaxy is the edge-on disk with two companions (was the inner-ring spiral); the PSF card compares DES with VIS.
 # 11-25 (user): opening = From this... -> ...to THIS. -> title and names on the POLISHed frame (both fade OUT); JWST card
 # = four images only (no result line, no grid; 74 actions); galaxy 4 = the clumpy irregular; the paper network figure is back.
+# 11-27 (user): From this / to THIS on arrival (one fade-out less), no chart zoom, the chart return is the whole card; the
+# window and sky-share returns step through Euclid | each survey side by side (5 clicks each); 78 actions.
 N = [
-    "From this... (Euclid, as it is; the POLISHed one appears beside it next.)",
-    "...to THIS: the same Euclid data, POLISHed. Remember this galaxy; we'll check it against JWST at the end.",
+    "From this... to THIS: the same Euclid data, POLISHed. Remember this galaxy; we'll check it against JWST at the end.",
     "EuclidPOLISH. Euclid is ESA's survey telescope: a third of the sky at nearly Hubble sharpness. Today: a network that makes Euclid sharper still, trained only on TNG50 skies.",
-    "Point 1: Euclid is the first wide survey with a sharp, known PSF. Every survey trades area for sharpness. From the ground you can image the whole sky, but the atmosphere blurs everything to about an arcsecond. From space you're sharp, but the fields are tiny.",
-    'Each dot is a survey. Up is sharper, right is wider. Nobody is in the top-right corner: wide AND sharp.',
+    "Point 1: Euclid is the first wide survey with a sharp, known PSF. Every survey trades area for sharpness. From the ground you can image the whole sky, but the atmosphere blurs everything to about an arcsecond. From space you're sharp, but the fields are tiny. Each dot is a survey: up is sharper, right is wider. Nobody is in the top-right corner: wide AND sharp.",
     "One patch near the Hubble Ultra Deep Field; each box's area is that survey's share of the sky. The big box: DSS2, photographic plates of the whole sky.",
     'Pan-STARRS covers three quarters of it.',
     'DES covers an eighth.',
@@ -32,14 +32,20 @@ N = [
     "JWST's widest survey: smaller still, at 0.06 arcsec. Now walk back down: what the ground sees in the same window.",
     'DES, the best wide survey from the ground: 0.9 arcsec.',
     'DSS2. Same sky, forty years of telescopes: area and sharpness never came together.',
-    "Radio already inverts a known PSF. From the ground, the atmosphere's blur changes all night and is never known exactly. In radio the PSF is set by the antenna layout and known exactly; every source carries the same starburst. That is why POLISH, from Liam's group, learns on simulations and works on real data.",
+    "Radio already inverts a known PSF. From the ground, the atmosphere blurs the PSF unpredictably. In radio the PSF is known exactly from the antenna layout; every source carries the same starburst. So POLISH, from Liam's group, trains on simulations and works on real data.",
     "Euclid flies above the atmosphere. Same scale, same stretch: on the left the ground (DES, 0.9 arcsec seeing), then Euclid's VIS PSF, 0.16 arcsec, five times sharper, and the three NISP bands. Below: VIS in five sky regions, nearly identical: a radio-like, known PSF over 14,000 square degrees.",
-    'Back to the window.',
-    'Here is Euclid in the same window.',
-    "Hubble's box...",
-    "...and JWST's. Euclid is nearly Hubble-sharp, everywhere.",
-    "And Euclid's share of the sky...",
-    '...14,000 square degrees.',
+    'Back to the window: now Euclid on the left, every other survey on the right.',
+    'DSS2, 2 arcsec.',
+    'Pan-STARRS, 1.1.',
+    'DES, 0.9: Euclid beats every survey from the ground.',
+    'Hubble, 0.09: sharper than Euclid...',
+    '...and JWST, 0.06. Only these two beat Euclid, and their fields are tiny.',
+    "And the sky each one covers: Euclid's 14,000 square degrees on the left.",
+    'DSS2: the whole sky.',
+    'Pan-STARRS: three quarters of it. Only the all-sky surveys cover more than Euclid.',
+    'DES: an eighth of the sky.',
+    "Hubble's widest survey: a dot.",
+    "JWST's: smaller still.",
     'Back to the chart.',
     'Euclid lands in the empty corner: 0.16 arcsec over 14,000 square degrees. DR1, public since November, already covers 1,900.',
     "Lenses: where resolution pays off. A ring's geometry weighs its galaxy, dark matter included. Time delays between the images measure the Hubble constant. Double-source lenses, like these DR1 systems, test cosmology. Euclid should find ~170,000 lenses, most only a few PSF widths across. Resolution decides which ones we can model.",
@@ -88,15 +94,15 @@ N = [
     'The same window, POLISHed.',
     'And Hubble in its box, over the POLISHed field: the same structure where Hubble can check it (left arrow flips back).',
     "Point 4: what remains, and what's next. Where it fails: two gaps in the training set. Faint galaxies lose up to about 9% of their flux, because our training noise was more correlated than Euclid's. Very bright cores can come out with holes, because training had no bright, extended cores. (If asked: retraining with the corrected noise model is under way.)",
-    'The holes, outlined.',
+    'POLISHed: holes in the brightest core.',
     'Remember this galaxy? The POLISHed one from the start.',
     'And JWST, for comparison: all three side by side, one color stretch. The structure is real.',
     'Next: POLISH all of Euclid DR1, then the full 14,000 square degrees, with the same network.',
     'The viewer already runs on DR1: scan the code to try it. In my last minute, let me show it (switch to the browser tab).',
     'The four points: one, Euclid is the first wide survey with a sharp, known PSF. Two, simulated TNG50 skies pass for real Euclid data. Three, trained only on them, POLISH resolves two to three times finer detail, confirmed by JWST. Four, faint flux and bright cores remain; next, all of Euclid DR1. Questions.',
 ]
-ZOOM = set([0, 3, 4, 5, 8, 12, 13, 14, 18, 20, 22, 23, 24, 25, 28, 30, 31, 38, 40, 41, 43, 45, 50, 51, 54, 57, 60, 63, 64, 67, 69, 71, 72, 73])
-assert len(N) == 74, len(N)
+ZOOM = set([0, 2, 3, 6, 10, 11, 12, 18, 24, 26, 27, 28, 29, 32, 34, 35, 42, 44, 45, 47, 49, 54, 55, 58, 61, 64, 67, 68, 71, 73, 75, 76, 77])
+assert len(N) == 78, len(N)
 # a zoom step's note also lists the fades that follow it ("→" lines): Prezi shows notes only on zoom steps
 NOTES = []
 for i, n in enumerate(N):

@@ -33,13 +33,13 @@ def moffat(fw, beta=3.0, n=1023):
 
 des = moffat(0.9)
 # labels carry the numbers the talk quotes (measured here: DES model 0.89", VIS 0.169", H 0.465")
-panels = [("DES", des, "Ground (DES) · 0.9″"), ("VIS", d["VIS"], "Euclid VIS · 0.16″"), ("Y", d["Y"], "Euclid NISP Y"),
+panels = [("DES", des, "Ground (DES), 0.9″"), ("VIS", d["VIS"], "Euclid VIS, 0.16″"), ("Y", d["Y"], "Euclid NISP Y"),
           ("J", d["J"], "Euclid NISP J"), ("H", d["H"], "Euclid NISP H")]      # 11-25 (user): all four bands, 5 x 2 card
 for key, p, lab in panels:
     save_panel(logimg(p), f"PSF2_{key}.png", label=lab, bar_arcsec=1.0, pix_arcsec=PIX)
     print(key, round(fwhm(p), 3))
 idx = np.argsort(-st["VIS_nstars"])[:5]
 for k, i in enumerate(idx):
-    save_panel(logimg(st["VIS"][i]), f"PSF2_VIS_region{k + 1}.png", label=f"VIS · sky region {k + 1}",
+    save_panel(logimg(st["VIS"][i]), f"PSF2_VIS_region{k + 1}.png", label=f"VIS, sky region {k + 1}",
                bar_arcsec=1.0, pix_arcsec=PIX)
 print("ok", st["VIS_nstars"][idx])

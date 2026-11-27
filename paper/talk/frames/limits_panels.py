@@ -22,7 +22,7 @@ GRID_Y, GRID_X, GRID_WHITE = int(os.environ.get("GY", 96)), int(os.environ.get("
 ROOT = "/Users/alarion239/Desktop/EuclidPolish"
 CACHE = os.path.join(ROOT, "output/battery/257_255_249/sr_cache/member_257@15000000-ee718c30")
 
-# 1 · faint flux: median F_SR(<3″)/F_Euclid(<3″) in VIS per magnitude bin
+# 1, faint flux: median F_SR(<3″)/F_Euclid(<3″) in VIS per magnitude bin
 d = np.load(os.path.join(ROOT, "output/light_profiles_257/cog.npz"))
 r = d["radii_arcsec"]
 i3 = int(np.argmin(np.abs(r - 3.0)))
@@ -65,7 +65,7 @@ for sp in ("left", "bottom"):
 fig.savefig(os.path.join(OUT, "LIM1_faint_flux.png"), dpi=200, facecolor="white")
 plt.close(fig)
 
-# 2 · faint pixel grid: NEXUS f200w-0038, VIS, the galaxy's outskirts (4.8″), display knee at 0.2 sigma
+# 2, faint pixel grid: NEXUS f200w-0038, VIS, the galaxy's outskirts (4.8″), display knee at 0.2 sigma
 sr = np.load(os.path.join(CACHE, "nexus-f200w-0038__5f9146a62c59.npy"))[..., 0].astype(np.float64)
 sky = np.median(sr)
 k = 0.2 * 0.895
@@ -75,7 +75,7 @@ img = np.clip((x + 1) / (np.arcsinh(GRID_WHITE * 0.895 / k) + 1), 0, 1)
 save_panel(np.stack([img] * 3, -1), "LIM2_faint_grid.png", label="POLISHed", interp="nearest",
            bar_arcsec=1.0)
 
-# 3 · bright core: poster nucleus B in VIS, Euclid vs POLISHed, one asinh stretch (NISP saturates here)
+# 3, bright core: poster nucleus B in VIS, Euclid vs POLISHed, one asinh stretch (NISP saturates here)
 lr = np.asarray(fits.getdata(os.path.join(ROOT, "poster/target_181255_lr.fits"), 1), np.float64)
 srp = np.load(os.path.join(CACHE, "poster-target_181255__a5754d75cdff.npy"))[..., 0].astype(np.float64)
 cy, cx, h = 512, 528, 64
@@ -93,7 +93,7 @@ edge = ndimage.binary_dilation(edge, iterations=1)
 print("hole px", int(hole.sum()), "of bright", int(bright.sum()))
 coral = np.array([0xF0, 0x8A, 0x6C]) / 255.0
 for nm, c, lab, mark in (("LIM3_core_1_euclid.png", up, "Euclid", False),
-                         ("LIM3_core_2_polished.png", S, "POLISHed", True)):
+                         ("LIM3_core_2_polished.png", S, "POLISHed", False)):
     v = np.clip(np.arcsinh((c - sk) / kk) / top, 0, 1)
     rgb = np.stack([v] * 3, -1)
     if mark:
