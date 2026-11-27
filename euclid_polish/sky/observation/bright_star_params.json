@@ -1076,5 +1076,139 @@
     0.08621
    ]
   ]
+ },
+ "trails": {
+  "_about": "Trail block of bright_star_params.json (DR1 Wide, Euclid only).  VIS bleed trail: blank component through the core in VIS (rays.py blank_trail on 102\" cutouts, 117 stars), total length, width (area / length) and log-scatter per 1-mag bin of halo-fit VIS magnitude. NISP persistence trail: share of stars whose H blank component exceeds 30\" (cutout-limited lengths), per 0.5-mag bin; full length, width, bow and the star's place along it from the five single-roll stars on 205\" mosaics (nisp_trail.py); the VIS trail's split from the same. Orientation: the VIS trail axis is the scene kernel's strongest spike axis + 9.45 deg (sd 0.4, 59 of 64 stars; trail_angle2.py); the NISP trail leaves the star along the same axis (median 2.8 deg off, curved). Cores: trail-free blank-core radii match today's generator within ~10% (core_real.py vs core_cmp.py), so no core change.",
+  "axis_offset_deg": 9.45,
+  "vis": {
+   "table": [
+    {
+     "mag": 7.5,
+     "length_arcsec": 44.6051416276559,
+     "width_arcsec": 1.3014194750142454,
+     "length_sd_ln": 0.5146644503857288,
+     "n": 11
+    },
+    {
+     "mag": 8.5,
+     "length_arcsec": 51.22115812230568,
+     "width_arcsec": 1.0091889396947233,
+     "length_sd_ln": 0.43676632771712914,
+     "n": 11
+    },
+    {
+     "mag": 9.5,
+     "length_arcsec": 32.61968138720298,
+     "width_arcsec": 0.974435049534542,
+     "length_sd_ln": 0.831895978417879,
+     "n": 16
+    },
+    {
+     "mag": 10.5,
+     "length_arcsec": 15.987535041000122,
+     "width_arcsec": 0.9133748053008062,
+     "length_sd_ln": 0.3057109989862036,
+     "n": 16
+    },
+    {
+     "mag": 11.5,
+     "length_arcsec": 9.108465151367431,
+     "width_arcsec": 0.9141299899446833,
+     "length_sd_ln": 0.3662177202430474,
+     "n": 16
+    },
+    {
+     "mag": 12.5,
+     "length_arcsec": 4.638955296184575,
+     "width_arcsec": 0.8802170161220872,
+     "length_sd_ln": 0.5545165020536907,
+     "n": 16
+    },
+    {
+     "mag": 13.5,
+     "length_arcsec": 2.005064665970777,
+     "width_arcsec": 0.8106692378712796,
+     "length_sd_ln": 0.21113583137959496,
+     "n": 14
+    },
+    {
+     "mag": 14.5,
+     "length_arcsec": 1.138518041132367,
+     "width_arcsec": 0.6976602633154861,
+     "length_sd_ln": 0.1954338275409681,
+     "n": 15
+    }
+   ],
+   "split_fraction": [
+    0.25,
+    0.75
+   ]
+  },
+  "nisp": {
+   "probability_table": [
+    {
+     "mag": 9.75,
+     "probability": 1.0,
+     "n": 8
+    },
+    {
+     "mag": 10.25,
+     "probability": 0.875,
+     "n": 8
+    },
+    {
+     "mag": 10.75,
+     "probability": 1.0,
+     "n": 8
+    },
+    {
+     "mag": 11.25,
+     "probability": 0.875,
+     "n": 8
+    },
+    {
+     "mag": 11.75,
+     "probability": 0.375,
+     "n": 8
+    },
+    {
+     "mag": 12.25,
+     "probability": 0.0,
+     "n": 8
+    },
+    {
+     "mag": 12.75,
+     "probability": 0.0,
+     "n": 8
+    }
+   ],
+   "length_arcsec": [
+    140.0,
+    160.0
+   ],
+   "split_fraction": [
+    0.4,
+    0.6
+   ],
+   "width_arcsec": {
+    "Y_E": [
+     1.3,
+     2.9
+    ],
+    "J_E": [
+     1.9,
+     3.6
+    ],
+    "H_E": [
+     1.4,
+     3.0
+    ]
+   },
+   "bow_arcsec_at_50": [
+    11.5,
+    14.5
+   ],
+   "axis_scatter_deg": 2.0
+  }
  }
 }

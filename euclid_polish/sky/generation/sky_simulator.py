@@ -58,6 +58,11 @@ from euclid_polish.sky.generation.stellar_sed import (
     EmpiricalStellarPrior,
     sample_stellar_sed,
 )
+from euclid_polish.sky.observation.bright_stars import (
+    OffFieldPrior,
+    draw_infield_bright_magnitudes,
+    load_off_field_prior,
+)
 from euclid_polish.tng import TNGAtlas, TNGGalaxy, TNGRenderer
 from euclid_polish.tng.redshift import (
     compactness_factor,
@@ -133,6 +138,10 @@ class SkySimulatorConfig:
     # Stars
     star_density_arcmin2:     float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
     star_prior_payload:       dict | None = None
+    # Stars brighter than the stellar law's bright end (VIS 12) down to
+    # ``infield_bright_mag_min``, at the DR1 Wide counts (bright_stars.py).
+    infield_bright_stars:     bool  = False
+    infield_bright_mag_min:   float = Config.TRAIN_INFIELD_BRIGHT_MAG_MIN
     # Lenses
     lens_density_arcmin2:     float = Config.LENS_DENSITY_ARCMIN2
     lens_sigma_v_min_kms:     float = Config.LENS_SIGMA_V_MIN_KMS
@@ -243,6 +252,41 @@ def inject_random_stars(
             "type": "star", "x_pix": x_pix, "y_pix": y_pix,
             **{_STAR_MAG_KEYS[name]: value for name, value in band_mags.items()},
         })
+    return stars
+
+
+def draw_bright_stars(
+    rng: np.random.Generator, n_side: int, *, prior: OffFieldPrior,
+    stellar_prior: EmpiricalStellarPrior, mag_min: float, pixel_scale_arcsec: float,
+) -> list[dict]:
+    """Star records for the in-field stars brighter than ``stellar_prior``'s
+    law (``mag_min`` .. its bright end) at the DR1 Wide counts; colours from
+    the stellar prior's Euclid colour model (its brightest bin)."""
+    area_deg2 = (n_side * pixel_scale_arcsec / 3600.0) ** 2
+    mags = draw_infield_bright_magnitudes(
+        rng, prior, float(mag_min), float(stellar_prior.magnitude_law.mag_bright), area_deg2)
+    stars = []
+    for mag in mags:
+        x_pix = float(rng.uniform(0.0, n_side - 1))
+        y_pix = float(rng.uniform(0.0, n_side - 1))
+        band_mags = sample_stellar_sed(rng, float(mag), stellar_prior).magnitudes
+        stars.append({
+            "type": "star", "x_pix": x_pix, "y_pix": y_pix,
+            **{_STAR_MAG_KEYS[name]: value for name, value in band_mags.items()},
+        })
+    return stars
+
+
+def inject_bright_stars(
+    canvas_4ch: np.ndarray, rng: np.random.Generator, *, prior: OffFieldPrior,
+    stellar_prior: EmpiricalStellarPrior, mag_min: float, pixel_scale_arcsec: float,
+) -> list[dict]:
+    """Draw (:func:`draw_bright_stars`) and DEPOSIT the bright in-field stars."""
+    stars = draw_bright_stars(rng, canvas_4ch.shape[0], prior=prior, stellar_prior=stellar_prior,
+                              mag_min=mag_min, pixel_scale_arcsec=pixel_scale_arcsec)
+    for star in stars:
+        _deposit_star(canvas_4ch, star["x_pix"], star["y_pix"], star["mag_vis"],
+                      band_magnitudes=star_band_magnitudes_from_record(star))
     return stars
 
 
@@ -1671,6 +1715,15 @@ class SkySimulator:
                     band_magnitudes=star_band_magnitudes_from_record(star),
                 )
             stars.append(star)
+        if cfg.infield_bright_stars and self.stellar_prior is not None:
+            for star in draw_bright_stars(
+                    star_rng, N, prior=load_off_field_prior(),
+                    stellar_prior=self.stellar_prior,
+                    mag_min=cfg.infield_bright_mag_min, pixel_scale_arcsec=cfg.pixel_scale):
+                if deposit_stars:
+                    _deposit_star(canvas, star["x_pix"], star["y_pix"], star["mag_vis"],
+                                  band_magnitudes=star_band_magnitudes_from_record(star))
+                stars.append(star)
 
         for _ in range(n_lenses):
             rec = self._add_lens(canvas, lens_rng)

@@ -419,3 +419,175 @@ def draw_off_field_stars(
     colours = rng.integers(0, len(prior.colour_ratios), size=k)
     return (np.asarray(ys, np.float64), np.asarray(xs, np.float64),
             np.asarray(mags, np.float64), colours)
+
+
+def draw_infield_bright_magnitudes(rng: np.random.Generator, prior: OffFieldPrior,
+                                   mag_min: float, mag_max: float,
+                                   area_deg2: float) -> np.ndarray:
+    """VIS magnitudes of the stars brighter than the regular stellar law
+    (``mag_min`` <= m < ``mag_max``) that fall inside a field of
+    ``area_deg2``: Poisson per DR1 count bin, uniform within the bin."""
+    if not mag_min < mag_max:
+        return np.zeros(0)
+    mags = []
+    for lo, hi, dens in zip(prior.mag_lo, prior.mag_hi, prior.density_deg2, strict=True):
+        a, b = max(lo, mag_min), min(hi, mag_max)
+        if b <= a or dens <= 0.0:
+            continue
+        n = int(rng.poisson(dens * (b - a) / (hi - lo) * area_deg2))
+        mags.extend(rng.uniform(a, b, size=n))
+    return np.asarray(mags, np.float64)
+
+
+# --------------------------------------------------------------------------- #
+# Blank trails of bright stars
+# --------------------------------------------------------------------------- #
+
+def _pair(v) -> tuple[float, float]:
+    return float(v[0]), float(v[1])
+
+
+@dataclass(frozen=True)
+class TrailParams:
+    """VIS bleed and NISP persistence trails (``bright_star_params.json``)."""
+
+    axis_offset_deg: float
+    vis_mag: np.ndarray
+    vis_length: np.ndarray
+    vis_width: np.ndarray
+    vis_sd_ln: np.ndarray
+    vis_split: tuple[float, float]
+    nisp_mag: np.ndarray
+    nisp_prob: np.ndarray
+    nisp_length: tuple[float, float]
+    nisp_split: tuple[float, float]
+    nisp_width: dict[str, tuple[float, float]]
+    nisp_bow_at_50: tuple[float, float]
+    nisp_axis_scatter_deg: float
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> TrailParams:
+        t = payload["trails"]
+        vis = t["vis"]["table"]
+        nisp = t["nisp"]
+        return cls(
+            axis_offset_deg=float(t["axis_offset_deg"]),
+            vis_mag=np.array([r["mag"] for r in vis], np.float64),
+            vis_length=np.array([r["length_arcsec"] for r in vis], np.float64),
+            vis_width=np.array([r["width_arcsec"] for r in vis], np.float64),
+            vis_sd_ln=np.clip(np.array([r["length_sd_ln"] for r in vis], np.float64), 0.2, 0.6),
+            vis_split=_pair(t["vis"]["split_fraction"]),
+            nisp_mag=np.array([r["mag"] for r in nisp["probability_table"]], np.float64),
+            nisp_prob=np.array([r["probability"] for r in nisp["probability_table"]], np.float64),
+            nisp_length=_pair(nisp["length_arcsec"]),
+            nisp_split=_pair(nisp["split_fraction"]),
+            nisp_width={b: _pair(v) for b, v in nisp["width_arcsec"].items()},
+            nisp_bow_at_50=_pair(nisp["bow_arcsec_at_50"]),
+            nisp_axis_scatter_deg=float(nisp["axis_scatter_deg"]),
+        )
+
+    @property
+    def vis_mag_max(self) -> float:
+        return float(self.vis_mag[-1] + 0.5)
+
+    @property
+    def nisp_mag_max(self) -> float:
+        nz = self.nisp_mag[self.nisp_prob > 0]
+        return float(nz.max() + 0.25) if nz.size else -np.inf
+
+    def vis_length_at(self, mag: float) -> float:
+        return float(np.exp(np.interp(mag, self.vis_mag, np.log(self.vis_length))))
+
+    def nisp_probability_at(self, mag: float) -> float:
+        if mag > self.nisp_mag[-1] + 0.25:
+            return 0.0
+        return float(np.interp(mag, self.nisp_mag, self.nisp_prob))
+
+
+@lru_cache(maxsize=4)
+def load_trail_params(path: str = PARAMS_PATH) -> TrailParams:
+    with open(path, encoding="utf-8") as fh:
+        return TrailParams.from_payload(json.load(fh))
+
+
+def trail_axis(angles: np.ndarray, rel: np.ndarray, offset_deg: float) -> float:
+    """Detector-column (trail) axis of a scene: its kernel's strongest spike
+    axis (the pair of opposite ridges with the largest summed height) plus
+    the measured offset. Radians, array frame, modulo π."""
+    axes = np.mod(np.asarray(angles, np.float64), np.pi)
+    rel = np.asarray(rel, np.float64)
+    group = np.round(((axes - axes[0]) % np.pi) / (np.pi / 3.0)).astype(int) % 3
+    heights = np.bincount(group, weights=rel, minlength=3)
+    members = np.flatnonzero(group == int(np.argmax(heights)))
+    strongest = axes[members[np.argmax(rel[members])]]
+    return float((strongest + np.radians(offset_deg)) % np.pi)
+
+
+def strip_mask(shape: tuple[int, int], y: float, x: float, axis: float,
+               back: float, ahead: float, width: float, *, bow_at_50: float = 0.0,
+               pixel_scale_arcsec: float) -> np.ndarray:
+    """Pixels of a strip through ``(y, x)`` (grid pixels) along ``axis``,
+    from ``back`` arcsec behind to ``ahead`` arcsec in front of the star,
+    ``width`` arcsec wide, bowed sideways by ``bow_at_50 (a / 50″)²``."""
+    ps = pixel_scale_arcsec
+    gy = (np.arange(shape[0], dtype=np.float64)[:, None] - y) * ps
+    gx = (np.arange(shape[1], dtype=np.float64)[None, :] - x) * ps
+    c, s = np.cos(axis), np.sin(axis)
+    along = gx * c + gy * s
+    perp = gy * c - gx * s - bow_at_50 * (along / 50.0) ** 2
+    return (along >= -back) & (along <= ahead) & (np.abs(perp) <= 0.5 * width)
+
+
+def draw_trail_masks(
+    rng: np.random.Generator,
+    params: TrailParams,
+    shape: tuple[int, int],
+    ys: np.ndarray,
+    xs: np.ndarray,
+    vis_mags: np.ndarray,
+    axis: float,
+    *,
+    band_names: tuple[str, ...],
+    pixel_scale_arcsec: float,
+) -> np.ndarray:
+    """Blank trails ``(H, W, n_bands)`` of stars at grid positions ``ys, xs``
+    (may lie off the grid) with VIS magnitudes ``vis_mags``.
+
+    VIS: a straight bleed trail of the measured length (log-normal scatter)
+    and width, the star at a random split along it. NISP: with the measured
+    magnitude-dependent probability, a ~150″ persistence trail through the
+    star, bowed (one bow sign per scene), the same strip in Y, J and H with
+    each band's width. Both run along the scene's detector-column ``axis``.
+    """
+    out = np.zeros((*shape, len(band_names)), bool)
+    k_vis = band_names.index("VIS")
+    nisp = [(band_names.index(b), b) for b in params.nisp_width]
+    ps = pixel_scale_arcsec
+    half_diag = 0.5 * np.hypot(*shape) * ps
+    cy, cx = (shape[0] - 1) / 2.0, (shape[1] - 1) / 2.0
+    bow_sign = 1.0 if rng.random() < 0.5 else -1.0
+    order = np.argsort(vis_mags, kind="stable")
+    for i in order:
+        m, y, x = float(vis_mags[i]), float(ys[i]), float(xs[i])
+        if m >= max(params.vis_mag_max, params.nisp_mag_max):
+            break
+        dist = np.hypot(y - cy, x - cx) * ps
+        if m < params.vis_mag_max:
+            sd = float(np.interp(m, params.vis_mag, params.vis_sd_ln))
+            length = params.vis_length_at(m) * float(np.exp(sd * rng.standard_normal()))
+            f = float(rng.uniform(*params.vis_split))
+            width = float(np.interp(m, params.vis_mag, params.vis_width))
+            if dist - half_diag <= length:
+                out[..., k_vis] |= strip_mask(shape, y, x, axis, f * length, (1.0 - f) * length,
+                                              width, pixel_scale_arcsec=ps)
+        if rng.random() < params.nisp_probability_at(m):
+            length = float(rng.uniform(*params.nisp_length))
+            f = float(rng.uniform(*params.nisp_split))
+            bow = bow_sign * float(rng.uniform(*params.nisp_bow_at_50))
+            ax = axis + np.radians(params.nisp_axis_scatter_deg) * float(rng.standard_normal())
+            widths = [float(rng.uniform(*params.nisp_width[b])) for _, b in nisp]
+            if dist - half_diag <= length:
+                for (k, _), w in zip(nisp, widths, strict=True):
+                    out[..., k] |= strip_mask(shape, y, x, ax, f * length, (1.0 - f) * length, w,
+                                              bow_at_50=bow, pixel_scale_arcsec=ps)
+    return out

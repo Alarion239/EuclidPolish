@@ -37,7 +37,7 @@ import numpy as np
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.image import Image, Role
-from euclid_polish.photometry import ab_mag_to_electrons
+from euclid_polish.photometry import ab_mag_to_electrons, electrons_to_ab_mag
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.psf import PSF
@@ -51,15 +51,19 @@ from euclid_polish.sky.observation.blank_pixels import BlankPixelModel
 from euclid_polish.sky.observation.bright_stars import (
     FarFieldParams,
     OffFieldPrior,
+    TrailParams,
     draw_jitter,
     draw_off_field_stars,
+    draw_trail_masks,
     far_field_flux,
     join_radii,
     load_far_field_params,
     load_off_field_prior,
+    load_trail_params,
     render_far_field,
     ridge_reach_arcsec,
     spike_ridges,
+    trail_axis,
 )
 from euclid_polish.sky.observation.field_variations import (
     DistantStarWing,
@@ -186,6 +190,12 @@ class ObservationSimulatorConfig:
     # without them. Replaces ``distant_star_wings``. Off by default.
     off_field_stars: bool = False
     off_field_min_peak_sigma: float = 0.05
+    # Blank trails of bright stars (needs ``blank_pixels``): the VIS bleed
+    # trail (VIS <~ 15, 1-50″ long, ~1″ wide) and the ~150″ bowed NISP
+    # persistence trail (VIS <~ 12), along the scene's detector columns
+    # (strongest spike axis + 9.45°), for in-field and off-field stars.
+    # Drawn after the other blanks. Off by default.
+    bright_star_trails: bool = False
     # A tiny per-scene depth jitter plus an occasional per-band pointing
     # seam. Both scale distributions are centred on one.
     # The jitter stays small on purpose: the drawn Q1 level already carries
@@ -282,6 +292,8 @@ class ObservationSimulatorConfig:
             raise ValueError("off_field_stars needs bright_star_far_field")
         if not float(self.off_field_min_peak_sigma) > 0.0:
             raise ValueError("off_field_min_peak_sigma must be > 0")
+        if self.bright_star_trails and not self.blank_pixels:
+            raise ValueError("bright_star_trails needs blank_pixels (a release)")
         if not (
             0.0 < float(self.noise_global_scale_min)
             <= float(self.noise_global_scale_max)
@@ -375,6 +387,8 @@ class ObservationSimulator:
         self._off_prior: OffFieldPrior | None = None
         self._off_reach = np.zeros(0)
         self._off_floor_e: dict[str, float] = {}
+        self._trail_params: TrailParams | None = (
+            load_trail_params() if self.config.bright_star_trails else None)
         if self.config.bright_star_far_field or self.config.nisp_psf_taper:
             self._setup_far_field()
         if self.config.off_field_stars:
@@ -433,10 +447,68 @@ class ObservationSimulator:
                None if psf_spec is None else psf_spec.angle)
         hit = self._far_ridges.get(key)
         if hit is None:
-            assert self._far_params is not None
-            hit = spike_ridges(psf.data, psf.pixel_scale, self._far_params.n_spikes)
+            hit = spike_ridges(psf.data, psf.pixel_scale, self._n_spikes)
             self._far_ridges[key] = hit
         return hit
+
+    @property
+    def _n_spikes(self) -> int:
+        return self._far_params.n_spikes if self._far_params is not None else 6
+
+    def _vis_ridges(self, psf_spec: PSFSample | None) -> tuple[np.ndarray, np.ndarray]:
+        """The scene's VIS spike ridges (unwarped kernel), cached."""
+        band = Config.BAND_VIS
+        key = (band.name, None if psf_spec is None else int(psf_spec.index),
+               None if psf_spec is None else psf_spec.angle)
+        hit = self._far_ridges.get(key)
+        if hit is None:
+            pset = self._psf_sets[band.name]
+            if psf_spec is None:
+                psf = pset.mean()
+            else:
+                psf = pset.psfs[min(int(psf_spec.index), pset.n - 1)]
+                if psf_spec.angle is not None:
+                    psf = psf.rotated(float(psf_spec.angle), order=3)
+            hit = self._ridges_for(band, psf, psf_spec)
+        return hit
+
+    def _apply_trails(
+        self,
+        lr_stack: np.ndarray,
+        rng: np.random.Generator,
+        psf_spec: PSFSample | None,
+        star_data: np.ndarray | None,
+        off_field_stars: tuple[np.ndarray, ...] | None,
+    ) -> None:
+        """Zero the blank trails of the scene's bright stars in place."""
+        assert self._trail_params is not None
+        k_vis = Config.LR_INPUT_BAND_NAMES.index(Config.BAND_VIS.name)
+        ys, xs, flux = [], [], []
+        if star_data is not None:
+            sy, sx = np.nonzero(star_data[..., k_vis])
+            ys.append(sy); xs.append(sx); flux.append(star_data[sy, sx, k_vis])
+        if off_field_stars is not None:
+            ys.append(off_field_stars[0]); xs.append(off_field_stars[1])
+            flux.append(off_field_stars[2][:, k_vis])
+        if not ys:
+            return
+        hy, hx = np.concatenate(ys), np.concatenate(xs)
+        f_vis = np.asarray(np.concatenate(flux), np.float64)
+        keep = f_vis > 0.0
+        mags = np.asarray(electrons_to_ab_mag(f_vis[keep], Config.BAND_VIS), np.float64).reshape(-1)
+        limit = max(self._trail_params.vis_mag_max, self._trail_params.nisp_mag_max)
+        if not np.any(mags < limit):
+            return
+        f = float(round(self.target_lr_pixel_scale_arcsec / self.config.hr_pixel_scale))
+        angles, rel = self._vis_ridges(psf_spec)
+        axis = trail_axis(angles, rel, self._trail_params.axis_offset_deg)
+        mask = draw_trail_masks(
+            rng, self._trail_params, lr_stack.shape[:2],
+            (hy[keep] + 0.5) / f - 0.5, (hx[keep] + 0.5) / f - 0.5, mags, axis,
+            band_names=Config.LR_INPUT_BAND_NAMES,
+            pixel_scale_arcsec=self.target_lr_pixel_scale_arcsec,
+        )
+        lr_stack[mask] = 0.0
 
     def _setup_off_field(self) -> None:
         """Load the off-field prior and, per magnitude bin, how far beyond
@@ -1083,6 +1155,9 @@ class ObservationSimulator:
             # instead of the rectangular blackout, plus the sky's own blanks.
             self.apply_blank_pixels(lr_stack, rng, sky_levels,
                                     saturation_trigger_stack, star_trigger_stack)
+            if self._trail_params is not None:
+                self._apply_trails(lr_stack, rng, psf_spec, star_data_trim,
+                                   off_field_stars)
 
         # HR target: all four bands (clean, no noise applied), trimmed to the
         # same spatial extent the LR pipeline saw. Band k of the target is

@@ -47,11 +47,12 @@ from euclid_polish.psf.psf_library import (
 )
 from euclid_polish.psf.psf_set import PSFSet
 from euclid_polish.psf.rotpool import load_all_band_rotpools, rotpool_path
-from euclid_polish.sky.generation.sky_simulator import inject_random_stars
+from euclid_polish.sky.generation.sky_simulator import inject_bright_stars, inject_random_stars
 from euclid_polish.sky.generation.stellar_sed import (
     EmpiricalStellarPrior,
     stellar_prior_density_arcmin2,
 )
+from euclid_polish.sky.observation.bright_stars import load_off_field_prior
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -160,6 +161,9 @@ class OnTheFlyForward:
         bright_star_far_field: bool = Config.TRAIN_BRIGHT_STAR_FAR_FIELD,
         nisp_psf_taper: bool = Config.TRAIN_NISP_PSF_TAPER,
         off_field_stars: bool = Config.TRAIN_OFF_FIELD_STARS,
+        infield_bright_stars: bool = Config.TRAIN_INFIELD_BRIGHT_STARS,
+        infield_bright_mag_min: float = Config.TRAIN_INFIELD_BRIGHT_MAG_MIN,
+        bright_star_trails: bool = Config.TRAIN_BRIGHT_STAR_TRAILS,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
         # Blank pixels where every exposure of the stack is invalid, bright
@@ -183,6 +187,10 @@ class OnTheFlyForward:
         # the star density too: generation places the fixed validate/test stars
         # at that density, so training sees the same star population.
         self.starless = bool(starless)
+        # Stars brighter than the stellar law (cap .. its bright end), DR1 counts.
+        self.infield_bright_stars = bool(infield_bright_stars)
+        self.infield_bright_mag_min = float(infield_bright_mag_min)
+        self._bright_prior = load_off_field_prior() if self.infield_bright_stars else None
         self.inject_stars = bool(inject_stars)
         self.stellar_prior = (
             EmpiricalStellarPrior.from_payload(star_prior_payload)
@@ -244,6 +252,7 @@ class OnTheFlyForward:
                 bright_star_far_field=bool(bright_star_far_field),
                 nisp_psf_taper=bool(nisp_psf_taper),
                 off_field_stars=bool(off_field_stars),
+                bright_star_trails=bool(bright_star_trails) and self.blank_pixels is not None,
             ))
         # tf.data calls from several threads → per-call child RNGs, spawned
         # under a lock (SeedSequence.spawn is not thread-safe), used lock-free.
@@ -265,6 +274,11 @@ class OnTheFlyForward:
         inject_random_stars(
             canvas, rng, n_stars=n_stars,
             stellar_prior=self.stellar_prior)
+        if self._bright_prior is not None:
+            inject_bright_stars(
+                canvas, rng, prior=self._bright_prior, stellar_prior=self.stellar_prior,
+                mag_min=self.infield_bright_mag_min,
+                pixel_scale_arcsec=self.pixel_scale_arcsec)
 
     def _blur_galaxies(self, field: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         """The clean galaxy field, smoothed on a ``galaxy_blur_prob`` share of visits.

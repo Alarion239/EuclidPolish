@@ -10,24 +10,31 @@ from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_set import PSFSet
-from euclid_polish.sky.generation.sky_simulator import _deposit_star
+from euclid_polish.sky.generation.sky_simulator import _deposit_star, inject_bright_stars
+from euclid_polish.sky.generation.stellar_sed import EmpiricalStellarPrior
 from euclid_polish.sky.observation.bright_stars import (
     FarFieldBand,
     _ray_entry,
+    draw_infield_bright_magnitudes,
     draw_jitter,
     draw_off_field_stars,
+    draw_trail_masks,
     far_field_flux,
     join_radii,
     join_weight,
     load_far_field_params,
     load_off_field_prior,
+    load_trail_params,
     render_far_field,
     spike_ridges,
+    strip_mask,
+    trail_axis,
 )
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
+from tests.test_forward_onthefly import _stellar_prior_payload
 
 HR = 0.05
 SPIKE_DEG = 17.0      # first ridge of the synthetic kernel; six, 60° apart
@@ -368,3 +375,119 @@ def test_off_field_kernel_spill_lands_at_the_edge():
     assert out[50, 0] > 0 and out.sum() < 1e6 * 0.1
     far = sim._stamp_kernel_at((100, 100), np.array([50]), np.array([-2000]), np.array([1e6]), psf)
     assert not far.any()
+
+
+# --------------------------------------------------------------------------- #
+# In-field stars brighter than the stellar law
+# --------------------------------------------------------------------------- #
+
+def test_infield_bright_magnitudes_follow_the_dr1_counts():
+    prior = load_off_field_prior()
+    area = 1.0                                   # deg² -> expected count = N(9..12)
+    sel = (prior.mag_lo >= 9.0) & (prior.mag_hi <= 12.0)
+    expect = float(prior.density_deg2[sel].sum())
+    rng = np.random.default_rng(0)
+    draws = [draw_infield_bright_magnitudes(rng, prior, 9.0, 12.0, area) for _ in range(300)]
+    assert np.mean([d.size for d in draws]) == pytest.approx(expect, abs=4 * np.sqrt(expect / 300))
+    allm = np.concatenate(draws)
+    assert allm.min() >= 9.0 and allm.max() < 12.0
+    assert draw_infield_bright_magnitudes(rng, prior, 12.0, 12.0, area).size == 0
+    # Partial bins are prorated: 9.25..12 holds less than 9..12.
+    part = np.mean([draw_infield_bright_magnitudes(rng, prior, 9.25, 12.0, area).size for _ in range(300)])
+    assert part < np.mean([d.size for d in draws])
+
+
+def test_bright_stars_are_deposited_between_the_cap_and_the_law():
+    stellar = EmpiricalStellarPrior.from_payload(_stellar_prior_payload())
+    prior = load_off_field_prior()
+    canvas = np.zeros((510, 510, 4), np.float32)
+    rng, stars = np.random.default_rng(3), []
+    for _ in range(3000):                        # ~0.0014 per 25.5″ field: draw many
+        stars += inject_bright_stars(canvas, rng, prior=prior, stellar_prior=stellar,
+                                     mag_min=9.0, pixel_scale_arcsec=HR)
+    assert 1 <= len(stars) <= 20
+    assert all(9.0 <= s["mag_vis"] < 12.0 for s in stars)
+    assert np.count_nonzero(canvas[..., 0]) == len({(round(s["y_pix"]), round(s["x_pix"])) for s in stars})
+
+
+# --------------------------------------------------------------------------- #
+# Blank trails
+# --------------------------------------------------------------------------- #
+
+def test_trail_axis_is_the_strongest_spike_pair_plus_offset():
+    angles = np.radians(SPIKE_DEG + 60.0 * np.arange(6))
+    rel = np.array([0.9, 0.9, 1.2, 0.9, 0.9, 1.2])          # pair 3/6 strongest
+    axis = np.degrees(trail_axis(angles, rel, 9.45))
+    assert axis == pytest.approx((SPIKE_DEG + 120.0 + 9.45) % 180.0, abs=1e-6)
+
+
+def test_strip_mask_geometry():
+    m = strip_mask((401, 401), 200.0, 200.0, 0.0, 5.0, 15.0, 1.0, pixel_scale_arcsec=0.1)
+    ys, xs = np.nonzero(m)
+    assert (xs.min() - 200) * 0.1 == pytest.approx(-5.0) and (xs.max() - 200) * 0.1 == pytest.approx(15.0)
+    assert np.ptp(ys) * 0.1 == pytest.approx(1.0)
+    bowed = strip_mask((1201, 1201), 600.0, 600.0, 0.0, 55.0, 55.0, 1.0, bow_at_50=12.0,
+                       pixel_scale_arcsec=0.1)
+    col = np.nonzero(bowed[:, 600 + 500])[0]                 # 50″ along the axis
+    assert (col.mean() - 600) * 0.1 == pytest.approx(12.0, abs=0.1)
+
+
+def test_trails_scale_with_magnitude_and_reach_nisp_only_when_bright():
+    p = load_trail_params()
+    bands = Config.LR_INPUT_BAND_NAMES
+    shape = (1601, 1601)                                     # 160″ grid, star in the middle
+    lengths, nisp_hits = {}, {}
+    for mag in (8.0, 10.5, 13.0):
+        vis, hits = [], 0
+        for seed in range(30):
+            m = draw_trail_masks(np.random.default_rng(seed), p, shape, np.array([800.0]),
+                                 np.array([800.0]), np.array([mag]), 0.3, band_names=bands,
+                                 pixel_scale_arcsec=0.1)
+            vis.append(m[..., 0].sum() / max(np.interp(mag, p.vis_mag, p.vis_width) / 0.1, 1.0) * 0.1)
+            if m[..., 3].any():
+                hits += 1
+                # One persistence strip, shared by the three NISP bands.
+                core = m[..., 1] & m[..., 2] & m[..., 3]
+                assert core.sum() > 0.5 * min(m[..., k].sum() for k in (1, 2, 3))
+        lengths[mag], nisp_hits[mag] = np.median(vis), hits
+    assert lengths[8.0] > lengths[10.5] > lengths[13.0]
+    assert lengths[10.5] == pytest.approx(p.vis_length_at(10.5), rel=0.3)
+    assert nisp_hits[8.0] >= 27 and nisp_hits[13.0] == 0
+
+
+def test_off_grid_star_can_cast_a_persistence_trail_into_the_field():
+    p = load_trail_params()
+    bands = Config.LR_INPUT_BAND_NAMES
+    # 50″ to the left of a 25.5″ grid, axis pointing at it: only NISP can reach.
+    m = draw_trail_masks(np.random.default_rng(0), p, (255, 255), np.array([127.0]),
+                         np.array([-500.0]), np.array([8.0]), 0.0, band_names=bands,
+                         pixel_scale_arcsec=0.1)
+    assert not m[..., 0].any() and m[..., 3].any()
+    a = draw_trail_masks(np.random.default_rng(4), p, (255, 255), np.array([100.0]),
+                         np.array([120.0]), np.array([9.0]), 1.0, band_names=bands, pixel_scale_arcsec=0.1)
+    b = draw_trail_masks(np.random.default_rng(4), p, (255, 255), np.array([100.0]),
+                         np.array([120.0]), np.array([9.0]), 1.0, band_names=bands, pixel_scale_arcsec=0.1)
+    np.testing.assert_array_equal(a, b)
+
+
+def test_simulator_blanks_trails_along_the_scene_axis():
+    with pytest.raises(ValueError):
+        ObservationSimulatorConfig(bright_star_trails=True)
+    n = 510
+    img, stars = _scene(n, [(255, 255, 9.0)])
+    cfg = {"add_noise": False, "add_artifacts": False, "add_saturation": True,
+           "randomize_psf": False, "blank_pixels": "dr1"}
+    off, _ = ObservationSimulator(psf_sets_by_band=_sets(), config=ObservationSimulatorConfig(**cfg)).process(
+        img, np.random.default_rng(0), star_hr_4ch=stars)
+    on, _ = ObservationSimulator(psf_sets_by_band=_sets(), config=ObservationSimulatorConfig(
+        bright_star_trails=True, **cfg)).process(img, np.random.default_rng(0), star_hr_4ch=stars)
+    new = (on.data == 0) & (off.data != 0)
+    assert new[..., 0].sum() > 50                  # VIS bleed trail (~30″ x 1″)
+    assert new[..., 3].sum() > 500                 # NISP persistence across the field
+    # The synthetic kernel's six ridges are equal, so the trail follows one
+    # of its three spike axes + 9.45°: modulo 60° the angle is fixed.
+    ys, xs = np.nonzero(new[..., 3])
+    far = np.hypot(ys - 127.25, xs - 127.25) > 30.0
+    ang = np.degrees(np.arctan2(ys[far] - 127.25, xs[far] - 127.25)) % 60.0
+    expect = (SPIKE_DEG + 9.45) % 60.0
+    assert np.median(np.abs((ang - expect + 30.0) % 60.0 - 30.0)) < 6.0      # the bow adds ~3°
